@@ -28,7 +28,16 @@ trap {
 
 $odin = Resolve-OdinCompiler
 Write-Host "Odin:   $odin ($OdinVersionPin)"
+$odinfmt = Resolve-OdinFormatter
+Write-Host "Format: $odinfmt (ols $OdinfmtReleaseTag)"
 Write-Host "Build:  $Configuration"
+
+# CLAUDE.md rule S1's other half, and it fails the build for the same reason the
+# vet flags below do: a rule enforced only at review is a rule that reaches main.
+# Before the compiler runs, so the answer arrives in a second rather than after
+# every target has been linked. scripts\format.ps1 -Fix is the way out.
+Assert-OdinFormatting -Odinfmt $odinfmt
+Write-Host '-> every .odin file is formatted as odinfmt.json says' -ForegroundColor Green
 
 New-Item -ItemType Directory -Path $BuildRoot -Force | Out-Null
 

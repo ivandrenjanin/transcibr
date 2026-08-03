@@ -190,9 +190,16 @@ The set is `-vet -vet-tabs -strict-style -vet-style -warnings-as-errors -disallo
 it out at a call site: `scripts\common.ps1` holds the only executable copy (`$OdinVetFlags`), and
 both commands pass all of it.
 
+The formatter half is `odinfmt.json` at the repository root — the one copy, and the name odinfmt
+looks for on its own, so an editor formatting on save and the build agree by construction. Do not
+reformat a file by hand or with a different config; `.\scripts\format.ps1 -Fix` is the way. A
+misformatted file fails the build, and the sweep covers every `.odin` file in the repository by
+discovery rather than by a list.
+
 ```powershell
-.\scripts\build.ps1     # every target in $OdinTargets, vet set, subsystem and smoke checked
+.\scripts\build.ps1     # every target in $OdinTargets, vet set, formatting, subsystem and smoke checked
 .\scripts\test.ps1      # every package under src\, vet set, memory failures fatal
+.\scripts\format.ps1    # every .odin file against odinfmt.json  (-Fix rewrites them)
 ```
 
 ### S2. Braces on every block

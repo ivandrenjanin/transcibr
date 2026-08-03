@@ -66,8 +66,55 @@ jobs:
           "ODIN=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           & $exe.FullName version
 
+      # odinfmt, which CLAUDE.md rule S1 names and which ships in the ols release
+      # zip rather than with the Odin distribution. Downloaded exactly the way the
+      # compiler above is, and from the tag scripts/common.ps1 pins, so the
+      # formatter CI runs is the one a developer runs -- two builds that lay out
+      # one line differently would fail every file in the repository on a commit
+      # that touched none of them.
+      - name: Install the pinned odinfmt
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . .\scripts\common.ps1
+          Write-Host "Pinned to ols $OdinfmtReleaseTag, which must hash to $OdinfmtSha256"
+
+          $url = "https://github.com/DanielGavin/ols/releases/download/$OdinfmtReleaseTag/$OdinfmtAsset"
+          $zip = Join-Path $env:RUNNER_TEMP $OdinfmtAsset
+          $dest = Join-Path $env:RUNNER_TEMP 'ols'
+
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+
+          # Resolve the executable rather than assuming the layout inside the zip,
+          # exactly as the compiler step does. The member is named for the target
+          # triple, so it is matched by pattern and not spelled out again here.
+          $exe = Get-ChildItem -Path $dest -Recurse -Filter 'odinfmt*.exe' -File |
+            Select-Object -First 1
+          if (-not $exe) {
+            throw "no odinfmt executable found under $dest after extracting $OdinfmtAsset."
+          }
+
+          # scripts/common.ps1 resolves the formatter from ODINFMT first, so this
+          # is the whole integration: CI runs the developer's commands as-is. The
+          # SHA-256 pin is then checked by those scripts, and because $env:CI is
+          # set here they refuse a mismatch outright instead of warning.
+          "ODINFMT=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "$($exe.FullName) is $((Get-FileHash -LiteralPath $exe.FullName -Algorithm SHA256).Hash)"
+
+      # Every .odin file in the repository against odinfmt.json. Its own step as
+      # well as part of the build below, because "which file" is the answer a
+      # developer wants and a build that stopped before compiling does not say
+      # it as plainly as the command whose whole job is to.
+      - name: Check formatting
+        shell: pwsh
+        run: .\scripts\format.ps1
+
       # Builds every target in $OdinTargets, then reads the subsystem back out
-      # of each PE header and runs the ones that can report their version.
+      # of each PE header and runs the ones that can report their version. The
+      # formatting check runs here too -- rule S1 fails the BUILD, not merely a
+      # step somebody could reorder away.
       - name: Build (debug)
         shell: pwsh
         run: .\scripts\build.ps1

@@ -47,7 +47,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 26
+$ExpectedCaseCount = 33
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -92,7 +92,31 @@ function New-FixtureRepo {
 	Copy-Item -Path (Join-Path $ScriptRoot 'common.ps1') -Destination $scripts -Force
 	Copy-Item -Path (Join-Path $ScriptRoot 'test.ps1') -Destination $scripts -Force
 	Copy-Item -Path (Join-Path $ScriptRoot 'build.ps1') -Destination $scripts -Force
+	Copy-Item -Path (Join-Path $ScriptRoot 'format.ps1') -Destination $scripts -Force
+	# The style, copied rather than left out: build.ps1 checks formatting, and
+	# common.ps1 resolves odinfmt.json from $RepoRoot -- which in here is the
+	# fixture. Without it every build case fails on a missing config instead of
+	# on the thing it checks.
+	Copy-Item -Path (Join-Path $RepoRoot 'odinfmt.json') -Destination $root -Force
 	return $root
+}
+
+# One fixture source file, written the way the real working tree holds one:
+# UTF-8 with no BOM, tab-indented, and CRLF-terminated.
+#
+# CRLF is not cosmetic here. core.autocrlf is on, so every .odin file in a
+# Windows checkout has CRLF endings, and odinfmt.json pins newline_style to
+# match. A fixture written with bare LF is not a faithful copy of the repository
+# it stands in for: it fails the formatting check on its line endings alone, and
+# every build case would fail for a reason none of them is about.
+function Write-FixtureSource {
+	param(
+		[Parameter(Mandatory)] [string] $Path,
+		[Parameter(Mandatory)] [AllowEmptyString()] [string] $Text
+	)
+
+	$crlf = ($Text -replace "`r`n", "`n") -replace "`n", "`r`n"
+	[System.IO.File]::WriteAllText($Path, $crlf, $Utf8NoBom)
 }
 
 # Odin source, written ASCII/no-BOM with tab indentation so the fixtures pass
@@ -118,10 +142,13 @@ function Add-FixturePackage {
 	# time; it is two or more firing CONCURRENTLY that either crash the runner
 	# with no summary or hang it forever (issue #22). The mechanism is written out
 	# once, in CLAUDE.md's Odin notes.
-	$asserting = ''
-	foreach ($ordinal in @(1, 2, 3)) {
-		$asserting += "@(test)`n${Name}_asserts_$ordinal :: proc(t: ^testing.T) {`n`ttesting.expect(t, true)`n`tassert(false, `"deliberate assertion`")`n}`n`n"
-	}
+	#
+	# Joined rather than accumulated with a trailing blank line each: odinfmt
+	# trims the blank line off the end of a file, so the accumulating form plants
+	# a fixture that fails the formatting check on its last byte.
+	$asserting = (@(1, 2, 3) | ForEach-Object {
+			"@(test)`n${Name}_asserts_$_ :: proc(t: ^testing.T) {`n`ttesting.expect(t, true)`n`tassert(false, `"deliberate assertion`")`n}`n"
+		}) -join "`n"
 
 	$body = switch ($Test) {
 		'passing' { "import `"core:testing`"`n`n@(test)`n${Name}_passes :: proc(t: ^testing.T) {`n`ttesting.expect(t, true)`n}`n" }
@@ -132,7 +159,7 @@ function Add-FixturePackage {
 		'none' { "${Name}_CONSTANT :: 1`n" }
 	}
 	$source = "package $Name`n`n$body"
-	[System.IO.File]::WriteAllText((Join-Path $dir "$Name.odin"), $source, $Utf8NoBom)
+	Write-FixtureSource -Path (Join-Path $dir "$Name.odin") -Text $source
 	return $dir
 }
 
@@ -146,7 +173,7 @@ function Add-FixtureBinary {
 
 	$dir = Join-Path (Join-Path $RepoRoot 'src') $SmokeTarget.Package
 	New-Item -ItemType Directory -Path $dir -Force | Out-Null
-	[System.IO.File]::WriteAllText((Join-Path $dir 'main.odin'), "package main`n`n$Body", $Utf8NoBom)
+	Write-FixtureSource -Path (Join-Path $dir 'main.odin') -Text "package main`n`n$Body"
 	return $dir
 }
 
@@ -160,7 +187,7 @@ function Build-FixtureArgvDumper {
 	$dir = Join-Path (Join-Path $RepoRoot 'src') 'argv'
 	New-Item -ItemType Directory -Path $dir -Force | Out-Null
 	$source = "package main`n`nimport `"core:fmt`"`nimport `"core:os`"`n`nmain :: proc() {`n`tfor argument in os.args[1:] {`n`t`tfmt.printfln(`"[%s]`", argument)`n`t}`n}`n"
-	[System.IO.File]::WriteAllText((Join-Path $dir 'argv.odin'), $source, $Utf8NoBom)
+	Write-FixtureSource -Path (Join-Path $dir 'argv.odin') -Text $source
 
 	$exe = Join-Path $RepoRoot 'argv.exe'
 	$built = Invoke-NativeCommand -Command (Resolve-OdinCompiler) -TimeoutSeconds $FixtureTimeoutSeconds `
@@ -708,7 +735,7 @@ Test-Case 'a package that does not compile fails the sweep' {
 	$repo = New-FixtureRepo 'broken-orphan'
 	Add-FixturePackage -RepoRoot $repo -Name 'good' -Test 'passing' | Out-Null
 	$orphan = Add-FixturePackage -RepoRoot $repo -Name 'orphan' -Test 'passing'
-	[System.IO.File]::WriteAllText((Join-Path $orphan 'orphan.odin'), "package orphan`n`nthis is not Odin`n", $Utf8NoBom)
+	Write-FixtureSource -Path (Join-Path $orphan 'orphan.odin') -Text "package orphan`n`nthis is not Odin`n"
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
 	Assert-Result -Result $result -Fails -Matching 'orphan'
 }
@@ -816,6 +843,128 @@ Test-Case 'the subsystem is read out of the PE header, not taken from the flag' 
 	if ($notAnImage -notmatch 'does not start with the MZ signature') {
 		throw "reading a script as a PE image gave: '$notAnImage'"
 	}
+}
+
+# ------------------------------------------------------ cases for format.ps1 --
+#
+# CLAUDE.md rule S1's formatter, which until now nothing ran at all. The check
+# it drives has the same failure mode the test sweep has -- silence -- so it is
+# guarded the same way: every case below is about the check REFUSING something,
+# and the two that are about it accepting exist so the refusals cannot be
+# satisfied by a check that refuses everything.
+#
+# The fixtures misformat by IMPORT ORDER. It is valid Odin, it passes the whole
+# vet set, so a case that fails is failing on FORMATTING and not on something
+# the compiler would have caught anyway -- and the misformatted and formatted
+# forms are the same LENGTH, so a check comparing file sizes rather than
+# contents would wave every one of them through.
+#
+# Otherwise the binary New-FixtureMain builds: it still prints the banner and
+# still exits zero, so build.ps1's smoke test passes once the imports are put
+# back in order. That is what makes the -Fix case able to build what it rewrote.
+function New-FixtureMainUnsorted {
+	param([Parameter(Mandatory)] [string] $Line)
+
+	return "import `"core:os`"`nimport `"core:fmt`"`n`nmain :: proc() {`n`tfmt.println(`"$Line`")`n`tos.exit(0)`n}`n"
+}
+
+$SmokeBanner = "$($SmokeTarget.Name) 0.1.0"
+
+Test-Case 'a misformatted file fails the build' {
+	$repo = New-FixtureRepo 'build-misformatted'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMainUnsorted -Line $SmokeBanner) | Out-Null
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Fails -Matching 'not formatted as odinfmt.json says'
+	Assert-Result -Result $result -Fails -Matching 'main\.odin'
+}
+
+Test-Case 'the format command passes a formatted file and fails a misformatted one' {
+	# Both halves, because either alone proves nothing: a check that accepts
+	# everything passes the first, and one that accepts nothing passes the second
+	# (CLAUDE.md rule A3).
+	$clean = New-FixtureRepo 'format-clean'
+	Add-FixtureBinary -RepoRoot $clean -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $clean -Script 'format.ps1') -Matching 'are formatted as odinfmt.json says'
+
+	$dirty = New-FixtureRepo 'format-dirty'
+	Add-FixtureBinary -RepoRoot $dirty -Body (New-FixtureMainUnsorted -Line $SmokeBanner) | Out-Null
+	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $dirty -Script 'format.ps1') -Fails -Matching 'main\.odin'
+}
+
+Test-Case 'the format check covers Odin outside src' {
+	# The sweep walks $RepoRoot and not $SrcRoot on purpose: docs\reference\ holds
+	# a spike that is still Odin somebody reads and copies from, and a check
+	# scoped to src\ would leave it drifting. Discovered rather than listed, so
+	# this file is covered by having been WRITTEN and not by being named anywhere.
+	$repo = New-FixtureRepo 'format-outside-src'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	$spike = Join-Path $repo 'docs\reference'
+	New-Item -ItemType Directory -Path $spike -Force | Out-Null
+	Write-FixtureSource -Path (Join-Path $spike 'spike.odin') `
+		-Text "package reference`n`nimport `"core:os`"`nimport `"core:fmt`"`n`nspike :: proc() {`n`tfmt.println(os.args[0])`n}`n"
+
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1'
+	Assert-Result -Result $result -Fails -Matching 'docs/reference/spike\.odin'
+}
+
+Test-Case 'a repository with no Odin at all fails the format command' {
+	# The deny-by-default rule, in the one place it matters most. A formatting
+	# check that discovers nothing reports exactly the green a check that
+	# discovered everything reports, and no one can tell the two apart.
+	$repo = New-FixtureRepo 'format-no-sources'
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1'
+	Assert-Result -Result $result -Fails -Matching 'no \.odin files found'
+}
+
+Test-Case 'a source with LF line endings fails the format check' {
+	# Deliberate, and recorded here rather than left to be discovered: the check
+	# IS line-ending-sensitive. core.autocrlf is on, so a Windows checkout holds
+	# CRLF, odinfmt.json pins newline_style to CRLF to match, and odinfmt's own
+	# default would have been LF had this run anywhere but Windows.
+	$repo = New-FixtureRepo 'format-lf-endings'
+	$dir = Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line $SmokeBanner)
+	$main = Join-Path $dir 'main.odin'
+	# Only the line endings differ from the file that just passed; nothing else
+	# about the fixture changes.
+	$lf = [System.IO.File]::ReadAllText($main) -replace "`r`n", "`n"
+	[System.IO.File]::WriteAllText($main, $lf, $Utf8NoBom)
+
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1'
+	Assert-Result -Result $result -Fails -Matching 'main\.odin'
+}
+
+Test-Case 'a config odinfmt would silently ignore fails the format command' {
+	# odinfmt's find_config_file_or_default returns its own built-in default
+	# whenever the file is missing or json.unmarshal fails, and says NOTHING. A
+	# trailing comma in odinfmt.json would otherwise leave every command here
+	# passing against a style nobody chose -- and that default is
+	# platform-dependent, so it would not even be the same style twice.
+	$missing = New-FixtureRepo 'format-config-missing'
+	Add-FixtureBinary -RepoRoot $missing -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	Remove-Item -LiteralPath (Join-Path $missing 'odinfmt.json') -Force
+	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $missing -Script 'format.ps1') -Fails -Matching 'no .*odinfmt\.json'
+
+	$broken = New-FixtureRepo 'format-config-broken'
+	Add-FixtureBinary -RepoRoot $broken -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	[System.IO.File]::WriteAllText((Join-Path $broken 'odinfmt.json'), '{ "character_width": 100, oops }', $Utf8NoBom)
+	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $broken -Script 'format.ps1') -Fails -Matching 'not valid JSON'
+}
+
+Test-Case 'the format command rewrites exactly what it named' {
+	$repo = New-FixtureRepo 'format-fix'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMainUnsorted -Line $SmokeBanner) | Out-Null
+	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1') -Fails
+
+	$fixed = Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1' -ScriptArguments @('-Fix')
+	Assert-Result -Result $fixed -Matching 'rewrote'
+
+	# The check after the fix, which is the only thing that makes -Fix worth
+	# having: a rewrite the check still rejects is a rewrite to a third style.
+	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1') -Matching 'are formatted as odinfmt.json says'
+
+	# And it still compiles -- a formatter that produces something the vet set
+	# rejects has fixed nothing.
+	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1')
 }
 
 # ----------------------------------------------------------------- summary --

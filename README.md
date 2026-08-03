@@ -104,19 +104,28 @@ through on Windows.
 
 ## Building from source
 
-Three scripts, and CI runs the same three on every push — nothing in the workflow that a developer
+Four scripts, and CI runs the same four on every push — nothing in the workflow that a developer
 cannot run locally.
 
 ```powershell
 .\scripts\build.ps1     # -> build\transcibr-cli.exe   (add -Configuration release for -o:speed)
 .\scripts\test.ps1      # every package under src\
-.\scripts\selftest.ps1  # checks that the two above still fail when they should
+.\scripts\format.ps1    # every .odin file against odinfmt.json (add -Fix to rewrite them)
+.\scripts\selftest.ps1  # checks that the three above still fail when they should
 ```
 
 The Odin compiler is pinned to release `dev-2026-07a`. The pin lives in `scripts/common.ps1` and
 nowhere else — CI dot-sources that file for the release tag rather than keeping a second copy that
 can drift. The scripts look for the compiler in `$env:ODIN`, then on `PATH`, then at
 `C:\Odin\dist\odin.exe`, so it does not need to be on `PATH`.
+
+The formatter is pinned the same way and resolved the same way — `$env:ODINFMT`, then `PATH`, then
+`C:\Odin\dist\odinfmt.exe`. It is **not** part of the Odin distribution: `odinfmt` ships in
+`ols-x86_64-pc-windows-msvc.zip` on the [ols](https://github.com/DanielGavin/ols) releases, pinned
+here to `dev-2026-06`. It has no version flag to ask, so the pin is the binary's SHA-256 — a
+stronger claim than a version string, since it names the exact build rather than a name several
+builds can share. A different build is refused in CI and warned about locally, exactly as the
+compiler is.
 
 A compiler reporting a different version is **refused in CI and warned about locally**. The shared
 answer — what CI says about a branch — comes from the pinned compiler and nothing else, which is
@@ -129,6 +138,14 @@ and toolchains set it locally too, and some CI systems do not set it at all — 
 refuse your compiler on your own machine, clear `$env:CI` for the shell and you get the warning
 instead. The reverse also holds: on a CI system that leaves `$env:CI` unset, set it in the job to
 get the refusal.
+
+The style itself is `odinfmt.json` at the repository root, which is the name odinfmt looks for on
+its own — an editor formatting on save and the build cannot disagree about it. A misformatted file
+fails `build.ps1`, not merely a check somebody remembers to run, and the sweep covers every `.odin`
+file in the repository by walking for them rather than by a list anyone maintains. It is
+line-ending-sensitive on purpose: `core.autocrlf` is on, a Windows checkout holds CRLF, and
+`newline_style` is pinned to match rather than left to odinfmt's own default, which is CRLF on
+Windows and LF everywhere else.
 
 Both commands pass the full vet set with warnings as errors, and the test command additionally sets
 `ODIN_TEST_FAIL_ON_BAD_MEMORY=true` — it defaults to false, which would let a procedure that leaks
