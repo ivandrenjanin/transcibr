@@ -325,36 +325,34 @@ BLOCK_STARTERS :: "#>-+=~"
 // reader will actually see first. Dropped rather than written out as a space,
 // unlike the ones inside the line: a space separates what stood either side of
 // it, and at the start of a line there is nothing on the left to separate.
+//
+// Taken off by `says_nothing`, which is the predicate BOTH producers of a
+// Paragraph's prose trim by -- spoken_text off a Cue's ends, word_split and
+// character_split off the ends of every piece carved out of a Cue's interior. A
+// byte loop of its own here was a second answer to "what can a reader see", and
+// two answers to that question is exactly how a Paragraph made of nothing else
+// reached this procedure.
 @(private)
 write_prose :: proc(out: ^strings.Builder, said: string) {
 	assert(out != nil, "there is no document here to write prose into")
 
-	prose := readable_from(said)
-	// The read side of what spoken_text settles as it trims (CLAUDE.md A4): a
-	// Cue holding nothing a reader could see is not a Saying, so no Paragraph is
-	// built out of one, so no Paragraph's prose can flatten away to nothing.
+	prose := strings.trim_left_proc(said, says_nothing)
+	// The read side of what both of those producers settle as they trim
+	// (CLAUDE.md A4): a Cue holding nothing a reader could see is not a Saying and
+	// no Paragraph is built out of one, and a carve hands back nothing a reader
+	// could see either -- so no Paragraph's prose can come off this trim empty.
 	assert(len(prose) > 0, "a paragraph holding nothing a reader could see reached the renderer")
-	assert(prose[0] != ' ', "prose still carrying the engine's padding reached the renderer")
+	// The other end of the same pair, and the end this procedure does NOT strip:
+	// a trailing byte nobody said is spent against the character cap and reaches
+	// the deliverable as a Paragraph ending in nothing. Guarded by the length
+	// above rather than repeated by it -- there is no last byte of an empty
+	// string to read.
+	assert(
+		!says_nothing(rune(prose[len(prose) - 1])),
+		"a paragraph ending on something nobody said reached the renderer",
+	)
 
 	write_inline(out, write_block_start(out, prose))
-}
-
-// The speech from the first byte of it a reader will actually see.
-//
-// Every byte before that one is written out as a space by write_inline or is
-// already a space, and a run of them at the start of a line is Markdown's own
-// indentation. A byte at a time and never a rune at a time, for the reason
-// write_inline gives: every byte this skips is ASCII, and every byte of a
-// multi-byte character is at or above 0x80 and stops the scan.
-@(private)
-readable_from :: proc(said: string) -> (prose: string) {
-	defer assert(len(prose) <= len(said), "skipping a paragraph's indentation grew it")
-
-	at := 0
-	for at < len(said) && (said[at] < 0x20 || said[at] == 0x7F || said[at] == ' ') {
-		at += 1
-	}
-	return said[at:]
 }
 
 // Escapes what opens a block, and hands back the speech that is left.

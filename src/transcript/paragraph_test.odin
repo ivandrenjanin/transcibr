@@ -586,3 +586,75 @@ a_carve_at_a_word_boundary_leaves_no_padding_behind :: proc(t: ^testing.T) {
 		testing.expect_value(t, paragraphs[i].text, want)
 	}
 }
+
+// A byte nobody said sitting in the MIDDLE of a Cue, at the one place a carve
+// can land on it.
+//
+// spoken_text guards a Cue's ENDS, and that is the whole of what it can promise:
+// a Paragraph is built out of carved interiors as well, and the carve walks
+// bytes spoken_text never looked at. Trimmed with a predicate that knew
+// whitespace and not control bytes, a split either side of a lone control
+// character handed back a `take` made of nothing else -- and the Paragraph
+// carrying it holds no speech at all, which is what the renderer refuses.
+//
+// One control byte in a Cue is enough, on ordinary Engine output, and it is the
+// pure core that produces it -- so this is a whole Batch down and not one
+// command line.
+@(test)
+a_carve_around_a_byte_nobody_said_never_makes_a_paragraph_of_it :: proc(t: ^testing.T) {
+	tight := Merge_Params {
+		max_gap_ms     = 1_000,
+		hard_gap_ms    = 3_000,
+		max_para_chars = 4,
+	}
+	for c in INTERIOR_SILENCE_CASES {
+		shape := []Shaped_Cue{{duration_ms = 2_000, text = c.said}}
+		cues := shaped_cues(shape, context.allocator)
+		defer delete(cues, context.allocator)
+
+		paragraphs := merge_paragraphs(cues, tight, context.allocator)
+		defer destroy_paragraphs(paragraphs, context.allocator)
+
+		if !testing.expectf(
+			t,
+			len(paragraphs) == len(c.becomes),
+			"%q became %d paragraphs, want %d",
+			c.said,
+			len(paragraphs),
+			len(c.becomes),
+		) {
+			continue
+		}
+		for want, i in c.becomes {
+			testing.expectf(
+				t,
+				paragraphs[i].text == want,
+				"%q: paragraph %d reads %q, want %q",
+				c.said,
+				i + 1,
+				paragraphs[i].text,
+				want,
+			)
+		}
+	}
+}
+
+// The two routes a split takes, so neither can be fixed while the other is left
+// carving a piece out of what nobody said: the first row breaks at the boundary
+// sitting exactly AT the cut, and the second at the last boundary the search
+// finds inside the window. The byte is gone in both, the way the padding either
+// side of a Cue is gone, and every letter that was said arrives.
+//
+// Not rodata: the rows hold slices, and rodata takes only constant
+// initialisation.
+@(private)
+Interior_Silence_Case :: struct {
+	said:    string,
+	becomes: []string,
+}
+
+@(private)
+INTERIOR_SILENCE_CASES := []Interior_Silence_Case {
+	{said = " aaaa \x01 bbbbbbbbbbbb", becomes = {"aaaa", "bbbb", "bbbb", "bbbb"}},
+	{said = " ab\x01cd efgh", becomes = {"ab", "cd", "efgh"}},
+}

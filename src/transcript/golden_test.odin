@@ -408,7 +408,13 @@ SILENT_OUTPUTS := []string {
 	`{"transcription": [{"offsets": {"from": 0, "to": 30000}, "text": ""}]}`,
 	// Bytes a text editor renders as nothing at all. Well-formed JSON, a Cue
 	// that is not empty, and still nobody said anything.
-	`{"transcription": [{"offsets": {"from": 0, "to": 30000}, "text": "  "}]}`,
+	//
+	// Written as JSON's own escapes and never as the raw bytes. RFC 8259 forbids
+	// an unescaped U+0000-U+001F inside a string, so the raw form made this row's
+	// own claim to be well-formed JSON false -- and it was invisible in an editor
+	// and in every diff, which is the harder half: a byte nobody can see is not
+	// something a reviewer can check, and this table is evidence.
+	`{"transcription": [{"offsets": {"from": 0, "to": 30000}, "text": " \u0001\u007f "}]}`,
 }
 
 @(test)
@@ -437,6 +443,64 @@ a_recording_nobody_said_anything_in_is_refused_rather_than_rendered_empty :: pro
 			i,
 		)
 	}
+}
+
+// A byte nobody said inside a Cue too long to admit whole, through the WHOLE
+// pipeline and under a shipped profile.
+//
+// merge_paragraphs has the case that isolates this; what this adds is the route
+// a Recording really takes. The core is what both binaries call, so a Cue like
+// this took the whole Batch down and not merely one command line -- and the
+// Engine writes long Cues and stray bytes without being provoked.
+//
+// The Cue is built against the profile's OWN cap rather than a number written
+// out beside it: what is pinned is that a carve landing on a byte nobody said
+// renders, not any particular arithmetic in a threshold ADR-0007 expects to be
+// tuned.
+@(test)
+a_byte_nobody_said_inside_a_carved_cue_still_renders :: proc(t: ^testing.T) {
+	room := profile_params(.Conversation).max_para_chars
+	if !testing.expect(t, room > 0, "the aggressive profile holds no characters at all") {
+		return
+	}
+
+	// Two runs of speech, each of them as long as the cap, either side of one
+	// byte a reader cannot see -- so the merger has to carve, and the second
+	// carve is offered speech opening on that byte.
+	said := strings.builder_make(context.allocator)
+	defer strings.builder_destroy(&said)
+	strings.write_string(&said, `{"transcription":[{"offsets":{"from":0,"to":1000},"text":" `)
+	for _ in 0 ..< room {
+		strings.write_byte(&said, 'a')
+	}
+	strings.write_string(&said, ` \u0001 `)
+	for _ in 0 ..< room {
+		strings.write_byte(&said, 'b')
+	}
+	strings.write_string(&said, `"}]}`)
+
+	markdown, err := render_transcript(
+		"carved.json",
+		strings.to_string(said),
+		nil,
+		golden_context(.Conversation, "en"),
+		context.allocator,
+	)
+	defer delete(markdown, context.allocator)
+
+	if !testing.expect_value(t, err.fault, Parse_Fault.None) {
+		return
+	}
+	// Every letter that was said arrives, and the byte nobody said does not.
+	// Counted off the BODY, because the front matter carries letters of its own.
+	body := body_of(markdown)
+	testing.expect_value(t, strings.count(body, "a"), room)
+	testing.expect_value(t, strings.count(body, "b"), room)
+	testing.expect(t, !strings.contains(body, "\x01"), "a control byte reached the document")
+	// And no Paragraph came back as Markdown's own indentation, which is what a
+	// line of prose that flattened away to a run of spaces reads as.
+	testing.expect(t, !strings.has_prefix(body, " "), "the first line of prose opens on a space")
+	testing.expect(t, !strings.contains(body, "\n "), "a line of the document opens on a space")
 }
 
 // The negative space of that (CLAUDE.md A3), and it is not a formality: a check

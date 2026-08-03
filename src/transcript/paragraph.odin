@@ -411,10 +411,15 @@ SENTENCE_CLOSERS :: `"')]}»”’`
 @(private)
 ends_a_sentence :: proc(said: string) -> bool {
 	// Paired with spoken_text's assert on the other end of the same string
-	// (CLAUDE.md A4): that one checks the padding is off the front, this one
-	// checks the back, which is the end this procedure reads.
+	// (CLAUDE.md A4): that one checks what nobody said is off the front, this one
+	// checks the back, which is the end this procedure reads. By the same
+	// predicate, so a stop hidden behind a control byte cannot read as no stop at
+	// all here while spoken_text calls that byte silence.
 	if len(said) > 0 {
-		assert(said[len(said) - 1] != ' ', "asked whether padded text ends a sentence")
+		assert(
+			!says_nothing(rune(said[len(said) - 1])),
+			"asked whether text still ending on what nobody said ends a sentence",
+		)
 	}
 
 	bare := strings.trim_right(said, SENTENCE_CLOSERS)
@@ -505,19 +510,35 @@ paragraph_room :: proc(s: Merge_State, p: Merge_Params) -> int {
 // and offers the whole cap, and only one that has already offered the whole cap
 // carves the word itself.
 //
-// Both ends of what it hands back are trimmed. The space the split broke at is
-// not speech and must not survive into either side of it: on the left it reaches
-// the deliverable as a Paragraph ending in whitespace and is spent against the
-// cap, and on the right it opens the next Paragraph with padding the Engine's
-// own leading space was already taken off for.
+// Both ends of what it hands back are trimmed, by says_nothing and never by a
+// predicate that knows only whitespace. What the split broke at is not speech
+// and must not survive into either side of it: on the left it reaches the
+// deliverable as a Paragraph ending in nothing anybody said and is spent against
+// the cap, and on the right it opens the next Paragraph with padding the
+// Engine's own leading space was already taken off for.
+//
+// THE PREDICATE IS THE WHOLE OF IT. spoken_text guards a Cue's ENDS, and this is
+// the OTHER producer of a Paragraph's prose -- it carves interiors spoken_text
+// never looked at. Trimmed by whitespace alone, a split either side of a single
+// control character handed back a `take` made of nothing else, and the Paragraph
+// carrying it held no speech at all.
 @(private)
 word_split :: proc(said: string, room: int) -> (take, rest: string) {
 	assert(len(said) > 0, "there is nothing here to split")
-	// The one thing the trims below rely on: speech starts with speech, so
-	// nothing they take off the left can empty what is left of it.
-	assert(!strings.is_space(rune(said[0])), "speech still carrying the engine's padding")
+	// The two things the trims below rely on, both ends of one claim (CLAUDE.md
+	// A3): speech starts with speech and ends with speech, so nothing they take
+	// off either side can empty what is left of it.
+	assert(!says_nothing(rune(said[0])), "speech still opening on something nobody said")
+	assert(
+		!says_nothing(rune(said[len(said) - 1])),
+		"speech still ending on something nobody said",
+	)
 	defer if len(take) > 0 {
-		assert(take == strings.trim_space(take), "a split left padding on the prose")
+		assert(!says_nothing(rune(take[0])), "a split opened prose on something nobody said")
+		assert(
+			!says_nothing(rune(take[len(take) - 1])),
+			"a split left something nobody said on the prose",
+		)
 	}
 
 	if room <= 0 {
@@ -540,19 +561,23 @@ word_split :: proc(said: string, room: int) -> (take, rest: string) {
 	// without breaking anything, which the search below cannot see because it
 	// only looks inside the window.
 	at_cut, _ := utf8.decode_rune_in_string(said[cut:])
-	if strings.is_space(at_cut) {
-		return strings.trim_right_space(said[:cut]), strings.trim_left_space(said[cut:])
+	if says_nothing(at_cut) {
+		take = strings.trim_right_proc(said[:cut], says_nothing)
+		rest = strings.trim_left_proc(said[cut:], says_nothing)
+		return
 	}
 
-	// `strings.is_space` and never a comparison against the space byte: it is the
-	// predicate trim_left_space and trim_right_space use, and a boundary search
-	// that knew about fewer characters than the trims do carves a tab as though
-	// it were a letter.
-	at := strings.last_index_proc(said[:cut], strings.is_space)
+	// `says_nothing` and never `strings.is_space`: it is the predicate the trims
+	// either side of this use, and a boundary search knowing about fewer
+	// characters than they do carves a control byte as though it were a letter --
+	// and then the trims take it off again, leaving a Paragraph made of nothing.
+	at := strings.last_index_proc(said[:cut], says_nothing)
 	if at <= 0 {
 		return "", said
 	}
-	return strings.trim_right_space(said[:at]), strings.trim_left_space(said[at:])
+	take = strings.trim_right_proc(said[:at], says_nothing)
+	rest = strings.trim_left_proc(said[at:], says_nothing)
+	return
 }
 
 // Splits speech at exactly `room` characters, wherever that falls.
@@ -560,6 +585,10 @@ word_split :: proc(said: string, room: int) -> (take, rest: string) {
 character_split :: proc(said: string, room: int) -> (take, rest: string) {
 	assert(len(said) > 0, "there is nothing here to carve")
 	assert(room > 0, "a carve that may take no characters never finishes")
+	// The same claim word_split makes about what it is handed, at the other carve
+	// (CLAUDE.md A4): the trims below take off what nobody said, and speech that
+	// opened on that would come back empty.
+	assert(!says_nothing(rune(said[0])), "speech still opening on something nobody said")
 	defer assert(len(take) > 0, "a carve that took no speech at all")
 
 	// Characters and not bytes, which is the whole reason this asks utf8 instead
@@ -569,7 +598,9 @@ character_split :: proc(said: string, room: int) -> (take, rest: string) {
 	// has already found more characters here than there is room for.
 	cut := utf8.rune_offset(said, room)
 	assert(cut > 0, "a positive room measured out no characters at all")
-	return strings.trim_right_space(said[:cut]), strings.trim_left_space(said[cut:])
+	take = strings.trim_right_proc(said[:cut], says_nothing)
+	rest = strings.trim_left_proc(said[cut:], says_nothing)
+	return
 }
 
 // Adds one Cue's speech to the Paragraph being built, opening one if none is.
