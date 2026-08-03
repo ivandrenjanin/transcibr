@@ -186,8 +186,13 @@ Indent with tabs: odinfmt emits them and `-vet-tabs` enforces them. Every test a
 invocation passes the full vet set. A style rule that fights the toolchain becomes a rule nobody
 runs; the formatter plus the vet flags are the rule.
 
-```bash
-odin test src -vet -vet-tabs -strict-style -vet-style -warnings-as-errors -disallow-do
+The set is `-vet -vet-tabs -strict-style -vet-style -warnings-as-errors -disallow-do`. Do not spell
+it out at a call site: `scripts\common.ps1` holds the only executable copy (`$OdinVetFlags`), and
+both commands pass all of it.
+
+```powershell
+.\scripts\build.ps1     # every target in $OdinTargets, vet set, subsystem and smoke checked
+.\scripts\test.ps1      # every package under src\, vet set, memory failures fatal
 ```
 
 ### S2. Braces on every block
@@ -225,9 +230,17 @@ completes. Note also that `Process.pid` is stale once the process exits and Wind
 so a late terminate can signal an unrelated application.
 
 **Testing is built in; there is no framework to choose.** Mark procedures `@(test)`, import
-`core:testing`, and assert with `testing.expect` and `testing.expect_value`. Run a package's tests
-with `odin test <package-dir>` plus the S1 vet set. To run a single test, pass its name:
-`odin test src/transcript -define:ODIN_TEST_NAMES=transcript.parses_srt_timestamp`.
+`core:testing`, and assert with `testing.expect` and `testing.expect_value`. `.\scripts\test.ps1`
+sweeps every package; `.\scripts\test.ps1 -TestName version.banner_renders_one_line` runs one.
+Do not hand-roll the compiler invocation — the sweep also enforces that every package either
+collects tests or is declared test-less in `$OdinPackagesWithoutTests`.
+
+**`odin test` cannot write its test executable to a path containing a space.** It runs the binary
+it builds through a command line it does not quote, so a space is re-parsed as an argument
+separator and the compiler exits `-1` with `Unknown argument encountered '<second word>'`. The
+default output path comes from the working directory, so a checkout under `C:\Users\John Smith\`
+fails before a single test runs, and CI never catches it because a runner's path has no spaces.
+`scripts\common.ps1` falls back to the 8.3 short name. `odin build` is unaffected.
 
 **Win32 subprocess handling needs hand-rolled `CreateProcessW`.** `core:os` spawns children with
 `CREATE_UNICODE_ENVIRONMENT` and `NORMAL_PRIORITY_CLASS` only, and `Process_Desc` has no field for

@@ -5,6 +5,9 @@ Local transcription tool. Converts video and audio files into text transcripts u
 > **Status: early implementation.** The specification is in `docs/spec/`. The build and test
 > commands work (see [Building from source](#building-from-source)); `transcibr-cli` currently
 > reports its version and nothing else. There are no releases yet.
+>
+> Building needs a checkout path without spaces, or a volume with 8.3 short names enabled:
+> `odin test` runs the binary it builds through an unquoted command line.
 
 ## What it does
 
@@ -104,30 +107,33 @@ through on Windows.
 
 ## Building from source
 
-Two commands, and CI runs the same two on every push.
+Three scripts, and CI runs the same three on every push — nothing in the workflow that a developer
+cannot run locally.
 
 ```powershell
-.\scripts\build.ps1     # -> build\transcibr-cli.exe
+.\scripts\build.ps1     # -> build\transcibr-cli.exe   (add -Configuration release for -o:speed)
 .\scripts\test.ps1      # every package under src\
+.\scripts\selftest.ps1  # checks that test.ps1 still fails when it should
 ```
 
 The Odin compiler is pinned to release `dev-2026-07a`. The scripts look for it in `$env:ODIN`, then
-on `PATH`, then at `C:\Odin\dist\odin.exe`, so it does not need to be on `PATH`.
+on `PATH`, then at `C:\Odin\dist\odin.exe`, so it does not need to be on `PATH` — and they refuse a
+compiler that reports a different version, because a pin nothing checks is a comment.
 
 Both commands pass the full vet set with warnings as errors, and the test command additionally sets
 `ODIN_TEST_FAIL_ON_BAD_MEMORY=true` — it defaults to false, which would let a procedure that leaks
-its returned slice pass with a warning (ADR-0010).
+its returned slice pass with a warning (ADR-0010). The build reads the subsystem back out of each
+binary's PE header (ADR-0004) and runs the ones that can report their version.
 
 **`odin test` collects test procedures from one package only**, and on a package with none it prints
 `No tests to run.` and exits 0. `test.ps1` therefore discovers every package under `src\` rather than
-naming one, counts the tests the runner reports finishing, and fails when that total is zero — a run
-that executes nothing is a failure, not a pass. To run a single test, call the compiler directly:
+naming one and reads the runner's own JSON report to see what each package actually collected. A
+package that collects nothing fails the run unless it is declared test-less in
+`$OdinPackagesWithoutTests`, and one declared there that grows tests fails too — a run that executes
+nothing is a failure, not a pass. To run a single test:
 
 ```powershell
-C:\Odin\dist\odin.exe test src\version -collection:transcibr=src `
-    -vet -vet-tabs -strict-style -vet-style -warnings-as-errors -disallow-do `
-    -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true `
-    -define:ODIN_TEST_NAMES=version.banner_names_the_program_and_its_version
+.\scripts\test.ps1 -TestName version.banner_names_the_program_and_its_version
 ```
 
 ## License

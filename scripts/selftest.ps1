@@ -22,6 +22,7 @@ $FixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) "transcibr-selftest-$
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 $script:Failures = @()
+$script:Skips = @()
 $script:Passes = 0
 
 # ---------------------------------------------------------------- fixtures --
@@ -113,10 +114,23 @@ function Test-Case {
 		Write-Host "    PASS" -ForegroundColor Green
 		$script:Passes += 1
 	}
+	catch [System.Management.Automation.ItemNotFoundException] {
+		# Thrown by Skip-Case only: a case whose SETUP the environment refused,
+		# which is not the same as the case failing. Reported, never silent.
+		Write-Host "    SKIP: $($_.Exception.Message)" -ForegroundColor Yellow
+		$script:Skips += "$Name -- $($_.Exception.Message)"
+	}
 	catch {
 		Write-Host "    FAIL: $($_.Exception.Message)" -ForegroundColor Red
 		$script:Failures += "$Name -- $($_.Exception.Message)"
 	}
+}
+
+# A case this machine cannot set up. Distinct from a failure, and loud either
+# way -- the summary lists skips even when everything else passes.
+function Skip-Case {
+	param([Parameter(Mandatory)] [string] $Reason)
+	throw (New-Object System.Management.Automation.ItemNotFoundException($Reason))
 }
 
 function Assert-ExitCode {
@@ -190,6 +204,20 @@ Test-Case 'an unreadable directory fails discovery rather than shortening it' {
 	# it, so the deny is removable again for cleanup without elevation.
 	& icacls $locked /deny "${env:USERNAME}:(OI)(CI)(RD)" | Out-Null
 	try {
+		# A token holding SeBackupPrivilege walks straight past the deny. Prove
+		# the setup took before asserting on it, rather than passing the case
+		# for a reason that has nothing to do with the sweep.
+		$denied = $false
+		try {
+			Get-ChildItem -LiteralPath $locked -Force -ErrorAction Stop | Out-Null
+		}
+		catch {
+			$denied = $true
+		}
+		if (-not $denied) {
+			Skip-Case -Reason 'this account can still list a directory it has been denied'
+		}
+
 		$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
 		Assert-ExitCode -Result $result -Expected 'nonzero'
 		Assert-Output -Result $result -Pattern 'TEST COMMAND FAILED'
@@ -258,6 +286,14 @@ if (Test-Path -LiteralPath $FixtureRoot) {
 Write-Host ''
 Write-Host '========================================'
 Write-Host "Cases passed: $script:Passes"
+
+if ($script:Skips.Count -gt 0) {
+	Write-Host ''
+	Write-Host "Cases skipped: $($script:Skips.Count)" -ForegroundColor Yellow
+	foreach ($skip in $script:Skips) {
+		Write-Host "  - $skip" -ForegroundColor Yellow
+	}
+}
 
 if ($script:Failures.Count -gt 0) {
 	Write-Host ''

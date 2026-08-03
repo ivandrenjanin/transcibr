@@ -1,7 +1,10 @@
 name: CI
 
-# The same two commands a developer runs locally. If CI and local ever need
-# different commands, the commands are wrong.
+# Nothing here but the repository's own scripts. Every check CI performs a
+# developer performs too, by running the same script -- a check that lives only
+# in this file is one that lets someone break main while both local commands
+# pass. That is why the binary smoke test and the PE-header subsystem check are
+# in build.ps1 rather than in a step below.
 on:
   push:
   workflow_dispatch:
@@ -18,7 +21,9 @@ jobs:
     env:
       # Pinned to a tagged release, never `latest`: an unpinned toolchain turns
       # an upstream change into a build failure on an unrelated commit, and
-      # makes "it passed yesterday" unanswerable.
+      # makes "it passed yesterday" unanswerable. This release reports itself as
+      # dev-2026-07-nightly:819fdc7, which is the string scripts/common.ps1
+      # checks against ($OdinVersionPin). Change the two together.
       ODIN_RELEASE: dev-2026-07a
 
     steps:
@@ -50,23 +55,25 @@ jobs:
           "ODIN=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           & $exe.FullName version
 
-      - name: Build
+      # Builds every target in $OdinTargets, then reads the subsystem back out
+      # of each PE header and runs the ones that can report their version.
+      - name: Build (debug)
         shell: pwsh
         run: .\scripts\build.ps1
+
+      # Both configurations, so neither rots. -o:speed is a different code path
+      # through the compiler and a release that only builds at tagging time is
+      # a release that breaks at tagging time.
+      - name: Build (release)
+        shell: pwsh
+        run: .\scripts\build.ps1 -Configuration release
 
       - name: Test
         shell: pwsh
         run: .\scripts\test.ps1
 
-      - name: Binary reports its version and exits zero
+      # The sweep's own checks. It is the script whose failure mode is silence,
+      # so it is the one script CI cannot take on trust.
+      - name: Self-test the build and test commands
         shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $output = & .\build\transcibr-cli.exe
-          if ($LASTEXITCODE -ne 0) {
-            throw "transcibr-cli exited $LASTEXITCODE, expected 0."
-          }
-          Write-Host "transcibr-cli printed: $output"
-          if ($output -notmatch '^transcibr-cli \d+\.\d+\.\d+$') {
-            throw "transcibr-cli did not report a version; printed '$output'."
-          }
+        run: .\scripts\selftest.ps1
