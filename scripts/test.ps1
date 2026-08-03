@@ -64,12 +64,28 @@ $testRoot = Get-SpaceFreeDirectory -Path (Join-Path $BuildRoot 'odin-test')
 
 $failures = @()
 $totalTests = 0
+$position = 0
 
 foreach ($package in $packages) {
 	Write-Host ''
 	Write-Host "=== $($package.Name) ===" -ForegroundColor Cyan
+	$position += 1
 
-	$stem = Join-Path $testRoot $package.Name.Replace('/', '-')
+	# The stem every artefact of this package's run is named from. Two
+	# properties, neither optional:
+	#
+	# No space, whatever the package directory is called. `odin test` re-parses
+	# the -out: path on an unquoted command line, so src\my pkg\ otherwise exits
+	# -1 with "Unknown argument encountered 'pkg.exe'" and the sweep runs
+	# nothing -- the same defect Get-OdinTestRoot closes for the checkout path,
+	# reintroduced one directory further down.
+	#
+	# Unique to this run. Two sweeps in one checkout share $testRoot, and on a
+	# name fixed by package alone each deletes the report the other is about to
+	# write and reads back "collected ZERO tests". $position also keeps the
+	# sanitised names apart: `a b` and `a-b` sanitise to the same slug.
+	$slug = $package.Name -replace '[^A-Za-z0-9._-]', '-'
+	$stem = Join-Path $testRoot "$PID-$position-$slug"
 	$report = "$stem.json"
 	if (Test-Path -LiteralPath $report) {
 		Remove-Item -LiteralPath $report -Force
@@ -107,6 +123,12 @@ foreach ($package in $packages) {
 		$succeeded = [int] $json.success
 	}
 	$totalTests += $collected
+
+	# Read, so done with. Per-run names keep concurrent sweeps apart but would
+	# otherwise leave one executable per package per run behind forever. Best
+	# effort: a file another process still holds is not this sweep's verdict.
+	Get-ChildItem -LiteralPath $testRoot -File -Filter "$PID-$position-$slug.*" -ErrorAction SilentlyContinue |
+		Remove-Item -Force -ErrorAction SilentlyContinue
 
 	$expectedEmpty = ($OdinPackagesWithoutTests -contains $package.Name)
 	if ($odinExit -ne 0) {

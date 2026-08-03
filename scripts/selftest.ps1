@@ -35,7 +35,7 @@ $script:Passes = 0
 # Keep $ExpectedCaseCount in step with the cases below; a mismatch either way
 # fails the run. Skipping is deny-by-default, same as $OdinPackagesWithoutTests
 # in common.ps1: a case may end in a skip only if it is named here.
-$ExpectedCaseCount = 12
+$ExpectedCaseCount = 14
 $CasesAllowedToSkip = @(
 	'an unreadable directory fails discovery rather than shortening it'
 )
@@ -75,10 +75,17 @@ function Add-FixturePackage {
 		[Parameter(Mandatory)] [string] $RepoRoot,
 		[Parameter(Mandatory)] [string] $Name,
 		[Parameter(Mandatory)] [ValidateSet('passing', 'failing', 'leaking', 'none')] [string] $Test,
+		# The directory to plant the package in, where that has to differ from
+		# the package name: an Odin identifier cannot contain a space and a
+		# directory can, which is the whole point of the case that uses this.
+		[string] $Directory = '',
 		[switch] $Hidden
 	)
 
-	$dir = Join-Path (Join-Path $RepoRoot 'src') $Name
+	if ($Directory -eq '') {
+		$Directory = $Name
+	}
+	$dir = Join-Path (Join-Path $RepoRoot 'src') $Directory
 	New-Item -ItemType Directory -Path $dir -Force | Out-Null
 
 	$body = switch ($Test) {
@@ -126,14 +133,62 @@ function Invoke-FixtureScript {
 		-WorkingDirectory $RepoRoot -NoNewWindow -Wait -PassThru `
 		-RedirectStandardOutput $outFile -RedirectStandardError $errFile
 
+	return [pscustomobject]@{
+		ExitCode = $process.ExitCode
+		Output   = Read-FixtureOutput -Files @($outFile, $errFile)
+	}
+}
+
+function Read-FixtureOutput {
+	param([Parameter(Mandatory)] [string[]] $Files)
+
 	$text = ''
-	foreach ($file in @($outFile, $errFile)) {
+	foreach ($file in $Files) {
 		if (Test-Path -LiteralPath $file) {
 			$text += (Get-Content -LiteralPath $file -Raw)
 			Remove-Item -LiteralPath $file -Force
 		}
 	}
-	return [pscustomobject]@{ ExitCode = $process.ExitCode; Output = $text }
+	return $text
+}
+
+# Several runs of the same script started TOGETHER in one checkout -- what a
+# developer produces by running the tests in two terminals, and the only shape
+# in which the sweep's artefacts are shared. Started before any is waited on:
+# run sequentially they never overlap and the case proves nothing.
+function Invoke-FixtureScriptConcurrently {
+	param(
+		[Parameter(Mandatory)] [string] $RepoRoot,
+		[Parameter(Mandatory)] [string] $Script,
+		[Parameter(Mandatory)] [int] $Count
+	)
+
+	$scriptPath = Join-Path (Join-Path $RepoRoot 'scripts') $Script
+	$started = @()
+	for ($i = 0; $i -lt $Count; $i++) {
+		$outFile = Join-Path $FixtureRoot "concurrent-$i-$([System.Guid]::NewGuid().ToString('N')).log"
+		$errFile = [System.IO.Path]::ChangeExtension($outFile, '.err.log')
+		$process = Start-Process -FilePath 'powershell.exe' `
+			-ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$scriptPath`"") `
+			-WorkingDirectory $RepoRoot -NoNewWindow -PassThru `
+			-RedirectStandardOutput $outFile -RedirectStandardError $errFile
+
+		# Touching .Handle makes the Process object cache the native handle.
+		# Without -Wait it does not, and .ExitCode then reads back empty once
+		# the child is gone -- which this case would report as a collision.
+		$null = $process.Handle
+		$started += [pscustomobject]@{ Process = $process; Out = $outFile; Err = $errFile }
+	}
+
+	$results = @()
+	foreach ($run in $started) {
+		$run.Process.WaitForExit()
+		$results += [pscustomobject]@{
+			ExitCode = $run.Process.ExitCode
+			Output   = Read-FixtureOutput -Files @($run.Out, $run.Err)
+		}
+	}
+	return $results
 }
 
 # -------------------------------------------------------------- assertions --
@@ -226,6 +281,32 @@ Test-Case 'a repository path containing a space still runs its tests' {
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
 	Assert-ExitCode -Result $result -Expected 'zero'
 	Assert-Output -Result $result -Pattern 'All 1 tests? passed'
+}
+
+Test-Case 'a package directory containing a space still runs its tests' {
+	$repo = New-FixtureRepo 'spaced-package'
+	# The directory carries the space, not the package identifier: `odin test`
+	# re-parses the -out: path it builds on an unquoted command line, so a stem
+	# named after this package exits -1 with "Unknown argument encountered
+	# 'pkg.exe'" and the sweep runs nothing.
+	Add-FixturePackage -RepoRoot $repo -Name 'spaced' -Directory 'my pkg' -Test 'passing' | Out-Null
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
+	Assert-ExitCode -Result $result -Expected 'zero'
+	Assert-Output -Result $result -Pattern 'All 1 tests? passed'
+}
+
+Test-Case 'two sweeps at once in one checkout do not collide' {
+	$repo = New-FixtureRepo 'concurrent-sweeps'
+	Add-FixturePackage -RepoRoot $repo -Name 'alpha' -Test 'passing' | Out-Null
+	Add-FixturePackage -RepoRoot $repo -Name 'beta' -Test 'passing' | Out-Null
+	# Artefact names fixed by package alone had each run deleting the report the
+	# other was about to write, and the linker failing on an executable the
+	# other still held: a spurious "collected ZERO tests" in an untouched tree.
+	$results = @(Invoke-FixtureScriptConcurrently -RepoRoot $repo -Script 'test.ps1' -Count 2)
+	foreach ($result in $results) {
+		Assert-ExitCode -Result $result -Expected 'zero'
+		Assert-Output -Result $result -Pattern 'All 2 tests? passed'
+	}
 }
 
 Test-Case 'a passing sweep survives a caller that merges the output streams' {
