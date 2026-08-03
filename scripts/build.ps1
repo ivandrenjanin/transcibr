@@ -66,17 +66,14 @@ foreach ($target in $OdinTargets) {
 	Write-Host "-> $out is subsystem $($target.Subsystem)" -ForegroundColor Green
 
 	if ($target.Smoke) {
-		$ErrorActionPreference = 'Continue'
-		$printed = (& $out | Out-String).Trim()
-		$smokeExit = $LASTEXITCODE
-		$ErrorActionPreference = 'Stop'
-		if ($smokeExit -ne 0) {
-			throw "$($target.Name) exited $smokeExit, expected 0."
+		$smoke = Read-NativeOutput -Command $out -Arguments @()
+		if ($smoke.ExitCode -ne 0) {
+			throw "$($target.Name) exited $($smoke.ExitCode), expected 0."
 		}
-		if ($printed -notmatch "^$([regex]::Escape($target.Name)) \d+\.\d+\.\d+$") {
-			throw "$($target.Name) did not report a version; printed '$printed'."
+		if ($smoke.Output -notmatch "^$([regex]::Escape($target.Name)) \d+\.\d+\.\d+$") {
+			throw "$($target.Name) did not report a version; printed '$($smoke.Output)'."
 		}
-		Write-Host "-> $($target.Name) printed: $printed" -ForegroundColor Green
+		Write-Host "-> $($target.Name) printed: $($smoke.Output)" -ForegroundColor Green
 	}
 }
 

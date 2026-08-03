@@ -18,24 +18,26 @@ jobs:
     name: Build and test (Windows)
     runs-on: windows-latest
 
-    env:
-      # Pinned to a tagged release, never `latest`: an unpinned toolchain turns
-      # an upstream change into a build failure on an unrelated commit, and
-      # makes "it passed yesterday" unanswerable. This release reports itself as
-      # dev-2026-07-nightly:819fdc7, which is the string scripts/common.ps1
-      # checks against ($OdinVersionPin). Change the two together.
-      ODIN_RELEASE: dev-2026-07a
-
     steps:
       - name: Check out
         uses: actions/checkout@v5
 
-      - name: Install Odin ${{ env.ODIN_RELEASE }}
+      # Pinned to a tagged release, never `latest`: an unpinned toolchain turns
+      # an upstream change into a build failure on an unrelated commit, and
+      # makes "it passed yesterday" unanswerable. The tag is read out of
+      # scripts/common.ps1 rather than copied here, so the release CI installs
+      # and the version string the scripts check cannot drift apart -- and
+      # because $env:CI is set here, those scripts refuse an unpinned compiler
+      # outright instead of warning as they do locally.
+      - name: Install the pinned Odin release
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $asset = "odin-windows-amd64-$env:ODIN_RELEASE.zip"
-          $url = "https://github.com/odin-lang/Odin/releases/download/$env:ODIN_RELEASE/$asset"
+          . .\scripts\common.ps1
+          Write-Host "Pinned to $OdinReleaseTag, which reports $OdinVersionPin"
+
+          $asset = "odin-windows-amd64-$OdinReleaseTag.zip"
+          $url = "https://github.com/odin-lang/Odin/releases/download/$OdinReleaseTag/$asset"
           $zip = Join-Path $env:RUNNER_TEMP $asset
           $dest = Join-Path $env:RUNNER_TEMP 'odin'
 

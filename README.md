@@ -113,9 +113,16 @@ cannot run locally.
 .\scripts\selftest.ps1  # checks that test.ps1 still fails when it should
 ```
 
-The Odin compiler is pinned to release `dev-2026-07a`. The scripts look for it in `$env:ODIN`, then
-on `PATH`, then at `C:\Odin\dist\odin.exe`, so it does not need to be on `PATH` — and they refuse a
-compiler that reports a different version, because a pin nothing checks is a comment.
+The Odin compiler is pinned to release `dev-2026-07a`. The pin lives in `scripts/common.ps1` and
+nowhere else — CI dot-sources that file for the release tag rather than keeping a second copy that
+can drift. The scripts look for the compiler in `$env:ODIN`, then on `PATH`, then at
+`C:\Odin\dist\odin.exe`, so it does not need to be on `PATH`.
+
+A compiler reporting a different version is **refused in CI and warned about locally**. The shared
+answer — what CI says about a branch — comes from the pinned compiler and nothing else, which is
+what the pin is for; but a pin that makes the repository unbuildable for everyone the day upstream
+retags is a pin nobody keeps. Locally you get a warning, and CI still catches anything that only
+compiles on your compiler.
 
 Both commands pass the full vet set with warnings as errors, and the test command additionally sets
 `ODIN_TEST_FAIL_ON_BAD_MEMORY=true` — it defaults to false, which would let a procedure that leaks

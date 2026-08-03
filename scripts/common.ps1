@@ -29,10 +29,12 @@ $OdinVetFlags = @(
 # Packages import each other as `transcibr:<package>`.
 $OdinCollection = "-collection:transcibr=$SrcRoot"
 
-# The compiler this repository is pinned to, exactly as `odin version` reports
-# it. Keep in step with ODIN_RELEASE in .github/workflows/ci.yml: the tagged
-# release dev-2026-07a reports this string. A pin nothing checks is a comment,
-# so Resolve-OdinCompiler refuses a compiler that reports anything else.
+# The compiler this repository is pinned to, in its two spellings: the release
+# tag CI downloads, and the string that release's `odin version` prints. They
+# do not resemble each other and there is no deriving one from the other, so
+# both live here and CI dot-sources this file for the tag rather than keeping
+# a second copy in the workflow. One edit moves the pin.
+$OdinReleaseTag = 'dev-2026-07a'
 $OdinVersionPin = 'dev-2026-07-nightly:819fdc7'
 
 # The binaries this repository produces. Data rather than prose, so the GUI
@@ -94,7 +96,7 @@ function Resolve-OdinCompiler {
 		}
 	}
 
-	Assert-OdinVersion -Odin $odin
+	Confirm-OdinVersion -Odin $odin
 	return $odin
 }
 
@@ -119,33 +121,71 @@ function Invoke-Odin {
 	& $Odin @Arguments
 }
 
-# The pin, enforced. An unpinned toolchain turns an upstream change into a
-# build failure on an unrelated commit and makes "it passed yesterday"
-# unanswerable -- which is just as true locally as in CI.
-function Assert-OdinVersion {
-	param([Parameter(Mandatory)] [string] $Odin)
+# The same call with the output CAPTURED instead of passed through, for the two
+# places that need to read what a program printed: the version check and the
+# build's smoke test. Deliberately not a switch on Invoke-Odin -- a procedure
+# that both passes output through and returns a value puts the two on one
+# stream, which is exactly what Invoke-Odin's contract exists to avoid.
+function Read-NativeOutput {
+	param(
+		[Parameter(Mandatory)] [string] $Command,
+		[Parameter(Mandatory)] [AllowEmptyCollection()] [string[]] $Arguments
+	)
 
 	$ErrorActionPreference = 'Continue'
-	$reported = (& $Odin version | Out-String).Trim()
-	if ($LASTEXITCODE -ne 0) {
-		throw "'$Odin version' exited $LASTEXITCODE."
+	$text = (& $Command @Arguments | Out-String)
+	return [pscustomobject]@{ Output = $text.Trim(); ExitCode = $LASTEXITCODE }
+}
+
+# The pin: refused in CI, warned about anywhere else.
+#
+# An unpinned toolchain turns an upstream change into a build failure on an
+# unrelated commit and makes "it passed yesterday" unanswerable, so the shared
+# answer -- what CI says about a branch -- comes from the pinned compiler and
+# nothing else.
+#
+# A hard local refusal buys nothing on top of that and costs a great deal. The
+# first upstream retag, or the first contributor whose nightly is a week off,
+# makes the repository unbuildable and untestable for them until two constants
+# are edited -- and the warning already tells them, while CI still catches a
+# change that only compiles on their compiler.
+function Confirm-OdinVersion {
+	param([Parameter(Mandatory)] [string] $Odin)
+
+	$reported = Read-NativeOutput -Command $Odin -Arguments @('version')
+	if ($reported.ExitCode -ne 0) {
+		throw "'$Odin version' exited $($reported.ExitCode)."
 	}
 
-	$match = [regex]::Match($reported, 'version\s+(\S+)')
+	$match = [regex]::Match($reported.Output, 'version\s+(\S+)')
 	if (-not $match.Success) {
-		throw "Cannot read a version out of '$reported'."
+		throw "Cannot read a version out of '$($reported.Output)'."
 	}
 
 	$found = $match.Groups[1].Value
-	if ($found -ne $OdinVersionPin) {
-		throw @"
+	if ($found -eq $OdinVersionPin) {
+		return
+	}
+
+	$mismatch = @"
 Odin version mismatch.
-  expected: $OdinVersionPin
+  expected: $OdinVersionPin (the pin in scripts\common.ps1)
   found:    $found ($Odin)
-The pin lives in scripts\common.ps1 (`$OdinVersionPin) and .github\workflows\ci.yml
-(ODIN_RELEASE). Change both together, or point `$env:ODIN at the pinned compiler.
+"@
+	if ($env:CI) {
+		throw @"
+$mismatch
+CI runs the pinned compiler and nothing else. Point ODIN at it, or move the pin
+in scripts\common.ps1 (`$OdinVersionPin and `$OdinReleaseTag together).
 "@
 	}
+
+	Write-Warning @"
+$mismatch
+Continuing on this one. CI will not: anything that builds here and not on the
+pinned compiler fails there instead. Set `$env:ODIN to the pinned compiler, or
+move `$OdinVersionPin and `$OdinReleaseTag together if you mean to move the pin.
+"@
 }
 
 # The src-relative name of a package directory, forward-slashed: `version`,
