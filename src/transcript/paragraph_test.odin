@@ -1,6 +1,7 @@
 package transcript
 
 import "core:mem"
+import "core:slice"
 import "core:strings"
 import "core:testing"
 
@@ -189,11 +190,9 @@ cue_speech :: proc(cues: []Cue, allocator: mem.Allocator) -> string {
 	assert(len(cues) > 0, "no cues to put back together")
 	assert(allocator.procedure != nil, "the joined speech outlives this procedure")
 
-	parts := make([]string, len(cues), allocator)
+	parts := slice.mapper(cues, spoken_text, allocator)
 	defer delete(parts, allocator)
-	for cue, i in cues {
-		parts[i] = spoken_text(cue)
-	}
+	assert(len(parts) == len(cues), "a cue went missing on the way to its speech")
 	return strings.join(parts, " ", allocator)
 }
 

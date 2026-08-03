@@ -103,12 +103,7 @@ collapse_repetition :: proc(cues: []Cue, p: Collapse_Params, allocator: mem.Allo
 		start = end
 	}
 
-	// destroy_cues frees the returned SLICE, so the block behind it has to be
-	// exactly as long as the slice says -- and unlike the parser's, this array is
-	// reserved for the whole input and deliberately not filled.
-	shrink(&built)
-	kept = built[:]
-	assert(cap(built) == len(kept), "the returned slice does not own exactly the block it names")
+	kept = owned_slice(&built)
 	assert(len(kept) > 0, "collapsed a cue set that had cues in it down to nothing")
 	assert(len(kept) <= len(cues), "collapsing invented a cue")
 	// The read side of the ordering asserted on the way in (CLAUDE.md A4).

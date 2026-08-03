@@ -25,12 +25,18 @@ Paragraph :: struct {
 	text:  string,
 }
 
-// Where paragraph breaks fall.
+// Where paragraph breaks fall, and how long a Paragraph may get.
 //
-// Two signals and no more (ADR-0007): the silence between consecutive Cues, and
+// Two SIGNALS and no more (ADR-0007): the silence between consecutive Cues, and
 // whether the Cue in front ended a sentence. There is nothing else to read --
 // speaker diarization is out of scope, so this handles multi-speaker material
 // temporally and will still merge two people who overlap without a gap.
+//
+// The character cap is not a third signal and reading it as one is the mistake
+// this paragraph exists to prevent. A signal says where a reader would break; the
+// cap says where a Paragraph has to stop whatever the signals said, and it fires
+// only where NEITHER did. It puts breaks in arbitrary places on purpose, because
+// a wall of text is worse.
 //
 // Passed as an argument rather than read from a constant because these are taste
 // and not truth. They are the one part of this program tuned by reading real
@@ -89,16 +95,25 @@ CONVERSATION :: Merge_Params {
 #assert(CONVERSATION.hard_gap_ms >= CONVERSATION.max_gap_ms)
 #assert(CONVERSATION.max_para_chars > 0)
 
-// And what makes them two profiles rather than two spellings of one. Every
-// threshold in the aggressive profile sits below its counterpart in the generous
-// one, so no tuning pass can leave the pair pointing the same way while the
-// names still promise otherwise.
+// And what makes them two profiles rather than two spellings of one: both
+// SIGNALS in the aggressive profile fire sooner than their counterparts in the
+// generous one, so no tuning pass can leave the pair pointing the same way while
+// the names still promise otherwise.
+//
+// The caps are deliberately not held apart the same way. A cap is a bound and
+// not a signal, two profiles sharing one would still break in different places,
+// and an #assert here would be pinning how the pair happens to be tuned as
+// though it were the rule that makes them a pair.
 #assert(CONVERSATION.max_gap_ms < MONOLOGUE.max_gap_ms)
 #assert(CONVERSATION.hard_gap_ms < MONOLOGUE.hard_gap_ms)
-#assert(CONVERSATION.max_para_chars < MONOLOGUE.max_para_chars)
 
 // Everything a half-built Paragraph is made of, in one place so the procedures
 // that add to it and close it cannot disagree about what "open" means.
+//
+// There is no `open` flag. Nothing ever opens a Paragraph on empty speech --
+// paragraph_extend asserts that on the way in -- so "open" IS `runes > 0`, and
+// a flag beside the count would be a second answer to one question kept in step
+// by assertions. Derived, the two cannot disagree at all.
 @(private)
 Merge_State :: struct {
 	out:   [dynamic]Paragraph,
@@ -110,7 +125,13 @@ Merge_State :: struct {
 	runes: int,
 	start: Millis,
 	end:   Millis,
-	open:  bool,
+}
+
+// Whether there is a Paragraph half-built.
+@(private)
+paragraph_is_open :: proc(s: Merge_State) -> bool {
+	assert(s.runes >= 0, "a paragraph holding a negative number of characters")
+	return s.runes > 0
 }
 
 // Merges a Cue set into Paragraphs.
@@ -169,17 +190,13 @@ merge_paragraphs :: proc(
 	}
 	paragraph_close(&state, p, allocator)
 
-	// destroy_paragraphs frees the returned SLICE, so the block behind it has to
-	// be exactly as long as the slice says.
-	shrink(&state.out)
-	paragraphs = state.out[:]
-	assert(cap(state.out) == len(paragraphs), "the returned slice does not own exactly the block it names")
-	// The cap is NOT re-counted here. paragraph_admit maintains it by arithmetic
-	// on the way in, and the cases that observe it count the characters that
-	// actually arrived -- an assert on the same predicate would pre-empt those,
-	// leaving one of them with no reachable expectation at all and turning a
-	// named failure into several tests asserting at once, which is the runner
-	// hang CLAUDE.md documents.
+	paragraphs = owned_slice(&state.out)
+	// The cap is NOT re-counted over the set here. paragraph_close checks it on
+	// each Paragraph as it is emitted, and the cases that observe it count the
+	// characters that actually arrived -- a sweep on the same predicate would
+	// pre-empt those, leaving one of them with no reachable expectation at all
+	// and turning a named failure into several tests asserting at once, which is
+	// the runner hang CLAUDE.md documents.
 	return
 }
 
@@ -290,7 +307,7 @@ paragraph_admit :: proc(s: ^Merge_State, cue: Cue, said: string, p: Merge_Params
 		room := paragraph_room(s^, p)
 		take, tail := word_split(rest, room)
 
-		if len(take) == 0 && s.open {
+		if len(take) == 0 && paragraph_is_open(s^) {
 			// Not enough room left for the next whole word. Closing offers the
 			// whole cap instead, which is strictly more room than there was.
 			paragraph_close(s, p, allocator)
@@ -333,7 +350,7 @@ paragraph_admit :: proc(s: ^Merge_State, cue: Cue, said: string, p: Merge_Params
 paragraph_room :: proc(s: Merge_State, p: Merge_Params) -> int {
 	assert(p.max_para_chars > 0, "a paragraph that may hold no characters can never be closed")
 
-	if !s.open {
+	if !paragraph_is_open(s) {
 		return p.max_para_chars
 	}
 	return p.max_para_chars - s.runes - 1
@@ -370,7 +387,11 @@ word_split :: proc(said: string, room: int) -> (take, rest: string) {
 
 	// More characters than there is room for, so there is a character sitting at
 	// the cut and it can be read.
-	cut := character_offset(said, room)
+	cut := utf8.rune_offset(said, room)
+	// rune_offset answers -1 where the string ran out, and the guard above is why
+	// it cannot here. Asserted rather than argued, because -1 passes the bound
+	// below and `said[cut:]` panics on it (CLAUDE.md A6).
+	assert(cut >= 0, "speech longer than the room ran out of characters inside it")
 	assert(cut < len(said), "speech longer than the room measured out no shorter than itself")
 
 	// A boundary sitting exactly AT the cut fills the room to the character
@@ -399,28 +420,14 @@ character_split :: proc(said: string, room: int) -> (take, rest: string) {
 	assert(room > 0, "a carve that may take no characters never finishes")
 	defer assert(len(take) > 0, "a carve that took no speech at all")
 
-	cut := character_offset(said, room)
-	// Characters and not bytes, which is the whole reason this walks the string
-	// instead of slicing it: a cut taken at a byte offset lands inside an
-	// accented character and puts a broken one into the deliverable.
+	// Characters and not bytes, which is the whole reason this asks utf8 instead
+	// of slicing: a cut taken at a byte offset lands inside an accented character
+	// and puts a broken one into the deliverable. The same guard as above, and
+	// this one rejects rune_offset's -1 with it: only reached where word_split
+	// has already found more characters here than there is room for.
+	cut := utf8.rune_offset(said, room)
 	assert(cut > 0, "a positive room measured out no characters at all")
 	return strings.trim_right_space(said[:cut]), strings.trim_left_space(said[cut:])
-}
-
-// The byte offset one past the `count`th character, or the whole length where
-// there are fewer than that many.
-@(private)
-character_offset :: proc(said: string, count: int) -> int {
-	assert(count > 0, "the offset of no characters at all is not a position")
-
-	seen := 0
-	for _, at in said {
-		if seen == count {
-			return at
-		}
-		seen += 1
-	}
-	return len(said)
 }
 
 // Adds one Cue's speech to the Paragraph being built, opening one if none is.
@@ -428,17 +435,18 @@ character_offset :: proc(said: string, count: int) -> int {
 paragraph_extend :: proc(s: ^Merge_State, cue: Cue, said: string) {
 	assert(len(said) > 0, "empty speech opens a paragraph that can never be closed")
 
-	if s.open {
+	if paragraph_is_open(s^) {
 		strings.write_byte(&s.prose, ' ')
 		s.runes += 1
 	} else {
 		// The negative space of paragraph_close resetting the builder (A3, A4).
 		// Opening onto characters the last Paragraph left behind is how speech
-		// from two ends of a Recording ends up inside one Paragraph.
-		assert(s.runes == 0, "opened a paragraph onto characters the last one left behind")
+		// from two ends of a Recording ends up inside one Paragraph -- and with
+		// "open" derived from the count, those characters would also make this
+		// look like a Paragraph already in progress.
+		assert(strings.builder_len(s.prose) == 0, "opened a paragraph onto prose the last one left behind")
 		s.start = cue.start
 		s.end = cue.end
-		s.open = true
 	}
 
 	strings.write_string(&s.prose, said)
@@ -456,10 +464,11 @@ paragraph_close :: proc(s: ^Merge_State, p: Merge_Params, allocator: mem.Allocat
 	assert(p.max_para_chars > 0, "a paragraph that may hold no characters can never be closed")
 	assert(allocator.procedure != nil, "a paragraph's prose outlives this procedure")
 
-	if !s.open {
-		// The negative space of the reset below (CLAUDE.md A3). Nothing open
-		// means nothing half-written is waiting to be inherited.
-		assert(s.runes == 0, "a paragraph that is not open is still holding characters")
+	if !paragraph_is_open(s^) {
+		// The negative space of the reset below (CLAUDE.md A3). Nothing counted
+		// means nothing half-written is waiting to be inherited, and the builder
+		// is the other half of that claim.
+		assert(strings.builder_len(s.prose) == 0, "nothing is open but there is prose half-written")
 		return
 	}
 
@@ -483,5 +492,4 @@ paragraph_close :: proc(s: ^Merge_State, p: Merge_Params, allocator: mem.Allocat
 
 	strings.builder_reset(&s.prose)
 	s.runes = 0
-	s.open = false
 }

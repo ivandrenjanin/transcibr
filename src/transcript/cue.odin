@@ -49,6 +49,13 @@ Cue :: struct {
 // leave a run uncollapsed over a stray byte the Engine chose. Paragraph merging
 // joins by this for the mirror-image reason -- prose that kept the padding
 // carries a double space at every Cue seam.
+//
+// Private, unlike cues_are_ordered beneath it. That one is public because it is
+// the promise parse_cues makes about what it hands back, and a caller holding a
+// Cue set can check it. This is how the stages inside this package read a Cue,
+// which is nobody else's business: what the package offers outward is Cues,
+// Paragraphs, and the procedures that make them.
+@(private)
 spoken_text :: proc(cue: Cue) -> (said: string) {
 	said = strings.trim_space(cue.text)
 	// Both sides of what trimming is allowed to do (CLAUDE.md A3): it only ever
@@ -144,4 +151,21 @@ destroy_cues :: proc(cues: []Cue, allocator: mem.Allocator) {
 		delete(cue.text, allocator)
 	}
 	delete(cues, allocator)
+}
+
+// The slice a builder owns, shrunk to exactly what was put in it.
+//
+// Every destroy_ procedure in this package frees the returned SLICE, so the
+// block behind it has to be exactly as long as the slice says -- and both
+// builders here reserve for the whole input and then deliberately do not fill
+// it. Said once, because it was the same three lines and the same comment in
+// two files, and a claim maintained in two places is a claim that drifts.
+@(private)
+owned_slice :: proc(built: ^[dynamic]$T) -> (owned: []T) {
+	assert(built != nil, "there is no builder here to take a slice of")
+
+	shrink(built)
+	owned = built[:]
+	assert(cap(built^) == len(owned), "the returned slice does not own exactly the block it names")
+	return
 }
