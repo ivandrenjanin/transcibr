@@ -26,6 +26,15 @@ import "transcibr:process"
 // This file holds the spawner itself: the job object children are started into,
 // starting one, asking whether it has finished, and giving its handles back.
 
+// WHAT FOLLOWS IS A NEAR-CLONE OF `transcibr:process`, AND THE SECOND COPY IS
+// THE LAST ONE. A fault enumeration, an error record, a FAULT table, one checked
+// reader of it, a renderer and a disposition: the Process contract has the same
+// six, and the shape is repeated here rather than shared because the two fault
+// sets are disjoint and neither package should own the other's vocabulary. That
+// argument holds for two packages and stops holding at three -- a third copy is
+// the point at which the shape moves into a package of its own and both of these
+// import it, rather than the point at which somebody copies this file again.
+//
 // How starting or stopping a child refused. `.None` is the only value that comes
 // with a child.
 Fault :: enum u8 {
@@ -127,28 +136,26 @@ error_message :: proc(err: Error, allocator: mem.Allocator) -> string {
 		"the message outlives this procedure and needs a chosen allocator",
 	)
 
-	// Passed through rather than wrapped. That report already names the argument
-	// and says what about it cannot be spelled; a prefix from here would add a
-	// layer's name to a sentence that is about the caller's own settings.
+	message: string
 	if err.fault == .Bad_Command_Line {
-		return deliverable(process.error_message(err.build, allocator))
-	}
-	// The numeric code is printed and never translated. `FormatMessageW` renders
-	// it in the machine's UI language, which is a second thing to be wrong about,
-	// while the number is what a search engine and a header file both answer to.
-	return deliverable(
-		fmt.aprintf(
+		// Passed through rather than wrapped. That report already names the argument
+		// and says what about it cannot be spelled; a prefix from here would add a
+		// layer's name to a sentence that is about the caller's own settings.
+		message = process.error_message(err.build, allocator)
+	} else {
+		// The numeric code is printed and never translated. `FormatMessageW` renders
+		// it in the machine's UI language, which is a second thing to be wrong
+		// about, while the number is what a search engine and a header file both
+		// answer to.
+		message = fmt.aprintf(
 			"%s (Windows error %d)",
 			fault_says(err.fault),
 			err.last_error,
 			allocator = allocator,
-		),
-	)
-}
-
-// One rendered refusal, checked at the one place both branches leave through.
-@(private)
-deliverable :: proc(message: string) -> string {
+		)
+	}
+	// The one place both branches leave through, which is why it is a postcondition
+	// here rather than a check on each of them.
 	assert(len(message) > 0, "a refusal rendered as nothing at all")
 	return message
 }

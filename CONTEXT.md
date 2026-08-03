@@ -43,6 +43,12 @@ line. Distinct from the program transcibr itself is: `program` meant both, and o
 always the wrong reading.
 _Avoid_: program, binary, command, exe
 
+**Child**:
+One running ffmpeg or Engine process, with the handles that hold it and the job object that ends it.
+Distinct from Executable, which is only the path — and it is a tree rather than a process, because a
+child that starts something of its own leaves a process no handle reaches (ADR-0004).
+_Avoid_: spawner, subprocess, runner, process
+
 ## Repetition
 
 **Saying**:
