@@ -11,6 +11,14 @@ import "core:unicode/utf8"
 // a Paragraph that has lost its place in the Recording cannot be checked against
 // it. `text` is prose: the Engine's padding is off every Cue and one space
 // stands at each seam.
+//
+// Consecutive Paragraphs MAY OVERLAP, and one carved out of a long Cue overlaps
+// its neighbours by that Cue's whole length. Nothing in the Engine's output says
+// where inside a Cue a carve landed, so every piece of one carries the Cue's own
+// start and end rather than an offset interpolated from nothing -- which would
+// put an Anchor at a time nobody spoke. Placing Anchors off these is therefore
+// not simply reading `start`: see
+// carved_paragraphs_all_claim_their_cue_and_so_overlap_each_other.
 Paragraph :: struct {
 	start: Millis,
 	end:   Millis,
@@ -154,12 +162,12 @@ merge_paragraphs :: proc(
 
 		before, spoke_before := previous.?
 		if spoke_before && breaks_paragraph(before, cue, p) {
-			paragraph_close(&state, allocator)
+			paragraph_close(&state, p, allocator)
 		}
 		paragraph_admit(&state, cue, said, p, allocator)
 		previous = cue
 	}
-	paragraph_close(&state, allocator)
+	paragraph_close(&state, p, allocator)
 
 	// destroy_paragraphs frees the returned SLICE, so the block behind it has to
 	// be exactly as long as the slice says.
@@ -285,7 +293,7 @@ paragraph_admit :: proc(s: ^Merge_State, cue: Cue, said: string, p: Merge_Params
 		if len(take) == 0 && s.open {
 			// Not enough room left for the next whole word. Closing offers the
 			// whole cap instead, which is strictly more room than there was.
-			paragraph_close(s, allocator)
+			paragraph_close(s, p, allocator)
 			continue
 		}
 		if len(take) == 0 {
@@ -313,7 +321,7 @@ paragraph_admit :: proc(s: ^Merge_State, cue: Cue, said: string, p: Merge_Params
 		// next word ends at or past the cut and cannot fit in what is left.
 		// Only a run of spaces frees enough room to make the question live.
 		if len(rest) > 0 {
-			paragraph_close(s, allocator)
+			paragraph_close(s, p, allocator)
 		}
 	}
 }
@@ -444,7 +452,8 @@ paragraph_extend :: proc(s: ^Merge_State, cue: Cue, said: string) {
 // Emits the Paragraph being built, if there is one, and readies the state for
 // the next.
 @(private)
-paragraph_close :: proc(s: ^Merge_State, allocator: mem.Allocator) {
+paragraph_close :: proc(s: ^Merge_State, p: Merge_Params, allocator: mem.Allocator) {
+	assert(p.max_para_chars > 0, "a paragraph that may hold no characters can never be closed")
 	assert(allocator.procedure != nil, "a paragraph's prose outlives this procedure")
 
 	if !s.open {
@@ -457,6 +466,19 @@ paragraph_close :: proc(s: ^Merge_State, allocator: mem.Allocator) {
 	said := strings.to_string(s.prose)
 	assert(len(said) > 0, "an open paragraph with no prose in it")
 	assert(s.end >= s.start, "a paragraph that ends before it starts")
+
+	// The read side of the cap paragraph_admit maintains by arithmetic on the way
+	// in (CLAUDE.md A4), and the one Merge_State invariant that had no check
+	// facing it. Counted off the prose that actually arrived rather than read off
+	// the running total, so a counter that drifted from the builder is caught by
+	// the first of these and an arithmetic error by the second. Per Paragraph and
+	// never over the set: an assert sweeping every Paragraph is the expectation
+	// neither_shipped_profile_exceeds_its_own_character_cap already holds, and
+	// pre-empting it would turn a named failure into several tests asserting at
+	// once, which is the runner hang CLAUDE.md documents.
+	held := strings.rune_count(said)
+	assert(held == s.runes, "the character count and the prose behind it disagree")
+	assert(held <= p.max_para_chars, "a paragraph longer than the cap reached the deliverable")
 	append(&s.out, Paragraph{start = s.start, end = s.end, text = strings.clone(said, allocator)})
 
 	strings.builder_reset(&s.prose)

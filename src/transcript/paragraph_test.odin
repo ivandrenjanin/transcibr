@@ -275,6 +275,69 @@ a_cue_longer_than_the_cap_is_carved_rather_than_looping :: proc(t: ^testing.T) {
 	testing.expect_value(t, prose, word)
 }
 
+// The consequence of that, on a Cue set rather than on one Cue, RECORDED rather
+// than fixed.
+//
+// Nothing in the Engine's output says where inside a Cue a carve landed, so the
+// alternative is inventing an offset by interpolation and putting an Anchor at a
+// time nobody spoke. That trade is deliberate. What it costs is not visible on a
+// single-Cue set, and this is it: every piece carved out of one long Cue claims
+// that Cue's whole span, so a Paragraph ENDS a minute after the next one STARTS,
+// and four of them sit within one second of each other across a minute of
+// speech.
+//
+// CONTEXT.md defines an Anchor as what lets a reader find their place. Four
+// Anchors a second apart over a minute of speech does not, so the Anchor ticket
+// has to decide what to do here -- place Anchors off Paragraph starts and it
+// emits four identical ones, take the first per stretch and three Paragraphs go
+// unanchored. This case exists so that ticket finds the problem stated rather
+// than discovers it.
+@(test)
+carved_paragraphs_all_claim_their_cue_and_so_overlap_each_other :: proc(t: ^testing.T) {
+	tight := Merge_Params{max_gap_ms = 1_000, hard_gap_ms = 3_000, max_para_chars = 20}
+	// One Cue holding a minute of Recording and one unbroken 70-character word,
+	// between two ordinary short ones.
+	long := strings.repeat("x", 70, context.allocator)
+	defer delete(long, context.allocator)
+	shape := []Shaped_Cue {
+		{duration_ms = 1_000, text = " hi there"},
+		{duration_ms = 60_000, text = long},
+		{duration_ms = 1_000, text = " done"},
+	}
+	cues := shaped_cues(shape, context.allocator)
+	defer delete(cues, context.allocator)
+
+	paragraphs := merge_paragraphs(cues, tight, context.allocator)
+	defer destroy_paragraphs(paragraphs, context.allocator)
+
+	// Offsets copied off the shape by hand. Everything carved out of the middle
+	// Cue carries that Cue's own start and end, the last piece picking up the
+	// short Cue that follows it.
+	expected := []Paragraph {
+		{0, 1_000, "hi there"},
+		{1_000, 61_000, "xxxxxxxxxxxxxxxxxxxx"},
+		{1_000, 61_000, "xxxxxxxxxxxxxxxxxxxx"},
+		{1_000, 61_000, "xxxxxxxxxxxxxxxxxxxx"},
+		{1_000, 62_000, "xxxxxxxxxx done"},
+	}
+	if !testing.expect_value(t, len(paragraphs), len(expected)) {
+		return
+	}
+	for want, i in expected {
+		testing.expect_value(t, paragraphs[i], want)
+	}
+
+	// The part that bites, said as its own claim rather than left to be read off
+	// the table above: consecutive Paragraphs overlap, and by a minute.
+	overlapped := 0
+	for paragraph, i in paragraphs[1:] {
+		if paragraph.start < paragraphs[i].end {
+			overlapped += 1
+		}
+	}
+	testing.expect_value(t, overlapped, 3)
+}
+
 // The cap counts CHARACTERS. Every accented character the Engine writes is two
 // bytes or more, so a cap enforced on bytes cuts a Recording of French short of
 // one recorded in English -- silently, and only on the material where it is
