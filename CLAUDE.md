@@ -237,6 +237,20 @@ cannot go stale unnoticed.
 Do not hand-roll the compiler invocation — the sweep also enforces that every package either
 collects tests or is declared test-less in `$OdinPackagesWithoutTests`.
 
+**`core:encoding/json` does not parse integers, and leaks when it refuses a file.** `parse_integers`
+defaults to *false* on every entry point, so `12345` arrives as a `json.Float` and the natural
+`value.(json.Integer)` matches nothing at all — every number silently reads as its zero value, and a
+monotonicity check downstream still passes, because zero is monotonic. Pass the flag, and *also*
+accept `json.Float`: the tokenizer classifies on the decimal point, so `12345.0` stays a Float even
+with the flag on. `DEFAULT_SPECIFICATION` is `JSON5` as well, which accepts trailing commas and
+comments — pass `.JSON` where the input is supposed to be strict. Separately, the parser leaks on
+several of its error paths: an object key parsed just before the value after it fails is never
+inserted into the object, so the cleanup that walks that object never frees it, and a truncated file
+takes exactly that path. Decode into an arena you destroy unconditionally rather than trying to free
+the tree. `src\transcript\engine_json.odin` is the worked example, and
+`.\scripts\test.ps1 -TestName transcript.parses_real_engine_output_into_cues` is the test that
+catches the integer default against real Engine output.
+
 **`odin test` cannot write its test executable to a path containing a space.** It runs the binary
 it builds through a command line it does not quote, so a space is re-parsed as an argument
 separator and the compiler exits `-1` with `Unknown argument encountered '<second word>'`. The

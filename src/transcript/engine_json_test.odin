@@ -176,10 +176,14 @@ rejects_a_cue_set_whose_final_offset_is_zero :: proc(t: ^testing.T) {
 	testing.expect(t, len(cues) == 0, "handed back a cue set that covers none of the recording")
 	testing.expect_value(t, err.fault, Parse_Fault.Final_Offset_Is_Zero)
 	testing.expect_value(t, err.json_name, "all-zero.json")
+	// The fault is about the set, and the last Cue is the one it is read off,
+	// so that is the one a reader is sent to look at.
+	testing.expect_value(t, err.cue, 2)
 
 	message := error_message(err, context.allocator)
 	defer delete(message, context.allocator)
 	testing.expect(t, strings.contains(message, "all-zero.json"), "the report does not name the input")
+	testing.expect(t, strings.contains(message, "cue 2"), "the report does not name the cue")
 }
 
 // The negative space of the check above (CLAUDE.md A3). A Recording whose

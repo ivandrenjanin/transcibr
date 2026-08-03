@@ -324,7 +324,15 @@ read_cue :: proc(entry: json.Value, allocator: mem.Allocator) -> (cue: Cue, faul
 // largest integer an f64 still represents exactly. Past it a JSON float has
 // already lost the value it was written with, so converting is guessing.
 @(private)
-READABLE_MS_LIMIT :: f64(1 << 53)
+READABLE_MS :: 1 << 53
+@(private)
+READABLE_MS_LIMIT :: f64(READABLE_MS)
+
+// The range check in read_millis is the only thing keeping the conversion to
+// Millis from overflowing, and it does that job only while the limit it checks
+// against fits in one. A constant relationship the code relies on, stated in
+// checked code rather than in prose (CLAUDE.md A5).
+#assert(READABLE_MS <= max(i64))
 
 // Reads one whole-millisecond offset out of a Cue's `offsets` object.
 //
@@ -392,7 +400,7 @@ FAULT_TEXT := [Parse_Fault]string {
 	.Negative_Offset           = "starts before the recording does",
 	.Cue_Ends_Before_It_Starts = "ends before it starts",
 	.Cues_Out_Of_Order         = "starts before the cue in front of it",
-	.Final_Offset_Is_Zero      = "the last cue ends at offset zero over a recording that is not empty; the engine's offsets did not survive being read",
+	.Final_Offset_Is_Zero      = "ends at offset zero and is the last cue, over a recording that is not empty; the engine's offsets did not survive being read",
 }
 
 // Renders one operating error as a line naming the input it came from.

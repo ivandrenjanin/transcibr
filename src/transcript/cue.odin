@@ -46,11 +46,17 @@ Cue :: struct {
 // Engine output, and a check demanding a strictly increasing, disjoint sequence
 // would reject real Recordings while looking stricter.
 //
-// Leaf math over data the caller has not vouched for yet: parse_cues runs this
-// across Engine output *before* that output is trusted, so there is nothing
-// here to assert that would not be an assertion on external input (CLAUDE.md
-// A8). Both callers below carry the assertions instead (A1).
-first_disordered_cue :: proc(cues: []Cue) -> int {
+// Nothing about the Cues themselves is asserted here. parse_cues runs this
+// across Engine output *before* that output is trusted, so an assertion on what
+// it finds would be an assertion on external input (CLAUDE.md A8). What is
+// asserted is the answer this procedure gives about them.
+first_disordered_cue :: proc(cues: []Cue) -> (ordinal: int) {
+	// The ordinal convention checked where it is PRODUCED; fault_at checks the
+	// same range where one is written into a Parse_Error (CLAUDE.md A4). Off by
+	// one on either side reports a fault against a Cue that is not in the set.
+	defer assert(ordinal >= 0, "a cue ordinal is a position or zero, never negative")
+	defer assert(ordinal <= len(cues), "named a cue position past the end of the set")
+
 	for cue, i in cues {
 		if cue.start < 0 {
 			return i + 1
@@ -73,11 +79,14 @@ first_disordered_cue :: proc(cues: []Cue) -> int {
 // in, which is why this is public rather than an internal detail of the parser.
 cues_are_ordered :: proc(cues: []Cue) -> bool {
 	ordinal := first_disordered_cue(cues)
-	assert(ordinal >= 0, "a cue ordinal is a position or zero, never negative")
-	// The ordinal convention checked where it is READ; fault_at checks the same
-	// range where one is written into a Parse_Error (CLAUDE.md A4). Off by one
-	// here reports a fault against a Cue that is not in the set.
-	assert(ordinal <= len(cues), "named a cue position past the end of the set")
+	// The negative space of the same fact (CLAUDE.md A3), checked at the one
+	// place both answers are in hand. A set with nothing in it has nothing to
+	// disorder, and a disagreement here would make every assertion built on
+	// this predicate vacuous rather than wrong -- which is worse, because a
+	// vacuous assertion still passes.
+	if len(cues) == 0 {
+		assert(ordinal == 0, "an empty cue set was reported disordered")
+	}
 	return ordinal == 0
 }
 
@@ -94,6 +103,12 @@ destroy_cues :: proc(cues: []Cue, allocator: mem.Allocator) {
 	// else, and freeing those stays silent until an unrelated allocation comes
 	// back corrupted.
 	assert(cues_are_ordered(cues), "freeing a cue set parse_cues could not have returned")
+	// The negative space of that (CLAUDE.md A3): a set with no backing memory
+	// but a length in it was assembled by hand out of parts rather than
+	// returned from here, and the loop below walks pointers that never existed.
+	if cues == nil {
+		assert(len(cues) == 0, "a cue set with a length and no memory behind it")
+	}
 
 	for cue in cues {
 		delete(cue.text, allocator)
