@@ -9,6 +9,14 @@
 // Deliberately thin, and declared test-less in scripts/common.ps1 for that
 // reason: everything worth testing lives in the pure core (ADR-0009). What is
 // here is argument reading, one file read, one clock read, and a write.
+//
+// WHAT THAT COSTS, because it is worth knowing before editing anything below:
+// nothing in this file is covered by a test, and nothing in it can BE covered by
+// one -- the sweep requires this package to collect zero. An assertion deleted
+// here leaves all 83 tests green, and so does one put back. Every claim in this
+// file is held up by review and by reading; ADR-0009's consequences say so at
+// length, and say what is meant to happen when a decision worth testing turns up
+// in here.
 package main
 
 import "core:fmt"
