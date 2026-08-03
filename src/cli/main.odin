@@ -13,7 +13,6 @@ package main
 
 import "core:fmt"
 import "core:os"
-import "core:slice"
 import "core:strings"
 import "core:time"
 import "transcibr:transcript"
@@ -110,7 +109,7 @@ re_render :: proc(arguments: []string) -> int {
 	// zero, which is where a script redirecting one expects it. A caller who
 	// typed something this binary cannot read gets it on standard error at exit
 	// two, which is where a script checking one expects it.
-	if slice.contains(arguments, HELP) {
+	if asks_for_help(arguments) {
 		write_usage(os.stdout)
 		return 0
 	}
@@ -199,6 +198,32 @@ write_transcript :: proc(
 	return 0
 }
 
+// Whether the command line asks for the usage block.
+//
+// Scanned across the positions a NAME can stand in, and never across the whole
+// command line. A scan of everything read `--from-json --help` as a request for
+// usage -- and that command line asks to render a file called `--help` and names
+// no output at all, so it went out on standard output at exit ZERO, which is a
+// script told its render succeeded. A flag is a flag only where a flag can
+// stand.
+//
+// Stepping by two from zero, which is how read_options walks the same argument
+// list below: the two are one shape and a change to either is a change to both.
+@(private)
+asks_for_help :: proc(arguments: []string) -> bool {
+	assert(
+		len(arguments) > 0,
+		"no arguments at all is the version banner, settled before this point",
+	)
+
+	for at := 0; at < len(arguments); at += 2 {
+		if arguments[at] == HELP {
+			return true
+		}
+	}
+	return false
+}
+
 // Reads the command line, or says what is wrong with it.
 //
 // Nothing here asserts against what a caller typed. A command line is outside
@@ -277,10 +302,13 @@ read_options :: proc(arguments: []string) -> (o: Options, ok: bool) {
 @(private)
 read_option :: proc(o: ^Options, name, value: string) -> (ok: bool) {
 	assert(o != nil, "there is nothing here to read an option into")
-	// Nothing here asserts against what a caller TYPED (CLAUDE.md A8); this is
-	// about the loop that hands it over, which is this program's own.
-	assert(len(name) > 0, "an option with no name at all is not something a caller can type")
 
+	// The empty name is REFUSED and never asserted against, by the arm at the
+	// bottom of this switch like every other spelling this binary cannot read.
+	// `transcibr-cli "$FLAG" "$VALUE"` with `$FLAG` unset is an ordinary shell
+	// invocation, and the loop above hands `os.args[1:][at]` over untouched -- so
+	// an empty name is what the CALLER typed, not this program's own doing, and
+	// nothing outside this program may crash it (CLAUDE.md A8).
 	switch name {
 	case "--from-json":
 		o.json_path = value
