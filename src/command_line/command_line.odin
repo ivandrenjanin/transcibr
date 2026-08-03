@@ -90,8 +90,20 @@ build :: proc(
 	}
 
 	out := strings.to_string(b)
-	assert(len(out) >= 2, "a command line always carries at least the quoted program path")
+	assert(
+		len(out) >= len(program) + 2,
+		"the command line is shorter than the quoted program path",
+	)
 	assert(out[0] == '"', "the program path is not quoted")
+	// The negative space (A3): with no arguments there is nothing after the
+	// closing quote, so a stray separator or a dropped argument shows up here
+	// rather than as a child's misreading.
+	if len(arguments) == 0 {
+		assert(
+			len(out) == len(program) + 2,
+			"a command line with no arguments carries something anyway",
+		)
+	}
 
 	// Measured on the finished line rather than estimated from the inputs: the
 	// quoting is what pushes a line over, and an estimate that disagreed with the
@@ -134,11 +146,22 @@ utf16_units :: proc(s: string) -> int {
 // exactly why the general argument rule below must not be reused here.
 @(private)
 write_program :: proc(b: ^strings.Builder, program: string) {
+	// Both of these are refused at the boundary in `build`; asserted again here,
+	// on the write side, because that is where a path this shape becomes a command
+	// line nobody can read back (A4). A quote in particular is unrecoverable: it
+	// ends argv[0] early and every argument after it shifts.
 	assert(len(program) > 0, "the program path must not be empty")
+	assert(strings.index_byte(program, '"') == -1, "a quote reached the program path writer")
 
+	start := strings.builder_len(b^)
 	strings.write_byte(b, '"')
 	strings.write_string(b, program)
 	strings.write_byte(b, '"')
+
+	assert(
+		strings.builder_len(b^) == start + len(program) + 2,
+		"the program path was not written whole",
+	)
 }
 
 // The characters that force an argument to be quoted, and there are exactly two
@@ -175,6 +198,17 @@ needs_quoting :: proc(argument: string) -> bool {
 // through untouched and a surrogate pair cannot be split.
 @(private)
 write_argument :: proc(b: ^strings.Builder, argument: string) {
+	// Refused at the boundary, asserted on the write side (A4): a NUL here would
+	// end the command line mid-build and drop every argument after this one.
+	assert(strings.index_byte(argument, 0) == -1, "a NUL reached the argument writer")
+
+	start := strings.builder_len(b^)
+	// An argument ALWAYS writes at least one byte -- an empty one writes `""`.
+	// This is the write-side pair for the empty-argument rule: a change that let
+	// an empty argument write nothing would shift every argument after it, and
+	// this is where that becomes visible rather than at the child.
+	defer assert(strings.builder_len(b^) > start, "an argument wrote nothing and would be dropped")
+
 	if !needs_quoting(argument) {
 		assert(len(argument) > 0, "an empty argument is never written unquoted")
 		strings.write_string(b, argument)
@@ -210,7 +244,13 @@ write_argument :: proc(b: ^strings.Builder, argument: string) {
 write_backslashes :: proc(b: ^strings.Builder, count: int) {
 	assert(count >= 0, "a backslash run cannot be negative")
 
+	start := strings.builder_len(b^)
 	for _ in 0 ..< count {
 		strings.write_byte(b, '\\')
 	}
+
+	// A short write here is an argument that ends in an escaped quote and
+	// swallows its neighbour, which is the loudest bug in the package and the
+	// quietest symptom.
+	assert(strings.builder_len(b^) == start + count, "the backslash run was not written whole")
 }
