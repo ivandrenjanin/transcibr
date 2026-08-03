@@ -8,7 +8,7 @@ import "core:strings"
 //
 // ONE threshold, and it counts SAYINGS. Per-Cue confidence does not exist in
 // Engine output and the only number that does -- per-token `p` -- is the wrong
-// instrument, because a fabrication over silence is emitted with HIGH token
+// instrument, because an invention over silence is emitted with HIGH token
 // probability (ADR-0001). So the shape of the run is all there is to read.
 //
 // What separates the two populations is HOW MANY, not how long (ADR-0016). The

@@ -10,10 +10,10 @@ it.
 
 ## The evidence that exists
 
-ADR-0001 measured two hallucination runs on a real 20-minute excerpt: **17 identical cues of one
+ADR-0001 measured two inventions on a real 20-minute excerpt: **17 identical cues of one
 short phrase**, and **16 identical cues of the single word *"you"*** spanning 4.5 minutes of silence.
 ADR-0005 re-measured the same recordings with VAD enabled and both runs collapsed to a longest run
-of **1**, which confirms they are engine artefacts rather than anything on the tape.
+of **1**, which confirms the engine produced them rather than the speaker.
 
 So the measurement gives us, for both runs, a **count**. It gives us a **span** for only one of them
 — the 4.5 minutes attaches to the *"you"* run, and nothing was ever recorded about how long the

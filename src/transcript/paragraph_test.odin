@@ -406,7 +406,7 @@ merging_cues_that_say_nothing_yields_no_paragraphs :: proc(t: ^testing.T) {
 // The fixtures above are shapes chosen to isolate one threshold at a time, which
 // is what makes them readable and what makes them not proof. This is the whole
 // of the ticket's work -- parse, collapse, merge -- run over 30 seconds of
-// speech a real Engine really transcribed, hallucination and mishearing intact.
+// speech a real Engine really transcribed, its inventions and mishearings intact.
 // ---------------------------------------------------------------------------
 
 // The fixture's gaps are 900, 920, 980, 1040, 660 and 520 ms, every Cue ends a
