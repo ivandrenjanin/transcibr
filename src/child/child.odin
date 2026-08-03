@@ -91,8 +91,10 @@ Error :: struct {
 // An enumerated array rather than a switch, for the reason the FAULT table in
 // `transcibr:process` gives: add a Fault and leave this alone and the COMPILER
 // refuses the build with `Unhandled enumerated array case`, so a row cannot go
-// missing in anything that ships. Write the row and leave it empty and the
-// assertion in fault_says catches it on the first report.
+// missing in anything that ships. Write the row and leave it EMPTY and
+// every_fault_renders_a_line_a_failure_row_can_carry catches it before the sweep
+// is green; fault_says asserts the same thing, but only on the first report of
+// that fault, which is a Recording already failing in front of somebody.
 @(private, rodata)
 FAULT := [Fault]string {
 	// Two rows are deliberately empty, and fault_says refuses both by name rather
