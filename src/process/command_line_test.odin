@@ -503,6 +503,109 @@ a_refusal_renders_as_one_line_naming_its_input :: proc(t: ^testing.T) {
 	testing.expect_value(t, nothing, "there is no executable to run")
 }
 
+// One refusal's rendered line, against the row its fault carries.
+//
+// The three EXACT lines above are the independent check on the grammar, one per
+// branch of error_message. This is what says the other four faults are rendered
+// the same way -- which the `says` column had nothing at all standing behind it.
+// MEASURED: dropping `facts.says` from error_message's executable branch left all
+// seventeen tests green before this existed.
+//
+// It takes the culprit's escaping from the same %q the renderer uses, because
+// checking that independently would mean writing a second quoter here -- the
+// exact thing argv_of exists to avoid. What it does NOT take from the renderer is
+// which sentence, which branch, the ordinal, or the separators, and a mutant in
+// any of those disagrees with it.
+@(private)
+expect_refusal_renders :: proc(t: ^testing.T, err: Build_Error, loc := #caller_location) {
+	message := error_message(err, context.allocator)
+	defer delete(message, context.allocator)
+
+	facts := FAULT[err.fault]
+	// What the line OPENS with is the whole of what the blame decides.
+	opens: string
+	switch facts.blames {
+	case .An_Argument:
+		opens = fmt.tprintf("argument %d (%q): ", err.argument, err.culprit)
+	case .The_Executable:
+		opens = fmt.tprintf("%q: ", err.culprit)
+	case .Nothing:
+		opens = ""
+	case .Unset:
+		testing.expectf(t, false, "%v reached the renderer blaming nothing", err.fault, loc = loc)
+		return
+	}
+
+	want := fmt.tprintf("%s%s", opens, facts.says)
+	testing.expectf(
+		t,
+		message == want,
+		"%v rendered <%s>, wanted <%s>",
+		err.fault,
+		message,
+		want,
+		loc = loc,
+	)
+	// ONE line, which the test above has claimed by name since it was written and
+	// nothing checked. This is the half of it that is about the TABLE rather than
+	// the renderer: a sentence with a newline in it is a report that a single-line
+	// status field shows the first half of.
+	testing.expectf(
+		t,
+		!strings.contains(message, "\n"),
+		"%v rendered more than one line: <%s>",
+		err.fault,
+		message,
+		loc = loc,
+	)
+}
+
+// Every fault renders, and the list that proves it is walked against the
+// enumeration rather than trusted to be complete.
+//
+// Seven faults, one refusal each, all produced through the public entry point
+// rather than by hand -- so this is also the case that says every fault the
+// builder can return is one a caller can actually print.
+@(test)
+every_fault_renders_as_the_line_its_row_describes :: proc(t: ^testing.T) {
+	over_the_ceiling := strings.repeat("a", MAX_COMMAND_LINE_UNITS, context.allocator)
+	defer delete(over_the_ceiling, context.allocator)
+
+	Refusal :: struct {
+		executable: string,
+		arguments:  []string,
+	}
+	cases := []Refusal {
+		{"", {"-i"}},
+		{`C:\a"b\ffmpeg.exe`, {}},
+		{"C:\\a\x00b\\ffmpeg.exe", {"-i"}},
+		{EXE, {"-i", "a\x00b.mkv"}},
+		{"C:\\\xED\xA0\x80\\ffmpeg.exe", {}},
+		{EXE, {"-i", "\xED\xA0\x80"}},
+		{EXE, {over_the_ceiling}},
+	}
+
+	seen: [Build_Fault]bool
+	for refusal, i in cases {
+		line, err := build_command_line(refusal.executable, refusal.arguments, context.allocator)
+		defer delete(line, context.allocator)
+		if !testing.expectf(t, err.fault != .None, "refusal[%d] was accepted", i) {
+			continue
+		}
+		seen[err.fault] = true
+		expect_refusal_renders(t, err)
+	}
+
+	// The half that rots: a fault added to Build_Fault gets a row in FAULT because
+	// the compiler insists, and gets no case here because nothing does.
+	for fault in Build_Fault {
+		if fault == .None {
+			continue
+		}
+		testing.expectf(t, seen[fault], "%v is rendered by no case in this list", fault)
+	}
+}
+
 // Every fault has a row, and the two kinds of refusal are told apart.
 //
 // `.Too_Long` is the one that a different plan fixes: ADR-0002 puts the Engine's
