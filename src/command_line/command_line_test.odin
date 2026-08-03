@@ -54,11 +54,23 @@ free_argv :: proc(argv: []string, allocator: mem.Allocator) {
 }
 
 // One case: build it, hand it to Windows, and check every argument came back.
+//
+// #caller_location, the mechanism render_test.odin already uses: without it every
+// failure in this file is reported against a line inside this procedure, which is
+// the one line that is the same for all of them. With it the report names the run
+// that failed, which for a table case is the difference between the standalone
+// loop and the flanked one.
 @(private)
-expect_round_trip :: proc(t: ^testing.T, program: string, arguments: []string, name: string) {
+expect_round_trip :: proc(
+	t: ^testing.T,
+	program: string,
+	arguments: []string,
+	name: string,
+	loc := #caller_location,
+) {
 	line, err := build(program, arguments, context.allocator)
 	defer delete(line, context.allocator)
-	testing.expectf(t, err == .None, "%s: build refused with %v", name, err)
+	testing.expectf(t, err == .None, "%s: build refused with %v", name, err, loc = loc)
 
 	argv := argv_of(t, line, context.allocator)
 	defer free_argv(argv, context.allocator)
@@ -70,11 +82,12 @@ expect_round_trip :: proc(t: ^testing.T, program: string, arguments: []string, n
 		line,
 		len(argv),
 		len(arguments) + 1,
+		loc = loc,
 	) {
 		return
 	}
 
-	testing.expectf(t, argv[0] == program, "%s: argv[0] came back <%s>", name, argv[0])
+	testing.expectf(t, argv[0] == program, "%s: argv[0] came back <%s>", name, argv[0], loc = loc)
 	for want, i in arguments {
 		testing.expectf(
 			t,
@@ -84,6 +97,7 @@ expect_round_trip :: proc(t: ^testing.T, program: string, arguments: []string, n
 			i + 1,
 			argv[i + 1],
 			want,
+			loc = loc,
 		)
 	}
 }
@@ -96,22 +110,34 @@ expect_round_trip :: proc(t: ^testing.T, program: string, arguments: []string, n
 @(private)
 expect_each_and_all :: proc(t: ^testing.T, group: string, cases: []string) {
 	for value, i in cases {
-		expect_round_trip(t, EXE, {value}, tprint_case(group, i))
+		expect_round_trip(t, EXE, {value}, tprint_case(group, i, "alone"))
 	}
-	expect_round_trip(t, EXE, cases, group)
+	expect_round_trip(t, EXE, cases, tprint_group(group, "all together"))
 	// A neighbour on each side, so a case that swallows the space after it is
 	// caught rather than absorbed by the end of the command line.
 	for value, i in cases {
-		expect_round_trip(t, EXE, {"-before", value, "-after"}, tprint_case(group, i))
+		expect_round_trip(t, EXE, {"-before", value, "-after"}, tprint_case(group, i, "flanked"))
 	}
 }
 
 @(private)
 EXE :: `C:\tools\ffmpeg.exe`
 
+// The label one case is reported under, and `how` is not decoration: every value
+// in a table is round-tripped more than once -- alone, and again flanked by
+// neighbours -- so the group and the index together do not identify a run.
+// Measured on a deliberately broken builder, both runs reported `backslash[12]`,
+// and the two say different things: alone means the value itself is mangled,
+// flanked means the damage only shows as a neighbour's argument.
 @(private)
-tprint_case :: proc(group: string, index: int) -> string {
-	return fmt.tprintf("%s[%d]", group, index)
+tprint_case :: proc(group: string, index: int, how: string) -> string {
+	return fmt.tprintf("%s[%d] %s", group, index, how)
+}
+
+// The same label for a run that is about a whole table rather than one case.
+@(private)
+tprint_group :: proc(group: string, how: string) -> string {
+	return fmt.tprintf("%s %s", group, how)
 }
 
 @(test)
@@ -298,7 +324,9 @@ non_ascii_arguments_round_trip :: proc(t: ^testing.T) {
 // this file; these are the paths whose SHAPE is the point.
 @(private)
 PROGRAM_CASES :: []string {
-	`C:\tools\ffmpeg.exe`,
+	// The ordinary path every other test in this file already runs as argv[0],
+	// named once rather than spelled a second time here.
+	EXE,
 	`C:\Program Files\ffmpeg\bin\ffmpeg.exe`,
 	`C:\dir with space\`,
 	`C:\trailing\`,
@@ -317,8 +345,13 @@ PROGRAM_CASES :: []string {
 @(test)
 the_program_path_round_trips_under_its_own_rule :: proc(t: ^testing.T) {
 	for program, i in PROGRAM_CASES {
-		expect_round_trip(t, program, {}, tprint_case("program alone", i))
-		expect_round_trip(t, program, {"-i", "a b.mkv", ""}, tprint_case("program", i))
+		expect_round_trip(t, program, {}, tprint_case("program", i, "alone"))
+		expect_round_trip(
+			t,
+			program,
+			{"-i", "a b.mkv", ""},
+			tprint_case("program", i, "with arguments"),
+		)
 	}
 }
 
