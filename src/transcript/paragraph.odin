@@ -513,6 +513,46 @@ paragraph_room :: proc(s: Merge_State, p: Merge_Params) -> int {
 	return p.max_para_chars - s.runes - 1
 }
 
+// The two sides of a split at `at`, with what nobody said taken off the ends the
+// split itself made.
+//
+// THE TRIM, SAID ONCE. It was written three times -- either side of a boundary
+// sitting exactly at the cut, either side of the last boundary before it, and
+// either side of a carve that fell inside a word -- which is six calls naming
+// says_nothing at three sites, all of which have to name the SAME predicate for
+// any of them to be right.
+//
+// By says_nothing and never by one that knows only whitespace. What the split
+// broke at is not speech and must not survive into either side of it: on the left
+// it reaches the deliverable as a Paragraph ending in nothing anybody said and is
+// spent against the cap, and on the right it opens the next Paragraph with padding
+// the Engine's own leading space was already taken off for. spoken_text guards a
+// Cue's ENDS; this is the OTHER producer of a Paragraph's prose and it trims
+// interiors spoken_text never looked at. Trimmed by whitespace alone, a split
+// either side of a single control character handed back a `take` made of nothing
+// else, and the Paragraph carrying it held no speech at all.
+//
+// It is HALF of that edge and not the whole of it: word_split's boundary SEARCH
+// reads the same predicate, and reverting either one alone puts a Paragraph made
+// of nothing back. The search stays where it is read, with the argument for it.
+@(private)
+split_trimmed :: proc(said: string, at: int) -> (take, rest: string) {
+	assert(at > 0, "a split that takes nothing is not a split into two sides")
+	assert(at < len(said), "a split at or past the end of the speech behind it")
+	// What makes the trims safe, asserted at the one place all three splits now
+	// pass through (CLAUDE.md A4): speech that opens on speech cannot be emptied by
+	// taking off what nobody said, whatever `at` the caller chose.
+	assert(!opens_on_silence(said), "speech still opening on something nobody said")
+	// And the conclusion drawn from it, which paragraph_admit's loop terminates on:
+	// a split that took nothing would send that loop round again on the same speech
+	// with the same room.
+	defer assert(len(take) > 0, "trimming a split emptied the side that opened on speech")
+
+	take = strings.trim_right_proc(said[:at], says_nothing)
+	rest = strings.trim_left_proc(said[at:], says_nothing)
+	return
+}
+
 // Splits speech at the last word boundary that fits in `room` characters.
 //
 // Reports that NOTHING fits rather than breaking a word, which is what makes the
@@ -520,18 +560,7 @@ paragraph_room :: proc(s: Merge_State, p: Merge_Params) -> int {
 // and offers the whole cap, and only one that has already offered the whole cap
 // carves the word itself.
 //
-// Both ends of what it hands back are trimmed, by says_nothing and never by a
-// predicate that knows only whitespace. What the split broke at is not speech
-// and must not survive into either side of it: on the left it reaches the
-// deliverable as a Paragraph ending in nothing anybody said and is spent against
-// the cap, and on the right it opens the next Paragraph with padding the
-// Engine's own leading space was already taken off for.
-//
-// THE PREDICATE IS THE WHOLE OF IT. spoken_text guards a Cue's ENDS, and this is
-// the OTHER producer of a Paragraph's prose -- it carves interiors spoken_text
-// never looked at. Trimmed by whitespace alone, a split either side of a single
-// control character handed back a `take` made of nothing else, and the Paragraph
-// carrying it held no speech at all.
+// Both ends of what it hands back are trimmed, by split_trimmed above.
 @(private)
 word_split :: proc(said: string, room: int) -> (take, rest: string) {
 	assert(len(said) > 0, "there is nothing here to split")
@@ -567,22 +596,20 @@ word_split :: proc(said: string, room: int) -> (take, rest: string) {
 	// only looks inside the window.
 	at_cut, _ := utf8.decode_rune_in_string(said[cut:])
 	if says_nothing(at_cut) {
-		take = strings.trim_right_proc(said[:cut], says_nothing)
-		rest = strings.trim_left_proc(said[cut:], says_nothing)
-		return
+		return split_trimmed(said, cut)
 	}
 
-	// `says_nothing` and never `strings.is_space`: it is the predicate the trims
-	// either side of this use, and a boundary search knowing about fewer
-	// characters than they do carves a control byte as though it were a letter --
-	// and then the trims take it off again, leaving a Paragraph made of nothing.
+	// `says_nothing` and never `strings.is_space`: it is the predicate split_trimmed
+	// trims either side of this by, and a boundary search knowing about fewer
+	// characters than the trim does carves a control byte as though it were a
+	// letter -- and then the trim takes it off again, leaving a Paragraph made of
+	// nothing. LOAD-BEARING ON ITS OWN: the trim reverted alone and this reverted
+	// alone each put that Paragraph back, by different routes.
 	at := strings.last_index_proc(said[:cut], says_nothing)
 	if at <= 0 {
 		return "", said
 	}
-	take = strings.trim_right_proc(said[:at], says_nothing)
-	rest = strings.trim_left_proc(said[at:], says_nothing)
-	return
+	return split_trimmed(said, at)
 }
 
 // Splits speech at exactly `room` characters, wherever that falls.
@@ -591,9 +618,13 @@ character_split :: proc(said: string, room: int) -> (take, rest: string) {
 	assert(len(said) > 0, "there is nothing here to carve")
 	assert(room > 0, "a carve that may take no characters never finishes")
 	// The same claim word_split makes about what it is handed, at the other carve
-	// (CLAUDE.md A4): the trims below take off what nobody said, and speech that
+	// (CLAUDE.md A4): the trim below takes off what nobody said, and speech that
 	// opened on that would come back empty.
 	assert(!opens_on_silence(said), "speech still opening on something nobody said")
+	// This procedure's own contract with paragraph_admit, which split_trimmed
+	// settles one frame down and paragraph_admit asserts again on the way out
+	// (CLAUDE.md A4). It is the claim THE LOOP THAT MUST TERMINATE rests on, so it
+	// is checked on every frame that could break it.
 	defer assert(len(take) > 0, "a carve that took no speech at all")
 
 	// Characters and not bytes, which is the whole reason this asks utf8 instead
@@ -603,9 +634,7 @@ character_split :: proc(said: string, room: int) -> (take, rest: string) {
 	// has already found more characters here than there is room for.
 	cut := utf8.rune_offset(said, room)
 	assert(cut > 0, "a positive room measured out no characters at all")
-	take = strings.trim_right_proc(said[:cut], says_nothing)
-	rest = strings.trim_left_proc(said[cut:], says_nothing)
-	return
+	return split_trimmed(said, cut)
 }
 
 // Adds one Cue's speech to the Paragraph being built, opening one if none is.
