@@ -22,10 +22,25 @@
 param(
 	# Run one test instead of sweeping, as <package>.<test>. Only that
 	# package is built, and a name that matches nothing is a failure.
-	[string] $TestName = ''
+	[string] $TestName = '',
+
+	# Wall-clock ceiling on ONE package's `odin test`, in seconds. Zero takes
+	# $OdinCommandTimeoutSeconds from scripts\common.ps1, which is the answer
+	# everywhere but scripts\selftest.ps1: it plants packages built to hang, and
+	# cannot wait ten minutes to find out that they did. Resolved after the
+	# dot-source below, because a param default is bound before it runs.
+	#
+	# The sweep as a whole is bounded separately, by $OdinSweepTimeoutSeconds:
+	# this number times however many packages exist is not a ceiling anyone chose.
+	[ValidateRange(0, 86400)]
+	[int] $TimeoutSeconds = 0
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
+
+if ($TimeoutSeconds -eq 0) {
+	$TimeoutSeconds = $OdinCommandTimeoutSeconds
+}
 
 # No terminating error may leave a zero exit behind. That is how this script
 # once reported success after crashing before its own failure check.
@@ -56,6 +71,13 @@ if ($focused) {
 # chosen space-free and swept of what earlier runs left -- see Get-OdinTestRoot.
 $testRoot = Get-OdinTestRoot
 
+# The ceiling on the sweep as a whole and not merely on each package in it --
+# see $OdinSweepTimeoutSeconds for why the product of the two was not one.
+# Never below the per-package ceiling, so a caller who raises -TimeoutSeconds
+# past it is not silently capped at it instead.
+$sweepSeconds = [math]::Max($TimeoutSeconds, $OdinSweepTimeoutSeconds)
+$sweepEnd = (Get-Date).AddSeconds($sweepSeconds)
+
 $failures = @()
 $totalTests = 0
 $position = 0
@@ -64,6 +86,18 @@ foreach ($package in $packages) {
 	Write-Host ''
 	Write-Host "=== $($package.Name) ===" -ForegroundColor Cyan
 	$position += 1
+
+	# What is left of the sweep's own budget, which is what this package gets if
+	# that is less than its own ceiling. A package left with none of it is not
+	# started: a run nobody waits for cannot be reported, and naming the package
+	# that would have gone next is the only thing left pointing anywhere.
+	$remaining = [int][math]::Floor(($sweepEnd - (Get-Date)).TotalSeconds)
+	if ($remaining -lt 1) {
+		$failures += "$($package.Name): the sweep's $sweepSeconds-second budget ran out before this package ran"
+		Write-Host "-> FAILED (the sweep's $sweepSeconds-second budget ran out)" -ForegroundColor Red
+		continue
+	}
+	$budget = [math]::Min($TimeoutSeconds, $remaining)
 
 	# The stem every artefact of this package's run is named from. Two
 	# properties, neither optional:
@@ -98,12 +132,12 @@ foreach ($package in $packages) {
 		$arguments += "-define:ODIN_TEST_NAMES=$TestName"
 	}
 
-	# Invoked directly, never through cmd: hand-quoting a flag string breaks on
-	# the first checkout path containing a space, and PowerShell's own argument
-	# passing does not. Nothing is redirected either, so the runner's output
-	# reaches the console as it happens and $LASTEXITCODE stays trustworthy.
-	Invoke-NativeCommand -Command $odin -Arguments $arguments
-	$odinExit = $LASTEXITCODE
+	# Under a ceiling, because `odin test` RUNS what it builds and the runner
+	# hangs outright when two or more tests assert concurrently -- see
+	# $OdinCommandTimeoutSeconds. Nothing is redirected, so the runner's output
+	# still reaches the console as it happens.
+	$run = Invoke-NativeCommand -Command $odin -Arguments $arguments -TimeoutSeconds $budget
+	$odinExit = $run.ExitCode
 
 	# The runner's machine-readable report, not its console prose. It writes no
 	# file at all when it collects nothing, which is itself the answer.
@@ -123,7 +157,15 @@ foreach ($package in $packages) {
 		Remove-Item -Force -ErrorAction SilentlyContinue
 
 	$expectedEmpty = ($OdinPackagesWithoutTests -contains $package.Name)
-	if ($odinExit -ne 0) {
+	# Read before anything else, because a run that was killed left no verdict
+	# to read: no summary, no JSON report, and an exit code that belongs to the
+	# kill rather than to the tests. Named against the package, since that is
+	# the only thing left pointing at what to go and look at.
+	if ($run.TimedOut) {
+		$failures += "$($package.Name): odin test did not finish within $budget seconds and was killed"
+		Write-Host "-> FAILED (did not finish within $budget seconds; killed)" -ForegroundColor Red
+	}
+	elseif ($odinExit -ne 0) {
 		$failures += "$($package.Name): odin exited $odinExit"
 		Write-Host "-> FAILED (odin exited $odinExit)" -ForegroundColor Red
 	}

@@ -237,6 +237,60 @@ cannot go stale unnoticed.
 Do not hand-roll the compiler invocation — the sweep also enforces that every package either
 collects tests or is declared test-less in `$OdinPackagesWithoutTests`.
 
+The notes below name identifiers in the compiler's `core` sources and never line numbers in them. A
+name is greppable, survives an upstream edit, and says which thing is meant; a line number in another
+repository is a claim with no guard on it at all. The one this file used to carry — a single range
+cited for two separate branches of `get_token` — was already wrong about one of them at the pinned
+compiler.
+
+**The test runner hangs when two or more tests assert concurrently.** One asserting test fails
+cleanly every time. Two or more either crash the process with no summary and no JSON report, or hang
+forever — and `-define:ODIN_TEST_THREADS=1` makes the hang *deterministic* rather than mitigating it.
+The Windows signal handler records into a single global slot and returns `EXCEPTION_CONTINUE_SEARCH`,
+so the faulting thread races a main loop that has to `TerminateThread` it before the OS kills the
+process; a second concurrent assertion overwrites that slot, and `TerminateThread` on a thread killed
+mid-log abandons its locks. Nothing in the toolchain has a timeout: `testing.set_fail_timeout` is
+opt-in per test. `scripts\common.ps1` therefore runs every `odin` invocation under
+`$OdinCommandTimeoutSeconds` and kills the tree — the compiler spawns the test binary, so killing the
+compiler alone orphans it — and `.github/workflows/ci.yml` carries an explicit `timeout-minutes`.
+Do not remove either; a sweep with no ceiling is a CI job that burns six hours to say nothing.
+
+**`core:encoding/json` does not parse integers, silently wraps the ones it does, leaks when it
+refuses a file, and crashes on deep nesting.** Four traps, all measured, all with a worked example in
+`src\transcript\engine_json.odin`.
+
+`parse_integers` defaults to *false* on every entry point, so `12345` arrives as a `json.Float` and
+the natural `value.(json.Integer)` matches nothing at all — every number silently reads as its zero
+value, and a monotonicity check downstream still passes, because zero is monotonic. Read the
+`json.Float`; do **not** reach for the flag. `get_token` classifies a number on the decimal point and
+on an `e`/`E` exponent, so `12345.0` and `1.2e4` stay Floats however the flag is set — a reader has
+to handle Floats regardless, and handling Integers as well buys nothing but the trap below.
+`DEFAULT_SPECIFICATION` is `JSON5` as well, which accepts trailing commas and comments — pass `.JSON`
+where the input is supposed to be strict.
+
+Passing the flag trades a number that is silently zero for one that is silently wrong. The `.Integer`
+case of `parse_value` reads its token with `i, _ := strconv.parse_i64(token.text)`, and the discarded
+error is not the problem: `parse_i64` **wraps on overflow and returns `ok = true`**, so there is no
+failure to read even if you read it. `99999999999999999999999` arrives as `200376420520689663` and
+`2^127` arrives as `0` — magnitudes a range check can still refuse — but `18446744073709556616`,
+which is 2^64 + 5000, arrives as `5000`, and nothing downstream can tell that from a real value. An
+f64 has no wrap to exploit: rounding is monotonic, so a literal outside the range arrives outside the
+range. Read the Float and range-check it strictly below 2^53, which is where f64 stops representing
+every integer and starts rounding one literal onto another.
+
+The parser leaks on several of its error paths: an object key parsed just before the value after it
+fails is never inserted into the object, so the cleanup that walks that object never frees it, and a
+truncated file takes exactly that path. Decode into an arena you destroy unconditionally rather than
+trying to free the tree.
+
+It is a recursive descent with **no depth limit**, so nesting deep enough runs the thread off its
+stack and takes the process down — 0xC00000FD from 1694 bytes, 751 levels fine and 801 fatal. There
+is no error return to catch, so the depth has to be bounded *before* the decode; A8 has no exception
+for input that is merely unusual.
+
+`.\scripts\test.ps1 -TestName transcript.parses_real_engine_output_into_cues` is the test that
+catches the integer default against real Engine output.
+
 **`odin test` cannot write its test executable to a path containing a space.** It runs the binary
 it builds through a command line it does not quote, so a space is re-parsed as an argument
 separator and the compiler exits `-1` with `Unknown argument encountered '<second word>'`. The

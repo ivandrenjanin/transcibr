@@ -57,10 +57,15 @@ foreach ($target in $OdinTargets) {
 	Write-Host ''
 	Write-Host "=== $($target.Name) ($($target.Subsystem)) ===" -ForegroundColor Cyan
 
-	Invoke-NativeCommand -Command $odin -Arguments $arguments
-	$odinExit = $LASTEXITCODE
-	if ($odinExit -ne 0) {
-		throw "odin exited $odinExit building $($target.Name)."
+	# Under the same ceiling the sweep runs: a compiler that never returns is
+	# the identical unguarded wait, and this command has no timeout of its own
+	# either -- see $OdinCommandTimeoutSeconds.
+	$run = Invoke-NativeCommand -Command $odin -Arguments $arguments -TimeoutSeconds $OdinCommandTimeoutSeconds
+	if ($run.TimedOut) {
+		throw "odin did not finish building $($target.Name) within $OdinCommandTimeoutSeconds seconds and was killed."
+	}
+	if ($run.ExitCode -ne 0) {
+		throw "odin exited $($run.ExitCode) building $($target.Name)."
 	}
 
 	# Read out of the image rather than trusted from the flag that went in.
@@ -68,7 +73,13 @@ foreach ($target in $OdinTargets) {
 	Write-Host "-> $out is subsystem $($target.Subsystem)" -ForegroundColor Green
 
 	if ($target.Smoke) {
-		$smoke = Read-NativeOutput -Command $out -Arguments @()
+		# Under the same ceiling as the compiler that produced it. A `main` that
+		# wedges is this command never coming back, with nothing but the CI job's
+		# own timeout behind it -- and that is not a backstop a developer has.
+		$smoke = Read-NativeOutput -Command $out -Arguments @() -TimeoutSeconds $OdinCommandTimeoutSeconds
+		if ($smoke.TimedOut) {
+			throw "$($target.Name) did not finish within $OdinCommandTimeoutSeconds seconds and was killed."
+		}
 		if ($smoke.ExitCode -ne 0) {
 			throw "$($target.Name) exited $($smoke.ExitCode), expected 0."
 		}

@@ -1,0 +1,20 @@
+# A fixture is EVIDENCE, not source.
+#
+# src\transcript\fixtures\ holds one real whisper.cpp run committed exactly as
+# the Engine wrote it, systeminfo block and absolute model path and all, because
+# the whole point of it is to pin the schema this design bets on (ADR-0001).
+# Line-ending normalisation is an EDIT to that evidence. With core.autocrlf on
+# and nothing said here, the 2335 bytes the Engine wrote were stored as 2226:
+# the blob was not the file anyone was told it was, and the byte count the test
+# documents was true only on a machine that happened to convert it back.
+#
+# It matters beyond tidiness. The truncation case slices this fixture in half,
+# so where the cut falls moves with the line endings; and `#load` embeds
+# whatever is on disk, so a rewritten checkout tests a different file while
+# every name in the suite stays the same.
+#
+# -text turns conversion off in both directions: what is committed is what is
+# checked out is what the Engine wrote. Written for every package's fixtures
+# directory rather than for this one file, because the reason is about fixtures
+# and not about JSON.
+**/fixtures/** -text
