@@ -1,0 +1,109 @@
+{
+	"systeminfo": "WHISPER : COREML = 0 | OPENVINO = 0 | CUDA : ARCHS = 500,610,700,750,800,860,890,900 | PEER_MAX_BATCH_SIZE = 128 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | AVX512 = 1 | AVX512_VNNI = 1 | OPENMP = 1 | REPACK = 1 | ",
+	"model": {
+		"type": "large",
+		"multilingual": true,
+		"vocab": 51866,
+		"audio": {
+			"ctx": 1500,
+			"state": 1280,
+			"head": 20,
+			"layer": 32
+		},
+		"text": {
+			"ctx": 448,
+			"state": 1280,
+			"head": 20,
+			"layer": 4
+		},
+		"mels": 128,
+		"ftype": 1
+	},
+	"params": {
+		"model": "C:\\Users\\drenj\\models\\ggml-large-v3-turbo.bin",
+		"language": "en",
+		"translate": false
+	},
+	"result": {
+		"language": "en"
+	},
+	"transcription": [
+		{
+			"timestamps": {
+				"from": "00:00:00,000",
+				"to": "00:00:03,480"
+			},
+			"offsets": {
+				"from": 0,
+				"to": 3480
+			},
+			"text": " This is a recording made to exercise the Q-Parser."
+		},
+		{
+			"timestamps": {
+				"from": "00:00:04,380",
+				"to": "00:00:08,440"
+			},
+			"offsets": {
+				"from": 4380,
+				"to": 8440
+			},
+			"text": " The engine emits one time-stamped fragment of speech at a time."
+		},
+		{
+			"timestamps": {
+				"from": "00:00:09,360",
+				"to": "00:00:13,980"
+			},
+			"offsets": {
+				"from": 9360,
+				"to": 13980
+			},
+			"text": " Each fragment carries a start offset, an end offset, and its text."
+		},
+		{
+			"timestamps": {
+				"from": "00:00:14,960",
+				"to": "00:00:19,720"
+			},
+			"offsets": {
+				"from": 14960,
+				"to": 19720
+			},
+			"text": " The offsets arrive in miliscans, counted from the beginning of the recording."
+		},
+		{
+			"timestamps": {
+				"from": "00:00:20,760",
+				"to": "00:00:26,200"
+			},
+			"offsets": {
+				"from": 20760,
+				"to": 26200
+			},
+			"text": " A parser that reads them as integers will find none, because the numbers are floating point."
+		},
+		{
+			"timestamps": {
+				"from": "00:00:26,860",
+				"to": "00:00:29,480"
+			},
+			"offsets": {
+				"from": 26860,
+				"to": 29480
+			},
+			"text": " That is the whole point of this fixture."
+		},
+		{
+			"timestamps": {
+				"from": "00:00:30,000",
+				"to": "00:00:59,980"
+			},
+			"offsets": {
+				"from": 30000,
+				"to": 59980
+			},
+			"text": " Thank you."
+		}
+	]
+}
