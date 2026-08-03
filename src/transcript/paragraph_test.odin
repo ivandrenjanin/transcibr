@@ -201,6 +201,11 @@ cue_speech :: proc(cues: []Cue, allocator: mem.Allocator) -> string {
 // is the only thing that can break this and every break it makes falls at a word
 // boundary. Putting the Paragraphs back together has to give back exactly what
 // went in.
+//
+// Rejoining with ONE space is honest here because the speech is single-spaced:
+// every break the cap makes falls at exactly the one space this puts back. It
+// would not be honest on speech carrying runs of them, and that is a different
+// case with a different expectation.
 @(test)
 a_paragraph_never_exceeds_the_character_cap :: proc(t: ^testing.T) {
 	tight := Merge_Params{max_gap_ms = 1_000, hard_gap_ms = 3_000, max_para_chars = 120}
@@ -385,14 +390,53 @@ real_engine_output_becomes_paragraphs :: proc(t: ^testing.T) {
 	testing.expect_value(t, broken[6], Paragraph{30_000, 59_980, "Thank you."})
 }
 
+// What the Engine wrote between two words is the Engine's, and a run of spaces
+// is never quietly rewritten into one. A run has exactly two fates: it stays
+// inside a Paragraph byte for byte, or the cap breaks at it and it is the break.
+//
+// There was a third, and it was silent. The carve loop split at the run, dropped
+// it, and then carried on filling the SAME Paragraph -- where the seam space
+// that stands between two Cues went in instead. Four spaces came back as one,
+// inside one Paragraph, and the character cap counted the Paragraph three
+// characters shorter than the speech it was made of.
+@(test)
+a_run_of_spaces_is_kept_whole_or_is_the_break :: proc(t: ^testing.T) {
+	said := " one  two   three    four"
+	shape := []Shaped_Cue{{duration_ms = 2_000, text = said}}
+	cues := shaped_cues(shape, context.allocator)
+	defer delete(cues, context.allocator)
+
+	// Room for all of it: nothing breaks, so every run is left exactly alone.
+	roomy := Merge_Params{max_gap_ms = 1_000, hard_gap_ms = 3_000, max_para_chars = 30}
+	whole := merge_paragraphs(cues, roomy, context.allocator)
+	defer destroy_paragraphs(whole, context.allocator)
+	if testing.expect_value(t, len(whole), 1) {
+		testing.expect_value(t, whole[0].text, strings.trim_space(said))
+	}
+
+	// Room for eight characters at a time: each run the cap reaches is a break,
+	// and no run survives as a single space on either side of one.
+	tight := Merge_Params{max_gap_ms = 1_000, hard_gap_ms = 3_000, max_para_chars = 10}
+	broken := merge_paragraphs(cues, tight, context.allocator)
+	defer destroy_paragraphs(broken, context.allocator)
+
+	expected := []string{"one  two", "three", "four"}
+	if !testing.expect_value(t, len(broken), len(expected)) {
+		return
+	}
+	for want, i in expected {
+		testing.expect_value(t, broken[i].text, want)
+	}
+}
+
 // A Paragraph's prose is prose: the Engine's padding is off it and it does not
 // end in the space the carve happened to break at. A trailing space reaches the
 // deliverable and is spent against the cap -- at a cap of five, "one  two" would
 // come back holding four characters of speech and one of nothing.
 //
-// The interior run of spaces is a different question and is left alone: it is
-// what the Engine wrote down, and this stage is not in the business of deciding
-// what a speaker meant by it.
+// Every run of spaces here is one the cap breaks at, so every one of them is a
+// break and none survives. The case above is the one that says what happens to
+// a run the cap does NOT reach.
 @(test)
 a_carve_at_a_word_boundary_leaves_no_padding_behind :: proc(t: ^testing.T) {
 	tight := Merge_Params{max_gap_ms = 1_000, hard_gap_ms = 3_000, max_para_chars = 5}

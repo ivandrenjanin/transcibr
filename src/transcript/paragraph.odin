@@ -300,6 +300,21 @@ paragraph_admit :: proc(s: ^Merge_State, cue: Cue, said: string, p: Merge_Params
 		assert(len(tail) < len(rest), "a split that consumed no speech at all")
 		paragraph_extend(s, cue, take)
 		rest = tail
+
+		// Speech left behind means the split happened because the rest did not
+		// fit, and whatever stood between the two sides -- one space or four --
+		// went with it. Carrying on inside this Paragraph would put ONE space
+		// back in its place, which rewrites what the Engine wrote and spends
+		// fewer characters against the cap than the speech was made of. So the
+		// Paragraph ends at the split, which is what a split means anyway.
+		//
+		// On single-spaced speech this changes nothing, and the arithmetic is
+		// why: the split takes the LAST word boundary inside the room, so the
+		// next word ends at or past the cut and cannot fit in what is left.
+		// Only a run of spaces frees enough room to make the question live.
+		if len(rest) > 0 {
+			paragraph_close(s, allocator)
+		}
 	}
 }
 
