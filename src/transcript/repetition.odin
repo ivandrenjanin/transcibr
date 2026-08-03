@@ -22,13 +22,13 @@ import "core:strings"
 // chorus, a count-off. Those are over in seconds, and every one of them survives
 // a filter that asks for both.
 Collapse_Params :: struct {
-	// How many sayings of an invented run survive it. Three rather than one: the
+	// How many SAYINGS of an invented run survive it. Three rather than one: the
 	// run is dropped where it is INVENTED, and a Transcript that reads "you. you.
 	// you." tells a reader the Engine ran on over silence, where a single "you."
 	// reads as something the speaker said.
 	max_run:    int,
-	// How much of the Recording a run must cover before its length is held
-	// against it at all. This is the threshold that protects real speech.
+	// How much of the Recording the sayings must cover before their number is
+	// held against them at all. This is the threshold that protects real speech.
 	min_run_ms: Millis,
 }
 
@@ -48,14 +48,15 @@ COLLAPSE_DEFAULT :: Collapse_Params {
 // Collapses every invented repetition run in a Cue set, leaving everything else
 // exactly as it was.
 //
-// The Cues come back CLONED, so the result is freed with destroy_cues and the
-// input is freed separately with the allocator that made it. Handing back a
-// slice that borrowed the input's text would be cheaper and would make the two
-// sets impossible to free independently -- one destroy_cues on each is a double
-// free, and only one of the two orders of the two calls is even survivable.
+// The Cues come back CLONED, so what is returned is freed with destroy_cues and
+// the Cue set that went in is freed separately with the allocator that made it.
+// Handing back a slice that borrowed the other one's text would be cheaper and
+// would make the two sets impossible to free independently -- one destroy_cues
+// on each is a double free, and only one of the two orders of the two calls is
+// even survivable.
 //
-// The allocator is explicit and never defaulted: the result outlives this
-// procedure and crosses a worker boundary (ADR-0010).
+// The allocator is explicit and never defaulted: the Cue set this returns
+// outlives this procedure and crosses a worker boundary (ADR-0010).
 collapse_repetition :: proc(cues: []Cue, p: Collapse_Params, allocator: mem.Allocator) -> (kept: []Cue) {
 	assert(p.max_run > 0, "a run collapsed to nothing deletes the speech it was made of")
 	assert(p.min_run_ms > 0, "a run that need span no time at all makes every repetition an invention")
@@ -75,14 +76,16 @@ collapse_repetition :: proc(cues: []Cue, p: Collapse_Params, allocator: mem.Allo
 	built := make([dynamic]Cue, 0, len(cues), allocator)
 	for start := 0; start < len(cues); {
 		end := repetition_run_end(cues, start)
-		take := end - start
-		if is_invention(cues[start:end], p) {
-			take = p.max_run
+		run := cues[start:end]
+
+		take := len(run)
+		if is_invention(run, p) {
+			take = through_sayings(run, p.max_run)
 		}
 		assert(take > 0, "kept no part of a run that had cues in it")
-		assert(take <= end - start, "kept more sayings of a run than were ever said")
+		assert(take <= len(run), "kept more of a run than was ever in it")
 
-		for cue in cues[start:][:take] {
+		for cue in run[:take] {
 			append(&built, Cue{cue.start, cue.end, strings.clone(cue.text, allocator)})
 		}
 		start = end
@@ -118,11 +121,20 @@ is_invention :: proc(run: []Cue, p: Collapse_Params) -> bool {
 	assert(len(run) > 0, "a run with no cues in it is not a run")
 	assert(p.max_run > 0, "a run collapsed to nothing deletes the speech it was made of")
 
-	if len(run) <= p.max_run {
+	count, ended := run_sayings(run)
+	// SAYINGS and not Cues, which is what keeps the Engine's own silence out of
+	// this. Silence is identical to silence, so counting Cues makes eight minutes
+	// of the Cues the Engine writes over a quiet stretch an invention and deletes
+	// all but three of them -- taking the Recording's timeline with them, and
+	// none of it was ever speech to strip.
+	if count <= p.max_run {
 		return false
 	}
 
-	span := run[len(run) - 1].end - run[0].start
+	// A run with sayings in it BEGAN at one: silence carries a run on rather than
+	// starting one, so a run that began at silence holds nothing else.
+	assert(len(spoken_text(run[0])) > 0, "a run of silence was counted as having said something")
+	span := ended - run[0].start
 	// The ordering collapse_repetition asserted, read back as the one thing this
 	// measurement needs from it (CLAUDE.md A4). A negative span would make every
 	// long run speech and strip nothing at all.
@@ -130,7 +142,56 @@ is_invention :: proc(run: []Cue, p: Collapse_Params) -> bool {
 	return span >= p.min_run_ms
 }
 
-// One past the last Cue saying the same thing as the one at `start`.
+// How many Cues of a run said something, and where the last of those ended.
+@(private)
+run_sayings :: proc(run: []Cue) -> (count: int, ended: Millis) {
+	assert(len(run) > 0, "a run with no cues in it is not a run")
+
+	for cue in run {
+		if len(spoken_text(cue)) == 0 {
+			continue
+		}
+		count += 1
+		// max, not assignment: consecutive Cues may overlap, which is ordinary
+		// Engine output, so the last saying is not always the one ending latest.
+		ended = max(ended, cue.end)
+	}
+
+	assert(count <= len(run), "counted more sayings than there were cues to say them")
+	// The negative space of that (CLAUDE.md A3): a run that said nothing has no
+	// last saying, so the zero here is the absence of one and not an offset.
+	if count == 0 {
+		assert(ended == 0, "a run that said nothing has a saying ending somewhere")
+	}
+	return
+}
+
+// One past the Cue carrying the `count`th saying of a run.
+//
+// Everything before it comes through, silence included: the Cues the Engine
+// wrote over the silence between two sayings are the Recording's own timeline,
+// and only the tail of an invention is anything to drop.
+@(private)
+through_sayings :: proc(run: []Cue, count: int) -> (end: int) {
+	assert(len(run) > 0, "a run with no cues in it is not a run")
+	assert(count > 0, "a run cut short of its first saying keeps no speech at all")
+	defer assert(end > 0, "kept no part of a run that had sayings in it")
+	defer assert(end <= len(run), "kept more of a run than was ever in it")
+
+	said := 0
+	for cue, i in run {
+		if len(spoken_text(cue)) == 0 {
+			continue
+		}
+		said += 1
+		if said == count {
+			return i + 1
+		}
+	}
+	return len(run)
+}
+
+// One past the last Cue carrying on the run that begins at `start`.
 @(private)
 repetition_run_end :: proc(cues: []Cue, start: int) -> (end: int) {
 	assert(start >= 0, "a run cannot begin before the cue set does")
@@ -141,8 +202,28 @@ repetition_run_end :: proc(cues: []Cue, start: int) -> (end: int) {
 
 	said := spoken_text(cues[start])
 	end = start + 1
-	for end < len(cues) && spoken_text(cues[end]) == said {
+	for end < len(cues) && carries_on_run(cues[end], said) {
 		end += 1
 	}
 	return
+}
+
+// Whether a Cue carries on the run of `said`.
+//
+// A Cue that says nothing is silence the Engine wrote a Cue over. It neither
+// starts a run nor breaks one, so it carries on whatever is in progress: an
+// invention with the Engine's own silence written through it is still ONE
+// invention, and a walk demanding strictly adjacent sayings sees sixteen runs of
+// one there and strips nothing at all.
+//
+// A run that began at silence is a run OF silence -- `said` is empty, so the
+// first Cue that says anything ends it -- and a run that said nothing is never
+// an invention.
+@(private)
+carries_on_run :: proc(cue: Cue, said: string) -> bool {
+	next := spoken_text(cue)
+	if len(next) == 0 {
+		return true
+	}
+	return next == said
 }

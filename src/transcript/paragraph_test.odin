@@ -237,8 +237,11 @@ a_paragraph_never_exceeds_the_character_cap :: proc(t: ^testing.T) {
 @(test)
 a_cue_longer_than_the_cap_is_carved_rather_than_looping :: proc(t: ^testing.T) {
 	tight := Merge_Params{max_gap_ms = 1_000, hard_gap_ms = 3_000, max_para_chars = 10}
-	word := "Llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch"
+	// Derived rather than written twice: the same 58 characters spelled out in
+	// two literals is two things to keep in step, and the case that puts them
+	// back together would pass a drift between them straight through.
 	shape := []Shaped_Cue{{duration_ms = 4_000, text = " Llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch"}}
+	word := strings.trim_space(shape[0].text)
 	cues := shaped_cues(shape, context.allocator)
 	defer delete(cues, context.allocator)
 
@@ -324,6 +327,10 @@ merging_cues_that_say_nothing_yields_no_paragraphs :: proc(t: ^testing.T) {
 	defer destroy_paragraphs(paragraphs, context.allocator)
 
 	testing.expect_value(t, len(paragraphs), 0)
+	// The same claim the no-Cues case makes, by the other route into it: this one
+	// reaches the end with an array reserved and never filled, and a reservation
+	// handed back unshrunk is a block destroy_paragraphs frees at the wrong size.
+	testing.expect(t, paragraphs == nil, "an empty paragraph set came back with memory behind it to free")
 }
 
 // ---------------------------------------------------------------------------
@@ -376,4 +383,31 @@ real_engine_output_becomes_paragraphs :: proc(t: ^testing.T) {
 	defer destroy_paragraphs(broken, context.allocator)
 	testing.expect_value(t, len(broken), 7)
 	testing.expect_value(t, broken[6], Paragraph{30_000, 59_980, "Thank you."})
+}
+
+// A Paragraph's prose is prose: the Engine's padding is off it and it does not
+// end in the space the carve happened to break at. A trailing space reaches the
+// deliverable and is spent against the cap -- at a cap of five, "one  two" would
+// come back holding four characters of speech and one of nothing.
+//
+// The interior run of spaces is a different question and is left alone: it is
+// what the Engine wrote down, and this stage is not in the business of deciding
+// what a speaker meant by it.
+@(test)
+a_carve_at_a_word_boundary_leaves_no_padding_behind :: proc(t: ^testing.T) {
+	tight := Merge_Params{max_gap_ms = 1_000, hard_gap_ms = 3_000, max_para_chars = 5}
+	shape := []Shaped_Cue{{duration_ms = 2_000, text = "  one  two   three  "}}
+	cues := shaped_cues(shape, context.allocator)
+	defer delete(cues, context.allocator)
+
+	paragraphs := merge_paragraphs(cues, tight, context.allocator)
+	defer destroy_paragraphs(paragraphs, context.allocator)
+
+	expected := []string{"one", "two", "three"}
+	if !testing.expect_value(t, len(paragraphs), len(expected)) {
+		return
+	}
+	for want, i in expected {
+		testing.expect_value(t, paragraphs[i].text, want)
+	}
 }

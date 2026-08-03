@@ -231,3 +231,60 @@ collapsing_no_cues_yields_no_cues :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(kept), 0)
 	testing.expect(t, kept == nil, "an empty cue set came back with memory behind it to free")
 }
+
+// ---------------------------------------------------------------------------
+// Silence, which the Engine writes Cues over and which lands in exactly the
+// place inventions do.
+// ---------------------------------------------------------------------------
+
+// ADR-0001's measured shape with the Engine's own silence Cues written through
+// it. A run walk that demanded strictly adjacent sayings sees sixteen runs of
+// one here and strips nothing at all -- and what reaches the reader is sixteen
+// paragraphs reading "you".
+@(test)
+an_invention_with_silence_written_through_it_still_collapses :: proc(t: ^testing.T) {
+	shape := make([dynamic]Shaped_Cue, context.allocator)
+	defer delete(shape)
+	for _ in 0 ..< 16 {
+		append(&shape, Shaped_Cue{duration_ms = 8_000, text = " you"})
+		append(&shape, Shaped_Cue{duration_ms = 9_000, text = ""})
+	}
+
+	cues := shaped_cues(shape[:], context.allocator)
+	defer delete(cues, context.allocator)
+
+	kept := collapse_repetition(cues, PINNED_COLLAPSE, context.allocator)
+	defer destroy_cues(kept, context.allocator)
+
+	// Everything up to and including the third saying: three sayings and the two
+	// stretches of silence that sat between them.
+	if !testing.expect_value(t, len(kept), 5) {
+		return
+	}
+	sayings := 0
+	for cue in kept {
+		if len(spoken_text(cue)) > 0 {
+			sayings += 1
+		}
+	}
+	testing.expect_value(t, sayings, PINNED_COLLAPSE.max_run)
+}
+
+// The negative space of that (CLAUDE.md A3). Silence is identical to silence, so
+// a run walk that counted CUES rather than sayings makes eight minutes of the
+// Engine's own silence Cues an invention and deletes all but three of them --
+// taking the Recording's timeline with them, and none of it was ever speech.
+@(test)
+silence_the_engine_wrote_cues_over_is_never_collapsed :: proc(t: ^testing.T) {
+	shape := make([dynamic]Shaped_Cue, context.allocator)
+	defer delete(shape)
+	say_repeatedly(&shape, "", 20, 24_000, 0)
+
+	cues := shaped_cues(shape[:], context.allocator)
+	defer delete(cues, context.allocator)
+
+	kept := collapse_repetition(cues, PINNED_COLLAPSE, context.allocator)
+	defer destroy_cues(kept, context.allocator)
+
+	testing.expect_value(t, len(kept), 20)
+}

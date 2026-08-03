@@ -2,6 +2,7 @@ package transcript
 
 import "core:mem"
 import "core:strings"
+import "core:unicode/utf8"
 
 // A run of consecutive Cues merged into one piece of prose, and the unit a
 // reader actually reads.
@@ -165,6 +166,12 @@ merge_paragraphs :: proc(
 	shrink(&state.out)
 	paragraphs = state.out[:]
 	assert(cap(state.out) == len(paragraphs), "the returned slice does not own exactly the block it names")
+	// The cap is NOT re-counted here. paragraph_admit maintains it by arithmetic
+	// on the way in, and the cases that observe it count the characters that
+	// actually arrived -- an assert on the same predicate would pre-empt those,
+	// leaving one of them with no reachable expectation at all and turning a
+	// named failure into several tests asserting at once, which is the runner
+	// hang CLAUDE.md documents.
 	return
 }
 
@@ -315,9 +322,21 @@ paragraph_room :: proc(s: Merge_State, p: Merge_Params) -> int {
 // caller's two cases two cases: a Paragraph with a few characters left closes
 // and offers the whole cap, and only one that has already offered the whole cap
 // carves the word itself.
+//
+// Both ends of what it hands back are trimmed. The space the split broke at is
+// not speech and must not survive into either side of it: on the left it reaches
+// the deliverable as a Paragraph ending in whitespace and is spent against the
+// cap, and on the right it opens the next Paragraph with padding the Engine's
+// own leading space was already taken off for.
 @(private)
 word_split :: proc(said: string, room: int) -> (take, rest: string) {
 	assert(len(said) > 0, "there is nothing here to split")
+	// The one thing the trims below rely on: speech starts with speech, so
+	// nothing they take off the left can empty what is left of it.
+	assert(!strings.is_space(rune(said[0])), "speech still carrying the engine's padding")
+	defer if len(take) > 0 {
+		assert(take == strings.trim_space(take), "a split left padding on the prose")
+	}
 
 	if room <= 0 {
 		return "", said
@@ -330,15 +349,24 @@ word_split :: proc(said: string, room: int) -> (take, rest: string) {
 	// the cut and it can be read.
 	cut := character_offset(said, room)
 	assert(cut < len(said), "speech longer than the room measured out no shorter than itself")
-	if said[cut] == ' ' {
-		return said[:cut], strings.trim_left_space(said[cut:])
+
+	// A boundary sitting exactly AT the cut fills the room to the character
+	// without breaking anything, which the search below cannot see because it
+	// only looks inside the window.
+	at_cut, _ := utf8.decode_rune_in_string(said[cut:])
+	if strings.is_space(at_cut) {
+		return strings.trim_right_space(said[:cut]), strings.trim_left_space(said[cut:])
 	}
 
-	at := strings.last_index_byte(said[:cut], ' ')
+	// `strings.is_space` and never a comparison against the space byte: it is the
+	// predicate trim_left_space and trim_right_space use, and a boundary search
+	// that knew about fewer characters than the trims do carves a tab as though
+	// it were a letter.
+	at := strings.last_index_proc(said[:cut], strings.is_space)
 	if at <= 0 {
 		return "", said
 	}
-	return said[:at], strings.trim_left_space(said[at:])
+	return strings.trim_right_space(said[:at]), strings.trim_left_space(said[at:])
 }
 
 // Splits speech at exactly `room` characters, wherever that falls.
@@ -346,13 +374,14 @@ word_split :: proc(said: string, room: int) -> (take, rest: string) {
 character_split :: proc(said: string, room: int) -> (take, rest: string) {
 	assert(len(said) > 0, "there is nothing here to carve")
 	assert(room > 0, "a carve that may take no characters never finishes")
+	defer assert(len(take) > 0, "a carve that took no speech at all")
 
 	cut := character_offset(said, room)
 	// Characters and not bytes, which is the whole reason this walks the string
 	// instead of slicing it: a cut taken at a byte offset lands inside an
 	// accented character and puts a broken one into the deliverable.
 	assert(cut > 0, "a positive room measured out no characters at all")
-	return said[:cut], strings.trim_left_space(said[cut:])
+	return strings.trim_right_space(said[:cut]), strings.trim_left_space(said[cut:])
 }
 
 // The byte offset one past the `count`th character, or the whole length where
@@ -381,8 +410,8 @@ paragraph_extend :: proc(s: ^Merge_State, cue: Cue, said: string) {
 		s.runes += 1
 	} else {
 		// The negative space of paragraph_close resetting the builder (A3, A4).
-		// Opening onto characters the last Paragraph left behind is how prose
-		// from two ends of a Recording ends up in one block of text.
+		// Opening onto characters the last Paragraph left behind is how speech
+		// from two ends of a Recording ends up inside one Paragraph.
 		assert(s.runes == 0, "opened a paragraph onto characters the last one left behind")
 		s.start = cue.start
 		s.end = cue.end
