@@ -1,5 +1,6 @@
 package transcript
 
+import "core:strings"
 import "core:testing"
 
 // One real whisper.cpp v1.9.1 run, committed verbatim -- systeminfo block,
@@ -58,4 +59,98 @@ parses_real_engine_output_into_cues :: proc(t: ^testing.T) {
 		testing.expect_value(t, cues[i].end, want.end)
 		testing.expect_value(t, cues[i].text, want.text)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Input that is not Engine output at all.
+//
+// Every one of these is an OPERATING error naming the file it came from, never
+// an assertion (CLAUDE.md A8). ADR-0002 is what makes that the whole answer:
+// output that will not parse is treated as absent, quarantined and re-run, so
+// the report only has to say which file to go and look at.
+// ---------------------------------------------------------------------------
+
+@(test)
+reports_empty_input_against_its_name :: proc(t: ^testing.T) {
+	// Nothing at all, and nothing but whitespace: a zero-byte file and a file
+	// the Engine opened and never wrote to are the same operating error.
+	blank := []string{"", "   \r\n\t "}
+	for text, i in blank {
+		cues, err := parse_cues("empty.json", text, FIXTURE_DURATION, context.allocator)
+		defer destroy_cues(cues, context.allocator)
+
+		testing.expectf(t, len(cues) == 0, "case %d handed back cues", i)
+		testing.expect_value(t, err.fault, Parse_Fault.Empty_Input)
+		testing.expect_value(t, err.json_name, "empty.json")
+		testing.expect_value(t, err.cue, 0)
+	}
+}
+
+@(test)
+reports_malformed_input_against_its_name :: proc(t: ^testing.T) {
+	malformed := []string {
+		"this is not json at all",
+		`{"transcription": [}`,
+		// Valid JSON5, which is core:encoding/json's DEFAULT specification and
+		// is NOT what the Engine writes. A trailing comma means something other
+		// than the Engine produced this file.
+		`{"transcription": [], /* a comment */}`,
+		// Valid JSON, wrong shape: the array is there and holds the wrong thing.
+		`{"transcription": "00:00:00,000 --> 00:00:03,480"}`,
+	}
+	for text, i in malformed {
+		cues, err := parse_cues("garbled.json", text, FIXTURE_DURATION, context.allocator)
+		defer destroy_cues(cues, context.allocator)
+
+		testing.expectf(t, len(cues) == 0, "case %d handed back cues", i)
+		testing.expectf(t, err.fault != .None, "case %d was accepted: %q", i, text)
+		testing.expect_value(t, err.json_name, "garbled.json")
+	}
+}
+
+// The ADR-0002 case, and the reason resume may not branch on a file existing:
+// the Engine opens its output with a truncating stream under the final name, so
+// a Stop press or a full disk leaves exactly this.
+@(test)
+reports_truncated_input_against_its_name :: proc(t: ^testing.T) {
+	cut := ENGINE_JSON[:len(ENGINE_JSON) / 2]
+	cues, err := parse_cues("cut-short.json", cut, FIXTURE_DURATION, context.allocator)
+	defer destroy_cues(cues, context.allocator)
+
+	testing.expect(t, len(cues) == 0, "handed back cues from a truncated file")
+	testing.expect_value(t, err.fault, Parse_Fault.Malformed_Json)
+	testing.expect_value(t, err.json_name, "cut-short.json")
+}
+
+@(test)
+error_message_names_the_input :: proc(t: ^testing.T) {
+	_, err := parse_cues(`C:\cache\9f2a.json`, "not json", FIXTURE_DURATION, context.allocator)
+	message := error_message(err, context.allocator)
+	defer delete(message, context.allocator)
+
+	testing.expect(
+		t,
+		strings.contains(message, `C:\cache\9f2a.json`),
+		"an operating error that does not say which file to go and look at",
+	)
+}
+
+@(test)
+error_message_names_the_offending_cue :: proc(t: ^testing.T) {
+	// Third Cue, and only the third, carries a text field that is not text.
+	text := `{"transcription": [
+		{"offsets": {"from": 0,    "to": 1000}, "text": "one"},
+		{"offsets": {"from": 1000, "to": 2000}, "text": "two"},
+		{"offsets": {"from": 2000, "to": 3000}, "text": 3}
+	]}`
+	cues, err := parse_cues("third.json", text, FIXTURE_DURATION, context.allocator)
+	defer destroy_cues(cues, context.allocator)
+
+	testing.expect_value(t, err.fault, Parse_Fault.No_Text)
+	testing.expect_value(t, err.cue, 3)
+
+	message := error_message(err, context.allocator)
+	defer delete(message, context.allocator)
+	testing.expect(t, strings.contains(message, "third.json"), "the report does not name the input")
+	testing.expect(t, strings.contains(message, "cue 3"), "the report does not name the cue")
 }

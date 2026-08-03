@@ -1,6 +1,7 @@
 package transcript
 
 import "core:encoding/json"
+import "core:fmt"
 import "core:math"
 import "core:mem"
 import "core:strings"
@@ -64,20 +65,36 @@ parse_cues :: proc(
 	assert(recording_duration >= 0, "a negative recording duration is a probe defect, not engine output")
 	assert(allocator.procedure != nil, "the cue set outlives this procedure and needs a chosen allocator")
 
-	if len(json_text) == 0 {
+	// A zero-byte file and a file the Engine opened and never wrote to are one
+	// operating error, and neither is malformed json worth a word about syntax.
+	if len(strings.trim_space(json_text)) == 0 {
 		return nil, fault_at(.Empty_Input, json_name, 0)
 	}
+
+	// The decoded tree is scratch: it dies in this procedure and the Cue text
+	// below is cloned out of it. It gets an arena of its own because
+	// core:encoding/json LEAKS on several of its error paths -- an object key
+	// parsed just before the value after it fails is never inserted into the
+	// object, so the parser's own cleanup, which walks that object, never sees
+	// it. Truncated Engine output takes exactly that path, and truncated output
+	// is the case ADR-0002 exists for, not a rarity. An arena settles it: no
+	// individual free happens here and everything goes back at once.
+	//
+	// Blocks come from the caller's allocator and never from
+	// `context.temp_allocator`, which is thread-local and belongs to whichever
+	// worker happens to be running this (ADR-0010).
+	scratch: mem.Dynamic_Arena
+	mem.dynamic_arena_init(&scratch, block_allocator = allocator, array_allocator = allocator)
+	defer mem.dynamic_arena_destroy(&scratch)
 
 	// `.JSON` rather than the package default of JSON5, and `parse_integers`
 	// stated rather than left at its default of false -- see read_millis for
 	// what that default costs. The Engine writes strict JSON, so a trailing
 	// comma or a comment means this is not what the Engine wrote, and ADR-0002
 	// wants that quarantined rather than guessed at.
-	root, decode_err := json.parse(json_text, .JSON, true, allocator)
-	defer json.destroy_value(root, allocator)
+	root, decode_err := json.parse(json_text, .JSON, true, mem.dynamic_arena_allocator(&scratch))
 	if decode_err != nil {
-		fault := decode_err == .EOF ? Parse_Fault.Empty_Input : Parse_Fault.Malformed_Json
-		return nil, fault_at(fault, json_name, 0)
+		return nil, fault_at(.Malformed_Json, json_name, 0)
 	}
 
 	entries, locate_fault := read_transcription(root)
@@ -284,6 +301,61 @@ read_millis :: proc(offsets: json.Object, key: string) -> (Millis, Parse_Fault) 
 		return converted, .None
 	}
 	return 0, .Offset_Not_A_Number
+}
+
+// What each fault reads as, without the input's name or the Cue's position --
+// error_message supplies those, so no entry here can forget to.
+//
+// An enumerated array rather than a switch: adding a Parse_Fault without a
+// sentence for it leaves an empty string here, which the assertion in
+// error_message catches on the first report rather than shipping a diagnostic
+// that says nothing.
+@(private, rodata)
+FAULT_TEXT := [Parse_Fault]string {
+	.None                      = "",
+	.Empty_Input               = "the engine wrote nothing",
+	.Malformed_Json            = "not valid json; the file is truncated or was not written by the engine",
+	.Not_An_Object             = "valid json, but not the object the engine writes",
+	.No_Transcription          = "no `transcription` array",
+	.No_Cues                   = "the `transcription` array is empty; the engine transcribed nothing",
+	.Cue_Not_An_Object         = "is not an object",
+	.No_Offsets                = "has no `offsets` object",
+	.Offset_Missing            = "is missing one of its `from`/`to` offsets",
+	.Offset_Not_A_Number       = "has an offset that is not a number",
+	.Offset_Not_Whole          = "has an offset that is not a whole number of milliseconds",
+	.Offset_Out_Of_Range       = "has an offset too large to read as milliseconds",
+	.No_Text                   = "has no `text` string",
+	.Negative_Offset           = "starts before the recording does",
+	.Cue_Ends_Before_It_Starts = "ends before it starts",
+	.Cues_Out_Of_Order         = "starts before the cue in front of it",
+}
+
+// Renders one operating error as a line naming the input it came from.
+//
+// The allocator is explicit and never defaulted: the line outlives this
+// procedure and is written by a worker other than the one that reads it
+// (ADR-0010).
+error_message :: proc(err: Parse_Error, allocator: mem.Allocator) -> string {
+	assert(err.fault != .None, "there is no message for a parse that did not fail")
+	assert(len(err.json_name) > 0, "an operating error must name the input it is reported against")
+	assert(err.cue >= 0, "a cue ordinal is a position, or zero for the input as a whole")
+	assert(allocator.procedure != nil, "the message outlives this procedure and needs a chosen allocator")
+
+	text := FAULT_TEXT[err.fault]
+	assert(len(text) > 0, "a fault was added to Parse_Fault without a sentence in FAULT_TEXT")
+
+	out: string
+	if err.cue == 0 {
+		out = fmt.aprintf("%s: %s", err.json_name, text, allocator = allocator)
+	} else {
+		out = fmt.aprintf("%s: cue %d: %s", err.json_name, err.cue, text, allocator = allocator)
+	}
+
+	// The one property every caller depends on and no format string guarantees:
+	// the report says which file to go and look at (ADR-0002 -- the answer is
+	// always to quarantine that file and re-run it).
+	assert(strings.contains(out, err.json_name), "an operating error that does not name its input")
+	return out
 }
 
 // Builds a report, checking at the one place they are made that every report
