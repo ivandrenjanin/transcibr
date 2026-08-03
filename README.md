@@ -2,8 +2,9 @@
 
 Local transcription tool. Converts video and audio files into text transcripts using Whisper.
 
-> **Status: pre-implementation.** The specification is being written in `docs/spec/`. There is no
-> build, no usage, and no releases yet.
+> **Status: early implementation.** The specification is in `docs/spec/`. The build and test
+> commands work (see [Building from source](#building-from-source)); `transcibr-cli` currently
+> reports its version and nothing else. There are no releases yet.
 
 ## What it does
 
@@ -99,7 +100,51 @@ Already have the engine, a model, or FFmpeg elsewhere on disk? Point transcibr a
 and skip the downloads entirely.
 
 Building from source additionally needs the Odin compiler and the MSVC toolset, which Odin links
-through on Windows. Exact pinned versions land here once the specification is settled.
+through on Windows.
+
+## Building from source
+
+Three scripts, and CI runs the same three on every push — nothing in the workflow that a developer
+cannot run locally.
+
+```powershell
+.\scripts\build.ps1     # -> build\transcibr-cli.exe   (add -Configuration release for -o:speed)
+.\scripts\test.ps1      # every package under src\
+.\scripts\selftest.ps1  # checks that the two above still fail when they should
+```
+
+The Odin compiler is pinned to release `dev-2026-07a`. The pin lives in `scripts/common.ps1` and
+nowhere else — CI dot-sources that file for the release tag rather than keeping a second copy that
+can drift. The scripts look for the compiler in `$env:ODIN`, then on `PATH`, then at
+`C:\Odin\dist\odin.exe`, so it does not need to be on `PATH`.
+
+A compiler reporting a different version is **refused in CI and warned about locally**. The shared
+answer — what CI says about a branch — comes from the pinned compiler and nothing else, which is
+what the pin is for; but a pin that makes the repository unbuildable for everyone the day upstream
+retags is a pin nobody keeps. Locally you get a warning, and CI still catches anything that only
+compiles on your compiler.
+
+"In CI" means `$env:CI` is set, which is how GitHub Actions marks its runners. Some devcontainers
+and toolchains set it locally too, and some CI systems do not set it at all — so if the scripts
+refuse your compiler on your own machine, clear `$env:CI` for the shell and you get the warning
+instead. The reverse also holds: on a CI system that leaves `$env:CI` unset, set it in the job to
+get the refusal.
+
+Both commands pass the full vet set with warnings as errors, and the test command additionally sets
+`ODIN_TEST_FAIL_ON_BAD_MEMORY=true` — it defaults to false, which would let a procedure that leaks
+its returned slice pass with a warning (ADR-0010). The build reads the subsystem back out of each
+binary's PE header (ADR-0004) and runs the ones that can report their version.
+
+**`odin test` collects test procedures from one package only**, and on a package with none it prints
+`No tests to run.` and exits 0. `test.ps1` therefore discovers every package under `src\` rather than
+naming one and reads the runner's own JSON report to see what each package actually collected. A
+package that collects nothing fails the run unless it is declared test-less in
+`$OdinPackagesWithoutTests`, and one declared there that grows tests fails too — a run that executes
+nothing is a failure, not a pass. To run a single test:
+
+```powershell
+.\scripts\test.ps1 -TestName version.banner_names_the_program_and_its_version
+```
 
 ## License
 

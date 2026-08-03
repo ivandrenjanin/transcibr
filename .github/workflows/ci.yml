@@ -1,0 +1,83 @@
+name: CI
+
+# Nothing here but the repository's own scripts. Every check CI performs a
+# developer performs too, by running the same script -- a check that lives only
+# in this file is one that lets someone break main while both local commands
+# pass. That is why the binary smoke test and the PE-header subsystem check are
+# in build.ps1 rather than in a step below.
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v5
+
+      # Pinned to a tagged release, never `latest`: an unpinned toolchain turns
+      # an upstream change into a build failure on an unrelated commit, and
+      # makes "it passed yesterday" unanswerable. The tag is read out of
+      # scripts/common.ps1 rather than copied here, so the release CI installs
+      # and the version string the scripts check cannot drift apart -- and
+      # because $env:CI is set here, those scripts refuse an unpinned compiler
+      # outright instead of warning as they do locally.
+      - name: Install the pinned Odin release
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . .\scripts\common.ps1
+          Write-Host "Pinned to $OdinReleaseTag, which reports $OdinVersionPin"
+
+          $asset = "odin-windows-amd64-$OdinReleaseTag.zip"
+          $url = "https://github.com/odin-lang/Odin/releases/download/$OdinReleaseTag/$asset"
+          $zip = Join-Path $env:RUNNER_TEMP $asset
+          $dest = Join-Path $env:RUNNER_TEMP 'odin'
+
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+
+          # Resolve odin.exe rather than assuming the layout inside the zip.
+          $exe = Get-ChildItem -Path $dest -Recurse -Filter 'odin.exe' -File |
+            Select-Object -First 1
+          if (-not $exe) {
+            throw "odin.exe not found under $dest after extracting $asset."
+          }
+
+          # scripts/common.ps1 resolves the compiler from ODIN first, so this
+          # is the whole integration: CI runs the developer's commands as-is.
+          "ODIN=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & $exe.FullName version
+
+      # Builds every target in $OdinTargets, then reads the subsystem back out
+      # of each PE header and runs the ones that can report their version.
+      - name: Build (debug)
+        shell: pwsh
+        run: .\scripts\build.ps1
+
+      # Both configurations, so neither rots. -o:speed is a different code path
+      # through the compiler and a release that only builds at tagging time is
+      # a release that breaks at tagging time.
+      - name: Build (release)
+        shell: pwsh
+        run: .\scripts\build.ps1 -Configuration release
+
+      - name: Test
+        shell: pwsh
+        run: .\scripts\test.ps1
+
+      # The two commands above, checked against repositories built to make them
+      # fail: the sweep because its failure mode is silence, and the build
+      # because its smoke test and PE-header read are the acceptance criteria
+      # of this repository and nothing else guards them.
+      - name: Self-test the build and test commands
+        shell: pwsh
+        run: .\scripts\selftest.ps1
