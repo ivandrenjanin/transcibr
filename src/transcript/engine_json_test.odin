@@ -76,6 +76,87 @@ parses_real_engine_output_into_cues :: proc(t: ^testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// The detected language, which is the one front matter fact the Engine's own
+// output can settle.
+//
+// ADR-0001 chose JSON over SRT partly because it "carries the detected language
+// and model parameters we want in the transcript's front matter". Everything
+// else a Transcript records -- the Engine version, the Model's identity -- comes
+// from transcibr's own record instead, because the Engine reports every large
+// Model under the bare name `large` and does not report its own version at all
+// (ADR-0003).
+// ---------------------------------------------------------------------------
+
+@(test)
+reads_the_language_the_engine_detected :: proc(t: ^testing.T) {
+	language, said := parse_language(ENGINE_JSON, context.allocator)
+	defer if said {
+		delete(language, context.allocator)
+	}
+
+	testing.expect(t, said, "the fixture's detected language was not read")
+	testing.expect_value(t, language, "en")
+}
+
+// One document and the language it must be read as, where "" means the Engine
+// did not say.
+@(private)
+Language_Case :: struct {
+	name:  string,
+	json:  string,
+	reads: string,
+}
+
+@(private, rodata)
+LANGUAGE_CASES := []Language_Case {
+	{
+		// `result` and NOT `params`. The Engine writes what it was ASKED for in
+		// `params.language`, which is `auto` on every Recording nobody set a
+		// language for, and what it DETECTED in `result.language`. A Transcript
+		// stamped `auto` says nothing, and one stamped the requested language when
+		// the two disagree says something false.
+		name  = "detected-differs-from-requested.json",
+		json  = `{"params": {"language": "auto"}, "result": {"language": "de"}}`,
+		reads = "de",
+	},
+	{name = "only-requested.json", json = `{"params": {"language": "en"}}`},
+	{name = "result-without-language.json", json = `{"result": {"beam": 5}}`},
+	{name = "language-not-a-string.json", json = `{"result": {"language": 7}}`},
+	{name = "result-not-an-object.json", json = `{"result": "en"}`},
+	{name = "language-said-empty.json", json = `{"result": {"language": ""}}`},
+	// Everything parse_cues would refuse. The language is read for the front
+	// matter, so a document that is not Engine output has no language in it --
+	// reported as nothing rather than crashing, because it came from outside this
+	// program (CLAUDE.md A8).
+	{name = "empty.json", json = ""},
+	{name = "whitespace.json", json = "  \r\n\t "},
+	{name = "not-json.json", json = "this is not json at all"},
+	{name = "not-an-object.json", json = `[{"language": "en"}]`},
+	{name = "truncated.json", json = `{"result": {"language": "e`},
+}
+
+@(test)
+a_document_that_names_no_language_is_read_as_naming_none :: proc(t: ^testing.T) {
+	for c in LANGUAGE_CASES {
+		language, said := parse_language(c.json, context.allocator)
+		defer if said {
+			delete(language, context.allocator)
+		}
+
+		testing.expectf(
+			t,
+			said == (len(c.reads) > 0),
+			"%s: said=%v for %q, want %v",
+			c.name,
+			said,
+			language,
+			len(c.reads) > 0,
+		)
+		testing.expectf(t, language == c.reads, "%s: read %q, want %q", c.name, language, c.reads)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Input that is not Engine output at all.
 //
 // Every one of these is an OPERATING error naming the file it came from, never

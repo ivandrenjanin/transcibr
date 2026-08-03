@@ -281,6 +281,84 @@ parse_cues :: proc(
 	return built, Parse_Error{}
 }
 
+// The language the Engine DETECTED, out of the same output the Cues came from,
+// or nothing where it did not say.
+//
+// `result.language` and never `params.language`. The Engine writes what it was
+// ASKED for in `params` -- which is `auto` on every Recording nobody chose a
+// language for -- and what it decided in `result`. A Transcript stamped `auto`
+// says nothing at all, and one stamped the request when the two disagree says
+// something false.
+//
+// This is the ONLY front matter fact the Engine's own output can settle
+// (ADR-0001). The Engine version is not in there, and the Model is reported as
+// the bare name `large` whichever large Model was loaded, so both come from
+// transcibr's own record instead (ADR-0003).
+//
+// It decodes the document a SECOND time rather than being folded into
+// parse_cues, and the cost is stated rather than hidden: about twenty
+// microseconds over the fixture, against a Recording that took minutes on a GPU
+// and a re-render ADR-0003 measures in seconds. Folding it in would change what
+// parse_cues hands back to every caller and every case that already reads it, to
+// save an amount of time nobody can perceive.
+//
+// Nothing here is an operating error, because there is nothing to report: a
+// document that is not Engine output has no language in it, and parse_cues is
+// what refuses that document and names it (CLAUDE.md A8).
+//
+// The language comes back CLONED and is freed with `delete` and the same
+// allocator -- but only where `said` is true, since nothing was allocated
+// otherwise. Explicit and never defaulted: it outlives this procedure and
+// crosses a worker boundary (ADR-0010).
+parse_language :: proc(
+	json_text: string,
+	allocator: mem.Allocator,
+) -> (
+	language: string,
+	said: bool,
+) {
+	assert(
+		allocator.procedure != nil,
+		"the language outlives this procedure and needs a chosen allocator",
+	)
+	// Both sides of what the pair means (CLAUDE.md A3), at the one place both are
+	// in hand: nothing said is nothing to free, and something said is something a
+	// front matter field can be written from.
+	defer if said {
+		assert(len(language) > 0, "reported a language and handed back an empty one")
+	} else {
+		assert(len(language) == 0, "handed back a language while reporting none")
+	}
+
+	if len(strings.trim_space(json_text)) == 0 {
+		return "", false
+	}
+
+	// The caller's allocator and never `context.temp_allocator`, which is
+	// thread-local and belongs to whichever worker is running this (ADR-0010).
+	scratch: mem.Dynamic_Arena
+	mem.dynamic_arena_init(&scratch, block_allocator = allocator, array_allocator = allocator)
+	defer mem.dynamic_arena_destroy(&scratch)
+
+	root, fault := decode_engine_json(json_text, mem.dynamic_arena_allocator(&scratch))
+	if fault != .None {
+		return "", false
+	}
+	body, is_object := root.(json.Object)
+	if !is_object {
+		return "", false
+	}
+	result, has_result := field(json.Object, body, "result")
+	if !has_result {
+		return "", false
+	}
+	detected, is_text := field(json.String, result, "language")
+	if !is_text || len(detected) == 0 {
+		return "", false
+	}
+	return strings.clone(detected, allocator), true
+}
+
 // Decodes the Engine's JSON into a tree that lives on `scratch` and dies with
 // it, which is what makes an arena the right home for it in the first place.
 //
