@@ -36,8 +36,26 @@ Cue :: struct {
 	text:  string,
 }
 
-// Whether a character is one nobody said: whitespace, or a control byte a text
-// editor renders as nothing at all.
+// Whether a character is one a text editor renders as nothing at all: an ASCII
+// control code, or DEL.
+//
+// THE ONE DEFINITION, and it had four. The same range was spelled out again in
+// the renderer's flattening pass, again in its YAML quoting, and again in a byte
+// loop that decided where a Paragraph's visible prose began -- four answers to
+// "what can a reader see", any one of which could be edited without the others,
+// and a Paragraph made of nothing at all is what came of them disagreeing.
+//
+// Everything at or above 0x80 falls through: every byte of a multi-byte
+// character is at or above 0x80, so a caller walking BYTES and casting each one
+// to a rune gets the answer it wants without decoding, and a caller walking
+// runes gets the same answer.
+@(private)
+renders_as_nothing :: proc(r: rune) -> bool {
+	return r < 0x20 || r == 0x7F
+}
+
+// Whether a character is one nobody said: whitespace, or a character nothing
+// renders.
 //
 // The two are one question here, and CONTEXT.md is why: a Saying is "one cue
 // that said something", and the Engine's empty and space-only Cues over silence
@@ -45,7 +63,7 @@ Cue :: struct {
 // bytes -- nothing a reader could see, and nothing a speaker said.
 @(private)
 says_nothing :: proc(r: rune) -> bool {
-	return strings.is_space(r) || r < 0x20 || r == 0x7F
+	return strings.is_space(r) || renders_as_nothing(r)
 }
 
 // What was actually said in a Cue: its text with everything nobody said taken
@@ -61,7 +79,10 @@ says_nothing :: proc(r: rune) -> bool {
 // leaving them there costs more than a stray byte: prose opening on one reaches
 // Markdown as prose opening on a space, which is that renderer's own indentation
 // (see write_prose). Inside the speech they stay, and the renderer writes them
-// out as spaces -- there, what they separated is still separated.
+// out as spaces -- there, what they separated is still separated. A Cue's ends
+// are all this can promise, though, and word_split says why: a Paragraph is
+// built out of carved INTERIORS too, and the carve trims by the same predicate
+// for exactly this reason.
 //
 // Repetition collapse compares Cues by this and not by the raw text: " you" and
 // "you " are one phrase said twice, and a comparison that could not tell would
@@ -78,13 +99,18 @@ says_nothing :: proc(r: rune) -> bool {
 spoken_text :: proc(cue: Cue) -> (said: string) {
 	said = strings.trim_left_proc(strings.trim_right_proc(cue.text, says_nothing), says_nothing)
 	// Both sides of what trimming is allowed to do (CLAUDE.md A3): it only ever
-	// takes bytes away, and what it leaves no longer starts with the one byte it
-	// exists to take away. The second is the claim every caller relies on and the
-	// only one a reader cannot check by looking (A6).
+	// takes bytes away, and what it leaves no longer opens or ends on the thing it
+	// exists to take away. The last two are the claims every caller relies on and
+	// the only ones a reader cannot check by looking (A6) -- ends_a_sentence reads
+	// the tail, write_prose reads both, and word_split asserts the pair again on
+	// what it is handed.
 	assert(len(said) <= len(cue.text), "trimming a cue's text added bytes to it")
 	if len(said) > 0 {
-		assert(said[0] != ' ', "a trimmed cue still carries the engine's padding")
 		assert(!says_nothing(rune(said[0])), "a trimmed cue still opens on a byte nobody said")
+		assert(
+			!says_nothing(rune(said[len(said) - 1])),
+			"a trimmed cue still ends on a byte nobody said",
+		)
 	}
 	return
 }

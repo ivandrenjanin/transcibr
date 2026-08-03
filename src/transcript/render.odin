@@ -416,7 +416,11 @@ write_inline :: proc(out: ^strings.Builder, said: string) {
 		// everything above, because everything above escapes the start of the
 		// Paragraph and this is the start of a line the Paragraph never had.
 		// A space instead: what it separated is still separated.
-		if said[i] < 0x20 || said[i] == 0x7F {
+		//
+		// Asked of renders_as_nothing and never of a range spelled out here, which
+		// is the same definition write_prose trims by: two answers to "what can a
+		// reader see" is how a Paragraph made of nothing reached this file.
+		if renders_as_nothing(rune(said[i])) {
 			strings.write_byte(out, ' ')
 			continue
 		}
@@ -551,19 +555,25 @@ write_yaml_quoted :: proc(out: ^strings.Builder, value: string) {
 			strings.write_string(out, `\r`)
 		case '\t':
 			strings.write_string(out, `\t`)
-		case 0x00 ..= 0x1F, 0x7F:
-			// Everything else a text editor renders as nothing at all. Written as
-			// the byte it is, because a control character dropped silently is a
-			// front matter field that no longer matches what planning recorded.
+		case:
+			// Everything else a text editor renders as nothing at all, asked of
+			// renders_as_nothing rather than of a byte range spelled out here --
+			// the same definition write_prose trims by and write_inline flattens
+			// by, so a change to what a reader can see is one edit and not four.
+			// Written as the byte it is, because a control character dropped
+			// silently is a front matter field that no longer matches what
+			// planning recorded.
 			//
 			// Lower case, because YAML's `\x` escape is written that way and a
 			// header this program cannot read back is a Transcript planning treats
 			// as somebody's notes (ADR-0008). `%x` is lower case, which is the
 			// whole of what a sixteen-entry table of hex digits beside this was
 			// for -- and core:fmt is already how write_anchor lays out a number.
-			fmt.sbprintf(out, `\x%02x`, value[i])
-		case:
-			strings.write_byte(out, value[i])
+			if renders_as_nothing(rune(value[i])) {
+				fmt.sbprintf(out, `\x%02x`, value[i])
+			} else {
+				strings.write_byte(out, value[i])
+			}
 		}
 	}
 	strings.write_byte(out, '"')
