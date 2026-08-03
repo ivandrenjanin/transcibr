@@ -39,6 +39,55 @@ Merge_Params :: struct {
 	max_para_chars: int,
 }
 
+// Continuous single-speaker material: merge generously.
+//
+// The measured population is bimodal -- 45.8% of Cues touch outright, and 19% of
+// the gaps run over two and a half seconds while the speaker pauses (ADR-0007).
+// So there is very little gap mass between the two modes for a threshold to sit
+// in, and one placed at a second and a half breaks at the pauses and nowhere
+// else. The generous cap follows from the same shape: fewer breaks means longer
+// Paragraphs, and cutting them short again at a character count would put the
+// breaks back in the arbitrary places the thresholds were chosen to avoid.
+MONOLOGUE :: Merge_Params {
+	max_gap_ms     = 1_500,
+	hard_gap_ms    = 5_000,
+	max_para_chars = 2_000,
+}
+
+// Interactive material: break aggressively.
+//
+// A dense continuous distribution of short turns, almost nothing touching, and
+// a median gap of 520 ms -- rapid speaker turns leave sub-second gaps, and a
+// threshold that ignored them would merge two people into one Paragraph. It
+// still will where they overlap without a gap at all: diarization is out of
+// scope, this handles multi-speaker material temporally, and that limitation is
+// inherent rather than a defect to be fixed later (ADR-0007).
+CONVERSATION :: Merge_Params {
+	max_gap_ms     = 500,
+	hard_gap_ms    = 1_500,
+	max_para_chars = 700,
+}
+
+// What the shipped profiles have to be for merge_paragraphs to accept them at
+// all, said in checked code beside them rather than discovered on the first
+// Recording that uses one (CLAUDE.md A5). The compiler answers this; the
+// assertions inside merge_paragraphs answer it again for a profile a caller
+// built by hand (CLAUDE.md A4).
+#assert(MONOLOGUE.max_gap_ms > 0)
+#assert(MONOLOGUE.hard_gap_ms >= MONOLOGUE.max_gap_ms)
+#assert(MONOLOGUE.max_para_chars > 0)
+#assert(CONVERSATION.max_gap_ms > 0)
+#assert(CONVERSATION.hard_gap_ms >= CONVERSATION.max_gap_ms)
+#assert(CONVERSATION.max_para_chars > 0)
+
+// And what makes them two profiles rather than two spellings of one. Every
+// threshold in the aggressive profile sits below its counterpart in the generous
+// one, so no tuning pass can leave the pair pointing the same way while the
+// names still promise otherwise.
+#assert(CONVERSATION.max_gap_ms < MONOLOGUE.max_gap_ms)
+#assert(CONVERSATION.hard_gap_ms < MONOLOGUE.hard_gap_ms)
+#assert(CONVERSATION.max_para_chars < MONOLOGUE.max_para_chars)
+
 // Everything a half-built Paragraph is made of, in one place so the procedures
 // that add to it and close it cannot disagree about what "open" means.
 @(private)
