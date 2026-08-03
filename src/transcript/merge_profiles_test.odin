@@ -444,6 +444,74 @@ the_profiles_diverge_further_on_interactive_material :: proc(t: ^testing.T) {
 	)
 }
 
+// ---------------------------------------------------------------------------
+// The profiles by NAME, which is what a person picks and what a Transcript
+// records having been merged under.
+//
+// A Merge Profile is "a named set of thresholds" (CONTEXT.md), and until now the
+// name existed only in prose: the thresholds were two constants and the word
+// `monologue` lived in the spec. A front matter block recording the profile, and
+// a command line accepting one, both need the name to be a value.
+// ---------------------------------------------------------------------------
+
+@(test)
+every_merge_profile_is_named_and_names_itself_back :: proc(t: ^testing.T) {
+	// Every member, so a profile added without a row in PROFILES fails here
+	// rather than rendering a Transcript that records an empty profile.
+	for profile in Merge_Profile {
+		name := profile_name(profile)
+		testing.expectf(t, len(name) > 0, "%v carries no name", profile)
+
+		back, known := profile_named(name)
+		testing.expectf(t, known, "%v is called %q, which is a name nothing knows", profile, name)
+		testing.expectf(t, back == profile, "%q came back as %v, want %v", name, back, profile)
+	}
+}
+
+// The negative space of that (CLAUDE.md A3). Without it, a lookup that answered
+// `.Monologue` to everything satisfies every line above.
+@(test)
+a_name_no_merge_profile_carries_is_refused :: proc(t: ^testing.T) {
+	// A name off by a letter, a name in the wrong case, and nothing at all. The
+	// middle one is the interesting row: a lookup folding case would accept a
+	// spelling the front matter never writes, and re-rendering would then record
+	// a profile under two names.
+	unknown := []string{"murmur", "Monologue", ""}
+	for name, i in unknown {
+		profile, known := profile_named(name)
+		testing.expectf(t, !known, "case %d: %q was accepted as %v", i, name, profile)
+	}
+}
+
+// The thresholds behind each name, against the constants ADR-0007 tuned. Read
+// through the profile rather than beside it: a table row pointing at the wrong
+// constant is a Transcript merged one way and recording the other.
+@(test)
+each_merge_profile_carries_the_thresholds_adr_0007_tuned :: proc(t: ^testing.T) {
+	testing.expect_value(t, profile_params(.Monologue), MONOLOGUE)
+	testing.expect_value(t, profile_params(.Conversation), CONVERSATION)
+}
+
+// Two profiles under one name would resolve to whichever the lookup reached
+// first, so a Batch asking for the second gets the first's thresholds and the
+// front matter records the name both of them answer to. Nothing in the type
+// stops it, and the round trip above cannot see it: the duplicate's own name
+// still comes back as a profile, just not as that one.
+@(test)
+no_two_merge_profiles_answer_to_one_name :: proc(t: ^testing.T) {
+	for profile in Merge_Profile {
+		named, _ := profile_named(profile_name(profile))
+		testing.expectf(
+			t,
+			named == profile,
+			"%v and %v are both called %q",
+			named,
+			profile,
+			profile_name(profile),
+		)
+	}
+}
+
 // And the cap, on the profiles that actually ship rather than on a threshold a
 // case pinned for itself.
 @(test)

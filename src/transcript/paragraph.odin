@@ -107,6 +107,86 @@ CONVERSATION :: Merge_Params {
 #assert(CONVERSATION.max_gap_ms < MONOLOGUE.max_gap_ms)
 #assert(CONVERSATION.hard_gap_ms < MONOLOGUE.hard_gap_ms)
 
+// The two Merge Profiles by name -- what a person picks, and what a Transcript
+// records having been merged under.
+//
+// The thresholds above are the profile; this is its NAME, and a Merge Profile is
+// "a named set of thresholds" (CONTEXT.md) rather than the thresholds alone. The
+// name existed only in prose until a front matter block had to record it and a
+// command line had to accept one, and prose is not something either can read.
+Merge_Profile :: enum u8 {
+	Monologue = 0,
+	Conversation,
+}
+
+// A profile's name beside the thresholds it stands for, so a row cannot name one
+// profile and point at the other's constants.
+@(private)
+Named_Profile :: struct {
+	name:   string,
+	params: Merge_Params,
+}
+
+// An enumerated array rather than a switch, the way FAULT is: a profile added to
+// Merge_Profile without an entry here still HAS an entry, made of zeroes, and
+// profile_name's assertion on an empty name is what catches it on the first
+// Transcript rather than after one ships recording no profile at all.
+@(private, rodata)
+PROFILES := [Merge_Profile]Named_Profile {
+	.Monologue = {name = "monologue", params = MONOLOGUE},
+	.Conversation = {name = "conversation", params = CONVERSATION},
+}
+
+// What a Transcript records having been merged under.
+//
+// Borrowed from the table above and never owned: it is a compiled-in constant
+// that outlives every caller, so nothing frees it.
+profile_name :: proc(profile: Merge_Profile) -> string {
+	name := PROFILES[profile].name
+	assert(len(name) > 0, "a profile was added to Merge_Profile without a row in PROFILES")
+	// The negative space of the same missing row (CLAUDE.md A3), checked at the
+	// one place both halves of a row are in hand: a zeroed row carries thresholds
+	// merge_paragraphs would refuse, and refusing them there names the merger
+	// rather than the profile that was never filled in.
+	assert(PROFILES[profile].params.max_gap_ms > 0, "a named profile carries no thresholds")
+	return name
+}
+
+// The thresholds behind a name, for merge_paragraphs to be handed.
+profile_params :: proc(profile: Merge_Profile) -> Merge_Params {
+	// The same missing-row check profile_name makes, at the other place the table
+	// is read (CLAUDE.md A4). A zeroed row is a profile that breaks at every Cue.
+	params := PROFILES[profile].params
+	assert(params.max_gap_ms > 0, "a profile was added to Merge_Profile without a row in PROFILES")
+	assert(
+		params.hard_gap_ms >= params.max_gap_ms,
+		"a named profile's hard gap sits below its soft",
+	)
+	return params
+}
+
+// The profile a name stands for, or nothing where no profile carries it.
+//
+// Compared EXACTLY, case included. A lookup folding case would accept a spelling
+// the front matter never writes, and a Transcript recording `Monologue` while
+// planning looks for `monologue` is a Recording re-done on every run (ADR-0003).
+profile_named :: proc(name: string) -> (profile: Merge_Profile, known: bool) {
+	// Never asserted against the empty string: the name comes off a command line,
+	// which is outside this program, and nothing outside it may crash it
+	// (CLAUDE.md A8). It is refused through the return like any other spelling.
+	for row, candidate in PROFILES {
+		if row.name == name {
+			// The same missing-row check profile_name and profile_params make, at
+			// the third place the table is read (CLAUDE.md A4). A zeroed row
+			// answers to the empty name, so a caller passing "" would be handed a
+			// profile whose thresholds merge_paragraphs refuses.
+			assert(row.params.max_gap_ms > 0, "a named profile carries no thresholds")
+			return candidate, true
+		}
+	}
+	return {}, false
+}
+
 // Everything a half-built Paragraph is made of, in one place so the procedures
 // that add to it and close it cannot disagree about what "open" means.
 //
