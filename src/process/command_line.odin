@@ -87,9 +87,11 @@ Build_Fault :: enum u8 {
 Build_Error :: struct {
 	fault:    Build_Fault,
 	// The executable path or the argument the fault is about, or empty where there
-	// is nothing to name -- which is `.Empty_Executable` and only that. Which of the
+	// is nothing to name -- `.Empty_Executable`, which had none, and `.Too_Long`,
+	// which is about the finished line rather than any one part of it. Which of the
 	// three it is follows from the fault and is checked in fault_at, never guessed
-	// at from whether the string happens to be empty.
+	// at from whether the string happens to be empty: an EMPTY argument is a legal
+	// argument, so a fault about one carries an empty culprit and means it.
 	culprit:  string,
 	// The 1-based position of the offending argument, or 0 when the fault is not
 	// about one. 1-based because it is printed: `argument 2` is what a reader
@@ -127,7 +129,11 @@ Disposition :: enum u8 {
 @(private)
 Fault_Blames :: enum u8 {
 	Unset = 0,
-	// There is no input to name: there was no executable to begin with.
+	// There is no ONE input to name. Two faults answer this way and for different
+	// reasons: `.Empty_Executable` had no executable to begin with, and `.Too_Long`
+	// is about the finished line rather than any part that went into it -- the
+	// executable path it was built from may be perfectly fine, and naming it reads
+	// as an accusation against a path nobody needs to change.
 	Nothing,
 	The_Executable,
 	An_Argument,
@@ -189,8 +195,8 @@ FAULT := [Build_Fault]Fault_Facts {
 		disposition = .Fail_The_Job,
 	},
 	.Too_Long = {
-		says = "needs a command line past the 32,767 code units CreateProcessW accepts",
-		blames = .The_Executable,
+		says = "the command line needs more than the 32,767 code units CreateProcessW accepts",
+		blames = .Nothing,
 		disposition = .Shorten_And_Replan,
 	},
 }
@@ -285,20 +291,37 @@ deliverable :: proc(message: string) -> string {
 fault_at :: proc(fault: Build_Fault, culprit: string, argument: int) -> Build_Error {
 	assert(fault != .None, "a fault of .None is the success value and reports nothing")
 
-	blames := fault_facts(fault).blames
 	// The ordinal and the culprit against the blame the fault declares, at the one
 	// place a Build_Error is written -- so no call site has to remember the
 	// convention and error_message can print by blame without checking either.
-	// Both sides of it (A3).
-	if blames == .An_Argument {
+	// Both sides of it (A3), one blame at a time, because the three do not agree
+	// about the culprit and the pair of `if`s this replaced said they did.
+	switch fault_facts(fault).blames {
+	case .An_Argument:
 		assert(argument > 0, "a fault about one argument did not say which")
-	} else {
+	// And deliberately NO rule on that argument's length. An EMPTY argument is
+	// legal and routine -- `--language ""` -- so "an argument fault names
+	// something non-empty" is a rule about external input, and A8 forbids this
+	// procedure, of all of them, from holding one. It held one and was safe only
+	// by accident: neither argument fault can fire on an empty argument, since
+	// `index_byte("", 0)` is -1 and `utf8.valid_string("")` is true. A length rule
+	// or a whitespace rule added to check_inputs later would have turned the
+	// safety net into the thing that crashes on a legal command line.
+	case .The_Executable:
 		assert(argument == 0, "a fault that is not about an argument blamed one")
-	}
-	if blames == .Nothing {
+		// Safe where the argument rule is not, and for a reason rather than by
+		// luck: check_inputs refuses an empty executable path as
+		// `.Empty_Executable` before any fault that blames the executable can
+		// fire. So an executable fault with no culprit is this package losing the
+		// path between the check and the report, never a caller handing one in.
+		assert(len(culprit) > 0, "a fault about the executable path was handed nothing")
+	case .Nothing:
+		assert(argument == 0, "a fault that is not about an argument blamed one")
 		assert(len(culprit) == 0, "a fault with nothing to name was handed something")
-	} else {
-		assert(len(culprit) > 0, "a fault that names its input was handed nothing")
+	case .Unset:
+	// Refused by fault_facts above, which is the one place a missing row in
+	// FAULT is named. Stated here so the switch is exhaustive rather than
+	// #partial, which would let a fourth blame go unhandled in silence.
 	}
 	return Build_Error{fault = fault, culprit = culprit, argument = argument}
 }
@@ -389,7 +412,12 @@ build_command_line :: proc(
 	// result would refuse lines that fit.
 	if utf16_units(out) + 1 > MAX_COMMAND_LINE_UNITS {
 		strings.builder_destroy(&b)
-		return "", fault_at(.Too_Long, executable, 0)
+		// Nothing named, because there is nothing here to name. The executable path
+		// this line was built from may be entirely reasonable; what is too long is
+		// the LINE, and no part of it is more at fault than any other. Naming the
+		// path anyway reads as `C:\ffmpeg.exe: ...` -- an accusation against a file
+		// the caller would then go and look at for no reason.
+		return "", fault_at(.Too_Long, "", 0)
 	}
 	return out, Build_Error{}
 }
