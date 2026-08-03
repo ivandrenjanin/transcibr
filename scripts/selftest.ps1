@@ -25,6 +25,31 @@ $script:Failures = @()
 $script:Skips = @()
 $script:Passes = 0
 
+# "A test run that executes nothing is a failure, not a pass" -- the thesis of
+# the script this file guards, turned on this file. Both values are DECLARED
+# rather than counted from the cases that happened to run, because a count
+# taken from what ran cannot notice that nothing did: deleting a case, or
+# breaking the setup every case shares, then reads as a clean sweep of the
+# cases that survived.
+#
+# Keep $ExpectedCaseCount in step with the cases below; a mismatch either way
+# fails the run. Skipping is deny-by-default, same as $OdinPackagesWithoutTests
+# in common.ps1: a case may end in a skip only if it is named here.
+$ExpectedCaseCount = 12
+$CasesAllowedToSkip = @(
+	'an unreadable directory fails discovery rather than shortening it'
+)
+
+# A skip is signalled by throwing THIS OBJECT and nothing else, matched on
+# reference identity of an instance private to this file.
+#
+# Not an exception type: PowerShell raises ItemNotFoundException for any
+# missing path -- Copy-Item, Get-Item, Get-Content -- so a type-matched signal
+# reads a broken fixture setup as an intentional skip. That is not theoretical.
+# Deleting scripts\build.ps1 turned all twelve cases into skips and the run
+# still exited 0, announcing that all zero cases passed.
+$SkipSignal = [pscustomobject]@{ Reason = '' }
+
 # ---------------------------------------------------------------- fixtures --
 
 function New-FixtureRepo {
@@ -126,15 +151,18 @@ function Test-Case {
 		Write-Host "    PASS" -ForegroundColor Green
 		$script:Passes += 1
 	}
-	catch [System.Management.Automation.ItemNotFoundException] {
-		# Thrown by Skip-Case only: a case whose SETUP the environment refused,
-		# which is not the same as the case failing. Reported, never silent.
-		Write-Host "    SKIP: $($_.Exception.Message)" -ForegroundColor Yellow
-		$script:Skips += "$Name -- $($_.Exception.Message)"
-	}
 	catch {
-		Write-Host "    FAIL: $($_.Exception.Message)" -ForegroundColor Red
-		$script:Failures += "$Name -- $($_.Exception.Message)"
+		if ([object]::ReferenceEquals($_.TargetObject, $SkipSignal)) {
+			# A case whose SETUP this machine refused, which is not the same as
+			# the case failing. Reported, never silent, and still checked
+			# against $CasesAllowedToSkip in the summary.
+			Write-Host "    SKIP: $($SkipSignal.Reason)" -ForegroundColor Yellow
+			$script:Skips += [pscustomobject]@{ Name = $Name; Reason = $SkipSignal.Reason }
+		}
+		else {
+			Write-Host "    FAIL: $($_.Exception.Message)" -ForegroundColor Red
+			$script:Failures += "$Name -- $($_.Exception.Message)"
+		}
 	}
 }
 
@@ -142,7 +170,8 @@ function Test-Case {
 # way -- the summary lists skips even when everything else passes.
 function Skip-Case {
 	param([Parameter(Mandatory)] [string] $Reason)
-	throw (New-Object System.Management.Automation.ItemNotFoundException($Reason))
+	$SkipSignal.Reason = $Reason
+	throw $SkipSignal
 }
 
 function Assert-ExitCode {
@@ -308,25 +337,33 @@ if (Test-Path -LiteralPath $FixtureRoot) {
 
 Write-Host ''
 Write-Host '========================================'
-Write-Host "Cases passed: $script:Passes"
+
+# The guard this file exists to be. A suite that ran fewer cases than it
+# declares has not passed, however green every case it did run looks.
+$attempted = $script:Passes + $script:Skips.Count + $script:Failures.Count
+if ($attempted -ne $ExpectedCaseCount) {
+	$script:Failures += "attempted $attempted case(s), but $ExpectedCaseCount are declared in `$ExpectedCaseCount"
+}
 
 if ($script:Skips.Count -gt 0) {
-	Write-Host ''
 	Write-Host "Cases skipped: $($script:Skips.Count)" -ForegroundColor Yellow
 	foreach ($skip in $script:Skips) {
-		Write-Host "  - $skip" -ForegroundColor Yellow
+		Write-Host "  - $($skip.Name) -- $($skip.Reason)" -ForegroundColor Yellow
+		if ($CasesAllowedToSkip -notcontains $skip.Name) {
+			$script:Failures += "$($skip.Name): skipped, and it is not named in `$CasesAllowedToSkip"
+		}
 	}
+	Write-Host ''
 }
 
 if ($script:Failures.Count -gt 0) {
-	Write-Host ''
 	Write-Host "SELFTEST FAILED in $($script:Failures.Count) case(s):" -ForegroundColor Red
 	foreach ($failure in $script:Failures) {
 		Write-Host "  - $failure" -ForegroundColor Red
 	}
+	Write-Host 'A test run that executes nothing is a failure, not a pass.' -ForegroundColor Red
 	exit 1
 }
 
-Write-Host ''
-Write-Host "All $script:Passes self-test cases passed." -ForegroundColor Green
+Write-Host "All $script:Passes of $ExpectedCaseCount self-test cases passed." -ForegroundColor Green
 exit 0
