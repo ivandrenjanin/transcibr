@@ -14,6 +14,15 @@ import "core:testing"
 // that opens a file is testing the filesystem too.
 ENGINE_JSON :: #load("fixtures/engine-output.json", string)
 
+// The size the Engine wrote, in checked code rather than in prose (CLAUDE.md
+// A5). Not a claim about the JSON format -- a tripwire on this one committed
+// artefact: `#load` embeds whatever is on disk, so a checkout that rewrote the
+// file's line endings would leave every test below reading a different file
+// under the same names, and reports_truncated_input_against_its_name cutting it
+// at a different byte. .gitattributes marks fixtures `-text` to stop that; this
+// is what notices if it ever stops working.
+#assert(len(ENGINE_JSON) == 2335)
+
 // What ffprobe reports for the Recording the fixture was transcribed from:
 // 30.355875 s. Passed as the Recording's length rather than derived from the
 // Cues, which is the circular measurement ADR-0009 rules out.
