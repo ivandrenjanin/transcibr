@@ -47,7 +47,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 35
+$ExpectedCaseCount = 36
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -1094,6 +1094,79 @@ Test-Case 'git checks out every .odin file with the endings the check demands' -
 	if ($evidence.Output -match ': eol: crlf$') {
 		throw "git says it converts $fixture, which .gitattributes exempts as evidence: $($evidence.Output)"
 	}
+}
+
+# The repository's OWN odinfmt.json with one edit made to it, which is what
+# keeps these cases about the edit. A config written from scratch here would
+# pass or fail for reasons the real one never has.
+function Edit-FixtureFormatConfig {
+	param(
+		[Parameter(Mandatory)] [string] $RepoRoot,
+		[Parameter(Mandatory)] [scriptblock] $Edit
+	)
+
+	$path = Join-Path $RepoRoot 'odinfmt.json'
+	$config = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+	& $Edit $config
+	[System.IO.File]::WriteAllText($path, ($config | ConvertTo-Json), $Utf8NoBom)
+}
+
+Test-Case 'a config key odinfmt would not read fails the format command by name' {
+	# The four ways a config goes wrong WITHOUT odinfmt saying anything, each
+	# planted in the real file. None of them is caught by formatting something and
+	# looking at the answer, which is what this check used to do: odinfmt's
+	# built-in Windows default is already tabs, CRLF and character_width 100, so
+	# on this platform formatting with the config and with no config at all is
+	# byte-identical. `"tabs": "true"` passed that check green.
+	#
+	# Each case asserts the KEY is named. A refusal that does not say which key is
+	# a refusal somebody has to bisect by hand -- which is what removing a key
+	# used to give: "The property 'tabs' cannot be found on this object."
+	$faults = @(
+		@{
+			Name    = 'wrong-type'
+			Edit    = { param($c) $c.tabs = 'true' }
+			Matches = "'tabs' is the string 'true'"
+		}
+		@{
+			Name    = 'misspelled-key'
+			Edit    = {
+				param($c)
+				$c.PSObject.Properties.Remove('character_width')
+				$c | Add-Member -NotePropertyName 'character_widht' -NotePropertyValue 100
+			}
+			Matches = "'character_widht' is not a key odinfmt reads"
+		}
+		@{
+			Name    = 'missing-key'
+			Edit    = { param($c) $c.PSObject.Properties.Remove('tabs') }
+			Matches = "'tabs' is missing"
+		}
+		@{
+			Name    = 'unknown-enum-name'
+			Edit    = { param($c) $c.newline_style = 'CR' }
+			Matches = "'newline_style' is the string 'CR'"
+		}
+	)
+
+	foreach ($fault in $faults) {
+		$repo = New-FixtureRepo "format-config-$($fault.Name)"
+		Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+		Edit-FixtureFormatConfig -RepoRoot $repo -Edit $fault.Edit
+		$result = Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1'
+		Assert-Result -Result $result -Fails -Matching ([regex]::Escape($fault.Matches))
+	}
+
+	# The negative space (rule A3). Every refusal above is satisfied by a check
+	# that refuses every config there is -- including this repository's own, which
+	# is the one config that has to pass. Written through the same editor that
+	# planted the faults, so a helper that corrupts the file on the way through
+	# cannot make the four cases above pass for the wrong reason.
+	$sound = New-FixtureRepo 'format-config-sound'
+	Add-FixtureBinary -RepoRoot $sound -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	Edit-FixtureFormatConfig -RepoRoot $sound -Edit { param($c) $c.tabs = $true }
+	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $sound -Script 'format.ps1') `
+		-Matching 'are formatted as odinfmt\.json says'
 }
 
 Test-Case 'the format command rewrites exactly what it named' {

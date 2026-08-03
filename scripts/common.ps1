@@ -108,6 +108,35 @@ $OdinfmtSha256 = '130742513F9F6029E7D3CF8705A1303CEF5B9B5126FA5FA030587662B83E3B
 # config and not whatever sits above their shell.
 $OdinFormatConfig = Join-Path $RepoRoot 'odinfmt.json'
 
+# odinfmt's printer.Config: every key it reads, and the type it reads it as.
+# `int` and `bool` mean themselves; anything else is the pipe-joined list of
+# names an enum field accepts.
+#
+# Read out of the pinned binary rather than off a web page or a memory. Odin's
+# runtime type information carries the field names of every type a program
+# reflects over, and printer.Config's fifteen sit contiguously inside
+# odinfmt.exe, in this order, alongside Brace_Style's four members and
+# Newline_Style's two. That makes this list checkable against the one thing that
+# has a vote -- and if a future ols adds a key, odinfmt.json fails here naming
+# it, which is the outcome wanted: an unlisted key is a style nobody chose.
+$OdinFormatConfigSchema = [ordered]@{
+	character_width          = 'int'
+	spaces                   = 'int'
+	newline_limit            = 'int'
+	tabs                     = 'bool'
+	tabs_width               = 'int'
+	convert_do               = 'bool'
+	brace_style              = '_1TBS|Allman|Stroustrup|K_And_R'
+	indent_cases             = 'bool'
+	newline_style            = 'CRLF|LF'
+	sort_imports             = 'bool'
+	inline_single_stmt_case  = 'bool'
+	spaces_around_colons     = 'bool'
+	space_single_line_blocks = 'bool'
+	align_struct_fields      = 'bool'
+	align_struct_values      = 'bool'
+}
+
 # Directories the formatting sweep does not walk. A deny list of DIRECTORIES,
 # never a list of files: the files are discovered (Get-OdinSource), which is the
 # whole point -- a hand-maintained file list stops covering the file somebody
@@ -497,23 +526,71 @@ odinfmt build mismatch.
 	Write-Warning "$mismatch`nContinuing on this one. CI will not: anything this build formats differently from the pinned one fails there instead. $remedy"
 }
 
-# Prove odinfmt actually READ odinfmt.json, by formatting a probe and looking at
-# what came back.
-#
-# Not a formality. odinfmt's find_config_file_or_default returns the built-in
-# default_style whenever json.unmarshal fails, and says NOTHING -- so a trailing
-# comma in odinfmt.json is a formatting check that silently measures against a
-# style nobody chose. Worse, that default is platform-dependent: newline_style is
-# CRLF on Windows and LF everywhere else, so the silent fallback does not even
-# fail the same way twice.
-#
-# The probe is written unindented and LF-terminated, so a formatter that honoured
-# the config MUST have changed both to produce its answer. Read out of the output
-# rather than trusted from the file that went in -- the same reason
-# Assert-PeSubsystem reads the PE header instead of the flag that built it.
-function Confirm-OdinFormatConfig {
-	param([Parameter(Mandatory)] [string] $Odinfmt)
+# One value against the type odinfmt reads that key as. The fault, or an empty
+# string where there is none.
+function Test-OdinFormatConfigValue {
+	param(
+		[Parameter(Mandatory)] [string] $Key,
+		[Parameter(Mandatory)] [AllowNull()] $Value,
+		[Parameter(Mandatory)] [string] $Expected
+	)
 
+	$found = 'null'
+	if ($null -ne $Value) {
+		if ($Value -is [bool]) { $found = "the boolean $(([string] $Value).ToLower())" }
+		elseif (($Value -is [int]) -or ($Value -is [long])) { $found = "the whole number $Value" }
+		elseif ($Value -is [string]) { $found = "the string '$Value'" }
+		else { $found = "a $($Value.GetType().Name) ($Value)" }
+	}
+
+	if ($Expected -eq 'int') {
+		if (($Value -is [int]) -or ($Value -is [long])) { return '' }
+		return "'$Key' is $found; odinfmt reads it as a whole number."
+	}
+	if ($Expected -eq 'bool') {
+		if ($Value -is [bool]) { return '' }
+		return "'$Key' is $found; odinfmt reads it as true or false."
+	}
+
+	# An enum, and the names are odinfmt's own, matched case-sensitively because
+	# that is how it matches them.
+	$names = @($Expected -split '\|')
+	if (($Value -is [string]) -and ($names -ccontains $Value)) { return '' }
+	return "'$Key' is $found; odinfmt reads it as one of $($names -join ', ')."
+}
+
+# Prove odinfmt.json says what this repository means, key by key.
+#
+# Not a formality, and not something the formatter can be asked. odinfmt's
+# find_config_file_or_default returns its built-in default_style whenever
+# json.unmarshal fails and says NOTHING -- but that is only the loudest of the
+# ways a config goes wrong in silence, and MEASURED against the pinned ols build
+# they do not even fail alike:
+#
+#   { "character_widht": 100 }   an unknown key is ignored; the rest applies
+#   { "spaces": "8" }            a string where an int belongs is COERCED to 8
+#   { "newline_style": "NOPE" }  an unknown enum name leaves the field at default
+#   { "tabs": 1 }                an int where a bool belongs drops the WHOLE file
+#   { "tabs": null }             null is read as false
+#   { }                          an absent key takes odinfmt's own default, and
+#                                that default is platform-dependent: newline_style
+#                                is CRLF on Windows and LF everywhere else
+#
+# This was first written as a PROBE: format a small file, read the indentation
+# and line endings back out of the answer, the way Assert-PeSubsystem reads the
+# header rather than the flag that built it. That cannot work here, and no probe
+# can. odinfmt's built-in Windows default is already tabs, CRLF and
+# character_width 100 -- so on the only platform this repository supports,
+# formatting with this config and with no config at all is byte-identical, and a
+# probe measuring the difference agrees with itself whatever the file says. The
+# hole it was written to close stayed open: `"tabs": "true"` passed it green.
+#
+# So the file is checked against the SCHEMA instead, which covers the class
+# rather than the incident. Every key odinfmt reads must be present, spelled the
+# way odinfmt spells it and typed the way odinfmt types it, and nothing else may
+# appear. Present as well as correct, because a key left out is not a key left
+# alone: it silently takes a default this repository did not choose.
+function Confirm-OdinFormatConfig {
 	if (-not (Test-Path -LiteralPath $OdinFormatConfig)) {
 		throw "no $OdinFormatConfig. Without it odinfmt formats to a built-in default that differs by platform, and this check would be measuring against a style nobody chose."
 	}
@@ -524,30 +601,35 @@ function Confirm-OdinFormatConfig {
 	catch {
 		throw "$OdinFormatConfig is not valid JSON: $($_.Exception.Message). odinfmt would ignore it silently and format to its own default instead."
 	}
-
-	$probe = Join-Path ([System.IO.Path]::GetTempPath()) "transcibr-fmtprobe-$PID-$([System.Guid]::NewGuid().ToString('N')).odin"
-	try {
-		[System.IO.File]::WriteAllText($probe, "package probe`n`nProbe :: struct {`nheld: int,`n}`n")
-		$formatted = [System.Text.Encoding]::UTF8.GetString((Format-OdinSource -Odinfmt $Odinfmt -Path $probe))
-	}
-	finally {
-		Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+	if ($declared -isnot [System.Management.Automation.PSCustomObject]) {
+		throw "$OdinFormatConfig is not a JSON object, so there is nothing for odinfmt to read printer.Config out of."
 	}
 
-	# Every claim below is one odinfmt.json makes and the probe can settle.
-	if ($declared.tabs -and ($formatted -notmatch "`n`t")) {
-		throw "$OdinFormatConfig asks for tabs, but odinfmt indented the probe with something else. It is formatting to its own default, not to this repository's config."
+	# Case-SENSITIVE on both sides. PowerShell compares names case-insensitively
+	# by default, which would read `Tabs` as the key `tabs` and wave through a
+	# spelling odinfmt does not answer to.
+	$known = @($OdinFormatConfigSchema.Keys)
+	$present = @($declared.PSObject.Properties.Name)
+	$faults = @()
+
+	foreach ($key in $present) {
+		if ($known -cnotcontains $key) {
+			$faults += "  - '$key' is not a key odinfmt reads. It is ignored in silence."
+		}
 	}
-	if ((-not $declared.tabs) -and ($formatted -match "`n`t")) {
-		throw "$OdinFormatConfig does not ask for tabs, but odinfmt indented the probe with one."
+	foreach ($key in $known) {
+		if ($present -cnotcontains $key) {
+			$faults += "  - '$key' is missing. odinfmt would use its own default, which differs by platform."
+			continue
+		}
+		$fault = Test-OdinFormatConfigValue -Key $key -Value $declared.$key -Expected $OdinFormatConfigSchema[$key]
+		if ($fault -ne '') {
+			$faults += "  - $fault"
+		}
 	}
 
-	$bareNewlines = ([regex]::Matches($formatted, "(?<!`r)`n")).Count
-	if (($declared.newline_style -eq 'CRLF') -and ($bareNewlines -ne 0)) {
-		throw "$OdinFormatConfig asks for CRLF, but odinfmt ended $bareNewlines of the probe's lines with a bare LF. It is formatting to its own default, not to this repository's config."
-	}
-	if (($declared.newline_style -eq 'LF') -and ($formatted -match "`r`n")) {
-		throw "$OdinFormatConfig asks for LF, but odinfmt ended a probe line with CRLF."
+	if ($faults.Count -gt 0) {
+		throw "$OdinFormatConfig is not the config odinfmt would read:`n$($faults -join "`n")`nodinfmt reports none of this. It ignores what it cannot read and formats to its own default, and every check here would pass against a style nobody chose."
 	}
 }
 
@@ -713,7 +795,7 @@ function Get-OdinSource {
 function Get-MisformattedOdinSource {
 	param([Parameter(Mandatory)] [string] $Odinfmt)
 
-	Confirm-OdinFormatConfig -Odinfmt $Odinfmt
+	Confirm-OdinFormatConfig
 
 	$sources = @(Get-OdinSource)
 	if ($sources.Count -eq 0) {
