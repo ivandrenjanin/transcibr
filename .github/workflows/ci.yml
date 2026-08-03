@@ -1,0 +1,72 @@
+name: CI
+
+# The same two commands a developer runs locally. If CI and local ever need
+# different commands, the commands are wrong.
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test (Windows)
+    runs-on: windows-latest
+
+    env:
+      # Pinned to a tagged release, never `latest`: an unpinned toolchain turns
+      # an upstream change into a build failure on an unrelated commit, and
+      # makes "it passed yesterday" unanswerable.
+      ODIN_RELEASE: dev-2026-07a
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install Odin ${{ env.ODIN_RELEASE }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $asset = "odin-windows-amd64-$env:ODIN_RELEASE.zip"
+          $url = "https://github.com/odin-lang/Odin/releases/download/$env:ODIN_RELEASE/$asset"
+          $zip = Join-Path $env:RUNNER_TEMP $asset
+          $dest = Join-Path $env:RUNNER_TEMP 'odin'
+
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+
+          # Resolve odin.exe rather than assuming the layout inside the zip.
+          $exe = Get-ChildItem -Path $dest -Recurse -Filter 'odin.exe' -File |
+            Select-Object -First 1
+          if (-not $exe) {
+            throw "odin.exe not found under $dest after extracting $asset."
+          }
+
+          # scripts/common.ps1 resolves the compiler from ODIN first, so this
+          # is the whole integration: CI runs the developer's commands as-is.
+          "ODIN=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          & $exe.FullName version
+
+      - name: Build
+        shell: pwsh
+        run: .\scripts\build.ps1
+
+      - name: Test
+        shell: pwsh
+        run: .\scripts\test.ps1
+
+      - name: Binary reports its version and exits zero
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = & .\build\transcibr-cli.exe
+          if ($LASTEXITCODE -ne 0) {
+            throw "transcibr-cli exited $LASTEXITCODE, expected 0."
+          }
+          Write-Host "transcibr-cli printed: $output"
+          if ($output -notmatch '^transcibr-cli \d+\.\d+\.\d+$') {
+            throw "transcibr-cli did not report a version; printed '$output'."
+          }
