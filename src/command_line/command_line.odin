@@ -28,10 +28,37 @@ import "core:strings"
 // error reported through this return, never an assertion.
 Build_Error :: enum u8 {
 	None,
+	// Nothing to run. Refused rather than passed on, because an EMPTY command
+	// line is not an error to Windows: measured, `CommandLineToArgvW` answers one
+	// with the RUNNING executable's own path as argv[0], so a child handed one
+	// would silently run against itself.
+	Empty_Program,
+	// argv[0] has no escape mechanism -- the scan ends at the next quote, whatever
+	// precedes it -- so a program path containing one cannot be expressed at all.
+	// Windows forbids `"` in a filename anyway.
+	Quote_In_Program,
+	// A NUL ends the command line where Windows reads it, silently discarding
+	// every argument after it.
+	Embedded_Nul,
+	// Past `CreateProcessW`'s documented ceiling; see MAX_COMMAND_LINE_UNITS.
+	Too_Long,
 }
 
+// `CreateProcessW`'s documented limit on `lpCommandLine`: 32,767 characters
+// INCLUDING the terminating null character.
+//
+// Characters means UTF-16 code units, which is neither bytes nor runes: one rune
+// outside the Basic Multilingual Plane is up to four UTF-8 bytes and exactly two
+// of these. Counting bytes refuses command lines that fit; counting runes accepts
+// ones that do not, and Windows truncates rather than complaining.
+MAX_COMMAND_LINE_UNITS :: 32767
+
 // Builds the command line for one child. The caller owns the returned string and
-// frees it with `delete`; nothing is allocated on the error paths.
+// frees it with `delete`; nothing is allocated on any error path.
+//
+// A8: the program path and every argument arrive from outside this program -- a
+// CLI flag, a discovered recording, a configured model path -- so each is checked
+// and refused through `err`. No input reaches an assertion here.
 build :: proc(
 	program: string,
 	arguments: []string,
@@ -40,6 +67,21 @@ build :: proc(
 	command_line: string,
 	err: Build_Error,
 ) {
+	if len(program) == 0 {
+		return "", .Empty_Program
+	}
+	if strings.index_byte(program, '"') >= 0 {
+		return "", .Quote_In_Program
+	}
+	if strings.index_byte(program, 0) >= 0 {
+		return "", .Embedded_Nul
+	}
+	for argument in arguments {
+		if strings.index_byte(argument, 0) >= 0 {
+			return "", .Embedded_Nul
+		}
+	}
+
 	b := strings.builder_make(allocator)
 	write_program(&b, program)
 	for argument in arguments {
@@ -50,7 +92,36 @@ build :: proc(
 	out := strings.to_string(b)
 	assert(len(out) >= 2, "a command line always carries at least the quoted program path")
 	assert(out[0] == '"', "the program path is not quoted")
+
+	// Measured on the finished line rather than estimated from the inputs: the
+	// quoting is what pushes a line over, and an estimate that disagreed with the
+	// result would refuse lines that fit.
+	if utf16_units(out) + 1 > MAX_COMMAND_LINE_UNITS {
+		strings.builder_destroy(&b)
+		return "", .Too_Long
+	}
 	return out, .None
+}
+
+// How many UTF-16 code units this UTF-8 string becomes -- the unit Windows counts
+// the command line in, and the reason this is not `len`.
+@(private)
+utf16_units :: proc(s: string) -> int {
+	units := 0
+	for r in s {
+		// A rune past the BMP is encoded as a surrogate PAIR.
+		units += 2 if r >= 0x10000 else 1
+	}
+
+	assert(units >= 0, "a code unit count cannot be negative")
+	// Every rune is at least one UTF-8 byte and at most two UTF-16 units, so the
+	// count is bracketed by the byte length on both sides (A3). A count outside
+	// this is an arithmetic mistake rather than a property of the input.
+	assert(units <= len(s) * 2, "more UTF-16 units than two per UTF-8 byte")
+	if len(s) > 0 {
+		assert(units > 0, "a non-empty string encodes to no UTF-16 units")
+	}
+	return units
 }
 
 // The program path, quoted -- and NOT escaped, because argv[0] is parsed by a

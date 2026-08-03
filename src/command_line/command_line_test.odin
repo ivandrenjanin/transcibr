@@ -2,6 +2,7 @@ package command_line
 
 import "core:fmt"
 import "core:mem"
+import "core:strings"
 import win32 "core:sys/windows"
 import "core:testing"
 
@@ -299,6 +300,113 @@ the_program_path_round_trips_under_its_own_rule :: proc(t: ^testing.T) {
 		expect_round_trip(t, program, {}, tprint_case("program alone", i))
 		expect_round_trip(t, program, {"-i", "a b.mkv", ""}, tprint_case("program", i))
 	}
+}
+
+// A8: everything here arrives from outside, so a bad one is REFUSED through the
+// error return rather than asserted. Each of these is a value that cannot be
+// spelled on a Windows command line at all, so the honest answer is to say so
+// and let the caller report it against the file that caused it.
+//
+// Rejection is checked to allocate nothing, which is the half that rots: a
+// refusal that still returns a builder's buffer leaks on every bad input, and
+// nothing about the error return says it did. The test runner's memory tracking
+// is what actually catches that (ODIN_TEST_FAIL_ON_BAD_MEMORY).
+@(test)
+an_unspellable_program_path_is_refused :: proc(t: ^testing.T) {
+	// Empty. `CommandLineToArgvW` measured on an EMPTY command line returns the
+	// running executable's own path as argv[0] -- so a child handed one would
+	// silently run against itself rather than fail.
+	line, err := build("", {"-i", "a.mkv"}, context.allocator)
+	testing.expect_value(t, err, Build_Error.Empty_Program)
+	testing.expect_value(t, len(line), 0)
+
+	// A quote. argv[0] has no escape mechanism at all: measured, `"a""b" one`
+	// yields argv[0] `a`, argv[1] `b`, argv[2] `one`, so the path simply cannot
+	// be expressed. Windows forbids `"` in a filename anyway -- a caller holding
+	// one has a bug, not an exotic path.
+	quoted, quote_err := build(`C:\a"b\ffmpeg.exe`, {}, context.allocator)
+	testing.expect_value(t, quote_err, Build_Error.Quote_In_Program)
+	testing.expect_value(t, len(quoted), 0)
+}
+
+// A NUL byte ends the command line where Windows reads it, so everything after
+// it -- every remaining argument -- disappears without a diagnostic. Refused on
+// both sides, because either side can carry one.
+@(test)
+an_embedded_nul_is_refused :: proc(t: ^testing.T) {
+	line, err := build("C:\\a\x00b\\ffmpeg.exe", {"-i"}, context.allocator)
+	testing.expect_value(t, err, Build_Error.Embedded_Nul)
+	testing.expect_value(t, len(line), 0)
+
+	in_argument, argument_err := build(EXE, {"-i", "a\x00b.mkv", "-y"}, context.allocator)
+	testing.expect_value(t, argument_err, Build_Error.Embedded_Nul)
+	testing.expect_value(t, len(in_argument), 0)
+}
+
+// The documented `CreateProcessW` ceiling: 32,767 characters INCLUDING the
+// terminating null, counted in UTF-16 code units rather than bytes or runes.
+//
+// Counted in the unit Windows counts in, which is the whole point of the case.
+// A rune outside the BMP is ONE rune, up to four UTF-8 bytes, and TWO UTF-16
+// code units -- so a builder measuring `len(string)` refuses lines that fit, and
+// one measuring runes accepts lines that do not and hands CreateProcessW an
+// argument it truncates.
+@(test)
+a_command_line_past_the_windows_ceiling_is_refused :: proc(t: ^testing.T) {
+	long := strings.repeat("a", MAX_COMMAND_LINE_UNITS, context.allocator)
+	defer delete(long, context.allocator)
+
+	line, err := build(EXE, {long}, context.allocator)
+	testing.expect_value(t, err, Build_Error.Too_Long)
+	testing.expect_value(t, len(line), 0)
+}
+
+@(test)
+the_ceiling_is_counted_in_utf16_code_units :: proc(t: ^testing.T) {
+	// Each rune is 4 UTF-8 bytes and 2 UTF-16 code units. Chosen so the line is
+	// well under the ceiling in UTF-16 but over it if bytes were counted --
+	// a builder measuring bytes refuses this, and it is perfectly legal.
+	runes := MAX_COMMAND_LINE_UNITS / 4
+	body := strings.repeat("\U0001F600", runes, context.allocator)
+	defer delete(body, context.allocator)
+
+	line, err := build(EXE, {body}, context.allocator)
+	defer delete(line, context.allocator)
+	testing.expect_value(t, err, Build_Error.None)
+	testing.expect(
+		t,
+		len(line) > MAX_COMMAND_LINE_UNITS,
+		"the case no longer exceeds the ceiling in BYTES",
+	)
+
+	argv := argv_of(t, line, context.allocator)
+	defer free_argv(argv, context.allocator)
+	testing.expect_value(t, len(argv), 2)
+	if len(argv) == 2 {
+		testing.expect_value(t, argv[1], body)
+	}
+}
+
+// The largest line that still fits, and the smallest that does not -- the two
+// sides of the boundary, so an off-by-one in either direction is caught (A3).
+@(test)
+the_ceiling_admits_the_longest_line_that_fits :: proc(t: ^testing.T) {
+	// `"x" ` is the quoted program plus the separating space: 4 units. The
+	// terminating null Windows counts takes one more.
+	overhead := len(`"x" `) + 1
+	fits := strings.repeat("a", MAX_COMMAND_LINE_UNITS - overhead, context.allocator)
+	defer delete(fits, context.allocator)
+
+	line, err := build("x", {fits}, context.allocator)
+	defer delete(line, context.allocator)
+	testing.expect_value(t, err, Build_Error.None)
+	testing.expect_value(t, len(line), MAX_COMMAND_LINE_UNITS - 1)
+
+	one_too_many := strings.concatenate({fits, "a"}, context.allocator)
+	defer delete(one_too_many, context.allocator)
+	over, over_err := build("x", {one_too_many}, context.allocator)
+	testing.expect_value(t, over_err, Build_Error.Too_Long)
+	testing.expect_value(t, len(over), 0)
 }
 
 // The rule the case above rests on, stated as a fact about Windows rather than
