@@ -47,7 +47,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 33
+$ExpectedCaseCount = 34
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -948,6 +948,64 @@ Test-Case 'a config odinfmt would silently ignore fails the format command' {
 	Add-FixtureBinary -RepoRoot $broken -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
 	[System.IO.File]::WriteAllText((Join-Path $broken 'odinfmt.json'), '{ "character_width": 100, oops }', $Utf8NoBom)
 	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $broken -Script 'format.ps1') -Fails -Matching 'not valid JSON'
+}
+
+Test-Case 'git checks out every .odin file with the endings the check demands' -MaySkip {
+	# The formatting check compares BYTES, and odinfmt.json pins newline_style to
+	# CRLF -- so what puts CRLF in a working tree decides whether this repository
+	# builds at all. Nothing in the repository did. The blobs are stored LF, and
+	# the only thing converting them on the way out was Git for Windows' SYSTEM
+	# gitconfig setting core.autocrlf=true: a machine-global setting, on a machine
+	# that happened to have it. `git -c core.autocrlf=false clone` produced a
+	# checkout where all 13 files failed the check and build.ps1 refused to build
+	# anything, and running the remedy the failure prints would have rewritten
+	# every one of them to CRLF and flipped the object store for everybody else.
+	#
+	# Asked of GIT rather than read off .gitattributes, and per FILE rather than
+	# per rule: what matters is the answer git's own attribute resolution gives for
+	# each path the sweep covers, and a rule written for the wrong glob reads
+	# perfectly well and matches nothing.
+	if (-not (Get-Command 'git' -CommandType Application -ErrorAction SilentlyContinue)) {
+		Skip-Case -Reason 'no git on PATH to ask what it would check out'
+	}
+	$inside = Read-NativeOutput -Command 'git' -TimeoutSeconds $FixtureTimeoutSeconds `
+		-Arguments @('-C', $RepoRoot, 'rev-parse', '--is-inside-work-tree')
+	if ($inside.TimedOut -or ($inside.ExitCode -ne 0) -or ($inside.Output -ne 'true')) {
+		Skip-Case -Reason "$RepoRoot is not a git work tree, so there are no checkout rules to ask about"
+	}
+
+	$sources = @(Get-OdinSource)
+	if ($sources.Count -eq 0) {
+		throw "no .odin files under $RepoRoot, so this case would pass having asked about nothing."
+	}
+
+	$asked = Read-NativeOutput -Command 'git' -TimeoutSeconds $FixtureTimeoutSeconds `
+		-Arguments (@('-C', $RepoRoot, 'check-attr', 'eol', '--') + @($sources | ForEach-Object { $_.Name }))
+	if ($asked.TimedOut) {
+		throw "git check-attr did not finish within $FixtureTimeoutSeconds seconds."
+	}
+	if ($asked.ExitCode -ne 0) {
+		throw "git check-attr exited $($asked.ExitCode).`n$($asked.Output)"
+	}
+
+	$answers = @($asked.Output -split "`r?`n" | Where-Object { $_ -ne '' })
+	if ($answers.Count -ne $sources.Count) {
+		throw "asked about $($sources.Count) files and git answered for $($answers.Count).`n$($asked.Output)"
+	}
+	$adrift = @($answers | Where-Object { $_ -notmatch ': eol: crlf$' })
+	if ($adrift.Count -gt 0) {
+		throw "$($adrift.Count) .odin file(s) have no eol=crlf rule in .gitattributes, so their line endings come from whatever core.autocrlf the machine happens to set:`n$($adrift -join "`n")"
+	}
+
+	# The negative space (rule A3). Without it this case passes for a reader that
+	# cannot tell the answers apart -- and the fixtures are the proof, because
+	# `**/fixtures/** -text` deliberately leaves them unconverted (ADR-0001).
+	$fixture = 'src/transcript/fixtures/engine-output.json'
+	$evidence = Read-NativeOutput -Command 'git' -TimeoutSeconds $FixtureTimeoutSeconds `
+		-Arguments @('-C', $RepoRoot, 'check-attr', 'eol', '--', $fixture)
+	if ($evidence.Output -match ': eol: crlf$') {
+		throw "git says it converts $fixture, which .gitattributes exempts as evidence: $($evidence.Output)"
+	}
 }
 
 Test-Case 'the format command rewrites exactly what it named' {
