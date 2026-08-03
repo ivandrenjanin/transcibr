@@ -1,28 +1,3 @@
-// Package extract turns one Recording into the mono 16 kHz audio the Engine
-// reads, and settles -- before any of that -- how long the Recording actually
-// is and whether anything is still writing it.
-//
-// ONE PACKAGE FOR TWO OF THE SPEC'S SHELL MODULES, *probing* and *extraction*,
-// which is a decision with a cost rather than a layout preference: see
-// ADR-0018. In short, the probe exists only for the extraction -- it supplies
-// the duration the produced audio is measured against and the two refusals that
-// stop an extraction from starting -- and splitting them would put one test seam
-// across two packages, which is exactly what ADR-0017 refuses.
-//
-// Impure, and honestly so: it runs ffmpeg and ffprobe through `transcibr:child`,
-// reads bytes off the disk and deletes files out of the scratch cache. But every
-// DECISION it makes is a pure procedure whose inputs are handed in -- the chunk
-// walk over a buffer, the two durations, the two readings of a source, the
-// sweep's choice of what may go -- because ADR-0009 says this layer will never
-// have a unit test, and a decision with a clock or a filesystem inside it cannot
-// be checked. `remaining_ms` in `transcibr:child` is the same shape for the same
-// reason.
-//
-// Nothing outside this program may crash it (A8). A container, a WAV, an exit
-// code, a byte of ffmpeg's diagnostic output and every file in the cache are all
-// from outside, so each is refused through a fault and reported against the
-// Recording that caused it. The assertions here are about this package's own
-// state.
 package extract
 
 import "core:mem"

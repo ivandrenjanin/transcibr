@@ -49,6 +49,21 @@ Distinct from Executable, which is only the path — and it is a tree rather tha
 child that starts something of its own leaves a process no handle reaches (ADR-0004).
 _Avoid_: spawner, subprocess, runner, process
 
+## Turning a recording into audio
+
+**Probe**:
+What a container is asked about itself before any work is spent on it — how long it is, and whether
+it carries audio at all. A claim the container makes and not a measurement of it, which is why a
+container that estimates its own length from an average bitrate can be minutes out.
+_Avoid_: ffprobe, scan, inspect, metadata
+
+**Scratch cache**:
+The one directory transcibr's children are allowed to write into: extracted audio, the Engine's
+output, and nothing that is finished. ASCII-only by construction, because the Engine cannot open a
+path that is not (ADR-0002), and swept at Batch start so a run that fails every Recording does not
+accumulate audio forever.
+_Avoid_: temp, working directory, staging, intermediate
+
 ## Repetition
 
 **Saying**:
