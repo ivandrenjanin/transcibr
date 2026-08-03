@@ -151,6 +151,24 @@ Fault_Facts :: struct {
 	disposition: Disposition,
 }
 
+// The two sentences the table spells TWICE, as constants -- the shape
+// MONOLOGUE_NAME and CONVERSATION_NAME have next door, for the same reason.
+//
+// One byte and one damage, reported against two different inputs, is what makes
+// each of these two rows rather than one (see Build_Fault). The sentence is the
+// part that is genuinely the same, and as two literals it was two things that
+// happened to match: edit one and not the other and the two reports describe the
+// same NUL differently, with nothing anywhere to catch it. Both rows stay
+// non-empty, so neither guard in fault_facts fires.
+//
+// The suite keeps its own copy of each, written out on that side. That is what
+// makes this dedup safe rather than merely tidy: a test reading these constants
+// would agree with any edit to them by construction.
+@(private)
+NUL_SAYS :: "contains a NUL, which ends the command line where Windows reads it"
+@(private)
+INVALID_UTF8_SAYS :: "is not valid UTF-8, so Windows cannot encode it as a command line"
+
 // An enumerated array rather than a switch, and it is guarded twice over.
 //
 // MEASURED, both layers. Add a Build_Fault and leave this table alone and the
@@ -174,23 +192,15 @@ FAULT := [Build_Fault]Fault_Facts {
 		blames = .The_Executable,
 		disposition = .Fail_The_Job,
 	},
-	.Nul_In_Executable = {
-		says = "contains a NUL, which ends the command line where Windows reads it",
-		blames = .The_Executable,
-		disposition = .Fail_The_Job,
-	},
-	.Nul_In_Argument = {
-		says = "contains a NUL, which ends the command line where Windows reads it",
-		blames = .An_Argument,
-		disposition = .Fail_The_Job,
-	},
+	.Nul_In_Executable = {says = NUL_SAYS, blames = .The_Executable, disposition = .Fail_The_Job},
+	.Nul_In_Argument = {says = NUL_SAYS, blames = .An_Argument, disposition = .Fail_The_Job},
 	.Invalid_Utf8_In_Executable = {
-		says = "is not valid UTF-8, so Windows cannot encode it as a command line",
+		says = INVALID_UTF8_SAYS,
 		blames = .The_Executable,
 		disposition = .Fail_The_Job,
 	},
 	.Invalid_Utf8_In_Argument = {
-		says = "is not valid UTF-8, so Windows cannot encode it as a command line",
+		says = INVALID_UTF8_SAYS,
 		blames = .An_Argument,
 		disposition = .Fail_The_Job,
 	},

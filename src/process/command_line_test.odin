@@ -450,12 +450,15 @@ a_refused_argument_is_reported_by_position :: proc(t: ^testing.T) {
 	testing.expect_value(t, executable_err.culprit, `C:\a"b\ffmpeg.exe`)
 }
 
-// The sentence both NUL faults carry, spelled out on this side so the two
-// expectations below are EXACT lines. The source keeps its own copy: a test that
-// read FAULT would agree with the rendering by construction and could never
-// disagree with it.
+// The sentence both NUL faults carry, spelled out on THIS side so the two
+// expectations below are exact lines.
+//
+// A second copy on purpose, and the reason the source may share one constant
+// between its two NUL rows: a test that read `NUL_SAYS` out of the source would
+// agree with any edit to it by construction, and the sentence a user reads would
+// have nothing checking it at all.
 @(private)
-NUL_SAYS :: "contains a NUL, which ends the command line where Windows reads it"
+NUL_SENTENCE :: "contains a NUL, which ends the command line where Windows reads it"
 
 // Every refusal renders as ONE line the caller can print, which is the whole
 // reason the fault carries what it does. The alternative is every consumer
@@ -486,13 +489,13 @@ a_refusal_renders_as_one_line_naming_its_input :: proc(t: ^testing.T) {
 	_, nul_err := build_command_line("C:\\a\x00b\\ffmpeg.exe", {"-i"}, context.allocator)
 	in_executable := error_message(nul_err, context.allocator)
 	defer delete(in_executable, context.allocator)
-	testing.expect_value(t, in_executable, `"C:\\a\x00b\\ffmpeg.exe": ` + NUL_SAYS)
+	testing.expect_value(t, in_executable, `"C:\\a\x00b\\ffmpeg.exe": ` + NUL_SENTENCE)
 
 	// The argument branch, which carries the ordinal as well.
 	_, argument_err := build_command_line(EXE, {"-i", "a\x00b.mkv"}, context.allocator)
 	named := error_message(argument_err, context.allocator)
 	defer delete(named, context.allocator)
-	testing.expect_value(t, named, `argument 2 ("a\x00b.mkv"): ` + NUL_SAYS)
+	testing.expect_value(t, named, `argument 2 ("a\x00b.mkv"): ` + NUL_SENTENCE)
 
 	// The branch that names nothing, and the only one that CLONES rather than
 	// formatting -- so it is also the one that checks the caller is handed memory
