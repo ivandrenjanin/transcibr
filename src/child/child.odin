@@ -38,6 +38,13 @@ Fault :: enum u8 {
 	// outside one survives transcibr's death holding video memory, and that is
 	// the failure ADR-0004 introduced the job object to prevent.
 	No_Job_Object,
+	// The null device would not open. Refused rather than fallen back on: the
+	// fallback is a pipe nobody drains, and ADR-0004 measured what that costs --
+	// the Engine wedges part-way through the first Recording with nothing to show.
+	No_Null_Device,
+	// No pipe for the child's diagnostic output, so nothing could read its
+	// progress. A handle table this program has exhausted, in practice.
+	No_Diagnostic_Pipe,
 	// `CreateProcessW` refused. Overwhelmingly an executable that is not there or
 	// not runnable, which is external input and a per-Recording failure.
 	Not_Started,
@@ -45,9 +52,17 @@ Fault :: enum u8 {
 	// rather than merely noted: it is started suspended, so a child that cannot be
 	// made to die with transcibr never runs at all.
 	Not_Assigned,
+	// The list of handles the child may inherit could not be built, so the only
+	// alternative would be to let it inherit every handle this process holds --
+	// see open_handle_list for what that costs.
+	No_Handle_List,
 	// The child was created suspended and the resume failed, which leaves a
 	// process that will never do anything.
 	Not_Resumed,
+	// The pipe carrying the child's diagnostic output failed in a way that is not
+	// the end of it. Distinct from end of stream, which is the ordinary outcome
+	// and no fault at all.
+	Diagnostics_Unreadable,
 }
 
 // One refusal, with whatever the failing layer knew about it.
@@ -74,12 +89,16 @@ FAULT := [Fault]string {
 	// Two rows are deliberately empty, and fault_says refuses both by name rather
 	// than letting the emptiness check find them: `.None` is the success value,
 	// and `.Bad_Command_Line`'s sentence belongs to the package that refused.
-	.None             = "",
-	.Bad_Command_Line = "",
-	.No_Job_Object    = "the job object that stops a child outliving transcibr could not be created",
-	.Not_Started      = "the executable could not be started",
-	.Not_Assigned     = "the child could not be put in the job object that ends it with transcibr",
-	.Not_Resumed      = "the child was created suspended and could not be resumed",
+	.None                   = "",
+	.Bad_Command_Line       = "",
+	.No_Job_Object          = "the job object that stops a child outliving transcibr could not be created",
+	.No_Null_Device         = "the null device the child writes its standard output to could not be opened",
+	.No_Diagnostic_Pipe     = "the pipe carrying the child's diagnostic output could not be created",
+	.No_Handle_List         = "the list of handles the child may inherit could not be built",
+	.Not_Started            = "the executable could not be started",
+	.Not_Assigned           = "the child could not be put in the job object that ends it with transcibr",
+	.Not_Resumed            = "the child was created suspended and could not be resumed",
+	.Diagnostics_Unreadable = "the child's diagnostic output could not be read",
 }
 
 // One fault's sentence, checked. The one place the table is read.
@@ -222,9 +241,17 @@ Child_ID :: distinct u32
 // One started child. The caller owns every handle in it and gives them all back
 // with close.
 Child :: struct {
-	handle: win32.HANDLE,
-	thread: win32.HANDLE,
-	id:     Child_ID,
+	handle:      win32.HANDLE,
+	thread:      win32.HANDLE,
+	// The READ end of the child's diagnostic pipe, and the only end this process
+	// keeps: the write end is the child's and is closed here the moment the child
+	// has its copy, which is what lets this one report end of stream.
+	diagnostics: win32.HANDLE,
+	id:          Child_ID,
+	// Remembered rather than re-derived, because end of stream is reported ONCE by
+	// the pipe and a caller that asks again after draining would otherwise get a
+	// fresh failure instead of the answer it already had.
+	at_end:      bool,
 }
 
 // What every child is created with.
@@ -239,7 +266,8 @@ Child :: struct {
 // before it can run, or a child that starts and forks in the window between
 // creation and assignment leaves a grandchild nothing will ever kill.
 @(private)
-CREATION_FLAGS :: win32.CREATE_NO_WINDOW | win32.CREATE_SUSPENDED
+CREATION_FLAGS ::
+	win32.CREATE_NO_WINDOW | win32.CREATE_SUSPENDED | win32.EXTENDED_STARTUPINFO_PRESENT
 
 // Starts one child, hidden, inside the caller's job object.
 //
@@ -279,11 +307,46 @@ start :: proc(
 	// package losing the string, never a caller handing one in.
 	assert(wide != nil, "a command line the Process contract accepted would not convert to UTF-16")
 
-	pi, denial := create_hidden(wide)
+	streams, opening := open_streams()
+	if opening.fault != .None {
+		return {}, opening
+	}
+	c, err = start_into(group, wide, &streams, allocator)
+
+	// Whatever happened above, the two handles the CHILD holds are no longer this
+	// process's to keep -- and the pipe's write end especially. A parent that keeps
+	// its copy holds the pipe open, and the read end then never reports end of
+	// stream however long ago the child exited.
+	close_child_side(&streams)
+	if err.fault != .None {
+		// There is no child left to say anything, so the read end goes too rather
+		// than sitting in a zeroed Child that close cannot see.
+		win32.CloseHandle(streams.read)
+		return {}, err
+	}
+	c.diagnostics = streams.read
+	return c, Error{}
+}
+
+// The three Win32 calls that actually make a child, in the one order that is
+// safe: create it suspended, put it in the job object, and only then let it run.
+@(private)
+start_into :: proc(
+	group: ^Job_Object,
+	command_line: []u16,
+	s: ^Streams,
+	allocator: mem.Allocator,
+) -> (
+	c: Child,
+	err: Error,
+) {
+	assert(group != nil, "a child started outside a job object outlives transcibr")
+	assert(s != nil, "a child started with no streams would inherit this process's")
+
+	pi, denial := create_hidden(command_line, s, allocator)
 	if denial.fault != .None {
 		return {}, denial
 	}
-
 	if !AssignProcessToJobObject(group.handle, pi.hProcess) {
 		return {}, abandon(&pi, .Not_Assigned)
 	}
@@ -304,28 +367,56 @@ start :: proc(
 // invites. What it buys is that a caller may name a bare `ffmpeg.exe` and have it
 // found the way every other program on the machine finds it.
 @(private)
-create_hidden :: proc(command_line: []u16) -> (pi: win32.PROCESS_INFORMATION, err: Error) {
+create_hidden :: proc(
+	command_line: []u16,
+	s: ^Streams,
+	allocator: mem.Allocator,
+) -> (
+	pi: win32.PROCESS_INFORMATION,
+	err: Error,
+) {
 	assert(len(command_line) > 0, "there is no command line here to start")
+	assert(s != nil, "a child started with no streams would inherit this process's")
+
+	// Declared HERE and passed by pointer, because the attribute list holds the
+	// address of the array inside it: a Handle_List returned by value would leave
+	// Windows reading a dead frame. See Handle_List.
+	hl: Handle_List
+	defer close_handle_list(&hl, allocator)
+	refusal := open_handle_list(&hl, s, allocator)
+	if refusal.fault != .None {
+		return {}, refusal
+	}
 
 	// SW_HIDE for a child that turns out to have a window of its own, which
 	// CREATE_NO_WINDOW says nothing about: that flag withholds a CONSOLE, and a
 	// GUI child would still show itself. Both, because the children are ffmpeg
 	// and the Engine today and neither is a promise about tomorrow.
-	si := win32.STARTUPINFOW {
-		cb          = size_of(win32.STARTUPINFOW),
-		dwFlags     = win32.STARTF_USESHOWWINDOW,
-		wShowWindow = win32.WORD(win32.SW_HIDE),
+	si := STARTUPINFOEXW {
+		StartupInfo = {
+			cb = size_of(STARTUPINFOEXW),
+			dwFlags = win32.STARTF_USESHOWWINDOW | win32.STARTF_USESTDHANDLES,
+			wShowWindow = win32.WORD(win32.SW_HIDE),
+			hStdInput = s.null_device,
+			hStdOutput = s.null_device,
+			hStdError = s.write,
+		},
+		lpAttributeList = hl.list,
 	}
 	started := win32.CreateProcessW(
 		nil,
 		win32.wstring(raw_data(command_line)),
 		nil,
 		nil,
-		false,
+		// Handles cannot reach a child at all without this. WHICH ones it lets
+		// through is not this flag's answer but the handle list's: on its own it
+		// means every inheritable handle this process holds right now, including
+		// another spawn's caught mid-flight.
+		true,
 		CREATION_FLAGS,
 		nil,
 		nil,
-		&si,
+		&si.StartupInfo,
 		&pi,
 	)
 	if !started {
@@ -428,5 +519,10 @@ close :: proc(c: ^Child) {
 		win32.CloseHandle(c.thread)
 		c.thread = nil
 	}
+	if c.diagnostics != nil {
+		win32.CloseHandle(c.diagnostics)
+		c.diagnostics = nil
+	}
 	c.id = 0
+	c.at_end = false
 }

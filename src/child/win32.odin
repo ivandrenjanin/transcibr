@@ -25,7 +25,37 @@ foreign kernel32 {
 	SetInformationJobObject :: proc(hJob: win32.HANDLE, JobObjectInformationClass: i32, lpJobObjectInformation: win32.LPVOID, cbJobObjectInformationLength: win32.DWORD) -> win32.BOOL ---
 	QueryInformationJobObject :: proc(hJob: win32.HANDLE, JobObjectInformationClass: i32, lpJobObjectInformation: win32.LPVOID, cbJobObjectInformationLength: win32.DWORD, lpReturnLength: ^win32.DWORD) -> win32.BOOL ---
 	IsProcessInJob :: proc(ProcessHandle: win32.HANDLE, JobHandle: win32.HANDLE, Result: ^win32.BOOL) -> win32.BOOL ---
+	InitializeProcThreadAttributeList :: proc(lpAttributeList: LPPROC_THREAD_ATTRIBUTE_LIST, dwAttributeCount: win32.DWORD, dwFlags: win32.DWORD, lpSize: ^win32.SIZE_T) -> win32.BOOL ---
+	UpdateProcThreadAttribute :: proc(lpAttributeList: LPPROC_THREAD_ATTRIBUTE_LIST, dwFlags: win32.DWORD, Attribute: win32.DWORD_PTR, lpValue: win32.PVOID, cbSize: win32.SIZE_T, lpPreviousValue: win32.PVOID, lpReturnSize: ^win32.SIZE_T) -> win32.BOOL ---
+	DeleteProcThreadAttributeList :: proc(lpAttributeList: LPPROC_THREAD_ATTRIBUTE_LIST) ---
 }
+
+// The attribute list is OPAQUE: Windows says how many bytes it needs and this
+// package supplies them, never reading a field. Declaring it as a pointer to
+// nothing is the honest shape and is what the header does.
+LPPROC_THREAD_ATTRIBUTE_LIST :: rawptr
+
+// `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, which the header BUILDS rather than states:
+// `ProcThreadAttributeValue(ProcThreadAttributeHandleList=2, thread=FALSE,
+// input=TRUE, additive=FALSE)` is `2 | PROC_THREAD_ATTRIBUTE_INPUT`, and
+// PROC_THREAD_ATTRIBUTE_INPUT is 0x00020000. A plain 2 -- which is what the
+// enumeration member alone would suggest -- is not this attribute and is refused.
+PROC_THREAD_ATTRIBUTE_HANDLE_LIST :: 0x00020002
+
+// STARTUPINFOW with the attribute list bolted on the end, which is the only way
+// to hand `CreateProcessW` one. The `cb` inside must be `size_of` THIS, and the
+// creation flags must carry EXTENDED_STARTUPINFO_PRESENT, or the extra pointer is
+// never looked at and the handle list silently does nothing.
+STARTUPINFOEXW :: struct {
+	StartupInfo:     win32.STARTUPINFOW,
+	lpAttributeList: LPPROC_THREAD_ATTRIBUTE_LIST,
+}
+
+// Stated as a relationship rather than as a number, because the number is not the
+// claim: what matters is that the pointer sits immediately after the embedded
+// structure with no padding of its own, which is what makes `&x.StartupInfo` a
+// pointer to the whole record as far as Windows is concerned.
+#assert(size_of(STARTUPINFOEXW) == size_of(win32.STARTUPINFOW) + size_of(rawptr))
 
 // `JobObjectExtendedLimitInformation`, the one member of the
 // JOBOBJECTINFOCLASS enumeration this package sets and reads.
