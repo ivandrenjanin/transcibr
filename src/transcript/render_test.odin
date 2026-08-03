@@ -352,6 +352,240 @@ an_anchor_past_the_end_of_the_recording_is_written_as_it_stands :: proc(t: ^test
 	)
 }
 
+// ---------------------------------------------------------------------------
+// Escaping: transcribed speech is arbitrary text, and Markdown reads several of
+// its characters as structure.
+//
+// BOTH DIRECTIONS, and the first one matters more. A Transcript is read by a
+// person, so an escaper that backslashes its way through ordinary punctuation
+// has broken the deliverable to protect it -- apostrophes, quotation marks,
+// hyphens, brackets in the ordinary sense and accented speech all have to reach
+// the reader exactly as they were said. What is escaped is what would otherwise
+// stop being text.
+// ---------------------------------------------------------------------------
+
+// The prose a rendered Transcript holds, from the first Paragraph on. The header
+// and the leading Anchor are cut off, so a case can compare the body outright.
+@(private)
+body_of :: proc(markdown: string) -> string {
+	assert(len(markdown) > 0, "an empty document has no body to read")
+
+	anchor := first_anchor_of(markdown)
+	if len(anchor) == 0 {
+		return ""
+	}
+	opening := strings.index(markdown, anchor)
+	rest := markdown[opening + len(anchor):]
+	if !strings.has_prefix(rest, "\n\n") {
+		return ""
+	}
+	return rest[2:]
+}
+
+// Speech carrying nothing Markdown reads as structure. Every one of these must
+// arrive byte for byte.
+@(private, rodata)
+ORDINARY_PROSE := []string {
+	// Apostrophes and quotation marks, straight and curly, which is most of what
+	// the Engine actually writes.
+	`It's the reader's transcript, and he said "no" and then "yes".`,
+	"She said \u201Cyes\u201D, and it\u2019s hers now.",
+	// Hyphens, a dash used as punctuation, and the Engine's own trailing-off.
+	"A well-known, long-standing habit, and then\u2026 nothing much.",
+	// The rest of what a speaker reaches for.
+	"Half of them (about 50%) arrived at 9:30 a.m.; the rest did not!",
+	"C# and F# are languages, R&D is a department, and 3+4=7.",
+	// Bytes above 0x7F, which an escaper walking one byte at a time would carve
+	// in half and leave as a broken character in the deliverable.
+	"Le caf\u00E9 fran\u00E7ais, na\u00EFve, \u00FCber, \u4F60\u597D.",
+}
+
+@(test)
+ordinary_prose_reaches_the_reader_exactly_as_it_was_said :: proc(t: ^testing.T) {
+	for said in ORDINARY_PROSE {
+		paragraphs := []Paragraph{{0, 1_000, said}}
+		out := render_markdown(paragraphs, SAMPLE_CONTEXT, ANCHOR_INTERVAL_MS, context.allocator)
+		defer delete(out, context.allocator)
+
+		want := strings.concatenate({said, "\n"}, context.allocator)
+		defer delete(want, context.allocator)
+		testing.expectf(t, body_of(out) == want, "%q was mangled into %q", said, body_of(out))
+	}
+}
+
+// One piece of speech and the bytes it must reach the document as.
+@(private)
+Escape_Case :: struct {
+	said:   string,
+	writes: string,
+}
+
+// What Markdown reads as structure ANYWHERE in a line.
+@(private, rodata)
+INLINE_ESCAPE_CASES := []Escape_Case {
+	// Emphasis. Left alone, a pair of these italicises whatever stands between
+	// them and the asterisks the speaker meant disappear from the page.
+	{"They said *that* and *this*.", `They said \*that\* and \*this\*.`},
+	{"The file_name_here is odd.", `The file\_name\_here is odd.`},
+	// A code span swallows everything up to the next backtick -- and where there
+	// is no next one, everything to the end of the paragraph.
+	{"He said `hello` twice.", "He said \\`hello\\` twice."},
+	// The Engine writes these itself over non-speech, so this is not a
+	// hypothetical piece of text: unescaped they are a link that goes nowhere.
+	{"[BLANK_AUDIO] and then speech.", `\[BLANK\_AUDIO\] and then speech.`},
+	// A tag somebody read out is text, not markup. `>` is structure only at the
+	// start of a line, so it stays as it was said.
+	{"Type <b>bold</b> to start.", `Type \<b>bold\</b> to start.`},
+	// FIRST, or every escape written after it is doubled by its own backslash.
+	{`A back\slash mid-sentence.`, `A back\\slash mid-sentence.`},
+	{"A pipe | in the middle.", `A pipe \| in the middle.`},
+}
+
+@(test)
+what_markdown_reads_as_structure_is_escaped_wherever_it_falls :: proc(t: ^testing.T) {
+	for c in INLINE_ESCAPE_CASES {
+		paragraphs := []Paragraph{{0, 1_000, c.said}}
+		out := render_markdown(paragraphs, SAMPLE_CONTEXT, ANCHOR_INTERVAL_MS, context.allocator)
+		defer delete(out, context.allocator)
+
+		want := strings.concatenate({c.writes, "\n"}, context.allocator)
+		defer delete(want, context.allocator)
+		testing.expectf(t, body_of(out) == want, "%q came out as %q", c.said, body_of(out))
+	}
+}
+
+// What Markdown reads as structure only where a line BEGINS with it. A Paragraph
+// is one line, so a Paragraph's first character is the only place these can do
+// any harm -- and escaping them everywhere would put a backslash in front of
+// every hyphen the Engine ever wrote.
+@(private, rodata)
+BLOCK_START_CASES := []Escape_Case {
+	// THE DANGEROUS ONE. Three dashes opening a line is a thematic break, and
+	// three dashes under prose is a setext heading that eats the line above.
+	{"--- and so it went.", `\--- and so it went.`},
+	{"# Hash, they said.", `\# Hash, they said.`},
+	{"> Quoted, they said.", `\> Quoted, they said.`},
+	{"- Dashed, they said.", `\- Dashed, they said.`},
+	{"+ Plussed, they said.", `\+ Plussed, they said.`},
+	{"= Equals, they said.", `\= Equals, they said.`},
+	{"~ Tilde, they said.", `\~ Tilde, they said.`},
+	// A year read out at the start of a Paragraph is an ordered list numbered
+	// from 1999 to every Markdown reader there is, and the year leaves the page.
+	{"1999. That was the year.", `1999\. That was the year.`},
+	{"1) First of all, listen.", `1\) First of all, listen.`},
+}
+
+@(test)
+speech_that_opens_a_paragraph_like_a_block_is_escaped :: proc(t: ^testing.T) {
+	for c in BLOCK_START_CASES {
+		paragraphs := []Paragraph{{0, 1_000, c.said}}
+		out := render_markdown(paragraphs, SAMPLE_CONTEXT, ANCHOR_INTERVAL_MS, context.allocator)
+		defer delete(out, context.allocator)
+
+		want := strings.concatenate({c.writes, "\n"}, context.allocator)
+		defer delete(want, context.allocator)
+		testing.expectf(t, body_of(out) == want, "%q came out as %q", c.said, body_of(out))
+	}
+}
+
+// The negative space of that (CLAUDE.md A3), and the reason the two sets are two
+// sets: away from the start of a line none of these is structure, and an escaper
+// that could not tell puts a backslash in front of every hyphen and every date.
+@(private, rodata)
+BLOCK_STARTERS_MID_LINE := []string {
+	"They said # and > and - and + and = and ~ in the middle of it.",
+	"It was 1999. That was the year, and the 3) option won.",
+}
+
+@(test)
+a_block_character_away_from_the_start_of_a_line_is_left_alone :: proc(t: ^testing.T) {
+	for said in BLOCK_STARTERS_MID_LINE {
+		paragraphs := []Paragraph{{0, 1_000, said}}
+		out := render_markdown(paragraphs, SAMPLE_CONTEXT, ANCHOR_INTERVAL_MS, context.allocator)
+		defer delete(out, context.allocator)
+
+		want := strings.concatenate({said, "\n"}, context.allocator)
+		defer delete(want, context.allocator)
+		testing.expectf(t, body_of(out) == want, "%q was mangled into %q", said, body_of(out))
+	}
+}
+
+// A Paragraph is ONE line, and everything above rests on it: "the start of a
+// line" and "the start of a Paragraph" are the same place only while that holds.
+// The parser is lossless on purpose, so a line break the Engine wrote into a Cue
+// arrives here intact, and the second line it makes can be anything at all --
+// three dashes among them.
+@(test)
+a_line_break_inside_speech_never_reaches_the_document :: proc(t: ^testing.T) {
+	said := "Speech that carries\n--- a break\rand a return\tand a tab."
+	paragraphs := []Paragraph{{0, 1_000, said}}
+	out := render_markdown(paragraphs, SAMPLE_CONTEXT, ANCHOR_INTERVAL_MS, context.allocator)
+	defer delete(out, context.allocator)
+
+	testing.expect_value(
+		t,
+		body_of(out),
+		"Speech that carries --- a break and a return and a tab.\n",
+	)
+}
+
+// A Paragraph that reads like a header cannot become one. Front matter is only
+// front matter at the top of a document, so what this refuses is the thematic
+// break and the setext heading -- but the shape is the one a reader would look
+// at and mistrust, and the escaping that stops it is the same escaping.
+@(test)
+speech_that_looks_like_front_matter_does_not_reopen_the_header :: proc(t: ^testing.T) {
+	paragraphs := []Paragraph {
+		{0, 1_000, "Real speech, before the trouble."},
+		{2_000, 3_000, "--- generator: not transcibr"},
+	}
+	out := render_markdown(paragraphs, SAMPLE_CONTEXT, ANCHOR_INTERVAL_MS, context.allocator)
+	defer delete(out, context.allocator)
+
+	// Seven lines in the header and no more: one per field, whatever the prose
+	// beneath it says.
+	block := front_matter_of(out)
+	testing.expect_value(t, strings.count(block, "\n"), 7)
+	testing.expect(
+		t,
+		strings.contains(out, `\--- generator: not transcibr`),
+		"the fake header reached the document unescaped",
+	)
+}
+
+// The other half of the same question, and the one ADR-0009 names: the front
+// matter's own VALUES come from outside this program -- a Recording named by
+// whoever named it, a language string the Engine chose -- and a value carrying a
+// newline would close the header and turn the rest of the Transcript into
+// metadata.
+@(test)
+a_front_matter_value_cannot_close_the_header_early :: proc(t: ^testing.T) {
+	hostile := Render_Context {
+		now            = SAMPLE_INSTANT,
+		source_display = "evil\n---\n# not a transcript.mp4",
+		engine_version = `a "quoted" version`,
+		model          = `C:\models\ggml-large-v3.bin`,
+		language       = "en\tand\x7f",
+		profile        = .Conversation,
+	}
+	paragraphs := []Paragraph{{0, 1_000, "Real speech."}}
+	out := render_markdown(paragraphs, hostile, ANCHOR_INTERVAL_MS, context.allocator)
+	defer delete(out, context.allocator)
+
+	block := front_matter_of(out)
+	testing.expect_value(t, strings.count(block, "\n"), 7)
+
+	wanted := []string {
+		`source: "evil\n---\n# not a transcript.mp4"`,
+		`engine: "a \"quoted\" version"`,
+		`model: "C:\\models\\ggml-large-v3.bin"`,
+		`language: "en\tand\x7f"`,
+	}
+	for want in wanted {
+		testing.expectf(t, strings.contains(block, want), "no %q in:\n%s", want, block)
+	}
+}
+
 // LF, on a Windows-only program, deliberately. A Transcript is read by editors
 // and viewers that all take LF, and the alternative is that the golden fixture's
 // bytes depend on what checked it out -- which is the defect .gitattributes

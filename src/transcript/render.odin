@@ -134,7 +134,7 @@ render_markdown :: proc(
 			assert(due > paragraph.start, "an anchor that is due again the moment it is placed")
 		}
 		strings.write_byte(&out, '\n')
-		strings.write_string(&out, paragraph.text)
+		write_prose(&out, paragraph.text)
 		strings.write_byte(&out, '\n')
 	}
 
@@ -146,6 +146,127 @@ render_markdown :: proc(
 	assert(strings.has_prefix(markdown, FENCE), "a transcript that opens with no front matter")
 	assert(strings.index_byte(markdown, '\r') == -1, "a carriage return reached the document")
 	return
+}
+
+// What Markdown reads as structure ANYWHERE in a line, and what therefore has to
+// carry a backslash wherever the Engine wrote it.
+//
+// The list is short on purpose, and what is NOT in it is the point. A Transcript
+// is read by a person, so an escaper backslashing its way through ordinary
+// punctuation has broken the deliverable in order to protect it: apostrophes,
+// quotation marks, hyphens, brackets, ampersands, hashes away from the start of
+// a line and every accented character reach the reader exactly as they were said.
+//
+// `\` is first because it has to be: escaped last, every backslash written by
+// the escapes after it would be escaped again.
+//
+// `>` is NOT here. It opens a blockquote only at the start of a line, and the
+// closing half of a tag somebody read out (`</b>`) is far commoner in speech
+// than a line beginning with one -- so it is handled at the line start instead,
+// where it can actually do harm.
+//
+// `&` is NOT here either, and that is a judgement rather than an oversight. It
+// is structure only as the opening of a named entity -- `&amp;` and its
+// relatives -- which is a spelling a speech model does not produce, and escaping
+// every ampersand would put a backslash into every "R&D" a Transcript holds.
+@(private)
+INLINE_SPECIALS :: `\` + "`" + `*_[]<|`
+
+// What Markdown reads as structure only where a line BEGINS with it.
+//
+// A Paragraph is one line, which is what makes this a set of its own: a hyphen
+// or a hash in the middle of a sentence is text, and an escaper that could not
+// tell the difference would put a backslash in front of every hyphenated word
+// the Engine ever wrote.
+//
+// `-` is the dangerous one. Three of them opening a line is a thematic break,
+// and three of them under prose is a setext heading that swallows the line
+// above -- which is the shape a reader would mistake for a second front matter
+// block.
+@(private)
+BLOCK_STARTERS :: "#>-+=~"
+
+// Writes one Paragraph's speech so that nothing in it can become structure.
+@(private)
+write_prose :: proc(out: ^strings.Builder, said: string) {
+	assert(out != nil, "there is no document here to write prose into")
+	// The write side of what word_split asserts as it carves (CLAUDE.md A4).
+	// Prose opening on whitespace is an indented code block to Markdown, and
+	// there is no backslash escape for a space to fix it with afterwards.
+	if len(said) > 0 {
+		assert(said[0] != ' ', "prose still carrying the engine's padding reached the renderer")
+	}
+
+	write_inline(out, write_block_start(out, said))
+}
+
+// Escapes what opens a block, and hands back the speech that is left.
+//
+// Returns `said` untouched where nothing at its start is structure, so the one
+// caller's two steps cannot both write the same byte.
+@(private)
+write_block_start :: proc(out: ^strings.Builder, said: string) -> (rest: string) {
+	assert(out != nil, "there is no document here to open a paragraph in")
+	defer assert(len(rest) <= len(said), "escaping a block opener grew the speech behind it")
+
+	if len(said) == 0 {
+		return said
+	}
+	if strings.index_byte(BLOCK_STARTERS, said[0]) >= 0 {
+		strings.write_byte(out, '\\')
+		strings.write_byte(out, said[0])
+		return said[1:]
+	}
+
+	// A year read out at the start of a Paragraph -- "1999. That was the year" --
+	// is an ordered list numbered from 1999 to every Markdown reader there is, and
+	// the year itself leaves the page. It is the stop that has to carry the
+	// backslash: the digits in front of it are the text worth keeping.
+	digits := 0
+	for digits < len(said) && said[digits] >= '0' && said[digits] <= '9' {
+		digits += 1
+	}
+	if digits == 0 || digits >= len(said) {
+		return said
+	}
+	if said[digits] != '.' && said[digits] != ')' {
+		return said
+	}
+	strings.write_string(out, said[:digits])
+	strings.write_byte(out, '\\')
+	strings.write_byte(out, said[digits])
+	return said[digits + 1:]
+}
+
+// Escapes what is structure wherever it falls, and flattens what would end the
+// line.
+//
+// A byte at a time and never a rune at a time, deliberately: every byte this
+// touches is ASCII, and every byte of a multi-byte character is at or above 0x80
+// and falls through untouched. Decoding runes to make the same decision would
+// cost a pass over the speech for an answer it already has.
+@(private)
+write_inline :: proc(out: ^strings.Builder, said: string) {
+	assert(out != nil, "there is no document here to write speech into")
+
+	for i in 0 ..< len(said) {
+		if strings.index_byte(INLINE_SPECIALS, said[i]) >= 0 {
+			strings.write_byte(out, '\\')
+			strings.write_byte(out, said[i])
+			continue
+		}
+		// A line break the Engine wrote into a Cue. The parser is lossless on
+		// purpose, so it arrives here intact, and a Paragraph carrying one is TWO
+		// lines to a Markdown reader -- the second of which is unescaped by
+		// everything above, because everything above escapes the start of the
+		// Paragraph and this is the start of a line the Paragraph never had.
+		// A space instead: what it separated is still separated.
+		if said[i] < 0x20 || said[i] == 0x7F {
+			strings.write_byte(out, ' ')
+			continue
+		}
+		strings.write_byte(out, said[i])
+	}
 }
 
 // What an Anchor is written as: a Markdown heading, so that every viewer there
