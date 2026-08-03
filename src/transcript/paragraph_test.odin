@@ -44,3 +44,57 @@ a_short_gap_does_not_break_a_paragraph :: proc(t: ^testing.T) {
 		"This is a recording made to exercise the merger. The engine emits one fragment of speech at a time, and the merger puts them back together.",
 	)
 }
+
+// The two signals together, which is the only place either one decides anything
+// (ADR-0007). This is silence past max_gap_ms landing where a sentence just
+// ended.
+@(test)
+a_long_gap_after_a_sentence_breaks_a_paragraph :: proc(t: ^testing.T) {
+	shape := []Shaped_Cue {
+		{duration_ms = 3_480, text = " That is the first thing I wanted to say."},
+		{gap_ms = 2_400, duration_ms = 4_060, text = " The second one needs a paragraph of its own."},
+	}
+	cues := shaped_cues(shape, context.allocator)
+	defer delete(cues, context.allocator)
+
+	paragraphs := merge_paragraphs(cues, PINNED_MERGE, context.allocator)
+	defer destroy_paragraphs(paragraphs, context.allocator)
+
+	expected := []Paragraph {
+		{0, 3_480, "That is the first thing I wanted to say."},
+		{5_880, 9_940, "The second one needs a paragraph of its own."},
+	}
+	if !testing.expect_value(t, len(paragraphs), len(expected)) {
+		return
+	}
+	for want, i in expected {
+		testing.expect_value(t, paragraphs[i], want)
+	}
+}
+
+// The negative space of the case above (CLAUDE.md A3), and the reason the
+// sentence signal is read at all. The SAME silence, in the middle of a sentence:
+// a speaker drawing breath after a comma is not starting a new paragraph, and a
+// merger that broke here would cut prose in half at the one place a reader
+// notices.
+@(test)
+the_same_gap_in_the_middle_of_a_sentence_does_not :: proc(t: ^testing.T) {
+	shape := []Shaped_Cue {
+		{duration_ms = 3_480, text = " That is the first thing I wanted to say,"},
+		{gap_ms = 2_400, duration_ms = 4_060, text = " and the second follows straight on from it."},
+	}
+	cues := shaped_cues(shape, context.allocator)
+	defer delete(cues, context.allocator)
+
+	paragraphs := merge_paragraphs(cues, PINNED_MERGE, context.allocator)
+	defer destroy_paragraphs(paragraphs, context.allocator)
+
+	if !testing.expect_value(t, len(paragraphs), 1) {
+		return
+	}
+	testing.expect_value(
+		t,
+		paragraphs[0].text,
+		"That is the first thing I wanted to say, and the second follows straight on from it.",
+	)
+}

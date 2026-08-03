@@ -86,15 +86,28 @@ merge_paragraphs :: proc(
 	}
 	defer strings.builder_destroy(&state.prose)
 
+	// The last Cue that SAID something, which is not always the last Cue. The
+	// Engine writes empty and space-only Cues over silence, and measuring the
+	// gap to one of those reads the silence it covers as no silence at all --
+	// the merger would run a Recording's two halves together across the four
+	// minutes of nothing the Engine politely filled in.
+	previous: Maybe(Cue)
+
 	for cue in cues {
 		said := spoken_text(cue)
-		// The Engine writes an empty or space-only Cue over silence. It holds a
-		// place in the Cue set -- repetition collapse counts runs of them -- and
-		// contributes nothing to prose.
+		// Such a Cue holds its place in the Cue set -- repetition collapse counts
+		// runs of them -- and contributes nothing to prose. The silence it covers
+		// is still counted, because `previous` did not move.
 		if len(said) == 0 {
 			continue
 		}
+
+		before, spoke_before := previous.?
+		if spoke_before && breaks_paragraph(before, cue, p) {
+			paragraph_close(&state, allocator)
+		}
 		paragraph_extend(&state, cue, said)
+		previous = cue
 	}
 	paragraph_close(&state, allocator)
 
@@ -131,6 +144,69 @@ destroy_paragraphs :: proc(paragraphs: []Paragraph, allocator: mem.Allocator) {
 		delete(paragraph.text, allocator)
 	}
 	delete(paragraphs, allocator)
+}
+
+// Whether a Paragraph ends between two Cues that both said something.
+//
+// The whole of the rule, and it is two lines long on purpose: silence past the
+// hard threshold ends a Paragraph whatever was being said, and silence past the
+// soft one ends it only where a sentence ended with it. Nothing else is read.
+//
+// The gap is negative where the Cues overlap, which is ordinary Engine output
+// (the parser accepts it), and a negative gap is no silence at all.
+@(private)
+breaks_paragraph :: proc(before, after: Cue, p: Merge_Params) -> bool {
+	assert(p.max_gap_ms > 0, "a paragraph that breaks on no silence at all breaks at every cue")
+	// The same relationship merge_paragraphs asserts, at the one place that
+	// depends on it (CLAUDE.md A4): a hard threshold below the soft one is
+	// reached first on every gap, and the sentence signal is never read at all.
+	assert(p.hard_gap_ms >= p.max_gap_ms, "hard gap must not sit below max gap")
+
+	gap := after.start - before.end
+	if gap >= p.hard_gap_ms {
+		return true
+	}
+	if gap < p.max_gap_ms {
+		return false
+	}
+	return ends_a_sentence(spoken_text(before))
+}
+
+// What a sentence can end with, and what may sit after it and still leave it
+// ended. `…` is the Engine's own spelling of a trailing-off, and a quote or a
+// bracket after the stop closes something the sentence opened.
+@(private)
+SENTENCE_ENDS :: ".!?…"
+@(private)
+SENTENCE_CLOSERS :: `"')]}»”’`
+
+// Whether a Cue's speech ended a sentence.
+//
+// Read off punctuation and nothing cleverer, which is only possible because VAD
+// is off: with it on the Engine emits one unbroken lower-case run carrying no
+// punctuation of any kind, and this signal -- along with the gap signal beside
+// it -- goes to zero (ADR-0005).
+//
+// It says yes to an abbreviation, and that is the right trade. A false yes costs
+// one paragraph break that a reader would not have made and which still falls at
+// a real pause, because it is only ever read where the silence already cleared
+// max_gap_ms.
+@(private)
+ends_a_sentence :: proc(said: string) -> bool {
+	// Paired with spoken_text's assert on the other end of the same string
+	// (CLAUDE.md A4): that one checks the padding is off the front, this one
+	// checks the back, which is the end this procedure reads.
+	if len(said) > 0 {
+		assert(said[len(said) - 1] != ' ', "asked whether padded text ends a sentence")
+	}
+
+	bare := strings.trim_right(said, SENTENCE_CLOSERS)
+	assert(len(bare) <= len(said), "trimming a sentence's closers added bytes to it")
+	// Shorter after the stops come off means there were stops to come off. Asked
+	// this way rather than by decoding the last rune, because the cutset is
+	// rune-aware and `…` is three bytes: a byte comparison would answer no to
+	// every trailing-off the Engine writes.
+	return len(strings.trim_right(bare, SENTENCE_ENDS)) < len(bare)
 }
 
 // Adds one Cue's speech to the Paragraph being built, opening one if none is.
