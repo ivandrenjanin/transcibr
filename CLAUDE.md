@@ -231,7 +231,9 @@ so a late terminate can signal an unrelated application.
 
 **Testing is built in; there is no framework to choose.** Mark procedures `@(test)`, import
 `core:testing`, and assert with `testing.expect` and `testing.expect_value`. `.\scripts\test.ps1`
-sweeps every package; `.\scripts\test.ps1 -TestName version.banner_renders_one_line` runs one.
+sweeps every package; `.\scripts\test.ps1 -TestName version.banner_names_the_program_and_its_version`
+runs one. A name written here is checked against the real suite by `scripts\selftest.ps1`, so it
+cannot go stale unnoticed.
 Do not hand-roll the compiler invocation — the sweep also enforces that every package either
 collects tests or is declared test-less in `$OdinPackagesWithoutTests`.
 

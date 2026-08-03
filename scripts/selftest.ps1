@@ -54,7 +54,7 @@ $script:Passes = 0
 # Keep $ExpectedCaseCount in step with the cases below; a mismatch either way
 # fails the run. Skipping is deny-by-default, same as $OdinPackagesWithoutTests
 # in common.ps1: a case may end in a skip only if it is named here.
-$ExpectedCaseCount = 19
+$ExpectedCaseCount = 20
 $CasesAllowedToSkip = @(
 	'an unreadable directory fails discovery rather than shortening it'
 	'the subsystem is read out of the PE header, not taken from the flag'
@@ -161,6 +161,11 @@ function Invoke-FixtureScript {
 	param(
 		[Parameter(Mandatory)] [string] $RepoRoot,
 		[Parameter(Mandatory)] [string] $Script,
+		# Passed on to the script itself, e.g. -TestName. Deliberately not named
+		# $Arguments: PowerShell matches variable names case-insensitively, so
+		# that name and the local $arguments below are ONE variable, and the
+		# host's own flags end up passed to the script under test.
+		[string[]] $ScriptArguments = @(),
 		# Have the CHILD merge its own streams with 2>&1, the way a caller
 		# piping the script's whole output would. Redirection at the process
 		# level, as below, does not exercise that path at all.
@@ -173,10 +178,13 @@ function Invoke-FixtureScript {
 
 	$arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass')
 	if ($MergeStreams) {
+		if ($ScriptArguments.Count -gt 0) {
+			throw 'Invoke-FixtureScript cannot pass -ScriptArguments through -MergeStreams.'
+		}
 		$arguments += @('-Command', "`"& '$scriptPath' 2>&1 | Out-Null; exit `$LASTEXITCODE`"")
 	}
 	else {
-		$arguments += @('-File', "`"$scriptPath`"")
+		$arguments += @('-File', "`"$scriptPath`"") + $ScriptArguments
 	}
 
 	$process = Start-Process -FilePath 'powershell.exe' `
@@ -454,6 +462,41 @@ Test-Case 'a test that leaks its returned slice fails rather than warns' {
 	Add-FixturePackage -RepoRoot $repo -Name 'leaky' -Test 'leaking' | Out-Null
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
 	Assert-Result -Result $result -Fails
+}
+
+Test-Case 'every single-test command in the documentation runs the test it names' {
+	# A test's name written into prose is the one copy no compiler checks, and
+	# it went stale the first time a test was renamed. The names are DISCOVERED
+	# from the documents rather than listed here: a guard holding its own copy
+	# of what it guards is the same hand-maintained duplicate it exists to catch.
+	$documented = @()
+	foreach ($document in @((Join-Path $RepoRoot 'CLAUDE.md'), (Join-Path $RepoRoot 'README.md'), (Join-Path $ScriptRoot 'test.ps1'))) {
+		if (-not (Test-Path -LiteralPath $document)) {
+			throw "no $document to read the documented commands out of."
+		}
+		# <package>.<test>, the shape -TestName takes. The dot is required, so
+		# prose about the flag ("-TestName takes <package>.<test>") is not a name.
+		$found = [regex]::Matches((Get-Content -LiteralPath $document -Raw), '-TestName\s+([A-Za-z0-9_]+\.[A-Za-z0-9_]+)')
+		$documented += @($found | ForEach-Object { $_.Groups[1].Value })
+	}
+
+	$documented = @($documented | Sort-Object -Unique)
+	if ($documented.Count -eq 0) {
+		throw 'no -TestName example found in any document, so this case checked nothing.'
+	}
+
+	# Run against the REAL repository, which is the whole claim a document that
+	# prints a command makes: that running it here does what it says.
+	foreach ($name in $documented) {
+		$result = Invoke-FixtureScript -RepoRoot $RepoRoot -Script 'test.ps1' -ScriptArguments @('-TestName', $name)
+		Assert-Result -Result $result -Matching 'All 1 tests? passed'
+	}
+
+	# The negative space (CLAUDE.md rule A3). Without it the loop above passes
+	# for any string at all the moment -TestName stops failing on a bad name.
+	$absent = Invoke-FixtureScript -RepoRoot $RepoRoot -Script 'test.ps1' `
+		-ScriptArguments @('-TestName', "$($documented[0])_no_such_test")
+	Assert-Result -Result $absent -Fails -Matching 'no test named'
 }
 
 Test-Case 'a package that does not compile fails the sweep' {
