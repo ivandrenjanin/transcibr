@@ -98,12 +98,34 @@ function Resolve-OdinCompiler {
 	return $odin
 }
 
+# Run the compiler, letting its output through to the console untouched. Read
+# $LASTEXITCODE immediately after; this deliberately returns nothing, because
+# anything it returned would be indistinguishable from the compiler's own
+# output on the same stream.
+#
+# $ErrorActionPreference drops to Continue for the call, and the assignment is
+# function-scoped so it lasts exactly that long. The test runner writes its
+# entire log to stderr; if a caller has merged the streams -- `.\scripts\test.ps1
+# 2>&1`, or `*>` to a file -- PowerShell wraps every one of those lines in an
+# ErrorRecord, and under 'Stop' the first INFO line of a perfectly good run
+# becomes a terminating error.
+function Invoke-Odin {
+	param(
+		[Parameter(Mandatory)] [string] $Odin,
+		[Parameter(Mandatory)] [AllowEmptyCollection()] [string[]] $Arguments
+	)
+
+	$ErrorActionPreference = 'Continue'
+	& $Odin @Arguments
+}
+
 # The pin, enforced. An unpinned toolchain turns an upstream change into a
 # build failure on an unrelated commit and makes "it passed yesterday"
 # unanswerable -- which is just as true locally as in CI.
 function Assert-OdinVersion {
 	param([Parameter(Mandatory)] [string] $Odin)
 
+	$ErrorActionPreference = 'Continue'
 	$reported = (& $Odin version | Out-String).Trim()
 	if ($LASTEXITCODE -ne 0) {
 		throw "'$Odin version' exited $LASTEXITCODE."

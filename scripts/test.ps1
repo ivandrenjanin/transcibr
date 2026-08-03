@@ -94,7 +94,7 @@ foreach ($package in $packages) {
 	# the first checkout path containing a space, and PowerShell's own argument
 	# passing does not. Nothing is redirected either, so the runner's output
 	# reaches the console as it happens and $LASTEXITCODE stays trustworthy.
-	& $odin @arguments
+	Invoke-Odin -Odin $odin -Arguments $arguments
 	$odinExit = $LASTEXITCODE
 
 	# The runner's machine-readable report, not its console prose. It writes no
@@ -159,3 +159,8 @@ if ($failures.Count -gt 0) {
 
 Write-Host ''
 Write-Host "All $totalTests tests passed." -ForegroundColor Green
+
+# Stated, not inherited. Falling off the end leaves $LASTEXITCODE holding
+# whatever the last native command set, which is the compiler's answer to one
+# package rather than this script's answer to the sweep.
+exit 0

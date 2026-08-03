@@ -77,15 +77,27 @@ function Add-FixturePackage {
 function Invoke-FixtureScript {
 	param(
 		[Parameter(Mandatory)] [string] $RepoRoot,
-		[Parameter(Mandatory)] [string] $Script
+		[Parameter(Mandatory)] [string] $Script,
+		# Have the CHILD merge its own streams with 2>&1, the way a caller
+		# piping the script's whole output would. Redirection at the process
+		# level, as below, does not exercise that path at all.
+		[switch] $MergeStreams
 	)
 
 	$outFile = Join-Path $FixtureRoot "out-$([System.Guid]::NewGuid().ToString('N')).log"
 	$errFile = [System.IO.Path]::ChangeExtension($outFile, '.err.log')
 	$scriptPath = Join-Path (Join-Path $RepoRoot 'scripts') $Script
 
+	$arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass')
+	if ($MergeStreams) {
+		$arguments += @('-Command', "`"& '$scriptPath' 2>&1 | Out-Null; exit `$LASTEXITCODE`"")
+	}
+	else {
+		$arguments += @('-File', "`"$scriptPath`"")
+	}
+
 	$process = Start-Process -FilePath 'powershell.exe' `
-		-ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$scriptPath`"") `
+		-ArgumentList $arguments `
 		-WorkingDirectory $RepoRoot -NoNewWindow -Wait -PassThru `
 		-RedirectStandardOutput $outFile -RedirectStandardError $errFile
 
@@ -183,6 +195,17 @@ Test-Case 'a repository path containing a space still runs its tests' {
 	$repo = New-FixtureRepo 'path with space'
 	Add-FixturePackage -RepoRoot $repo -Name 'spaced' -Test 'passing' | Out-Null
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
+	Assert-ExitCode -Result $result -Expected 'zero'
+	Assert-Output -Result $result -Pattern 'All 1 tests? passed'
+}
+
+Test-Case 'a passing sweep survives a caller that merges the output streams' {
+	$repo = New-FixtureRepo 'merged-streams'
+	Add-FixturePackage -RepoRoot $repo -Name 'merged' -Test 'passing' | Out-Null
+	# `2>&1` in the caller makes PowerShell wrap the runner's stderr log in
+	# ErrorRecords, and the sweep runs under $ErrorActionPreference = 'Stop':
+	# without care the first INFO line of a good run terminates the script.
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1' -MergeStreams
 	Assert-ExitCode -Result $result -Expected 'zero'
 	Assert-Output -Result $result -Pattern 'All 1 tests? passed'
 }
@@ -306,3 +329,4 @@ if ($script:Failures.Count -gt 0) {
 
 Write-Host ''
 Write-Host "All $script:Passes self-test cases passed." -ForegroundColor Green
+exit 0

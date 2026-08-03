@@ -53,10 +53,11 @@ foreach ($target in $OdinTargets) {
 	Write-Host ''
 	Write-Host "=== $($target.Name) ($($target.Subsystem)) ===" -ForegroundColor Cyan
 
-	& $odin @arguments
-	if ($LASTEXITCODE -ne 0) {
+	Invoke-Odin -Odin $odin -Arguments $arguments
+	$odinExit = $LASTEXITCODE
+	if ($odinExit -ne 0) {
 		Write-Host ''
-		Write-Host "BUILD FAILED: odin exited $LASTEXITCODE building $($target.Name)." -ForegroundColor Red
+		Write-Host "BUILD FAILED: odin exited $odinExit building $($target.Name)." -ForegroundColor Red
 		exit 1
 	}
 
@@ -65,9 +66,12 @@ foreach ($target in $OdinTargets) {
 	Write-Host "-> $out is subsystem $($target.Subsystem)" -ForegroundColor Green
 
 	if ($target.Smoke) {
+		$ErrorActionPreference = 'Continue'
 		$printed = (& $out | Out-String).Trim()
-		if ($LASTEXITCODE -ne 0) {
-			throw "$($target.Name) exited $LASTEXITCODE, expected 0."
+		$smokeExit = $LASTEXITCODE
+		$ErrorActionPreference = 'Stop'
+		if ($smokeExit -ne 0) {
+			throw "$($target.Name) exited $smokeExit, expected 0."
 		}
 		if ($printed -notmatch "^$([regex]::Escape($target.Name)) \d+\.\d+\.\d+$") {
 			throw "$($target.Name) did not report a version; printed '$printed'."
@@ -78,3 +82,6 @@ foreach ($target in $OdinTargets) {
 
 Write-Host ''
 Write-Host "Built $($OdinTargets.Count) of $($OdinTargets.Count) targets into $BuildRoot" -ForegroundColor Green
+
+# Stated, not inherited from whichever native command happened to run last.
+exit 0
