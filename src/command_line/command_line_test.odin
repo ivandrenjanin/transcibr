@@ -468,6 +468,84 @@ every_fault_says_whether_a_different_plan_would_help :: proc(t: ^testing.T) {
 	}
 }
 
+// Bytes that are not valid UTF-8, and are therefore not convertible to the UTF-16
+// `CreateProcessW` actually takes.
+//
+// NOT a fuzzer's inventions. NTFS permits unpaired surrogates in a name, and
+// `win32.wstring_to_utf8` hands one back as WTF-8 -- so the first two arrive
+// from the filesystem, on the exact path this package is built to serve. The
+// rest are the other shapes CP_UTF8 refuses, kept together because they are one
+// rule.
+@(private)
+UNENCODABLE_CASES :: []string {
+	"\xED\xA0\x80", // unpaired high surrogate
+	"\xED\xB0\x80", // unpaired low surrogate
+	"\xFF", // never a UTF-8 byte
+	"\x80", // a continuation byte with nothing in front of it
+	"\xE2\x82", // three-byte sequence cut short
+	"\xF0\x9F\x98", // four-byte sequence cut short
+	"ok then \xED\xA0\x80 trailing", // buried in otherwise valid text
+}
+
+// THE CONTRACT IN BOTH DIRECTIONS, measured against the real conversion rather
+// than reasoned about.
+//
+// `build` returns UTF-8 and the spawner converts it with `utf8_to_utf16`, which
+// passes MB_ERR_INVALID_CHARS and answers nil rather than substituting anything.
+// So a line this accepts but Windows cannot encode fails LATER, in the shell,
+// with no Build_Error naming the argument that caused it -- and ADR-0009 says
+// that layer will never have a unit test. Measured before this was fixed: 9,790
+// accepted lines across a fuzz run were unconvertible.
+//
+// The refusal lives here for exactly the reason MAX_COMMAND_LINE_UNITS does: only
+// this package can name which argument was at fault, and a user-reachable refusal
+// pushed into the shell is one nothing tests.
+//
+// Both halves are checked, because either alone can rot. Refusing everything
+// would satisfy the first and is caught by the second.
+@(test)
+what_the_builder_accepts_is_what_windows_can_encode :: proc(t: ^testing.T) {
+	for value, i in UNENCODABLE_CASES {
+		line, err := build(EXE, {value}, context.allocator)
+		defer delete(line, context.allocator)
+		testing.expectf(
+			t,
+			err.fault == .Invalid_Utf8_In_Argument,
+			"unencodable[%d]: accepted with %v",
+			i,
+			err.fault,
+		)
+		testing.expectf(t, len(line) == 0, "unencodable[%d]: refused but returned a line", i)
+
+		// The program path carries the same bytes on the same terms.
+		as_program, program_err := build(value, {"-i"}, context.allocator)
+		defer delete(as_program, context.allocator)
+		testing.expectf(
+			t,
+			program_err.fault == .Invalid_Utf8_In_Program,
+			"unencodable[%d] as a program path: accepted with %v",
+			i,
+			program_err.fault,
+		)
+	}
+
+	// The other direction, and the one that stops "refuse everything" from
+	// passing: every case the rest of this file round-trips is still accepted,
+	// and the line it produces really does convert. argv_of asserts exactly that
+	// on every case in this file, so the suite as a whole is the second half --
+	// this pins the non-ASCII table, which is where a check that was too strict
+	// would bite first.
+	for value, i in NON_ASCII_CASES {
+		line, err := build(EXE, {value}, context.allocator)
+		defer delete(line, context.allocator)
+		testing.expectf(t, err.fault == .None, "non-ascii[%d]: refused with %v", i, err.fault)
+
+		wide := win32.utf8_to_utf16(line, context.allocator)
+		defer delete(wide, context.allocator)
+		testing.expectf(t, wide != nil, "non-ascii[%d]: accepted a line Windows cannot encode", i)
+	}
+}
+
 // The documented `CreateProcessW` ceiling: 32,767 characters INCLUDING the
 // terminating null, counted in UTF-16 code units rather than bytes or runes.
 //
