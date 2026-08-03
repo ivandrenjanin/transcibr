@@ -354,7 +354,7 @@ EXECUTABLE_CASES :: []string {
 }
 
 @(test)
-the_program_path_round_trips_under_its_own_rule :: proc(t: ^testing.T) {
+the_executable_path_round_trips_under_its_own_rule :: proc(t: ^testing.T) {
 	for executable, i in EXECUTABLE_CASES {
 		expect_round_trip(t, executable, {}, tprint_case("executable", i, "alone"))
 		expect_round_trip(
@@ -376,7 +376,7 @@ the_program_path_round_trips_under_its_own_rule :: proc(t: ^testing.T) {
 // nothing about the error return says it did. The test runner's memory tracking
 // is what actually catches that (ODIN_TEST_FAIL_ON_BAD_MEMORY).
 @(test)
-an_unspellable_program_path_is_refused :: proc(t: ^testing.T) {
+an_unspellable_executable_path_is_refused :: proc(t: ^testing.T) {
 	// Empty. `CommandLineToArgvW` measured on an EMPTY command line returns the
 	// running executable's own path as argv[0] -- so a child handed one would
 	// silently run against itself rather than fail.
@@ -430,10 +430,14 @@ a_refused_argument_is_reported_by_position :: proc(t: ^testing.T) {
 	// A fault about the executable blames no argument, which is the negative space
 	// of the same rule (A3): an ordinal left set would print `argument 2` over a
 	// fault that has nothing to do with the argument list.
-	_, program_err := build_command_line(`C:\a"b\ffmpeg.exe`, {"-i", "in.mkv"}, context.allocator)
-	testing.expect_value(t, program_err.fault, Build_Fault.Quote_In_Executable)
-	testing.expect_value(t, program_err.argument, 0)
-	testing.expect_value(t, program_err.culprit, `C:\a"b\ffmpeg.exe`)
+	_, executable_err := build_command_line(
+		`C:\a"b\ffmpeg.exe`,
+		{"-i", "in.mkv"},
+		context.allocator,
+	)
+	testing.expect_value(t, executable_err.fault, Build_Fault.Quote_In_Executable)
+	testing.expect_value(t, executable_err.argument, 0)
+	testing.expect_value(t, executable_err.culprit, `C:\a"b\ffmpeg.exe`)
 }
 
 // Every refusal renders as one line the caller can print, which is the whole
@@ -533,14 +537,14 @@ what_the_builder_accepts_is_what_windows_can_encode :: proc(t: ^testing.T) {
 		testing.expectf(t, len(line) == 0, "unencodable[%d]: refused but returned a line", i)
 
 		// The executable path carries the same bytes on the same terms.
-		as_program, program_err := build_command_line(value, {"-i"}, context.allocator)
-		defer delete(as_program, context.allocator)
+		as_executable, executable_err := build_command_line(value, {"-i"}, context.allocator)
+		defer delete(as_executable, context.allocator)
 		testing.expectf(
 			t,
-			program_err.fault == .Invalid_Utf8_In_Executable,
+			executable_err.fault == .Invalid_Utf8_In_Executable,
 			"unencodable[%d] as an executable path: accepted with %v",
 			i,
-			program_err.fault,
+			executable_err.fault,
 		)
 	}
 
@@ -641,7 +645,7 @@ the_ceiling_admits_the_longest_line_that_fits :: proc(t: ^testing.T) {
 // MEASURED, and worth knowing before trusting the tests alone to catch it: that
 // mutant never reaches an expectation in this file. write_executable's own length
 // assertion fires first ("the executable path was not written whole"), and a
-// maintainer who relaxes that one to match is stopped by build's second,
+// maintainer who relaxes that one to match is stopped by build_command_line's second,
 // independent one ("a command line with no arguments carries something anyway").
 // Three separate checks have to be defeated before a wrong argv[0] can be
 // observed rather than crashed on -- which is what A4's paired write-side and
@@ -655,7 +659,7 @@ the_ceiling_admits_the_longest_line_that_fits :: proc(t: ^testing.T) {
 // nothing in argv[0] was ever an escape -- so there is no doubling anywhere for
 // write_executable to compensate for.
 @(test)
-a_trailing_backslash_in_the_program_path_is_not_an_escape :: proc(t: ^testing.T) {
+a_trailing_backslash_in_the_executable_path_is_not_an_escape :: proc(t: ^testing.T) {
 	line, err := build_command_line(`C:\dir with space\`, {"-after"}, context.allocator)
 	defer delete(line, context.allocator)
 	testing.expect_value(t, err.fault, Build_Fault.None)
