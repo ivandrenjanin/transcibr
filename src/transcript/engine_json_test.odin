@@ -458,10 +458,12 @@ ACCEPTED_CASES := []Accepted_Case {
 		expected = []Cue{{4_380, 8_440, " Words."}},
 	},
 	{
-		// The other half of read_millis' trap. The tokenizer classifies on
-		// the decimal point, so these stay json.Float even with
-		// `parse_integers` on, and an Engine release that starts writing
-		// them this way must not silently zero every offset.
+		// The other half of read_millis' trap. Nothing here asks
+		// core:encoding/json for integers, so every offset in every case
+		// above arrives as a json.Float already -- these are the spellings
+		// that would ALSO have been Floats under `parse_integers`, and an
+		// Engine release that starts writing them this way must read the
+		// same as the plain ones do.
 		name = "float-offsets.json",
 		json = `{"transcription": [
 			{"offsets": {"from": 0.0,    "to": 3480.0}, "text": " one"},
@@ -470,17 +472,19 @@ ACCEPTED_CASES := []Accepted_Case {
 		expected = []Cue{{0, 3_480, " one"}, {4_380, 8_440, " two"}},
 	},
 	{
-		// The negative space of the range check (CLAUDE.md A3). 2^53 is the
-		// limit and not one short of it, in both number forms, so a check
-		// written with the wrong comparison rejects a value it should read.
+		// The negative space of the range check (CLAUDE.md A3). 2^53 - 1 is
+		// the limit and not one short of it, and the same value written with
+		// a decimal point and without reads the same, because both spellings
+		// arrive as the one f64 -- so a check written with the wrong
+		// comparison rejects a value it should read, in either.
 		name = "offset-at-the-limit.json",
 		json = `{"transcription": [
-			{"offsets": {"from": 0, "to": 9007199254740992},                "text": " one"},
-			{"offsets": {"from": 9007199254740992, "to": 9007199254740992.0}, "text": " two"}
+			{"offsets": {"from": 0, "to": 9007199254740991},                "text": " one"},
+			{"offsets": {"from": 9007199254740991, "to": 9007199254740991.0}, "text": " two"}
 		]}`,
 		expected = []Cue {
-			{0, 9_007_199_254_740_992, " one"},
-			{9_007_199_254_740_992, 9_007_199_254_740_992, " two"},
+			{0, 9_007_199_254_740_991, " one"},
+			{9_007_199_254_740_991, 9_007_199_254_740_991, " two"},
 		},
 	},
 	{
@@ -613,12 +617,13 @@ REJECTED_CASES := []Rejected_Case {
 		cue = 1,
 	},
 	{
-		// The same magnitude written WITHOUT a decimal point, which the
-		// tokenizer classifies as an integer instead. core:encoding/json
-		// reads it with strconv.parse_i64 and DISCARDS the error, so the
-		// overflow arrives as a plausible small number -- 2e17 or so, about
-		// six million years -- rather than as a refusal. A corrupt cache
-		// file is ADR-0002's explicit case, and this one used to parse.
+		// The same magnitude written WITHOUT a decimal point. Under
+		// `parse_integers` the tokenizer classifies this one as an integer,
+		// core:encoding/json reads it with strconv.parse_i64 and DISCARDS
+		// the error, and the overflow arrives as a plausible small number --
+		// 2e17 or so, about six million years -- rather than as a refusal. A
+		// corrupt cache file is ADR-0002's explicit case, and this one used
+		// to parse.
 		name = "integer-offset-overflows.json",
 		json = `{"transcription": [{"offsets": {"from": 0, "to": 99999999999999999999999},
 			"text": " one"}]}`,
@@ -626,11 +631,31 @@ REJECTED_CASES := []Rejected_Case {
 		cue = 1,
 	},
 	{
-		// One past the limit, in each form. The two branches took different
-		// answers here: the float was refused and the integer was accepted
-		// exactly, so which one a Recording got depended on whether the
-		// Engine happened to write a decimal point.
-		name = "integer-offset-past-the-limit.json",
+		// The same overflow written so that it wraps back INSIDE the limit:
+		// 2^64 + 5000, which strconv.parse_i64 reports as 5000 with
+		// ok = true. No range check can see that one -- 5000 is an ordinary
+		// offset, and the token text is the only thing that ever knew
+		// otherwise. It is refused here because nobody asks
+		// core:encoding/json for an integer, so the magnitude arrives as the
+		// float 1.8446744073709556e19 with nothing wrapped away.
+		name = "integer-offset-wraps-into-range.json",
+		json = `{"transcription": [{"offsets": {"from": 0, "to": 18446744073709556616},
+			"text": " one"}]}`,
+		fault = .Offset_Out_Of_Range,
+		cue = 1,
+	},
+	{
+		// One past the limit, which is 2^53 exactly: the first value where
+		// the spacing between representable f64s becomes two, so it is also
+		// what 9007199254740993 arrives as. Reading either one back would be
+		// reading a number nobody wrote, and both are refused.
+		name = "offset-past-the-limit.json",
+		json = `{"transcription": [{"offsets": {"from": 0, "to": 9007199254740992}, "text": " one"}]}`,
+		fault = .Offset_Out_Of_Range,
+		cue = 1,
+	},
+	{
+		name = "offset-rounding-onto-the-limit.json",
 		json = `{"transcription": [{"offsets": {"from": 0, "to": 9007199254740993}, "text": " one"}]}`,
 		fault = .Offset_Out_Of_Range,
 		cue = 1,
@@ -638,8 +663,8 @@ REJECTED_CASES := []Rejected_Case {
 	{
 		// And below it, which Negative_Offset never sees: read_millis
 		// refuses the magnitude before cue_follows is asked about the sign.
-		name = "integer-offset-below-the-limit.json",
-		json = `{"transcription": [{"offsets": {"from": -9007199254740993, "to": 0}, "text": " one"}]}`,
+		name = "offset-below-the-limit.json",
+		json = `{"transcription": [{"offsets": {"from": -9007199254740992, "to": 0}, "text": " one"}]}`,
 		fault = .Offset_Out_Of_Range,
 		cue = 1,
 	},

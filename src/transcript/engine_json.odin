@@ -278,11 +278,16 @@ parse_cues :: proc(
 // exists for, not a rarity. An arena settles the question: nothing here is freed
 // individually and everything goes back at once.
 //
-// `.JSON` rather than the package default of JSON5, and `parse_integers` stated
-// rather than left at its default of false -- see read_millis for what that
-// default costs. The Engine writes strict JSON, so a trailing comma or a comment
-// means this is not what the Engine wrote, and ADR-0002 wants that quarantined
-// rather than guessed at.
+// `.JSON` rather than the package default of JSON5: the Engine writes strict
+// JSON, so a trailing comma or a comment means this is not what the Engine
+// wrote, and ADR-0002 wants that quarantined rather than guessed at.
+//
+// `parse_integers` is FALSE, stated rather than left to a default that happens
+// to agree. It is not a performance knob: with it on, an integer token that
+// overflows wraps silently to a plausible small offset and there is nothing left
+// to detect it with, while every number this decode produces without it is an
+// f64 whose magnitude read_millis can check. That procedure is where the whole
+// argument is written down.
 @(private)
 decode_engine_json :: proc(json_text: string, scratch: mem.Allocator) -> (json.Value, Parse_Fault) {
 	assert(len(json_text) > 0, "an empty input is Empty_Input, settled before this point")
@@ -294,7 +299,7 @@ decode_engine_json :: proc(json_text: string, scratch: mem.Allocator) -> (json.V
 		return nil, .Too_Deeply_Nested
 	}
 
-	root, decode_err := json.parse(json_text, .JSON, true, scratch)
+	root, decode_err := json.parse(json_text, .JSON, false, scratch)
 	if decode_err != nil {
 		return nil, .Malformed_Json
 	}
@@ -584,15 +589,18 @@ read_cue :: proc(entry: json.Value, allocator: mem.Allocator) -> (cue: Cue, faul
 	return cue, .None
 }
 
-// The widest offset this parser will read, either sign: 2^53 milliseconds, the
-// largest integer an f64 still represents exactly. Past it a JSON float has
-// already lost the value it was written with, so converting is guessing.
+// The widest offset this parser will read, either sign: 2^53 - 1 milliseconds,
+// about 285,000 years.
 //
-// Untyped, so the one number serves both branches of read_millis: naming it
-// twice, once per width, is how the two branches came to disagree about where
-// the limit was.
+// Every number in the Engine's JSON reaches read_millis as an f64, and an f64
+// represents every integer up to 2^53 exactly. The limit sits one BELOW that,
+// and the gap is the entire guard: at 2^53 the spacing between representable
+// values becomes two, so the literal 2^53 + 1 rounds DOWN onto 2^53, and a limit
+// set there would read back a number nobody wrote. Below 2^53 rounding is
+// monotonic and exact, so no literal outside this range can arrive inside it and
+// no literal inside it arrives as anything else.
 @(private)
-READABLE_MS :: 1 << 53
+READABLE_MS :: (1 << 53) - 1
 
 // The range check in read_millis is the only thing keeping the conversion to
 // Millis from overflowing, and it does that job only while the limit it checks
@@ -611,26 +619,23 @@ READABLE_MS :: 1 << 53
 // anywhere -- which is why parse_cues also refuses a Cue set whose final offset
 // is zero over a Recording that is not.
 //
-// Both number forms are accepted here AND parse_cues passes `parse_integers`:
-// the flag on its own is one brace, not a belt. The tokenizer classifies on the
-// decimal point, so `4380.0` stays a Float under that flag and would start
-// reading as zero the day an Engine release writes it that way.
+// THE ESCAPE IS NOT TO PASS THE FLAG. Passing it trades an offset that is
+// silently ZERO for one that is silently WRONG, which is strictly worse:
+// `core:encoding/json` reads an integer token with `strconv.parse_i64`, and
+// parse_i64 WRAPS on overflow and reports ok = true, so there is no failure to
+// read even if the discarded error were read. `99999999999999999999999` arrives
+// as 200376420520689663 -- about six million years, which a range check can at
+// least see -- and `18446744073709556616`, which is 2^64 + 5000, arrives as
+// 5000. Nothing can see that one: 5000 is an ordinary offset, and the token text
+// it was written as is gone by the time this sees the value.
 //
-// THE RANGE CHECK IS ON BOTH BRANCHES, and it has to be. `core:encoding/json`
-// reads an integer token with `strconv.parse_i64` and discards the error -- but
-// the error is not even set: parse_i64 WRAPS on overflow and reports success, so
-// `99999999999999999999999` arrives as 200376420520689663, about six million
-// years, and `170141183460469231731687303715884105728` arrives as 0. There is
-// nothing to read the failure off. The magnitude is the only signal left, which
-// is why the same limit is applied to a number that arrived already parsed.
-//
-// It is not a complete guard and cannot be from here: a literal big enough to
-// wrap back INSIDE the limit -- 18446744073709556616 wraps to 5000 -- is
-// indistinguishable from a Recording that really has a Cue at 5 seconds, and
-// the token text it was written as is gone by the time this sees it. What that
-// case cannot do is escape the parser's other promises: it is still one whole,
-// in-range, ordered offset, and the wrap-to-zero end of it is exactly what
-// check_cue_set refuses.
+// A float carries no such branch. Rounding to f64 is monotonic, so a literal
+// outside READABLE_MS arrives as a number outside READABLE_MS -- that same
+// 2^64 + 5000 arrives as 1.8446744073709556e19 and is refused here -- and a
+// literal inside it arrives exactly. So decode_engine_json asks for no integers
+// at all, and every offset is read from the one form that cannot lie about its
+// own magnitude. `integer-offset-wraps-into-range.json` in the rejected table is
+// what holds that shut.
 @(private)
 read_millis :: proc(offsets: json.Object, key: string) -> (Millis, Parse_Fault) {
 	assert(len(key) > 0, "an offset is read by name; the empty key is a caller defect")
@@ -639,25 +644,20 @@ read_millis :: proc(offsets: json.Object, key: string) -> (Millis, Parse_Fault) 
 	if !present {
 		return 0, .Offset_Missing
 	}
-
-	#partial switch number in value {
-	case json.Integer:
-		if number < -READABLE_MS || number > READABLE_MS {
-			return 0, .Offset_Out_Of_Range
-		}
-		return Millis(number), .None
-	case json.Float:
-		if number != math.trunc(number) {
-			return 0, .Offset_Not_Whole
-		}
-		if number < -READABLE_MS || number > READABLE_MS {
-			return 0, .Offset_Out_Of_Range
-		}
-		converted := Millis(number)
-		assert(f64(converted) == number, "a whole in-range offset did not survive the conversion")
-		return converted, .None
+	number, is_number := value.(json.Float)
+	if !is_number {
+		return 0, .Offset_Not_A_Number
 	}
-	return 0, .Offset_Not_A_Number
+
+	if number != math.trunc(number) {
+		return 0, .Offset_Not_Whole
+	}
+	if number < -READABLE_MS || number > READABLE_MS {
+		return 0, .Offset_Out_Of_Range
+	}
+	converted := Millis(number)
+	assert(f64(converted) == number, "a whole in-range offset did not survive the conversion")
+	return converted, .None
 }
 
 // Renders one operating error as a line naming the input it came from.
