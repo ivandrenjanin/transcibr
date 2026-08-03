@@ -49,17 +49,19 @@ foreign kernel32_probe {
 // Every child this suite starts is BOUNDED, and that is a rule rather than a
 // habit: `odin test` runs what it builds, and a test that starts a child which
 // never exits wedges the sweep behind scripts\common.ps1's ten-minute ceiling
-// with nothing naming the case that did it (issue #27). Three bounds, and every
-// one of them is load-bearing.
+// with nothing naming the case that did it (issue #27). Every bound below is
+// load-bearing.
 //
-// STAY_ALIVE is how a child that must still be running when it is looked at is
-// kept running: `waitfor /t` returns on its own when nobody signals it, so the
-// child ends by itself even if this suite never gets to it -- and no case here
-// signals anything, which is what makes the name a guarantee rather than a
-// convention. Long enough that a loaded machine has not raced past it, short
-// enough that a leaked one is gone before the sweep is.
+// A long-lived child is one told to wait for a signal nobody sends, so it ends by
+// itself after its own timeout even if this suite never gets to it -- see
+// stays_alive for why every one of them waits on a DIFFERENT signal.
 @(private)
-STAY_ALIVE :: "waitfor /t 5 transcibrNobodySignalsThis"
+ALIVE_SECONDS :: 5
+
+// The one case that has to still be running long after a bound has run out; see
+// KILL_BOUND_MS.
+@(private)
+LONGER_SECONDS :: 25
 
 // The ceiling on waiting for any child to exit. Generous against a cold or
 // loaded machine and still far under the sweep's own budget: what it bounds is a
@@ -69,19 +71,16 @@ STAY_ALIVE :: "waitfor /t 5 transcibrNobodySignalsThis"
 @(private)
 BOUND_MS :: u32(60_000)
 
-// A child for the one case that must still be running long AFTER a bound has
-// run out, and the bound that goes with it.
+// The bound on waiting for a child that a closed job object should have ended.
 //
-// MEASURED, and the reason both exist: the job-object case below first waited
-// BOUND_MS for the child to end, and with the kill-on-close limit mutated away
-// it still passed -- because `waitfor /t 5` ends by itself well inside a
-// sixty-second wait, and a case cannot tell "the job object ended it" from "it
+// MEASURED, and the reason it is not BOUND_MS: the job-object case below first
+// waited sixty seconds for the child to end, and with the kill-on-close limit
+// mutated away it STILL passed -- because the child ends by itself well inside
+// sixty seconds, and the case could not tell "the job object ended it" from "it
 // finished". A wait bound has to be far shorter than the child's own life or it
 // measures the child's patience instead of the mechanism. Closing a job object
-// ends its members in microseconds, so five seconds is generous by four orders
-// of magnitude and still twenty short of the child.
-@(private)
-STAY_LONGER :: "waitfor /t 25 transcibrNobodySignalsThis"
+// ends its members in microseconds, so five seconds is generous by four orders of
+// magnitude and still twenty short of the child.
 @(private)
 KILL_BOUND_MS :: u32(5_000)
 
@@ -154,6 +153,40 @@ scratch_path :: proc(t: ^testing.T, name: string, allocator := context.allocator
 		name,
 		allocator = allocator,
 	)
+}
+
+// The name of a signal nobody ever sends, unique to this run AND to the case that
+// asks for it.
+//
+// UNIQUE IS NOT TIDINESS. `waitfor` registers its signal name machine-wide, and a
+// second instance asking for a name already registered fails at once with
+// "ERROR: Cannot wait for the specified signal" -- measured directly, and
+// measured the hard way first. Five cases here shared one name, and under the
+// sweep's own concurrency the children that were supposed to outlive a check
+// exited immediately instead, turning a different case red on each run. The
+// process identifier keeps two sweeps in one checkout apart as well, which is a
+// thing scripts\selftest.ps1 does on purpose.
+@(private)
+lonely_signal :: proc(tag: string, allocator := context.allocator) -> string {
+	assert(len(tag) > 0, "a signal name shared by two cases is a signal one of them cannot have")
+
+	return fmt.aprintf(
+		"transcibrNoSignal%d%s",
+		win32.GetCurrentProcessId(),
+		tag,
+		allocator = allocator,
+	)
+}
+
+// A command that keeps a child running and then ends it, whatever this suite does
+// or fails to do: `waitfor /t` returns on its own when nobody signals it, and
+// nothing here ever signals anything.
+@(private)
+stays_alive :: proc(seconds: int, tag: string, allocator := context.allocator) -> string {
+	name := lonely_signal(tag, allocator)
+	defer delete(name, allocator)
+
+	return fmt.aprintf("waitfor /t %d %s", seconds, name, allocator = allocator)
 }
 
 @(test)
@@ -232,12 +265,15 @@ diagnostic_output_is_readable_while_the_child_is_still_running :: proc(t: ^testi
 		return
 	}
 
-	c, err := start(
-		&group,
-		CMD,
-		{"/c", "echo first 1>&2 & " + STAY_ALIVE + " & echo second 1>&2"},
-		context.allocator,
+	alive := stays_alive(ALIVE_SECONDS, "readwhilerunning")
+	defer delete(alive, context.allocator)
+	command := fmt.aprintf(
+		"echo first 1>&2 & %s & echo second 1>&2",
+		alive,
+		allocator = context.allocator,
 	)
+	defer delete(command, context.allocator)
+	c, err := start(&group, CMD, {"/c", command}, context.allocator)
 	defer close(&c)
 	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
 		return
@@ -311,6 +347,12 @@ the_diagnostic_pipe_reaches_end_of_stream_once_the_child_is_gone :: proc(t: ^tes
 // one word on its diagnostic output. Both halves are the test: reaching the word
 // is what proves the child was never blocked, and it cannot be reached by a child
 // stopped part-way through the first half.
+//
+// MEASURED against the mutant it exists to catch. Point hStdOutput at the
+// diagnostic pipe instead of the null device and this case fails in exactly the
+// way ADR-0004 describes -- the child wedges at the pipe buffer and never
+// finishes, and the case reports "the child never finished writing to standard
+// output" after its full sixty-second bound.
 @(test)
 standard_output_goes_to_the_null_device :: proc(t: ^testing.T) {
 	path := scratch_path(t, "stdout-volume")
@@ -332,9 +374,22 @@ standard_output_goes_to_the_null_device :: proc(t: ^testing.T) {
 		return
 	}
 
-	command := fmt.aprintf("type \"%s\" & echo drained 1>&2", path, allocator = context.allocator)
-	defer delete(command, context.allocator)
-	c, err := start(&group, CMD, {"/c", command}, context.allocator)
+	// `&&` and not `&`, and the path as its OWN argument. Both are what make this
+	// case say anything at all.
+	//
+	// `&&` runs the echo only if `type` SUCCEEDED, so the word arriving is proof
+	// the whole file went to standard output rather than proof the child reached
+	// the end of its command line. With a plain `&` the case passed whether the
+	// file was read or not -- which it was not, because the path was inside a
+	// single command string: build_command_line escapes a quote as `\"`, which is
+	// the rule CommandLineToArgvW reads and NOT the rule cmd.exe reads, so cmd was
+	// handed a path with backslashes still on it and `type` failed every time.
+	c, err := start(
+		&group,
+		CMD,
+		{"/c", "type", path, "&&", "echo", "drained", "1>&2"},
+		context.allocator,
+	)
 	defer close(&c)
 	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
 		return
@@ -392,7 +447,9 @@ a_child_inherits_nothing_but_the_streams_it_was_given :: proc(t: ^testing.T) {
 	}
 	defer close(&listener)
 
-	c, err := start(&group, CMD, {"/c", STAY_ALIVE}, context.allocator)
+	alive := stays_alive(ALIVE_SECONDS, "inheritance")
+	defer delete(alive, context.allocator)
+	c, err := start(&group, CMD, {"/c", alive}, context.allocator)
 	defer close(&c)
 	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
 		return
@@ -435,7 +492,9 @@ one_childs_pipe_ends_while_another_child_is_still_running :: proc(t: ^testing.T)
 
 	brief, brief_err := start(&group, CMD, {"/c", "echo brief 1>&2"}, context.allocator)
 	defer close(&brief)
-	lasting, lasting_err := start(&group, CMD, {"/c", STAY_ALIVE}, context.allocator)
+	alive := stays_alive(ALIVE_SECONDS, "twoatonce")
+	defer delete(alive, context.allocator)
+	lasting, lasting_err := start(&group, CMD, {"/c", alive}, context.allocator)
 	defer close(&lasting)
 	if !testing.expectf(t, brief_err.fault == .None, "the brief child: %v", brief_err.fault) {
 		return
@@ -503,7 +562,9 @@ a_child_is_put_in_a_job_object_that_ends_its_members_when_it_closes :: proc(t: ^
 		"the job object does not end its members when it closes, so it contains nothing",
 	)
 
-	c, err := start(&group, CMD, {"/c", STAY_ALIVE}, context.allocator)
+	alive := stays_alive(ALIVE_SECONDS, "jobmembership")
+	defer delete(alive, context.allocator)
+	c, err := start(&group, CMD, {"/c", alive}, context.allocator)
 	defer close(&c)
 	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
 		return
@@ -529,7 +590,9 @@ closing_the_job_object_ends_a_child_that_is_still_running :: proc(t: ^testing.T)
 		return
 	}
 
-	c, err := start(&group, CMD, {"/c", STAY_LONGER}, context.allocator)
+	alive := stays_alive(LONGER_SECONDS, "jobclose")
+	defer delete(alive, context.allocator)
+	c, err := start(&group, CMD, {"/c", alive}, context.allocator)
 	defer close(&c)
 	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
 		return
@@ -577,6 +640,46 @@ taken_exclusively :: proc(path: string) -> bool {
 	return true
 }
 
+// The bound this case gives stop, and it is the case's whole discrimination.
+//
+// MEASURED. With stop's own thirty-second default, a stop that terminated only
+// the child and not the tree still PASSED -- it waited twenty-five seconds for
+// the process the child had started to finish on its own, and then everything was
+// true. Correct on that child and useless on a real one: the Engine holds its
+// output for hours, so "eventually it finished by itself" is not stopping.
+// Terminating a job object ends its members in microseconds, so three seconds
+// passes the mechanism and fails the impostor.
+@(private)
+STOP_BOUND :: u32(3_000)
+
+// The bound on waiting for a file to come free after its holder is gone.
+//
+// Not slack in the claim being made, and it has to be read against the
+// twenty-five seconds the child would still be holding the file if stop had come
+// back early: three seconds is an eighth of that, so a stop that left the child
+// running still fails. What it absorbs is somebody ELSE opening the file in the
+// instant after the child let go -- real-time virus scanning opens a file when
+// its last handle closes, which is exactly this moment, and that is a race no
+// case here can win by asserting harder. Without it this case failed about one
+// sweep in three.
+@(private)
+FREED_BOUND :: 3 * time.Second
+
+// Whether the file comes free, under that bound.
+@(private)
+freed_within_bound :: proc(path: string) -> bool {
+	started := time.tick_now()
+	for {
+		if taken_exclusively(path) {
+			return true
+		}
+		if time.tick_since(started) >= FREED_BOUND {
+			return false
+		}
+		time.sleep(5 * time.Millisecond)
+	}
+}
+
 // Waits until the child has the file open, under a bound. A child that never got
 // that far would make the case below pass on a file nobody was holding.
 @(private)
@@ -597,10 +700,18 @@ held_by_the_child :: proc(path: string) -> bool {
 // artifacts it was writing (ADR-0002).
 //
 // So the file is the measurement. The child holds one open for as long as it
-// runs; this case takes it the instant stop returns, with no retry and no sleep
-// anywhere. An exclusive open conflicts with any handle at all, so it can only
-// succeed if the child is really gone -- and a stop that returned while the child
-// was still dying fails here rather than somewhere downstream a week later.
+// runs, and an exclusive open conflicts with any handle at all, so the file comes
+// free only when nothing is holding it.
+//
+// MEASURED against both ways of getting stop wrong:
+//
+//   terminate the child and not the tree   -> "the child did not stop within the
+//                                             bound", after three seconds
+//   terminate and come straight back       -> "stop came back with the child
+//                                             still running", at once
+//
+// The first is the mistake that was actually made here, and it is caught by the
+// bound rather than by the file: see STOP_BOUND.
 @(test)
 a_stopped_child_has_let_go_of_the_file_it_held :: proc(t: ^testing.T) {
 	path := scratch_path(t, "held-open")
@@ -619,12 +730,19 @@ a_stopped_child_has_let_go_of_the_file_it_held :: proc(t: ^testing.T) {
 	// CommandLineToArgvW reads and NOT the rule cmd.exe reads, so a quoted path
 	// buried in a single command string reaches cmd with the backslashes still on
 	// it. As its own argument it is quoted once, by us, and cmd sees a path.
-	c, err := start(
-		&group,
-		CMD,
-		{"/c", "(waitfor", "/t", "25", "transcibrNobodySignalsThis)", ">", path},
-		context.allocator,
-	)
+	// Spelled as SEPARATE, space-free arguments so that only the path is quoted.
+	// cmd.exe strips the outer quotes of a `/c` string when its first character is
+	// one, and the quote it removes is the LAST on the line -- which would be the
+	// path's own closing quote on a machine whose temp directory holds a space.
+	name := lonely_signal("heldopen", context.allocator)
+	defer delete(name, context.allocator)
+	block := fmt.aprintf("%s)", name, allocator = context.allocator)
+	defer delete(block, context.allocator)
+	seconds := fmt.aprintf("%d", LONGER_SECONDS, allocator = context.allocator)
+	defer delete(seconds, context.allocator)
+
+	arguments := [?]string{"/c", "(waitfor", "/t", seconds, block, ">", path}
+	c, err := start(&group, CMD, arguments[:], context.allocator)
 	defer close(&c)
 	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
 		return
@@ -638,12 +756,16 @@ a_stopped_child_has_let_go_of_the_file_it_held :: proc(t: ^testing.T) {
 		return
 	}
 
-	testing.expect(t, stop(&c), "the child did not stop within the bound")
-	testing.expect(
-		t,
-		taken_exclusively(path),
-		"the file the child held was still open when stop came back",
-	)
+	testing.expect(t, stop(&c, STOP_BOUND), "the child did not stop within the bound")
+
+	// Asked FIRST and with no waiting of any kind: this is what catches a stop
+	// that terminated and came straight back. The file below is the other half --
+	// what the child, or anything the child started, was still holding.
 	_, gone := exit_code(&c)
 	testing.expect(t, gone, "stop came back with the child still running")
+	testing.expect(
+		t,
+		freed_within_bound(path),
+		"the file the child held was still open when stop came back",
+	)
 }
