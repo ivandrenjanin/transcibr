@@ -1,5 +1,6 @@
 package transcript
 
+import "core:fmt"
 import "core:mem"
 import "core:strings"
 import "core:time"
@@ -107,7 +108,31 @@ render_markdown :: proc(
 	defer strings.builder_destroy(&out)
 
 	write_front_matter(&out, rc, allocator)
+
+	// When the next Anchor is allowed, which starts at the beginning of the
+	// Recording so the FIRST Paragraph always carries one: a Transcript whose
+	// opening prose is unplaced gives a reader nothing at all to seek to.
+	//
+	// The interval bounds how often an Anchor may appear, and never where one
+	// falls: the Anchor names the Paragraph's own start, because the boundary that
+	// made it due is a moment nobody spoke at, and a reader who seeks there hears
+	// the tail of the passage before.
+	due := Millis(0)
+	previous := Millis(0)
 	for paragraph in paragraphs {
+		// What merge_paragraphs hands back, checked the way every consumer in this
+		// package checks a Cue set on the way in (CLAUDE.md A4). Anchors are placed
+		// by comparing each start against the last one due, so a set whose starts
+		// went backwards would anchor one minute repeatedly and leave the stretch
+		// after it with none.
+		assert(paragraph.start >= previous, "rendering a paragraph set that runs backwards")
+		previous = paragraph.start
+
+		if paragraph.start >= due {
+			write_anchor(&out, paragraph.start)
+			due = paragraph.start + anchor_every_ms
+			assert(due > paragraph.start, "an anchor that is due again the moment it is placed")
+		}
 		strings.write_byte(&out, '\n')
 		strings.write_string(&out, paragraph.text)
 		strings.write_byte(&out, '\n')
@@ -121,6 +146,42 @@ render_markdown :: proc(
 	assert(strings.has_prefix(markdown, FENCE), "a transcript that opens with no front matter")
 	assert(strings.index_byte(markdown, '\r') == -1, "a carriage return reached the document")
 	return
+}
+
+// What an Anchor is written as: a Markdown heading, so that every viewer there
+// is puts it in an outline a reader can jump through.
+//
+// A heading and not bold text or a bare line, because "find my place in the
+// Recording" (spec story 33) is navigation, and navigation is what an outline
+// is. The level is the second: a Transcript has no title of its own -- the front
+// matter carries the source -- so nothing sits above these for them to nest
+// under, and starting at the first level would make each Anchor look like the
+// heading of a separate document when several are pasted together.
+@(private)
+ANCHOR_HEADING :: "## "
+
+// Writes an Anchor naming a moment in the Recording, as `hh:mm:ss`.
+//
+// Hours RUN ON past twenty-four rather than wrapping into days: a Recording
+// longer than a day is unusual and not impossible, and an Anchor that wrapped
+// would send a reader seeking `01:00:00` to whichever of the two hours they
+// looked at first. Truncated rather than rounded to the second, because an
+// Anchor rounded up names a moment its Paragraph had not reached.
+@(private)
+write_anchor :: proc(out: ^strings.Builder, at: Millis) {
+	assert(out != nil, "there is no document here to place an anchor in")
+	// An offset is a count from the start of the Recording, so there is nothing
+	// before zero to anchor. parse_cues refuses a negative offset on the way in
+	// (CLAUDE.md A4); this is the same claim where the number is finally read.
+	assert(at >= 0, "an anchor at a moment before the recording started")
+
+	seconds := i64(at) / 1_000
+	assert(seconds >= 0, "a non-negative offset counted out a negative number of seconds")
+
+	strings.write_byte(out, '\n')
+	strings.write_string(out, ANCHOR_HEADING)
+	fmt.sbprintf(out, "%02d:%02d:%02d", seconds / 3_600, (seconds % 3_600) / 60, seconds % 60)
+	strings.write_byte(out, '\n')
 }
 
 // Writes the block a Transcript found on its own months later is read by.

@@ -151,6 +151,207 @@ the_document_ends_with_exactly_one_newline :: proc(t: ^testing.T) {
 	testing.expect(t, out[len(out) - 2] != '\n', "the document ends with a blank line")
 }
 
+// ---------------------------------------------------------------------------
+// Anchors: "a timestamp Anchor every few minutes rather than on every line, so
+// that I can find my place in the Recording without the text becoming a table"
+// (spec story 33).
+//
+// Every case below pins its OWN interval rather than reading ANCHOR_INTERVAL_MS,
+// except where the shipped interval is the thing under test. Five minutes is
+// taste, the placement rule is not, and a suite that read the constant would
+// have to be rewritten the day the constant is tuned.
+// ---------------------------------------------------------------------------
+
+// How many Anchors a rendered Transcript carries.
+//
+// Counted off the line start, which is what makes the count trustworthy: prose
+// can never open a line with `##`, because escaping puts a backslash in front of
+// a `#` that lands there.
+@(private)
+anchors_in :: proc(markdown: string) -> int {
+	return strings.count(markdown, "\n## ")
+}
+
+// The first Anchor's time, without its heading or its newline, or "" where the
+// document carries no Anchor at all.
+@(private)
+first_anchor_of :: proc(markdown: string) -> string {
+	opening := "\n## "
+	at := strings.index(markdown, opening)
+	if at < 0 {
+		return ""
+	}
+	rest := markdown[at + len(opening):]
+	end := strings.index_byte(rest, '\n')
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
+}
+
+// One Paragraph start and the Anchor it must read as.
+@(private)
+Anchor_Case :: struct {
+	start: Millis,
+	reads: string,
+}
+
+@(private, rodata)
+ANCHOR_CASES := []Anchor_Case {
+	{0, "00:00:00"},
+	// Under a second is still the same second. An Anchor is coarse on purpose,
+	// and rounding up would name a moment the Paragraph had not reached yet.
+	{999, "00:00:00"},
+	{1_000, "00:00:01"},
+	{61_000, "00:01:01"},
+	{3_599_999, "00:59:59"},
+	{3_600_000, "01:00:00"},
+	{45_296_000, "12:34:56"},
+	// Past a day. Hours RUN ON rather than wrapping: a reader seeking `01:00:00`
+	// in a twenty-five hour Recording would otherwise be sent to the wrong hour,
+	// and Millis holds far more than any Recording anyone will feed this.
+	{90_000_000, "25:00:00"},
+}
+
+@(test)
+an_anchor_reads_as_hours_minutes_and_seconds :: proc(t: ^testing.T) {
+	for c in ANCHOR_CASES {
+		paragraphs := []Paragraph{{c.start, c.start + 1_000, "Something said."}}
+		out := render_markdown(paragraphs, SAMPLE_CONTEXT, ANCHOR_INTERVAL_MS, context.allocator)
+		defer delete(out, context.allocator)
+
+		testing.expectf(
+			t,
+			first_anchor_of(out) == c.reads,
+			"%d ms anchored as %q, want %q",
+			c.start,
+			first_anchor_of(out),
+			c.reads,
+		)
+	}
+}
+
+// An Anchor names where the Paragraph after it actually starts, not the interval
+// boundary that made it due. The boundary is a moment nobody spoke at, and a
+// reader who seeks to it hears the tail of the passage before.
+@(test)
+an_anchor_stands_in_front_of_a_paragraph_and_names_its_start :: proc(t: ^testing.T) {
+	paragraphs := []Paragraph{{4_380, 8_440, "The first thing said."}}
+	out := render_markdown(paragraphs, SAMPLE_CONTEXT, ANCHOR_INTERVAL_MS, context.allocator)
+	defer delete(out, context.allocator)
+
+	testing.expectf(
+		t,
+		strings.contains(out, "\n## 00:00:04\n\nThe first thing said.\n"),
+		"the anchor does not stand in front of its paragraph:\n%s",
+		out,
+	)
+}
+
+// THE ACCEPTANCE CRITERION: every few minutes, never per Cue.
+//
+// Twelve Paragraphs a minute apart with an Anchor due every five minutes. A
+// renderer anchoring per Paragraph writes twelve; one anchoring correctly writes
+// three, at zero, five and ten minutes.
+@(test)
+anchors_stand_minutes_apart_rather_than_at_every_paragraph :: proc(t: ^testing.T) {
+	MINUTE :: Millis(60_000)
+	paragraphs := make([]Paragraph, 12, context.allocator)
+	defer delete(paragraphs, context.allocator)
+	for &paragraph, i in paragraphs {
+		at := Millis(i) * MINUTE
+		paragraph = Paragraph{at, at + 30_000, "A minute of speech."}
+	}
+
+	out := render_markdown(paragraphs, SAMPLE_CONTEXT, 5 * MINUTE, context.allocator)
+	defer delete(out, context.allocator)
+
+	testing.expectf(
+		t,
+		anchors_in(out) == 3,
+		"twelve paragraphs over eleven minutes carried %d anchors, want 3:\n%s",
+		anchors_in(out),
+		out,
+	)
+	due := []string{"\n## 00:00:00\n", "\n## 00:05:00\n", "\n## 00:10:00\n"}
+	for reads in due {
+		testing.expectf(t, strings.contains(out, reads), "no anchor at %q", reads)
+	}
+}
+
+// The negative space of the interval (CLAUDE.md A3), and the fixture's own
+// shape: seven Cues over half a minute. A Recording that never reaches the
+// interval still gets ONE Anchor, because a Transcript whose first Paragraph is
+// unplaced gives a reader nothing to seek to at all.
+@(test)
+a_recording_shorter_than_one_interval_carries_exactly_one_anchor :: proc(t: ^testing.T) {
+	paragraphs := []Paragraph {
+		{0, 3_480, "The first thing said."},
+		{4_380, 8_440, "The second thing said."},
+		{9_360, 13_980, "The third thing said."},
+	}
+	out := render_markdown(paragraphs, SAMPLE_CONTEXT, ANCHOR_INTERVAL_MS, context.allocator)
+	defer delete(out, context.allocator)
+
+	testing.expectf(
+		t,
+		anchors_in(out) == 1,
+		"%d anchors over half a minute:\n%s",
+		anchors_in(out),
+		out,
+	)
+	testing.expect_value(t, first_anchor_of(out), "00:00:00")
+}
+
+// An Anchor stands BEFORE a Paragraph and never inside one, so a Paragraph
+// running through four intervals carries one and not four. Anchoring by elapsed
+// time rather than by Paragraph would break prose apart to place them, which is
+// the subtitle table story 33 refuses.
+@(test)
+a_paragraph_spanning_several_intervals_carries_one_anchor :: proc(t: ^testing.T) {
+	MINUTE :: Millis(60_000)
+	paragraphs := []Paragraph {
+		{0, 20 * MINUTE, "Twenty minutes of uninterrupted explanation."},
+		{20 * MINUTE + 500, 21 * MINUTE, "And then the next thing."},
+	}
+	out := render_markdown(paragraphs, SAMPLE_CONTEXT, 5 * MINUTE, context.allocator)
+	defer delete(out, context.allocator)
+
+	testing.expectf(
+		t,
+		anchors_in(out) == 2,
+		"a twenty-minute paragraph and its neighbour carried %d anchors, want 2:\n%s",
+		anchors_in(out),
+		out,
+	)
+	testing.expect(
+		t,
+		strings.contains(out, "\n## 00:20:00\n"),
+		"the second paragraph is unanchored",
+	)
+}
+
+// The Engine dates an invention over trailing silence past the end of the
+// Recording -- the fixture's own Cue 7 runs to 59,980 ms over a Recording of
+// 30,356. Nothing clamps, here or anywhere before here: an Anchor naming the
+// Recording's end instead would tell a reader to seek to a moment that holds
+// different speech.
+@(test)
+an_anchor_past_the_end_of_the_recording_is_written_as_it_stands :: proc(t: ^testing.T) {
+	paragraphs := []Paragraph {
+		{0, 29_480, "Everything that was actually said."},
+		{30_000, 59_980, "Thank you."},
+	}
+	out := render_markdown(paragraphs, SAMPLE_CONTEXT, 20_000, context.allocator)
+	defer delete(out, context.allocator)
+
+	testing.expect(
+		t,
+		strings.contains(out, "\n## 00:00:30\n\nThank you.\n"),
+		"the anchor past the recording's end was moved or dropped",
+	)
+}
+
 // LF, on a Windows-only program, deliberately. A Transcript is read by editors
 // and viewers that all take LF, and the alternative is that the golden fixture's
 // bytes depend on what checked it out -- which is the defect .gitattributes
