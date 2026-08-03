@@ -13,6 +13,7 @@ package main
 
 import "core:fmt"
 import "core:os"
+import "core:slice"
 import "core:strings"
 import "core:time"
 import "transcibr:transcript"
@@ -24,19 +25,36 @@ PROGRAM :: "transcibr-cli"
 #assert(len(PROGRAM) > 0)
 
 // What a caller gets told when the command line is not one this binary reads.
+//
+// The `%s` is the Merge Profiles, read out of the table that holds them
+// (transcript.profile_names) rather than spelled here. Spelled here it was a
+// copy of that table living in another package, where no compiler could compare
+// the two: a third profile would go unmentioned, and a renamed one would be
+// offered under a spelling the lookup refuses.
 USAGE :: `usage:
   transcibr-cli
       report the version and exit.
 
-  transcibr-cli --from-json <path> [--profile monologue|conversation]
+  transcibr-cli --from-json <path> [--profile %s]
                 [--source <name>] [--model <name>] [--engine <version>]
       render the transcript for one piece of retained engine output and
       write it to standard output.
 
+  transcibr-cli --help
+      print this and exit.
+
 --source, --model and --engine are what the transcript records about how it
 was made. The engine's own output cannot settle them -- it carries no engine
 version and reports every large model as "large" (ADR-0003) -- so anything
-not given is recorded as "unknown" rather than guessed at.`
+not given, or given empty, is recorded as "unknown" rather than guessed at.`
+
+// The one thing this binary reads that takes no value.
+//
+// Answered BEFORE the loop that reads the rest, because that loop pairs a name
+// off with the argument after it and cannot express a valueless flag at all: it
+// told a caller who typed `--help` that `--help` takes a value. Spec story 45's
+// plan flag is boolean by construction, and is what will make the pairing stop.
+HELP :: "--help"
 
 // What the exit code says. Two failures and not one: a command line this binary
 // cannot read is the caller's to fix, and a Recording's output that will not
@@ -87,6 +105,15 @@ re_render :: proc(arguments: []string) -> int {
 		len(arguments) > 0,
 		"no arguments at all is the version banner, settled before this point",
 	)
+
+	// A caller who ASKED for the usage block gets it on standard output at exit
+	// zero, which is where a script redirecting one expects it. A caller who
+	// typed something this binary cannot read gets it on standard error at exit
+	// two, which is where a script checking one expects it.
+	if slice.contains(arguments, HELP) {
+		write_usage(os.stdout)
+		return 0
+	}
 
 	options, ok := read_options(arguments)
 	if !ok {
@@ -150,7 +177,25 @@ write_transcript :: proc(
 	// os.write_string and not fmt.print: the document's bytes are the
 	// deliverable, and a formatter between them and the handle is one more thing
 	// that could put a byte in that the golden fixture never saw.
-	os.write_string(os.stdout, markdown)
+	//
+	// And the answer is READ, which is the other half of the same argument. A
+	// write to a full disk, or into a pipe whose reader has already gone, stops
+	// part-way -- and a caller told nothing about it holds a truncated Transcript
+	// at exit 0, which is the one outcome ADR-0002's quarantine-and-re-run can
+	// never fire on. Both halves checked (CLAUDE.md A3): an error, and a byte
+	// count short of the document, because a platform reporting one without the
+	// other still wrote less than the deliverable.
+	written, write_err := os.write_string(os.stdout, markdown)
+	if write_err != nil || written != len(markdown) {
+		fmt.eprintfln(
+			"%s: %d of %d bytes of the transcript reached standard output: %v",
+			json_path,
+			written,
+			len(markdown),
+			write_err,
+		)
+		return OPERATING_ERROR
+	}
 	return 0
 }
 
@@ -173,46 +218,32 @@ read_options :: proc(arguments: []string) -> (o: Options, ok: bool) {
 		assert(len(o.json_path) == 0, "refused a command line and kept what it asked for")
 	}
 
-	// What a Transcript records where nobody could settle it. Set BEFORE the
-	// loop, so a flag left off is "unknown" rather than an empty field the
-	// renderer would refuse.
-	o.rc.model = transcript.UNKNOWN
-	o.rc.engine_version = transcript.UNKNOWN
-	o.rc.profile = .Monologue
+	// The Merge Profile a caller who chose none is merged under, read from the
+	// package that holds the profiles rather than spelled here as a bare enum
+	// member: the window ADR-0004 promises has to produce the same bytes from the
+	// same input (spec story 44), and this shell is not where either binary's
+	// default belongs.
+	o.rc.profile = transcript.DEFAULT_PROFILE
 
 	for at := 0; at < len(arguments); at += 2 {
 		name := arguments[at]
 		if at + 1 >= len(arguments) {
-			fmt.eprintfln("%s takes a value.\n\n%s", name, USAGE)
-			return {}, false
+			// Every option below takes a value, so a name standing at the end of
+			// the command line is either one of them missing its value or not an
+			// option at all -- and telling those apart here needs a second copy of
+			// the switch below, which is a list that goes stale. So this says what
+			// it saw, and the usage block beneath it names every option there is.
+			// `--help` is the one flag that takes no value, and it is settled
+			// before this loop runs.
+			return {}, refuse("%q stands at the end of the command line with no value after it.", name)
 		}
-		value := arguments[at + 1]
-
-		switch name {
-		case "--from-json":
-			o.json_path = value
-		case "--source":
-			o.rc.source_display = value
-		case "--model":
-			o.rc.model = value
-		case "--engine":
-			o.rc.engine_version = value
-		case "--profile":
-			profile, known := transcript.profile_named(value)
-			if !known {
-				fmt.eprintfln("no merge profile called %q.\n\n%s", value, USAGE)
-				return {}, false
-			}
-			o.rc.profile = profile
-		case:
-			fmt.eprintfln("unknown option %q.\n\n%s", name, USAGE)
+		if !read_option(&o, name, arguments[at + 1]) {
 			return {}, false
 		}
 	}
 
 	if len(o.json_path) == 0 {
-		fmt.eprintfln("nothing to render.\n\n%s", USAGE)
-		return {}, false
+		return {}, refuse("nothing to render.")
 	}
 	// The Recording's own name is what a reader goes looking for, but this binary
 	// is handed the Engine's output and not the Recording. Naming the file it
@@ -221,5 +252,77 @@ read_options :: proc(arguments: []string) -> (o: Options, ok: bool) {
 	if len(o.rc.source_display) == 0 {
 		o.rc.source_display = o.json_path
 	}
+	// What a Transcript records where nobody could settle it, applied AFTER the
+	// loop and not before it. Set only before, `--model ""` and `--engine ""`
+	// overwrote the word with an empty field and tripped the assertions above --
+	// a command line crashing this binary, which is exactly what CLAUDE.md A8
+	// forbids: a command line is outside this program and nothing outside it may
+	// crash it. A caller who named nothing named nothing, however they spelled
+	// it, and absent provenance beats wrong provenance (ADR-0003).
+	if len(o.rc.model) == 0 {
+		o.rc.model = transcript.UNKNOWN
+	}
+	if len(o.rc.engine_version) == 0 {
+		o.rc.engine_version = transcript.UNKNOWN
+	}
 	return o, true
+}
+
+// Applies one option to what the command line has said so far, or says what is
+// wrong with it.
+//
+// A procedure of its own so read_options stays inside CLAUDE.md rule F1 -- and
+// because this is the list of what a caller may type, which is one thing, while
+// the loop around it is the shape of a command line, which is another.
+@(private)
+read_option :: proc(o: ^Options, name, value: string) -> (ok: bool) {
+	assert(o != nil, "there is nothing here to read an option into")
+	// Nothing here asserts against what a caller TYPED (CLAUDE.md A8); this is
+	// about the loop that hands it over, which is this program's own.
+	assert(len(name) > 0, "an option with no name at all is not something a caller can type")
+
+	switch name {
+	case "--from-json":
+		o.json_path = value
+	case "--source":
+		o.rc.source_display = value
+	case "--model":
+		o.rc.model = value
+	case "--engine":
+		o.rc.engine_version = value
+	case "--profile":
+		profile, known := transcript.profile_named(value)
+		if !known {
+			return refuse("no merge profile called %q.", value)
+		}
+		o.rc.profile = profile
+	case:
+		return refuse("unknown option %q.", name)
+	}
+	return true
+}
+
+// Says what is wrong with the command line, and what one looks like.
+//
+// Every refusal above goes through here, so none of them can forget the usage
+// block and none of them writes it to the wrong stream. It hands back `false`
+// so a caller can refuse in the one line it took to notice.
+@(private)
+refuse :: proc(complaint: string, args: ..any) -> (ok: bool) {
+	fmt.eprintf(complaint, ..args)
+	fmt.eprint("\n\n")
+	write_usage(os.stderr)
+	return false
+}
+
+// Writes the usage block, with the Merge Profiles read out of the table that
+// holds them.
+@(private)
+write_usage :: proc(to: ^os.File) {
+	assert(to != nil, "there is nowhere to write the usage block")
+
+	offered := transcript.profile_names(context.allocator)
+	defer delete(offered, context.allocator)
+
+	fmt.fprintfln(to, USAGE, offered)
 }
