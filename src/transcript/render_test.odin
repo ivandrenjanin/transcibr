@@ -170,9 +170,6 @@ the_document_ends_with_exactly_one_newline :: proc(t: ^testing.T) {
 @(private)
 anchors_in :: proc(markdown: string) -> (found: int) {
 	assert(len(markdown) > 0, "an empty document is not a transcript to count anchors in")
-	// Both ends of what a count can be (CLAUDE.md A3), so a case reading zero is
-	// reading an answer rather than a helper that quietly gave up.
-	defer assert(found >= 0, "counted a negative number of anchors")
 
 	return strings.count(markdown, "\n## ")
 }

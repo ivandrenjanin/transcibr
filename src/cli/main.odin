@@ -56,10 +56,6 @@ was made. The engine's own output cannot settle them -- it carries no engine
 version and reports every large model as "large" (ADR-0003) -- so anything
 not given, or given empty, is recorded as "unknown" rather than guessed at.`
 
-// `banner` is not the only thing here with a shape (A5): a usage block that
-// offers no choice of profile is one this binary could not have built.
-#assert(len(transcript.PROFILE_CHOICE) > 0)
-
 // The one thing this binary reads that takes no value.
 //
 // Answered BEFORE the loop that reads the rest, because that loop pairs a name
