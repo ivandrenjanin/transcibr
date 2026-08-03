@@ -2,15 +2,19 @@ package transcript
 
 import "core:testing"
 
-// The thresholds every test below pins for itself. Named here so the cases read
-// as "more than three sayings, spread over more than twenty seconds" rather than
-// as two numbers repeated down the file -- and stated in the TEST rather than
-// taken from COLLAPSE_DEFAULT, because those are taste and are expected to move
-// (ADR-0007). A test that read them would change its meaning when they did.
+// The thresholds the cases below pin for themselves. Named here so they read as
+// "fourteen sayings of one phrase, three of them kept" rather than as two numbers
+// repeated down the file -- and stated in the TEST rather than taken from
+// COLLAPSE_THRESHOLDS, because a case that read the shipped constant would change
+// its meaning when the constant was tuned.
+//
+// The shipped constant gets cases of its own, above and below, and those are the
+// ones that stop it being tuned into something that strips everything or nothing
+// (ADR-0016).
 @(private)
 PINNED_COLLAPSE :: Collapse_Params {
-	max_run    = 3,
-	min_run_ms = 20_000,
+	max_run      = 3,
+	invention_at = 14,
 }
 
 // ADR-0001's measured case, laid out as it was measured: 16 identical Cues of
@@ -70,11 +74,15 @@ Real_Repetition :: struct {
 	gap_ms:      Millis,
 }
 
-// Five of the six rows say the phrase MORE than PINNED_COLLAPSE.max_run times,
-// which is the point: a filter that counted sayings and stopped there would
-// truncate every one of them. What saves them is that real repetition is fast --
-// the slowest row here is over in eleven seconds, against the four and a half
-// minutes the Engine spent inventing "you" (ADR-0001).
+// Ten of the eleven rows say the phrase MORE than PINNED_COLLAPSE.max_run times,
+// which is the point: a filter that condemned a run the moment it passed what
+// survives it would truncate every one of them.
+//
+// The rows deliberately span the clock from end to end -- a stutter over in a
+// second, a hold announcement over three and a half minutes -- because the whole
+// of ADR-0016 is that elapsed time does not tell these apart from an invention.
+// The row that says so loudest is the hold announcement: it repeats every half a
+// minute, which is SLOWER than the Engine's measured invention of "you".
 @(private, rodata)
 REAL_REPETITIONS := []Real_Repetition {
 	{
@@ -129,78 +137,67 @@ REAL_REPETITIONS := []Real_Repetition {
 		duration_ms = 1_400,
 		gap_ms = 1_600,
 	},
+	{
+		// A meditation instructor, and the worked example the source comment
+		// itself offers as the false positive it is willing to make: five
+		// sayings across twenty-eight and a half seconds.
+		name = "an instruction repeated slowly",
+		text = " Breathe.",
+		count = 5,
+		duration_ms = 1_500,
+		gap_ms = 5_250,
+	},
+	{
+		// A parent calling a child in from the garden. Seven sayings, and the
+		// pauses between them are the listening.
+		name = "calling somebody who is not answering",
+		text = " Sam!",
+		count = 7,
+		duration_ms = 500,
+		gap_ms = 2_500,
+	},
+	{
+		// A language drill: the same word said back ten times over, with the
+		// teacher's correction in the silence between.
+		name = "a vocabulary drill",
+		text = " Bonjour.",
+		count = 10,
+		duration_ms = 900,
+		gap_ms = 3_100,
+	},
+	{
+		// THE row that says a rate cannot separate the two populations. A
+		// hold announcement repeats every half a minute, which is SLOWER than
+		// the Engine's measured invention of " you" -- one saying every
+		// seventeen seconds (ADR-0001). Anything reading "sparse means
+		// invented" deletes three and a half minutes of a real recording.
+		name = "a call-hold announcement",
+		text = " Your call is important to us.",
+		count = 8,
+		duration_ms = 2_400,
+		gap_ms = 27_600,
+	},
+	{
+		// The longest real repetition collected, and the row that pins the
+		// ceiling from below: eleven sayings across two and three-quarter
+		// minutes of a guided meditation.
+		name = "a guided meditation",
+		text = " Breathe in, and out.",
+		count = 11,
+		duration_ms = 1_800,
+		gap_ms = 14_400,
+	},
 }
 
-@(test)
-legitimately_repeated_speech_survives :: proc(t: ^testing.T) {
-	for said in REAL_REPETITIONS {
-		shape := make([dynamic]Shaped_Cue, context.allocator)
-		defer delete(shape)
-		say_repeatedly(&shape, said.text, said.count, said.duration_ms, said.gap_ms)
-
-		cues := shaped_cues(shape[:], context.allocator)
-		defer delete(cues, context.allocator)
-
-		kept := collapse_repetition(cues, PINNED_COLLAPSE, context.allocator)
-		defer destroy_cues(kept, context.allocator)
-
-		if !testing.expectf(
-			t,
-			len(kept) == len(cues),
-			"%s: %d of the %d sayings of %q survived",
-			said.name,
-			len(kept),
-			len(cues),
-			said.text,
-		) {
-			continue
-		}
-		for cue, i in cues {
-			testing.expectf(t, kept[i] == cue, "%s: saying %d came back as %v", said.name, i + 1, kept[i])
-		}
-	}
-}
-
-// The shipped thresholds against the same speech. PINNED_COLLAPSE is what the
-// cases above are stated in, so nothing there would notice COLLAPSE_DEFAULT
-// being tuned into something that strips real words -- and the shipped constant
-// is the one every Recording is actually run through.
-@(test)
-the_shipped_collapse_thresholds_leave_real_speech_alone :: proc(t: ^testing.T) {
-	for said in REAL_REPETITIONS {
-		shape := make([dynamic]Shaped_Cue, context.allocator)
-		defer delete(shape)
-		say_repeatedly(&shape, said.text, said.count, said.duration_ms, said.gap_ms)
-
-		cues := shaped_cues(shape[:], context.allocator)
-		defer delete(cues, context.allocator)
-
-		kept := collapse_repetition(cues, COLLAPSE_DEFAULT, context.allocator)
-		defer destroy_cues(kept, context.allocator)
-
-		testing.expectf(
-			t,
-			len(kept) == len(cues),
-			"%s: the shipped thresholds kept %d of the %d sayings of %q",
-			said.name,
-			len(kept),
-			len(cues),
-			said.text,
-		)
-	}
-}
-
-// Why there are two thresholds and not one, said in checked code rather than in
-// a comment (CLAUDE.md A6).
-//
-// The same rows, run through a span threshold low enough that every run clears
-// it -- which is what a cap on LENGTH alone is. Every row saying its phrase more
-// than max_run times loses the difference, and those are real words nobody would
-// have missed.
-@(test)
-a_cap_on_length_alone_would_delete_real_words :: proc(t: ^testing.T) {
-	length_only := Collapse_Params{max_run = PINNED_COLLAPSE.max_run, min_run_ms = 1}
-	truncated := 0
+// Every row of the table through one set of thresholds, reporting how many rows
+// came back short. Whatever survives is checked BYTE FOR BYTE against what went
+// in, on every row and under every threshold set: a row that came back the right
+// LENGTH with the wrong Cues in it is the same silent deletion by another route.
+@(private)
+real_repetitions_truncated :: proc(t: ^testing.T, p: Collapse_Params, whose: string) -> (truncated: int) {
+	assert(len(REAL_REPETITIONS) > 0, "no real repetitions to run past the thresholds")
+	assert(len(whose) > 0, "a report naming no thresholds says nothing about which ones failed")
+	defer assert(truncated <= len(REAL_REPETITIONS), "counted more rows truncated than there were rows")
 
 	for said in REAL_REPETITIONS {
 		shape := make([dynamic]Shaped_Cue, context.allocator)
@@ -210,17 +207,134 @@ a_cap_on_length_alone_would_delete_real_words :: proc(t: ^testing.T) {
 		cues := shaped_cues(shape[:], context.allocator)
 		defer delete(cues, context.allocator)
 
-		kept := collapse_repetition(cues, length_only, context.allocator)
+		kept := collapse_repetition(cues, p, context.allocator)
 		defer destroy_cues(kept, context.allocator)
 
 		if len(kept) < len(cues) {
 			truncated += 1
 		}
+		for cue, i in kept {
+			testing.expectf(
+				t,
+				cue == cues[i],
+				"%s, %s: saying %d came back as %v",
+				whose,
+				said.name,
+				i + 1,
+				cue,
+			)
+		}
+	}
+	return
+}
+
+@(test)
+legitimately_repeated_speech_survives :: proc(t: ^testing.T) {
+	testing.expect_value(t, real_repetitions_truncated(t, PINNED_COLLAPSE, "the pinned thresholds"), 0)
+}
+
+// The same speech through the constant that actually ships. PINNED_COLLAPSE is
+// what the cases above are stated in, so nothing there would notice
+// COLLAPSE_THRESHOLDS being tuned into something that strips real words -- and
+// the shipped constant is the one every Recording is run through.
+//
+// This is the case that holds invention_at DOWN. The longest row is eleven
+// sayings, so a ceiling dropped to eleven deletes a real guided meditation and
+// this fails (ADR-0016).
+@(test)
+the_shipped_collapse_thresholds_leave_real_speech_alone :: proc(t: ^testing.T) {
+	testing.expect_value(t, real_repetitions_truncated(t, COLLAPSE_THRESHOLDS, "the shipped thresholds"), 0)
+}
+
+// Why the ceiling sits above what survives rather than at it, said in checked
+// code rather than in a comment (CLAUDE.md A6).
+//
+// The same rows through a ceiling of max_run + 1, which is what a cap on LENGTH
+// alone is: every run is condemned the moment it passes what survives it. Ten of
+// the eleven rows lose the difference, and those are real words nobody would
+// have missed.
+@(test)
+a_cap_on_length_alone_would_delete_real_words :: proc(t: ^testing.T) {
+	length_only := Collapse_Params {
+		max_run      = PINNED_COLLAPSE.max_run,
+		invention_at = PINNED_COLLAPSE.max_run + 1,
 	}
 
-	// Five of the six rows say their phrase more than three times over; the
-	// sixth is inside the cap and survives either way.
-	testing.expect_value(t, truncated, 5)
+	// Ten of the eleven rows say their phrase more than three times over; the
+	// eleventh is inside the cap and survives either way.
+	testing.expect_value(t, real_repetitions_truncated(t, length_only, "a cap on length alone"), 10)
+}
+
+// ---------------------------------------------------------------------------
+// The other end of the same constant, and the half a wall-clock threshold could
+// not see at all: the Engine looping FAST.
+//
+// A filter reading elapsed time hands every one of these to the reader intact,
+// however long the loop runs, because none of them covers much Recording. The
+// first row is whisper's classic tail loop at one saying a second; the last says
+// a four-character word a hundred times inside fifteen seconds, which is not a
+// thing a person does at all.
+// ---------------------------------------------------------------------------
+
+@(private, rodata)
+INVENTION_LOOPS := []Real_Repetition {
+	{name = "the classic tail loop", text = " Thank you for watching!", count = 19, duration_ms = 1_000},
+	{name = "a subscribe loop", text = " Please subscribe.", count = 40, duration_ms = 400},
+	{name = "a single word at machine speed", text = " you", count = 100, duration_ms = 150},
+}
+
+@(test)
+a_fast_invention_loop_collapses_however_little_recording_it_spans :: proc(t: ^testing.T) {
+	for loop in INVENTION_LOOPS {
+		shape := make([dynamic]Shaped_Cue, context.allocator)
+		defer delete(shape)
+		say_repeatedly(&shape, loop.text, loop.count, loop.duration_ms, loop.gap_ms)
+
+		cues := shaped_cues(shape[:], context.allocator)
+		defer delete(cues, context.allocator)
+
+		kept := collapse_repetition(cues, COLLAPSE_THRESHOLDS, context.allocator)
+		defer destroy_cues(kept, context.allocator)
+
+		// THREE, spelled out. Reading COLLAPSE_THRESHOLDS.max_run here would
+		// recompute the expectation from the constant under test, and the case
+		// would agree with that constant whatever it was tuned to.
+		spanned := cues[len(cues) - 1].end - cues[0].start
+		testing.expectf(
+			t,
+			len(kept) == 3,
+			"%s: %d sayings over %v ms came back as %d",
+			loop.name,
+			loop.count,
+			spanned,
+			len(kept),
+		)
+	}
+}
+
+// ADR-0001's measured shape through the constant that ships, which is the only
+// place acceptance criterion 1 meets it. Every other collapse case states its own
+// thresholds, so without this one COLLAPSE_THRESHOLDS could be tuned to collapse
+// NOTHING -- invention_at raised past sixteen, or past a million -- and the whole
+// suite would still pass (ADR-0016).
+@(test)
+the_shipped_collapse_thresholds_collapse_the_measured_invention :: proc(t: ^testing.T) {
+	shape := make([dynamic]Shaped_Cue, context.allocator)
+	defer delete(shape)
+	append(&shape, Shaped_Cue{duration_ms = 3_000, text = " And that is all I had to say."})
+	say_repeatedly(&shape, " you", 16, 16_900, 0)
+
+	cues := shaped_cues(shape[:], context.allocator)
+	defer delete(cues, context.allocator)
+
+	kept := collapse_repetition(cues, COLLAPSE_THRESHOLDS, context.allocator)
+	defer destroy_cues(kept, context.allocator)
+
+	// FOUR, spelled out: the speech, and then three of the sixteen inventions.
+	// Stated as a number rather than as COLLAPSE_THRESHOLDS.max_run + 1, which
+	// would recompute the expectation from the constant this case exists to pin
+	// and would agree with it whatever it was tuned to.
+	testing.expect_value(t, len(kept), 4)
 }
 
 @(test)

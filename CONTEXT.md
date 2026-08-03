@@ -29,6 +29,31 @@ One timestamped fragment of speech as the engine emits it — a start, an end, a
 Typically a few seconds long and cut mid-sentence.
 _Avoid_: segment, subtitle, line
 
+## Repetition
+
+**Saying**:
+One cue that said something. The engine writes empty and space-only cues over silence, and those are
+not sayings — which is what stops eight minutes of silence being counted as a repetition of it.
+_Avoid_: utterance, occurrence, instance, repeat
+
+**Repetition Run**:
+A stretch of consecutive cues all saying the same thing, silence cues included. Silence carries a
+run on rather than starting one, so a run with the engine's own silence written through it is still
+one run.
+_Avoid_: streak, sequence, block, loop
+
+**Invention**:
+A repetition run the engine produced rather than the speaker — the decoder looping over silence. The
+run's number of sayings is the only handle there is on it: per-cue confidence does not exist in
+engine output (ADR-0001), and elapsed time separates nothing (ADR-0016).
+_Avoid_: hallucination, artifact, fabrication, garbage
+
+**Collapse**:
+Dropping the surplus sayings of an invention, keeping the first few so the transcript still shows the
+engine ran on. Never a whole-run delete: a run dropped entirely would take the recording's timeline
+with it.
+_Avoid_: strip, filter, dedupe, prune
+
 ## Output
 
 **Paragraph**:

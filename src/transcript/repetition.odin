@@ -1,4 +1,4 @@
-package transcript
+﻿package transcript
 
 import "core:mem"
 import "core:strings"
@@ -6,60 +6,72 @@ import "core:strings"
 // When a run of identical consecutive Cues stops being speech and starts being
 // the Engine inventing over silence.
 //
-// TWO thresholds, and the second one is why this is not simply a cap. Per-Cue
-// confidence does not exist in Engine output and the only number that does --
-// per-token `p` -- is the wrong instrument, because a fabrication over silence is
-// emitted with HIGH token probability (ADR-0001). So the shape of the run is all
-// there is to read, and a cap read off length alone deletes real words: "no. no.
-// no. no. no." is five sayings, and an over-eager filter that took two of them
-// away would not be noticed for weeks.
+// ONE threshold, and it counts SAYINGS. Per-Cue confidence does not exist in
+// Engine output and the only number that does -- per-token `p` -- is the wrong
+// instrument, because a fabrication over silence is emitted with HIGH token
+// probability (ADR-0001). So the shape of the run is all there is to read.
 //
-// What separates the two populations is TIME, not count. The measured inventions
-// were 17 identical Cues of one short phrase and 16 of the single word "you"
-// spanning four and a half minutes of silence -- one saying every seventeen
-// seconds, over a stretch where nothing was said at all. Real repetition is
-// fast: a stutter, a name repeated, "yeah, yeah, yeah" in a conversation, a
-// chorus, a count-off. Those are over in seconds, and every one of them survives
-// a filter that asks for both.
+// What separates the two populations is HOW MANY, not how long (ADR-0016). The
+// clock cannot do it in either direction: a call-hold announcement repeats more
+// slowly than the Engine's measured invention of "you", and the Engine's classic
+// loop of "Thank you for watching!" arrives faster than ordinary conversation.
+// A threshold on elapsed time therefore deletes real speech at the slow end and
+// waves the Engine through at the fast one, whichever way it is turned. The
+// number of sayings does neither: both inventions ADR-0001 measured hold 16 and
+// 17 of them, and the longest real repetition collected holds eleven.
 Collapse_Params :: struct {
 	// How many SAYINGS of an invented run survive it. Three rather than one: the
 	// run is dropped where it is INVENTED, and a Transcript that reads "you. you.
 	// you." tells a reader the Engine ran on over silence, where a single "you."
 	// reads as something the speaker said.
-	max_run:    int,
-	// How much of the Recording the sayings must cover before their number is
-	// held against them at all. This is the threshold that protects real speech.
-	min_run_ms: Millis,
+	max_run:      int,
+	// How many SAYINGS a run must hold before it is an Invention at all. Never at
+	// or below max_run, which would condemn a run the moment it passed what
+	// survives it -- a cap on length alone, and a cap on length alone deletes
+	// real words: "no. no. no. no. no." is five sayings, and an over-eager filter
+	// that took two of them away would not be noticed for weeks.
+	invention_at: int,
 }
 
 // The one shipped set of these, and the reason there is one rather than one per
 // Merge Profile: repetition is a property of the ENGINE, not of the material.
 // The Engine loops over silence the same way whoever was recorded was talking to
-// one person or to six.
+// one person or to six. Not COLLAPSE_DEFAULT: there is no second set for a
+// default to be chosen over, and a name promising one invites a caller to go
+// looking for it.
 //
-// Twenty seconds is far above anything a person says identically -- the longest
-// real run in the measured material was over in a few -- and far below the four
-// and a half minutes the Engine spent on "you" (ADR-0001).
-COLLAPSE_DEFAULT :: Collapse_Params {
-	max_run    = 3,
-	min_run_ms = 20_000,
+// The evidence supports a BAND rather than a number -- above eleven, the longest
+// real repetition collected, and at or below sixteen, the shorter of the two
+// inventions ADR-0001 measured. Fourteen is the middle of it, which is the value
+// furthest from both ways of being wrong. What the remaining false positives
+// cost, and why they are paid rather than tuned away, is ADR-0016.
+COLLAPSE_THRESHOLDS :: Collapse_Params {
+	max_run      = 3,
+	invention_at = 14,
 }
+
+// What collapse_repetition has to be handed to accept these at all, said in
+// checked code beside them rather than discovered on the first Recording that
+// uses one (CLAUDE.md A5). The compiler answers this; the assertions inside
+// collapse_repetition answer it again for a set a caller built by hand (A4).
+#assert(COLLAPSE_THRESHOLDS.max_run > 0)
+#assert(COLLAPSE_THRESHOLDS.invention_at > COLLAPSE_THRESHOLDS.max_run)
 
 // Collapses every invented repetition run in a Cue set, leaving everything else
 // exactly as it was.
 //
 // The Cues come back CLONED, so what is returned is freed with destroy_cues and
 // the Cue set that went in is freed separately with the allocator that made it.
-// Handing back a slice that borrowed the other one's text would be cheaper and
-// would make the two sets impossible to free independently -- one destroy_cues
-// on each is a double free, and only one of the two orders of the two calls is
-// even survivable.
+// Under the arena a job runs on (ADR-0010) neither set is freed at all and the
+// borrow would cost nothing; destroy_cues exists for the per-set freeing the
+// tests do, and a borrowed slice makes one destroy_cues on each a double free
+// with only one of the two orders even survivable.
 //
 // The allocator is explicit and never defaulted: the Cue set this returns
 // outlives this procedure and crosses a worker boundary (ADR-0010).
 collapse_repetition :: proc(cues: []Cue, p: Collapse_Params, allocator: mem.Allocator) -> (kept: []Cue) {
 	assert(p.max_run > 0, "a run collapsed to nothing deletes the speech it was made of")
-	assert(p.min_run_ms > 0, "a run that need span no time at all makes every repetition an invention")
+	assert(p.invention_at > p.max_run, "a run condemned at what survives it is a cap on length alone")
 	assert(allocator.procedure != nil, "the cue set outlives this procedure and needs a chosen allocator")
 	// What every consumer in this package asserts on the way in (CLAUDE.md A4).
 	// A set whose starts go backwards would have runs split across the reordering
@@ -107,61 +119,53 @@ collapse_repetition :: proc(cues: []Cue, p: Collapse_Params, allocator: mem.Allo
 
 // Whether a run of identical consecutive Cues is invention rather than speech.
 //
-// BOTH thresholds, and the conjunction is the whole design. Length alone
-// condemns real emphasis; span alone condemns a phrase said twice across a long
-// pause. A run is invention only when it is longer than anything said out loud
-// AND spread over more of the Recording than saying it would take.
+// The elapsed time of the run is deliberately not read, and that is the whole
+// design (ADR-0016). It is not a weaker signal than the count, it is a signal
+// pointing the wrong way at both ends: the slowest repetition in the collected
+// material is real speech -- a hold announcement every half a minute -- and the
+// fastest is the Engine looping once a second.
 //
-// The false positive this can still make is cheap and the false negative is not.
-// A slow, deliberate repetition -- "breathe. breathe. breathe." over half a
-// minute -- comes back with max_run sayings of it, which still reads as a
-// repetition; a missed invention is four minutes of "you" in the deliverable.
+// The false positive that remains is a run of MORE than invention_at genuine
+// sayings of one phrase: a chant, a drill, a guided meditation. It comes back
+// with max_run sayings and the rest of the run dropped, which is real speech
+// deleted, and ADR-0016 records it as the accepted cost rather than pretending
+// it is cheap.
 @(private)
 is_invention :: proc(run: []Cue, p: Collapse_Params) -> bool {
 	assert(len(run) > 0, "a run with no cues in it is not a run")
-	assert(p.max_run > 0, "a run collapsed to nothing deletes the speech it was made of")
+	assert(p.invention_at > p.max_run, "a run condemned at what survives it is a cap on length alone")
 
-	count, ended := run_sayings(run)
 	// SAYINGS and not Cues, which is what keeps the Engine's own silence out of
 	// this. Silence is identical to silence, so counting Cues makes eight minutes
 	// of the Cues the Engine writes over a quiet stretch an invention and deletes
 	// all but three of them -- taking the Recording's timeline with them, and
 	// none of it was ever speech to strip.
-	if count <= p.max_run {
+	count := run_sayings(run)
+	if count == 0 {
 		return false
 	}
 
 	// A run with sayings in it BEGAN at one: silence carries a run on rather than
-	// starting one, so a run that began at silence holds nothing else.
+	// starting one, so a run that began at silence holds nothing else. The read
+	// side of the run walk's own rule (CLAUDE.md A4).
 	assert(len(spoken_text(run[0])) > 0, "a run of silence was counted as having said something")
-	span := ended - run[0].start
-	// The ordering collapse_repetition asserted, read back as the one thing this
-	// measurement needs from it (CLAUDE.md A4). A negative span would make every
-	// long run speech and strip nothing at all.
-	assert(span >= 0, "a run of an ordered set ends before it starts")
-	return span >= p.min_run_ms
+	return count >= p.invention_at
 }
 
-// How many Cues of a run said something, and where the last of those ended.
+// How many Cues of a run said something.
 @(private)
-run_sayings :: proc(run: []Cue) -> (count: int, ended: Millis) {
+run_sayings :: proc(run: []Cue) -> (count: int) {
 	assert(len(run) > 0, "a run with no cues in it is not a run")
+	defer assert(count <= len(run), "counted more sayings than there were cues to say them")
+	// The negative space of that (CLAUDE.md A3): a count is a tally, and a
+	// negative one would make every run speech and strip nothing at all.
+	defer assert(count >= 0, "counted a negative number of sayings")
 
 	for cue in run {
 		if len(spoken_text(cue)) == 0 {
 			continue
 		}
 		count += 1
-		// max, not assignment: consecutive Cues may overlap, which is ordinary
-		// Engine output, so the last saying is not always the one ending latest.
-		ended = max(ended, cue.end)
-	}
-
-	assert(count <= len(run), "counted more sayings than there were cues to say them")
-	// The negative space of that (CLAUDE.md A3): a run that said nothing has no
-	// last saying, so the zero here is the absence of one and not an offset.
-	if count == 0 {
-		assert(ended == 0, "a run that said nothing has a saying ending somewhere")
 	}
 	return
 }

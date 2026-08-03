@@ -359,7 +359,7 @@ real_engine_output_becomes_paragraphs :: proc(t: ^testing.T) {
 	// runs 30356 ms -- is a SINGLE Cue and not a run, and repetition detection is
 	// the only handle there is (ADR-0001). It survives, un-clamped, because a
 	// stage that clamped it would be hiding the evidence rather than reading it.
-	kept := collapse_repetition(cues, COLLAPSE_DEFAULT, context.allocator)
+	kept := collapse_repetition(cues, COLLAPSE_THRESHOLDS, context.allocator)
 	defer destroy_cues(kept, context.allocator)
 	if !testing.expect_value(t, len(kept), 7) {
 		return
