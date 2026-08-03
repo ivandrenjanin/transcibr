@@ -6,6 +6,7 @@ import "core:strings"
 import win32 "core:sys/windows"
 import "core:testing"
 import "core:time"
+import "transcibr:process"
 
 // The one Win32 entry point this suite asks its questions through, declared
 // HERE and not beside the ones the package itself calls.
@@ -255,6 +256,80 @@ a_command_line_that_cannot_be_spelled_is_refused_before_anything_starts :: proc(
 	message := error_message(err, context.allocator)
 	defer delete(message, context.allocator)
 	testing.expect(t, len(message) > 0, "a refusal rendered as nothing at all")
+}
+
+// Every fault renders as a line a Recording's failure row can carry: a sentence
+// of its own, and the Windows code behind it.
+//
+// WALKED over the whole enumeration rather than written case by case, which is
+// the half that rots. The compiler already refuses a Fault added without a row
+// in FAULT -- FAULT is an enumerated array, and `Unhandled enumerated array
+// case` is a build failure. What nothing catches is a row that is PRESENT and
+// EMPTY, and a Recording whose failure line reads " (Windows error 5)" is a
+// failure nobody can act on. This is the guard the transcript package has had
+// since ticket #3 and the Process contract has had since ticket #6.
+//
+// The emptiness is read off the table BEFORE the render, and not left to
+// fault_says's own assertion, because a test that trips an assertion takes the
+// whole runner down with it rather than naming a case (issue #22).
+//
+// Two faults are skipped BY NAME, so neither can be skipped by accident: `.None`
+// is the success value and is not a fault, and `.Bad_Command_Line`'s sentence
+// belongs to the package that refused -- which
+// a_command_line_that_cannot_be_spelled_is_refused_before_anything_starts
+// covers end to end, message included.
+@(test)
+every_fault_renders_a_line_a_failure_row_can_carry :: proc(t: ^testing.T) {
+	for fault in Fault {
+		if fault == .None {
+			continue
+		}
+		if fault == .Bad_Command_Line {
+			continue
+		}
+		if !testing.expectf(t, len(FAULT[fault]) > 0, "%v has an empty row in FAULT", fault) {
+			continue
+		}
+
+		message := error_message(Error{fault = fault, last_error = 5}, context.allocator)
+		defer delete(message, context.allocator)
+		want := fmt.tprintf("%s (Windows error 5)", FAULT[fault])
+		testing.expectf(t, message == want, "%v rendered <%s>, wanted <%s>", fault, message, want)
+	}
+}
+
+// Every fault says whether a different plan would make the same job run, and
+// walked for the same reason: a fault added here answers from the table or from
+// nothing at all.
+//
+// Nothing this package refuses for itself is re-plannable -- a missing
+// executable, a job object that would not open and a resume that failed are one
+// answer, and it is that this Recording fails and the Batch carries on
+// (ADR-0002). `.Bad_Command_Line` is the exception and does not answer at all: it
+// delegates, and the Process contract calls a line that is merely too long
+// re-plannable. Both of its readings are exercised, so a delegation answering
+// from the wrong side would be visible here.
+@(test)
+every_fault_says_whether_a_different_plan_would_help :: proc(t: ^testing.T) {
+	for fault in Fault {
+		if fault == .None {
+			continue
+		}
+		err := Error {
+			fault = fault,
+		}
+		if fault == .Bad_Command_Line {
+			err.build = process.Build_Error {
+				fault = .Too_Long,
+			}
+			testing.expect_value(t, disposition_of(err), process.Disposition.Shorten_And_Replan)
+			err.build = process.Build_Error {
+				fault = .Nul_In_Argument,
+			}
+		}
+		got := disposition_of(err)
+		testing.expectf(t, got == .Fail_The_Job, "%v is %v, want Fail_The_Job", fault, got)
+	}
 }
 
 // The Engine writes progress to its diagnostic output for hours before it is
