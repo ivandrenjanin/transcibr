@@ -444,16 +444,169 @@ the_profiles_diverge_further_on_interactive_material :: proc(t: ^testing.T) {
 	)
 }
 
+// ---------------------------------------------------------------------------
+// The profiles by NAME, which is what a person picks and what a Transcript
+// records having been merged under.
+//
+// A Merge Profile is "a named set of thresholds" (CONTEXT.md), and until now the
+// name existed only in prose: the thresholds were two constants and the word
+// `monologue` lived in the spec. A front matter block recording the profile, and
+// a command line accepting one, both need the name to be a value.
+// ---------------------------------------------------------------------------
+
+@(test)
+every_merge_profile_is_named_and_names_itself_back :: proc(t: ^testing.T) {
+	// Every member, so a profile added without a row in PROFILES fails here
+	// rather than rendering a Transcript that records an empty profile.
+	for profile in Merge_Profile {
+		name := profile_name(profile)
+		testing.expectf(t, len(name) > 0, "%v carries no name", profile)
+
+		back, known := profile_named(name)
+		testing.expectf(t, known, "%v is called %q, which is a name nothing knows", profile, name)
+		testing.expectf(t, back == profile, "%q came back as %v, want %v", name, back, profile)
+	}
+}
+
+// The negative space of that (CLAUDE.md A3). Without it, a lookup that answered
+// `.Monologue` to everything satisfies every line above.
+@(test)
+a_name_no_merge_profile_carries_is_refused :: proc(t: ^testing.T) {
+	// A name off by a letter, a name in the wrong case, and nothing at all. The
+	// middle one is the interesting row: a lookup folding case would accept a
+	// spelling the front matter never writes, and re-rendering would then record
+	// a profile under two names.
+	unknown := []string{"murmur", "Monologue", ""}
+	for name, i in unknown {
+		profile, known := profile_named(name)
+		testing.expectf(t, !known, "case %d: %q was accepted as %v", i, name, profile)
+	}
+}
+
+// The thresholds behind each name, against the constants ADR-0007 tuned. Read
+// through the profile rather than beside it: a table row pointing at the wrong
+// constant is a Transcript merged one way and recording the other.
+@(test)
+each_merge_profile_carries_the_thresholds_adr_0007_tuned :: proc(t: ^testing.T) {
+	testing.expect_value(t, profile_params(.Monologue), MONOLOGUE)
+	testing.expect_value(t, profile_params(.Conversation), CONVERSATION)
+}
+
+// What a usage line offers a caller, against the profiles that exist.
+//
+// `monologue|conversation` was hand-written into the command line's USAGE, which
+// is a copy of PROFILES living where no compiler compares the two: a third
+// profile would be unmentioned, and a renamed one would be offered under a
+// spelling profile_named refuses.
+//
+// BUILT AND COMPARED ONCE, rather than approached from three sides. This case
+// used to ask three indirect questions -- every name appears somewhere in the
+// constant, the separator count matches the profile count, and the total length
+// is the names plus the separators -- and `conversation|monologue` answers all
+// three correctly while offering the profiles in the wrong ORDER. A usage block
+// that lists them backwards is what a caller reads, so the order is part of the
+// claim and none of the three indirect questions could see it.
+//
+// The join is the same one grammar the constant is built with, applied once. It
+// is not the constant's own arithmetic repeated: PROFILE_CHOICE is concatenated
+// at compile time out of the two name CONSTANTS, and this walks the ENUMERATION
+// and reads each name back out of the PROFILES table -- so a row pointing at the
+// wrong constant, a renamed profile, a reordered enumeration and a third profile
+// nobody added to the offer are each a disagreement between the two.
+@(test)
+the_profiles_a_caller_may_pick_are_the_profiles_that_exist :: proc(t: ^testing.T) {
+	names: [len(Merge_Profile)]string
+	at := 0
+	for profile in Merge_Profile {
+		names[at] = profile_name(profile)
+		at += 1
+	}
+
+	offered := strings.join(names[:], "|", context.allocator)
+	defer delete(offered, context.allocator)
+
+	testing.expect_value(t, PROFILE_CHOICE, offered)
+}
+
+// The profile a caller who chose none is merged under, and the reason it is that
+// one rather than the other.
+//
+// Spec story 44 asks that a re-render produce the Transcript the original run
+// would have, so the window ADR-0004 promises and the command line must default
+// to the SAME profile. That is bought by naming it once -- DEFAULT_PROFILE, in
+// the package that holds the profiles -- and both shells read it rather than
+// spelling a bare enum member. No test here can reach the command line to check
+// that it does: `cli` collects no tests by design (ADR-0009), so what guards the
+// second half of the claim is review and the fact that there is one constant to
+// read.
+//
+// What IS checkable is the half that has a wrong answer available. The default
+// is the GENEROUS profile because merging too little leaves the
+// subtitle-fragment wall this program exists to avoid, and a reader who wanted
+// the aggressive one can re-render in seconds (spec story 43) -- so a default
+// pointing at a profile that breaks sooner than another has the trade backwards.
+// Read off the ENUMERATION rather than compared against MONOLOGUE by name: this
+// is a claim about the default's PLACE among the profiles, and it must go on
+// meaning that when there is a third.
+@(test)
+the_default_merge_profile_merges_as_generously_as_any :: proc(t: ^testing.T) {
+	fallback := profile_params(DEFAULT_PROFILE)
+	for profile in Merge_Profile {
+		p := profile_params(profile)
+		testing.expectf(
+			t,
+			fallback.max_gap_ms >= p.max_gap_ms,
+			"the default breaks on %v ms of silence where %v waits for %v ms",
+			fallback.max_gap_ms,
+			profile,
+			p.max_gap_ms,
+		)
+		testing.expectf(
+			t,
+			fallback.hard_gap_ms >= p.hard_gap_ms,
+			"the default breaks whatever was said at %v ms where %v waits for %v ms",
+			fallback.hard_gap_ms,
+			profile,
+			p.hard_gap_ms,
+		)
+	}
+}
+
+// Two profiles under one name would resolve to whichever the lookup reached
+// first, so a Batch asking for the second gets the first's thresholds and the
+// front matter records the name both of them answer to. Nothing in the type
+// stops it, and the round trip above cannot see it: the duplicate's own name
+// still comes back as a profile, just not as that one.
+@(test)
+no_two_merge_profiles_answer_to_one_name :: proc(t: ^testing.T) {
+	for profile in Merge_Profile {
+		named, _ := profile_named(profile_name(profile))
+		testing.expectf(
+			t,
+			named == profile,
+			"%v and %v are both called %q",
+			named,
+			profile,
+			profile_name(profile),
+		)
+	}
+}
+
 // And the cap, on the profiles that actually ship rather than on a threshold a
 // case pinned for itself.
+//
+// Walked over the ENUMERATION and never over a list of constants written out
+// beside it. A third profile added to Merge_Profile would be silently exempt
+// from the only case checking the cap on shipped thresholds, while this case's
+// name went on claiming it covered every one of them.
 @(test)
-neither_shipped_profile_exceeds_its_own_character_cap :: proc(t: ^testing.T) {
-	profiles := []Merge_Params{MONOLOGUE, CONVERSATION}
+no_shipped_profile_exceeds_its_own_character_cap :: proc(t: ^testing.T) {
 	for m in MATERIALS {
 		cues := material_cues(m, context.allocator)
 		defer delete(cues, context.allocator)
 
-		for p, which in profiles {
+		for profile in Merge_Profile {
+			p := profile_params(profile)
 			paragraphs := merge_paragraphs(cues, p, context.allocator)
 			defer destroy_paragraphs(paragraphs, context.allocator)
 
@@ -462,9 +615,9 @@ neither_shipped_profile_exceeds_its_own_character_cap :: proc(t: ^testing.T) {
 				testing.expectf(
 					t,
 					held <= p.max_para_chars,
-					"%s, profile %d: paragraph %d holds %d characters against a cap of %d",
+					"%s, %s: paragraph %d holds %d characters against a cap of %d",
 					m.name,
-					which,
+					profile_name(profile),
 					i + 1,
 					held,
 					p.max_para_chars,

@@ -76,6 +76,77 @@ parses_real_engine_output_into_cues :: proc(t: ^testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// The detected language, which is the one front matter fact the Engine's own
+// output can settle.
+//
+// ADR-0001 chose JSON over SRT partly because it "carries the detected language
+// and model parameters we want in the transcript's front matter". Everything
+// else a Transcript records -- the Engine version, the Model's identity -- comes
+// from transcibr's own record instead, because the Engine reports every large
+// Model under the bare name `large` and does not report its own version at all
+// (ADR-0003).
+// ---------------------------------------------------------------------------
+
+@(test)
+reads_the_language_the_engine_detected :: proc(t: ^testing.T) {
+	language := parse_language(ENGINE_JSON, context.allocator)
+	defer delete(language, context.allocator)
+
+	testing.expect_value(t, language, "en")
+}
+
+// One document and the language it must be read as.
+@(private)
+Language_Case :: struct {
+	name:  string,
+	json:  string,
+	reads: string,
+}
+
+@(private, rodata)
+LANGUAGE_CASES := []Language_Case {
+	{
+		// `result` and NOT `params`. The Engine writes what it was ASKED for in
+		// `params.language`, which is `auto` on every Recording nobody set a
+		// language for, and what it DETECTED in `result.language`. A Transcript
+		// stamped `auto` says nothing, and one stamped the requested language when
+		// the two disagree says something false.
+		name  = "detected-differs-from-requested.json",
+		json  = `{"params": {"language": "auto"}, "result": {"language": "de"}}`,
+		reads = "de",
+	},
+	{name = "only-requested.json", json = `{"params": {"language": "en"}}`, reads = UNKNOWN},
+	{name = "result-without-language.json", json = `{"result": {"beam": 5}}`, reads = UNKNOWN},
+	{name = "language-not-a-string.json", json = `{"result": {"language": 7}}`, reads = UNKNOWN},
+	{name = "result-not-an-object.json", json = `{"result": "en"}`, reads = UNKNOWN},
+	{name = "language-said-empty.json", json = `{"result": {"language": ""}}`, reads = UNKNOWN},
+	// Everything parse_cues would refuse. The language is read for the front
+	// matter, so a document that is not Engine output has no language in it --
+	// answered with the word for a fact nobody settled rather than crashing,
+	// because it came from outside this program (CLAUDE.md A8).
+	{name = "empty.json", json = "", reads = UNKNOWN},
+	{name = "whitespace.json", json = "  \r\n\t ", reads = UNKNOWN},
+	{name = "not-json.json", json = "this is not json at all", reads = UNKNOWN},
+	{name = "not-an-object.json", json = `[{"language": "en"}]`, reads = UNKNOWN},
+	{name = "truncated.json", json = `{"result": {"language": "e`, reads = UNKNOWN},
+}
+
+@(test)
+a_document_that_names_no_language_is_read_as_naming_none :: proc(t: ^testing.T) {
+	for c in LANGUAGE_CASES {
+		// One lifetime rule and no fold at any call site: the language always
+		// comes back OWNED, and is always freed the same way. The row that reads
+		// "de" is the negative space of the ten that read UNKNOWN (CLAUDE.md A3) --
+		// without it a procedure returning the word unconditionally would satisfy
+		// every other line here.
+		language := parse_language(c.json, context.allocator)
+		defer delete(language, context.allocator)
+
+		testing.expectf(t, language == c.reads, "%s: read %q, want %q", c.name, language, c.reads)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Input that is not Engine output at all.
 //
 // Every one of these is an OPERATING error naming the file it came from, never
@@ -317,11 +388,11 @@ accepts_zero_offsets_when_the_recording_is_not_known_to_be_longer :: proc(t: ^te
 
 @(test)
 every_fault_says_what_adr_0002_does_with_it :: proc(t: ^testing.T) {
-	// The two the ADR calls a hard per-Recording failure: the Engine exited
+	// The three the ADR calls a hard per-Recording failure: the Engine exited
 	// having transcribed nothing, and re-running it transcribes nothing again.
 	// Everything else is a file that is not what the Engine writes, which says
 	// nothing about whether the Engine can write it.
-	hard := []Parse_Fault{.Empty_Input, .No_Cues}
+	hard := []Parse_Fault{.Empty_Input, .No_Cues, .Nothing_Said}
 
 	for fault in Parse_Fault {
 		if fault == .None {

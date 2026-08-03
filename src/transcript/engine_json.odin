@@ -22,6 +22,7 @@ Parse_Fault :: enum u8 {
 	No_Transcription,
 	Too_Deeply_Nested,
 	No_Cues,
+	Nothing_Said,
 	Cue_Not_An_Object,
 	No_Offsets,
 	Offset_Missing,
@@ -141,6 +142,18 @@ FAULT := [Parse_Fault]Fault_Facts {
 		scope = .Input,
 		disposition = .Fail_The_Recording,
 	},
+	.Nothing_Said = {
+		// What is actually CHECKED, and not what it implies. The check is on
+		// Paragraphs -- merge_paragraphs handed back none -- and the sentence used
+		// to be about Cues, which is a claim one step further on. The two coincide
+		// only because merge_paragraphs emits nothing exactly when no Cue is a
+		// Saying, and a diagnostic that states the inference rather than the
+		// observation sends a reader looking at the wrong thing the day they stop
+		// coinciding.
+		says        = "no paragraph could be made from it; nothing in it is speech",
+		scope       = .Input,
+		disposition = .Fail_The_Recording,
+	},
 	.Cue_Not_An_Object = {
 		says = "is not an object",
 		scope = .Cue,
@@ -194,14 +207,32 @@ FAULT := [Parse_Fault]Fault_Facts {
 	},
 }
 
+// One fault's row, checked.
+//
+// THE ONE PLACE THE TABLE IS READ, and the one place the missing row is caught.
+// The claim was made at three call sites -- disposition_of, error_message and
+// fault_at -- in two different wordings, all three about the same defect: a
+// Parse_Fault added without a row here still HAS a row, made of zeroes, so it
+// carries no sentence, no scope, and a disposition nobody chose. Said once,
+// where every field of a row is in hand. PROFILES had the same shape and
+// profile_row is what collapsed it.
+@(private)
+fault_facts :: proc(fault: Parse_Fault) -> (facts: Fault_Facts) {
+	assert(fault != .None, "the success value is not a fault and carries no facts")
+
+	facts = FAULT[fault]
+	assert(len(facts.says) > 0, "a fault was added to Parse_Fault without a row in FAULT")
+	// The negative space of the same missing row (CLAUDE.md A3): a row could carry
+	// a sentence and no scope, and error_message would then print a Cue's
+	// half-sentence as though it were about the file.
+	assert(facts.scope != .Unset, "a fault's row in FAULT names no scope")
+	return
+}
+
 // What ADR-0002 does with the input this fault was reported against.
 disposition_of :: proc(fault: Parse_Fault) -> Disposition {
 	assert(fault != .None, "a parse that did not fail has nothing to dispose of")
-	// The same missing-row check error_message makes, at the other place the
-	// table is read (CLAUDE.md A4). A fault added without an entry answers
-	// "quarantine and re-run" here, which is a sentence nobody wrote.
-	assert(len(FAULT[fault].says) > 0, "a fault was added to Parse_Fault without a row in FAULT")
-	return FAULT[fault].disposition
+	return fault_facts(fault).disposition
 }
 
 // Parses the Engine's JSON into Cues.
@@ -279,6 +310,81 @@ parse_cues :: proc(
 	// copy of one claim rather than a second route to it.
 	assert(len(built) > 0, "returned an empty cue set without reporting No_Cues")
 	return built, Parse_Error{}
+}
+
+// The language the Engine DETECTED, out of the same output the Cues came from,
+// or nothing where it did not say.
+//
+// `result.language` and never `params.language`. The Engine writes what it was
+// ASKED for in `params` -- which is `auto` on every Recording nobody chose a
+// language for -- and what it decided in `result`. A Transcript stamped `auto`
+// says nothing at all, and one stamped the request when the two disagree says
+// something false.
+//
+// This is the ONLY front matter fact the Engine's own output can settle
+// (ADR-0001). The Engine version is not in there, and the Model is reported as
+// the bare name `large` whichever large Model was loaded, so both come from
+// transcibr's own record instead (ADR-0003).
+//
+// It decodes the document a SECOND time rather than being folded into
+// parse_cues, and the cost is stated rather than hidden: about twenty
+// microseconds over the fixture, against a Recording that took minutes on a GPU
+// and a re-render ADR-0003 measures in seconds. Folding it in would change what
+// parse_cues hands back to every caller and every case that already reads it, to
+// save an amount of time nobody can perceive.
+//
+// Nothing here is an operating error, because there is nothing to report: a
+// document that is not Engine output has no language in it, and parse_cues is
+// what refuses that document and names it (CLAUDE.md A8).
+//
+// A document that settles nothing is answered with UNKNOWN and never with an
+// empty string or a flag beside one. ADR-0003's rule is that absent provenance
+// beats wrong provenance, and UNKNOWN is how every front matter field spells
+// absent -- so the fold that turned "nothing" into that word was written at
+// every call site, four times, and every one of them also had to remember that
+// only one of the two answers owned memory.
+//
+// The language ALWAYS comes back CLONED, including the word for nobody knowing,
+// and is always freed with `delete` and the same allocator. One lifetime rule,
+// no fold anywhere. Explicit and never defaulted: it outlives this procedure and
+// crosses a worker boundary (ADR-0010).
+parse_language :: proc(json_text: string, allocator: mem.Allocator) -> (language: string) {
+	assert(
+		allocator.procedure != nil,
+		"the language outlives this procedure and needs a chosen allocator",
+	)
+	// What every caller depends on and no path below states on its own: there is
+	// always something to write into a front matter field, and always something
+	// to free (CLAUDE.md A3, A6).
+	defer assert(len(language) > 0, "handed back a front matter field with nothing in it")
+
+	if len(strings.trim_space(json_text)) == 0 {
+		return strings.clone(UNKNOWN, allocator)
+	}
+
+	// The caller's allocator and never `context.temp_allocator`, which is
+	// thread-local and belongs to whichever worker is running this (ADR-0010).
+	scratch: mem.Dynamic_Arena
+	mem.dynamic_arena_init(&scratch, block_allocator = allocator, array_allocator = allocator)
+	defer mem.dynamic_arena_destroy(&scratch)
+
+	root, fault := decode_engine_json(json_text, mem.dynamic_arena_allocator(&scratch))
+	if fault != .None {
+		return strings.clone(UNKNOWN, allocator)
+	}
+	body, is_object := root.(json.Object)
+	if !is_object {
+		return strings.clone(UNKNOWN, allocator)
+	}
+	result, has_result := field(json.Object, body, "result")
+	if !has_result {
+		return strings.clone(UNKNOWN, allocator)
+	}
+	detected, is_text := field(json.String, result, "language")
+	if !is_text || len(detected) == 0 {
+		return strings.clone(UNKNOWN, allocator)
+	}
+	return strings.clone(detected, allocator)
 }
 
 // Decodes the Engine's JSON into a tree that lives on `scratch` and dies with
@@ -716,8 +822,7 @@ error_message :: proc(err: Parse_Error, allocator: mem.Allocator) -> string {
 		"the message outlives this procedure and needs a chosen allocator",
 	)
 
-	facts := FAULT[err.fault]
-	assert(len(facts.says) > 0, "a fault was added to Parse_Fault without a row in FAULT")
+	facts := fault_facts(err.fault)
 
 	// Which sentence is being printed decides the grammar, and the fault says
 	// which sentence it is. Reading that off the ordinal instead made an
@@ -750,10 +855,7 @@ fault_at :: proc(fault: Parse_Fault, json_name: string, cue: int) -> Parse_Error
 	assert(fault != .None, "a fault of .None is the success value and reports nothing")
 	assert(len(json_name) > 0, "an operating error must name the input it is reported against")
 
-	// The same missing-row check disposition_of and error_message make, at the
-	// third place the table is read (CLAUDE.md A4).
-	scope := FAULT[fault].scope
-	assert(scope != .Unset, "a fault was added to Parse_Fault without a row in FAULT")
+	scope := fault_facts(fault).scope
 
 	// The ordinal against the scope the fault declares, at the one place a
 	// Parse_Error is written, so no call site has to remember the convention

@@ -107,6 +107,145 @@ CONVERSATION :: Merge_Params {
 #assert(CONVERSATION.max_gap_ms < MONOLOGUE.max_gap_ms)
 #assert(CONVERSATION.hard_gap_ms < MONOLOGUE.hard_gap_ms)
 
+// The two Merge Profiles by name -- what a person picks, and what a Transcript
+// records having been merged under.
+//
+// The thresholds above are the profile; this is its NAME, and a Merge Profile is
+// "a named set of thresholds" (CONTEXT.md) rather than the thresholds alone. The
+// name existed only in prose until a front matter block had to record it and a
+// command line had to accept one, and prose is not something either can read.
+Merge_Profile :: enum u8 {
+	Monologue = 0,
+	Conversation,
+}
+
+// The profile a caller who chose none is merged under.
+//
+// Named once, here, because BOTH binaries need it and they must not disagree:
+// the window ADR-0004 promises and the command line have to produce the same
+// bytes from the same input (spec story 44), and a default spelled as a bare
+// enum member at each of them is two answers to one question that nothing keeps
+// in step. Monologue because it is the generous one: merging too little leaves
+// the subtitle-fragment wall this program exists to avoid, and a reader who
+// wanted the aggressive profile can re-render in seconds (spec story 43).
+DEFAULT_PROFILE :: Merge_Profile.Monologue
+
+// A profile's name beside the thresholds it stands for, so a row cannot name one
+// profile and point at the other's constants.
+@(private)
+Named_Profile :: struct {
+	name:   string,
+	params: Merge_Params,
+}
+
+// An enumerated array rather than a switch, the way FAULT is: a profile added to
+// Merge_Profile without an entry here still HAS an entry, made of zeroes, and
+// profile_name's assertion on an empty name is what catches it on the first
+// Transcript rather than after one ships recording no profile at all.
+@(private, rodata)
+PROFILES := [Merge_Profile]Named_Profile {
+	.Monologue = {name = MONOLOGUE_NAME, params = MONOLOGUE},
+	.Conversation = {name = CONVERSATION_NAME, params = CONVERSATION},
+}
+
+// Each profile's name as a CONSTANT, so the table above and the choice below are
+// the same spelling rather than two that happen to match.
+@(private)
+MONOLOGUE_NAME :: "monologue"
+@(private)
+CONVERSATION_NAME :: "conversation"
+
+// Every profile a caller may pick, spelled the way a usage line offers a choice:
+// `monologue|conversation`.
+//
+// A CONSTANT, and it used to be a procedure that built this string out of the
+// table at runtime. That made the command line's usage block a FORMAT STRING --
+// and a usage block that is a format string turns the first `%` a future line of
+// prose carries into a silent bad verb printed to a caller who asked for help.
+// As a constant the whole block is a constant, written with no verbs at all, and
+// an allocating API nobody else wanted goes with it.
+//
+// What the procedure bought was staleness: a third profile could not go
+// unmentioned, because the line was built by walking the enumeration. The
+// #assert beneath this buys the same thing at compile time and costs nothing at
+// run time -- a member added to Merge_Profile fails the BUILD here, in front of
+// the line that would have gone stale, rather than being noticed by a reader
+// diffing a usage block.
+//
+// It is a CLI grammar living in the core, and that is the cost of it. What the
+// core owns is the SPELLING -- the front matter records `merge_profile:
+// "monologue"` and profile_named accepts exactly that -- and the `|` between
+// them is the part a command line contributes. The window ADR-0004 promises will
+// want a list rather than a line, and it has one: Merge_Profile is public and
+// profile_name answers for each member.
+PROFILE_CHOICE :: MONOLOGUE_NAME + "|" + CONVERSATION_NAME
+
+// The claim that keeps the line above honest, in checked code rather than in the
+// prose around it (CLAUDE.md A5).
+#assert(len(Merge_Profile) == 2)
+
+// One profile's row, checked.
+//
+// THE ONE PLACE THE TABLE IS READ, and the one place the missing row is caught.
+// The claim was made at three call sites in two different wordings, all three
+// running on every render and all three about the same defect: a Merge_Profile
+// added without a row here still HAS a row, made of zeroes, and a zeroed row
+// carries no name for the front matter and thresholds merge_paragraphs would
+// refuse. Said once, where both halves of a row are in hand.
+@(private)
+profile_row :: proc(profile: Merge_Profile) -> (row: Named_Profile) {
+	row = PROFILES[profile]
+	assert(len(row.name) > 0, "a profile was added to Merge_Profile without a row in PROFILES")
+	// The negative space of the same missing row (CLAUDE.md A3): a row could
+	// carry a name and no thresholds, and the merger would then break at every
+	// Cue while naming the merger rather than the profile nobody filled in.
+	assert(row.params.max_gap_ms > 0, "a named profile carries no thresholds")
+	assert(
+		row.params.hard_gap_ms >= row.params.max_gap_ms,
+		"a named profile's hard gap sits below its soft",
+	)
+	return
+}
+
+// What a Transcript records having been merged under.
+//
+// Borrowed from the table above and never owned: it is a compiled-in constant
+// that outlives every caller, so nothing frees it.
+profile_name :: proc(profile: Merge_Profile) -> string {
+	return profile_row(profile).name
+}
+
+// The thresholds behind a name, for merge_paragraphs to be handed.
+profile_params :: proc(profile: Merge_Profile) -> Merge_Params {
+	return profile_row(profile).params
+}
+
+// The profile a name stands for, or nothing where no profile carries it.
+//
+// Compared EXACTLY, case included. A lookup folding case would accept a spelling
+// the front matter never writes, and a Transcript recording `Monologue` while
+// planning looks for `monologue` is a Recording re-done on every run (ADR-0003).
+profile_named :: proc(name: string) -> (profile: Merge_Profile, known: bool) {
+	// Never asserted against the empty string: the name comes off a command line,
+	// which is outside this program, and nothing outside it may crash it
+	// (CLAUDE.md A8). It is refused through the return like any other spelling.
+	//
+	// Read through profile_row rather than off the range value, so every row is
+	// checked as the walk passes it. What that catches is a MISSING ROW and not a
+	// caller's empty name: a Merge_Profile added without one still has a row, made
+	// of zeroes, and a walk comparing against that row directly would answer the
+	// empty name with a profile whose thresholds merge_paragraphs refuses.
+	// profile_row asserts on it BEFORE the comparison, which is the right way
+	// round -- a missing row is this program's own defect, and no row a person
+	// filled in ever answers to "".
+	for candidate in Merge_Profile {
+		if profile_row(candidate).name == name {
+			return candidate, true
+		}
+	}
+	return {}, false
+}
+
 // Everything a half-built Paragraph is made of, in one place so the procedures
 // that add to it and close it cannot disagree about what "open" means.
 //
@@ -284,11 +423,14 @@ SENTENCE_CLOSERS :: `"')]}»”’`
 @(private)
 ends_a_sentence :: proc(said: string) -> bool {
 	// Paired with spoken_text's assert on the other end of the same string
-	// (CLAUDE.md A4): that one checks the padding is off the front, this one
-	// checks the back, which is the end this procedure reads.
-	if len(said) > 0 {
-		assert(said[len(said) - 1] != ' ', "asked whether padded text ends a sentence")
-	}
+	// (CLAUDE.md A4): that one checks what nobody said is off the front, this one
+	// checks the back, which is the end this procedure reads. By the same
+	// predicate, so a stop hidden behind a control byte cannot read as no stop at
+	// all here while spoken_text calls that byte silence.
+	assert(
+		!ends_on_silence(said),
+		"asked whether text still ending on what nobody said ends a sentence",
+	)
 
 	bare := strings.trim_right(said, SENTENCE_CLOSERS)
 	assert(len(bare) <= len(said), "trimming a sentence's closers added bytes to it")
@@ -371,6 +513,46 @@ paragraph_room :: proc(s: Merge_State, p: Merge_Params) -> int {
 	return p.max_para_chars - s.runes - 1
 }
 
+// The two sides of a split at `at`, with what nobody said taken off the ends the
+// split itself made.
+//
+// THE TRIM, SAID ONCE. It was written three times -- either side of a boundary
+// sitting exactly at the cut, either side of the last boundary before it, and
+// either side of a carve that fell inside a word -- which is six calls naming
+// says_nothing at three sites, all of which have to name the SAME predicate for
+// any of them to be right.
+//
+// By says_nothing and never by one that knows only whitespace. What the split
+// broke at is not speech and must not survive into either side of it: on the left
+// it reaches the deliverable as a Paragraph ending in nothing anybody said and is
+// spent against the cap, and on the right it opens the next Paragraph with padding
+// the Engine's own leading space was already taken off for. spoken_text guards a
+// Cue's ENDS; this is the OTHER producer of a Paragraph's prose and it trims
+// interiors spoken_text never looked at. Trimmed by whitespace alone, a split
+// either side of a single control character handed back a `take` made of nothing
+// else, and the Paragraph carrying it held no speech at all.
+//
+// It is HALF of that edge and not the whole of it: word_split's boundary SEARCH
+// reads the same predicate, and reverting either one alone puts a Paragraph made
+// of nothing back. The search stays where it is read, with the argument for it.
+@(private)
+split_trimmed :: proc(said: string, at: int) -> (take, rest: string) {
+	assert(at > 0, "a split that takes nothing is not a split into two sides")
+	assert(at < len(said), "a split at or past the end of the speech behind it")
+	// What makes the trims safe, asserted at the one place all three splits now
+	// pass through (CLAUDE.md A4): speech that opens on speech cannot be emptied by
+	// taking off what nobody said, whatever `at` the caller chose.
+	assert(!opens_on_silence(said), "speech still opening on something nobody said")
+	// And the conclusion drawn from it, which paragraph_admit's loop terminates on:
+	// a split that took nothing would send that loop round again on the same speech
+	// with the same room.
+	defer assert(len(take) > 0, "trimming a split emptied the side that opened on speech")
+
+	take = strings.trim_right_proc(said[:at], says_nothing)
+	rest = strings.trim_left_proc(said[at:], says_nothing)
+	return
+}
+
 // Splits speech at the last word boundary that fits in `room` characters.
 //
 // Reports that NOTHING fits rather than breaking a word, which is what makes the
@@ -378,20 +560,20 @@ paragraph_room :: proc(s: Merge_State, p: Merge_Params) -> int {
 // and offers the whole cap, and only one that has already offered the whole cap
 // carves the word itself.
 //
-// Both ends of what it hands back are trimmed. The space the split broke at is
-// not speech and must not survive into either side of it: on the left it reaches
-// the deliverable as a Paragraph ending in whitespace and is spent against the
-// cap, and on the right it opens the next Paragraph with padding the Engine's
-// own leading space was already taken off for.
+// Both ends of what it hands back are trimmed, by split_trimmed above.
 @(private)
 word_split :: proc(said: string, room: int) -> (take, rest: string) {
 	assert(len(said) > 0, "there is nothing here to split")
-	// The one thing the trims below rely on: speech starts with speech, so
-	// nothing they take off the left can empty what is left of it.
-	assert(!strings.is_space(rune(said[0])), "speech still carrying the engine's padding")
-	defer if len(take) > 0 {
-		assert(take == strings.trim_space(take), "a split left padding on the prose")
-	}
+	// The two things the trims below rely on, both ends of one claim (CLAUDE.md
+	// A3): speech starts with speech and ends with speech, so nothing they take
+	// off either side can empty what is left of it.
+	assert(!opens_on_silence(said), "speech still opening on something nobody said")
+	assert(!ends_on_silence(said), "speech still ending on something nobody said")
+	// Both ends of what it hands BACK, and unguarded like the pair above: the two
+	// paths that report nothing fits hand back an empty `take`, and speech nobody
+	// said anything in opens and ends on nothing at all.
+	defer assert(!opens_on_silence(take), "a split opened prose on something nobody said")
+	defer assert(!ends_on_silence(take), "a split left something nobody said on the prose")
 
 	if room <= 0 {
 		return "", said
@@ -413,19 +595,21 @@ word_split :: proc(said: string, room: int) -> (take, rest: string) {
 	// without breaking anything, which the search below cannot see because it
 	// only looks inside the window.
 	at_cut, _ := utf8.decode_rune_in_string(said[cut:])
-	if strings.is_space(at_cut) {
-		return strings.trim_right_space(said[:cut]), strings.trim_left_space(said[cut:])
+	if says_nothing(at_cut) {
+		return split_trimmed(said, cut)
 	}
 
-	// `strings.is_space` and never a comparison against the space byte: it is the
-	// predicate trim_left_space and trim_right_space use, and a boundary search
-	// that knew about fewer characters than the trims do carves a tab as though
-	// it were a letter.
-	at := strings.last_index_proc(said[:cut], strings.is_space)
+	// `says_nothing` and never `strings.is_space`: it is the predicate split_trimmed
+	// trims either side of this by, and a boundary search knowing about fewer
+	// characters than the trim does carves a control byte as though it were a
+	// letter -- and then the trim takes it off again, leaving a Paragraph made of
+	// nothing. LOAD-BEARING ON ITS OWN: the trim reverted alone and this reverted
+	// alone each put that Paragraph back, by different routes.
+	at := strings.last_index_proc(said[:cut], says_nothing)
 	if at <= 0 {
 		return "", said
 	}
-	return strings.trim_right_space(said[:at]), strings.trim_left_space(said[at:])
+	return split_trimmed(said, at)
 }
 
 // Splits speech at exactly `room` characters, wherever that falls.
@@ -433,6 +617,14 @@ word_split :: proc(said: string, room: int) -> (take, rest: string) {
 character_split :: proc(said: string, room: int) -> (take, rest: string) {
 	assert(len(said) > 0, "there is nothing here to carve")
 	assert(room > 0, "a carve that may take no characters never finishes")
+	// The same claim word_split makes about what it is handed, at the other carve
+	// (CLAUDE.md A4): the trim below takes off what nobody said, and speech that
+	// opened on that would come back empty.
+	assert(!opens_on_silence(said), "speech still opening on something nobody said")
+	// This procedure's own contract with paragraph_admit, which split_trimmed
+	// settles one frame down and paragraph_admit asserts again on the way out
+	// (CLAUDE.md A4). It is the claim THE LOOP THAT MUST TERMINATE rests on, so it
+	// is checked on every frame that could break it.
 	defer assert(len(take) > 0, "a carve that took no speech at all")
 
 	// Characters and not bytes, which is the whole reason this asks utf8 instead
@@ -442,7 +634,7 @@ character_split :: proc(said: string, room: int) -> (take, rest: string) {
 	// has already found more characters here than there is room for.
 	cut := utf8.rune_offset(said, room)
 	assert(cut > 0, "a positive room measured out no characters at all")
-	return strings.trim_right_space(said[:cut]), strings.trim_left_space(said[cut:])
+	return split_trimmed(said, cut)
 }
 
 // Adds one Cue's speech to the Paragraph being built, opening one if none is.
@@ -503,7 +695,7 @@ paragraph_close :: proc(s: ^Merge_State, p: Merge_Params, allocator: mem.Allocat
 	// the running total, so a counter that drifted from the builder is caught by
 	// the first of these and an arithmetic error by the second. Per Paragraph and
 	// never over the set: an assert sweeping every Paragraph is the expectation
-	// neither_shipped_profile_exceeds_its_own_character_cap already holds, and
+	// no_shipped_profile_exceeds_its_own_character_cap already holds, and
 	// pre-empting it would turn a named failure into several tests asserting at
 	// once, which is the runner hang CLAUDE.md documents.
 	held := strings.rune_count(said)

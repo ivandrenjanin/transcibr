@@ -39,6 +39,22 @@ ceiling. The core/shell split does not make the whole program testable — it co
 that *can* be tested where the value also happens to be, and keeps everything else thin enough to
 inspect by reading.
 
+**The command line is on that list, and its bill is the one easiest to forget.** `src/cli` is named
+in `$OdinPackagesWithoutTests`, and `test.ps1` *requires* it to collect zero tests. The direct
+consequence is that no change to that package can turn a test red: deleting an assertion from it
+leaves the whole suite green, and so does putting one back. Measured rather than assumed — the
+empty-option-name assertion that A8 had removed from `read_option` was restored as a mutant and every
+test in the repository still passed.
+
+What runs the built `transcibr-cli` at all is `build.ps1`'s smoke test, and it runs it with *no
+arguments* and reads the banner line. Nothing automated here exercises `--from-json`, `--profile`,
+`--help`, or a refusal. So every claim the command line makes about itself — the assertions bracketing
+`read_options`, the four shape checks in `print_version`, the byte count after the write — is held up
+by review, by reading, and by whatever fuzzing a change brings with it. That is the price of a shell
+thin enough to inspect, and it stays a fair price only while the shell stays thin: the moment a
+decision worth testing turns up in `src/cli`, it belongs in the core instead, and the sweep's refusal
+to let that package collect a single test is the thing that keeps asking the question.
+
 The golden fixture is one real engine JSON plus its expected Markdown. That choice also pins the
 JSON schema this design bets on (ADR-0001), so an engine upgrade that changes the schema fails a test
 rather than silently producing empty transcripts.

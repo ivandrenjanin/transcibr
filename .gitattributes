@@ -29,7 +29,10 @@
 #
 # src\transcript\fixtures\ holds one real whisper.cpp run committed exactly as
 # the Engine wrote it, systeminfo block and absolute model path and all, because
-# the whole point of it is to pin the schema this design bets on (ADR-0001).
+# the whole point of it is to pin the schema this design bets on (ADR-0001) --
+# and, beside it, the two Markdown Transcripts that run must render as, one per
+# Merge Profile. Those are compared BYTE FOR BYTE, front matter included, so a
+# checkout that rewrote their endings would fail every comparison at once.
 # Line-ending normalisation is an EDIT to that evidence. With core.autocrlf on
 # and nothing said here, the 2335 bytes the Engine wrote were stored as 2226:
 # the blob was not the file anyone was told it was, and the byte count the test
