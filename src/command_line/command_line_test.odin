@@ -413,6 +413,29 @@ the_ceiling_admits_the_longest_line_that_fits :: proc(t: ^testing.T) {
 // about this package: a trailing backslash in argv[0] is NOT an escape, so the
 // argument after it survives. Doubling it -- the argument rule, misapplied --
 // would put a second backslash in the path instead.
+//
+// THE MUTANT THIS CASE HOLDS, written out because the measurement it rests on is
+// the one a reader is most likely to get backwards. Make write_program double a
+// trailing run the way write_argument does, and `C:\dir with space\` reaches the
+// child as `C:\dir with space\\` -- a path carrying a second backslash that the
+// filesystem does not have.
+//
+// MEASURED, and worth knowing before trusting the tests alone to catch it: that
+// mutant never reaches an expectation in this file. write_program's own length
+// assertion fires first ("the program path was not written whole"), and a
+// maintainer who relaxes that one to match is stopped by build's second,
+// independent one ("a command line with no arguments carries something anyway").
+// Three separate checks have to be defeated before a wrong argv[0] can be
+// observed rather than crashed on -- which is what A4's paired write-side and
+// read-side assertions buy, stated here because the crash names the assertion
+// and not the reason.
+//
+// The second half is the same rule read from the other end, and it is the half
+// that catches a reader who "corrects" the first. A path that ALREADY ends in a
+// doubled run keeps BOTH backslashes: `"C:\dir\\" one` yields argv[0]
+// `C:\dir\\`, measured, not `C:\dir\`. Nothing in argv[0] collapses, because
+// nothing in argv[0] was ever an escape -- so there is no doubling anywhere for
+// write_program to compensate for.
 @(test)
 a_trailing_backslash_in_the_program_path_is_not_an_escape :: proc(t: ^testing.T) {
 	line, err := build(`C:\dir with space\`, {"-after"}, context.allocator)
@@ -426,5 +449,18 @@ a_trailing_backslash_in_the_program_path_is_not_an_escape :: proc(t: ^testing.T)
 	if len(argv) == 2 {
 		testing.expect_value(t, argv[0], `C:\dir with space\`)
 		testing.expect_value(t, argv[1], "-after")
+	}
+
+	doubled, doubled_err := build(`C:\dir\\`, {"one"}, context.allocator)
+	defer delete(doubled, context.allocator)
+	testing.expect_value(t, doubled_err, Build_Error.None)
+	testing.expect_value(t, doubled, `"C:\dir\\" one`)
+
+	doubled_argv := argv_of(t, doubled, context.allocator)
+	defer free_argv(doubled_argv, context.allocator)
+	testing.expect_value(t, len(doubled_argv), 2)
+	if len(doubled_argv) == 2 {
+		testing.expect_value(t, doubled_argv[0], `C:\dir\\`)
+		testing.expect_value(t, doubled_argv[1], "one")
 	}
 }
