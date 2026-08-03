@@ -18,6 +18,7 @@ Parse_Fault :: enum u8 {
 	Malformed_Json,
 	Not_An_Object,
 	No_Transcription,
+	Too_Deeply_Nested,
 	No_Cues,
 	Cue_Not_An_Object,
 	No_Offsets,
@@ -136,11 +137,99 @@ decode_engine_json :: proc(
 	assert(len(json_text) > 0, "an empty input is Empty_Input, settled before this point")
 	assert(scratch.block_allocator.procedure != nil, "the scratch arena was never initialised")
 
+	// BEFORE the decode, because this is the one thing wrong with a file that
+	// the decode cannot survive to report -- see json_nesting_is_bounded.
+	if !json_nesting_is_bounded(json_text) {
+		return nil, .Too_Deeply_Nested
+	}
+
 	root, decode_err := json.parse(json_text, .JSON, true, mem.dynamic_arena_allocator(scratch))
 	if decode_err != nil {
 		return nil, .Malformed_Json
 	}
 	return root, .None
+}
+
+// The deepest nesting this parser will hand to core:encoding/json.
+//
+// That decoder is a recursive descent with NO depth limit of its own, so a file
+// nested deeply enough runs the thread off its stack and takes the process down
+// -- 0xC00000FD, measured, from 1694 bytes of input: 751 levels decoded fine and
+// 801 ended the run. There is no error return to catch, which makes it the one
+// piece of external input that can crash this program, and CLAUDE.md A8 says
+// nothing outside it may.
+//
+// The Engine writes five levels at the deepest: the root object, the
+// `transcription` array, a Cue, its `tokens` array, and a token. 64 leaves an
+// order of magnitude of headroom over anything an Engine release could
+// plausibly add, and sits an order of magnitude BELOW where the stack gives
+// out -- which is the gap the limit has to fall in, because the depth the stack
+// survives is not a constant: it moves with the build configuration and with
+// the stack the calling thread happens to have.
+@(private)
+MAX_JSON_DEPTH :: 64
+
+// Whether the nesting in a piece of JSON stays inside MAX_JSON_DEPTH.
+//
+// A byte scan and not a parse. It is asked one question -- how deep do the
+// brackets go -- and it has to answer it before the decoder that would crash on
+// the answer ever sees the text, so it cannot be built on that decoder.
+//
+// String-aware, and that is the whole subtlety: a bracket inside a string is
+// text the Engine transcribed, and a scan that could not tell would refuse a
+// Recording for containing "[[[". Deliberately NOT a validator otherwise --
+// everything it lets through still has to parse, and an unbalanced or trailing
+// bracket is Malformed_Json from the decoder exactly as it was before.
+@(private)
+json_nesting_is_bounded :: proc(json_text: string) -> bool {
+	assert(len(json_text) > 0, "an empty input is Empty_Input, settled before this point")
+
+	depth := 0
+	in_string := false
+	escaped := false
+	for i in 0 ..< len(json_text) {
+		// Bytes, not runes: every delimiter below is ASCII, and a UTF-8
+		// continuation byte is never one of them. Decoding runes here would
+		// mean deciding what to do about invalid UTF-8 in a procedure whose
+		// only job is to count brackets.
+		character := json_text[i]
+		if in_string {
+			switch {
+			case escaped:
+				escaped = false
+			case character == '\\':
+				escaped = true
+			case character == '"':
+				in_string = false
+			}
+			continue
+		}
+		switch character {
+		case '"':
+			in_string = true
+		case '{', '[':
+			depth += 1
+			if depth > MAX_JSON_DEPTH {
+				return false
+			}
+		case '}', ']':
+			// Never below zero. An unbalanced closer is the decoder's to
+			// report, and a depth allowed to go negative here would let the
+			// brackets after it run as deep as they liked.
+			if depth > 0 {
+				depth -= 1
+			}
+		}
+	}
+
+	// The two facts a `true` here stands for, asserted where it is returned
+	// rather than left to a reader to trace back through the loop (A6). The
+	// second is the one that is easy to lose: without the guard on the way
+	// down, a file of nothing but `]` drives depth negative and every bracket
+	// after it is measured from the wrong floor.
+	assert(depth <= MAX_JSON_DEPTH, "returned true for nesting past the limit")
+	assert(depth >= 0, "counted more closing brackets than were ever opened")
+	return true
 }
 
 // The one check that is about the Cue set rather than any Cue in it, and the
@@ -408,6 +497,7 @@ FAULT_TEXT := [Parse_Fault]string {
 	.None                      = "",
 	.Empty_Input               = "the engine wrote nothing",
 	.Malformed_Json            = "not valid json; the file is truncated or was not written by the engine",
+	.Too_Deeply_Nested         = "json nested far deeper than the engine writes; the file was not written by the engine",
 	.Not_An_Object             = "valid json, but not the object the engine writes",
 	.No_Transcription          = "no `transcription` array",
 	.No_Cues                   = "the `transcription` array is empty; the engine transcribed nothing",

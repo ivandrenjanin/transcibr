@@ -1,5 +1,6 @@
 package transcript
 
+import "core:mem"
 import "core:strings"
 import "core:testing"
 
@@ -120,6 +121,69 @@ reports_truncated_input_against_its_name :: proc(t: ^testing.T) {
 	testing.expect(t, len(cues) == 0, "handed back cues from a truncated file")
 	testing.expect_value(t, err.fault, Parse_Fault.Malformed_Json)
 	testing.expect_value(t, err.json_name, "cut-short.json")
+}
+
+// `{"a_key_from_2027": [[[...]]], "transcription": [one good Cue]}` -- the
+// nesting sits under a key this parser ignores, so a document that is accepted
+// is accepted WITH its Cue, and depth is the only thing these cases vary.
+@(private)
+nested_engine_json :: proc(inner_depth: int, allocator: mem.Allocator) -> string {
+	assert(inner_depth > 0, "a document nested no levels deep tests nothing")
+	assert(allocator.procedure != nil, "the document outlives this procedure")
+
+	out := strings.builder_make(allocator)
+	strings.write_string(&out, `{"a_key_from_2027": `)
+	for _ in 0 ..< inner_depth {
+		strings.write_byte(&out, '[')
+	}
+	for _ in 0 ..< inner_depth {
+		strings.write_byte(&out, ']')
+	}
+	strings.write_string(&out, `, "transcription": [{"offsets": {"from": 0, "to": 3480}, "text": " one"}]}`)
+
+	text := strings.to_string(out)
+	assert(len(text) > inner_depth * 2, "the nesting never reached the document")
+	return text
+}
+
+// A8, and the one input that cannot be reported through the error return at
+// all. `core:encoding/json` is a recursive descent with no depth limit, so
+// nesting deep enough runs the thread off its stack and takes the PROCESS down
+// -- 0xC00000FD, no return value, no report, nothing for a caller to catch.
+// The only place to stop it is before the decoder sees the text.
+@(test)
+refuses_nesting_that_would_crash_the_decoder :: proc(t: ^testing.T) {
+	// 750 levels survived on the build machine and 800 did not, so this is the
+	// document that used to end the run rather than fail it.
+	deep := nested_engine_json(800, context.allocator)
+	defer delete(deep, context.allocator)
+
+	cues, err := parse_cues("deep.json", deep, FIXTURE_DURATION, context.allocator)
+	defer destroy_cues(cues, context.allocator)
+
+	testing.expect(t, len(cues) == 0, "handed back cues from a file that cannot be decoded")
+	testing.expect_value(t, err.fault, Parse_Fault.Too_Deeply_Nested)
+	testing.expect_value(t, err.json_name, "deep.json")
+}
+
+// The negative space of that limit (CLAUDE.md A3). A ceiling low enough to be
+// safe is only useful while everything the Engine can write stays under it, and
+// a check written with the wrong comparison refuses a document it should read.
+@(test)
+accepts_nesting_up_to_the_limit :: proc(t: ^testing.T) {
+	// The root object is one level, so this is the deepest inner array that
+	// still fits under the limit -- and one past it is the first that does not.
+	either_side := [2]int{MAX_JSON_DEPTH - 1, MAX_JSON_DEPTH}
+	for inner_depth, i in either_side {
+		text := nested_engine_json(inner_depth, context.allocator)
+		defer delete(text, context.allocator)
+
+		cues, err := parse_cues("nested.json", text, FIXTURE_DURATION, context.allocator)
+		defer destroy_cues(cues, context.allocator)
+
+		want := Parse_Fault.None if i == 0 else Parse_Fault.Too_Deeply_Nested
+		testing.expectf(t, err.fault == want, "%d levels gave %v, want %v", inner_depth + 1, err.fault, want)
+	}
 }
 
 @(test)
@@ -384,6 +448,17 @@ parses_the_ugly_cases :: proc(t: ^testing.T) {
 			json = `{"transcription": [{"offsets": {"from": 0, "to": 1000},
 				"text": " \"quoted\", a \\ backslash, and café."}]}`,
 			expected = []Cue{{0, 1_000, ` "quoted", a \ backslash, and café.`}},
+		},
+		{
+			// A bracket inside a string is text the Engine transcribed, and a
+			// trailing backslash before the closing quote is an escaped
+			// backslash and not an escaped quote. The depth scan runs over the
+			// bytes ahead of the decoder, so a scan that could not tell either
+			// of those would refuse a Recording for what was said in it.
+			name = "bracketed-text.json",
+			json = `{"transcription": [{"offsets": {"from": 0, "to": 1000},
+				"text": " [[[[[ {{{ \" ]] }} \\"}]}`,
+			expected = []Cue{{0, 1_000, ` [[[[[ {{{ " ]] }} \`}},
 		},
 	}
 
