@@ -492,6 +492,66 @@ each_merge_profile_carries_the_thresholds_adr_0007_tuned :: proc(t: ^testing.T) 
 	testing.expect_value(t, profile_params(.Conversation), CONVERSATION)
 }
 
+// What a usage line offers a caller, read out of the table rather than spelled
+// again in another package.
+//
+// `monologue|conversation` was hand-written into the command line's USAGE, which
+// is a copy of PROFILES living where no compiler compares the two: a third
+// profile would be unmentioned, and a renamed one would be offered under a
+// spelling profile_named refuses.
+@(test)
+the_profiles_a_caller_may_pick_are_the_profiles_that_exist :: proc(t: ^testing.T) {
+	offered := profile_names(context.allocator)
+	defer delete(offered, context.allocator)
+
+	listed := strings.split(offered, "|", context.allocator)
+	defer delete(listed, context.allocator)
+
+	// Every profile, in the order the enumeration declares them, and nothing
+	// else. Walked over the enumeration on one side and the list on the other, so
+	// a profile missing from either is a failure rather than a shorter loop.
+	at := 0
+	for profile in Merge_Profile {
+		if !testing.expectf(t, at < len(listed), "%v is not offered in %q", profile, offered) {
+			break
+		}
+		testing.expectf(
+			t,
+			listed[at] == profile_name(profile),
+			"%q is offered where %v was expected",
+			listed[at],
+			profile,
+		)
+		at += 1
+	}
+	testing.expectf(t, at == len(listed), "%q offers something no profile answers to", offered)
+
+	// And every name in it is one the lookup actually accepts, which is the whole
+	// promise a usage line makes (CLAUDE.md A4).
+	for name in listed {
+		_, known := profile_named(name)
+		testing.expectf(t, known, "%q is offered and refused", name)
+	}
+}
+
+// The profile a caller who chose none is merged under, named once so the two
+// binaries cannot disagree about it.
+//
+// Spec story 44 asks that a re-render produce the Transcript the original run
+// would have. The command line spelled its default as a bare enum member, where
+// the window ADR-0004 promises could quietly spell a different one -- and the
+// two would then paragraph the same Recording differently while both recording
+// what they did.
+@(test)
+the_default_merge_profile_is_one_the_lookup_knows :: proc(t: ^testing.T) {
+	name := profile_name(DEFAULT_PROFILE)
+	testing.expect(t, len(name) > 0, "the default profile carries no name")
+
+	back, known := profile_named(name)
+	testing.expectf(t, known, "the default profile is called %q, which nothing knows", name)
+	testing.expect_value(t, back, DEFAULT_PROFILE)
+}
+
 // Two profiles under one name would resolve to whichever the lookup reached
 // first, so a Batch asking for the second gets the first's thresholds and the
 // front matter records the name both of them answer to. Nothing in the type
@@ -514,14 +574,19 @@ no_two_merge_profiles_answer_to_one_name :: proc(t: ^testing.T) {
 
 // And the cap, on the profiles that actually ship rather than on a threshold a
 // case pinned for itself.
+//
+// Walked over the ENUMERATION and never over a list of constants written out
+// beside it. A third profile added to Merge_Profile would be silently exempt
+// from the only case checking the cap on shipped thresholds, while this case's
+// name went on claiming it covered every one of them.
 @(test)
-neither_shipped_profile_exceeds_its_own_character_cap :: proc(t: ^testing.T) {
-	profiles := []Merge_Params{MONOLOGUE, CONVERSATION}
+no_shipped_profile_exceeds_its_own_character_cap :: proc(t: ^testing.T) {
 	for m in MATERIALS {
 		cues := material_cues(m, context.allocator)
 		defer delete(cues, context.allocator)
 
-		for p, which in profiles {
+		for profile in Merge_Profile {
+			p := profile_params(profile)
 			paragraphs := merge_paragraphs(cues, p, context.allocator)
 			defer destroy_paragraphs(paragraphs, context.allocator)
 
@@ -530,9 +595,9 @@ neither_shipped_profile_exceeds_its_own_character_cap :: proc(t: ^testing.T) {
 				testing.expectf(
 					t,
 					held <= p.max_para_chars,
-					"%s, profile %d: paragraph %d holds %d characters against a cap of %d",
+					"%s, %s: paragraph %d holds %d characters against a cap of %d",
 					m.name,
-					which,
+					profile_name(profile),
 					i + 1,
 					held,
 					p.max_para_chars,

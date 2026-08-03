@@ -119,6 +119,17 @@ Merge_Profile :: enum u8 {
 	Conversation,
 }
 
+// The profile a caller who chose none is merged under.
+//
+// Named once, here, because BOTH binaries need it and they must not disagree:
+// the window ADR-0004 promises and the command line have to produce the same
+// bytes from the same input (spec story 44), and a default spelled as a bare
+// enum member at each of them is two answers to one question that nothing keeps
+// in step. Monologue because it is the generous one: merging too little leaves
+// the subtitle-fragment wall this program exists to avoid, and a reader who
+// wanted the aggressive profile can re-render in seconds (spec story 43).
+DEFAULT_PROFILE :: Merge_Profile.Monologue
+
 // A profile's name beside the thresholds it stands for, so a row cannot name one
 // profile and point at the other's constants.
 @(private)
@@ -137,32 +148,68 @@ PROFILES := [Merge_Profile]Named_Profile {
 	.Conversation = {name = "conversation", params = CONVERSATION},
 }
 
+// One profile's row, checked.
+//
+// THE ONE PLACE THE TABLE IS READ, and the one place the missing row is caught.
+// The claim was made at three call sites in two different wordings, all three
+// running on every render and all three about the same defect: a Merge_Profile
+// added without a row here still HAS a row, made of zeroes, and a zeroed row
+// carries no name for the front matter and thresholds merge_paragraphs would
+// refuse. Said once, where both halves of a row are in hand.
+@(private)
+profile_row :: proc(profile: Merge_Profile) -> (row: Named_Profile) {
+	row = PROFILES[profile]
+	assert(len(row.name) > 0, "a profile was added to Merge_Profile without a row in PROFILES")
+	// The negative space of the same missing row (CLAUDE.md A3): a row could
+	// carry a name and no thresholds, and the merger would then break at every
+	// Cue while naming the merger rather than the profile nobody filled in.
+	assert(row.params.max_gap_ms > 0, "a named profile carries no thresholds")
+	assert(
+		row.params.hard_gap_ms >= row.params.max_gap_ms,
+		"a named profile's hard gap sits below its soft",
+	)
+	return
+}
+
 // What a Transcript records having been merged under.
 //
 // Borrowed from the table above and never owned: it is a compiled-in constant
 // that outlives every caller, so nothing frees it.
 profile_name :: proc(profile: Merge_Profile) -> string {
-	name := PROFILES[profile].name
-	assert(len(name) > 0, "a profile was added to Merge_Profile without a row in PROFILES")
-	// The negative space of the same missing row (CLAUDE.md A3), checked at the
-	// one place both halves of a row are in hand: a zeroed row carries thresholds
-	// merge_paragraphs would refuse, and refusing them there names the merger
-	// rather than the profile that was never filled in.
-	assert(PROFILES[profile].params.max_gap_ms > 0, "a named profile carries no thresholds")
-	return name
+	return profile_row(profile).name
 }
 
 // The thresholds behind a name, for merge_paragraphs to be handed.
 profile_params :: proc(profile: Merge_Profile) -> Merge_Params {
-	// The same missing-row check profile_name makes, at the other place the table
-	// is read (CLAUDE.md A4). A zeroed row is a profile that breaks at every Cue.
-	params := PROFILES[profile].params
-	assert(params.max_gap_ms > 0, "a profile was added to Merge_Profile without a row in PROFILES")
-	assert(
-		params.hard_gap_ms >= params.max_gap_ms,
-		"a named profile's hard gap sits below its soft",
-	)
-	return params
+	return profile_row(profile).params
+}
+
+// Every profile a caller may pick, joined the way a usage line offers a choice:
+// `monologue|conversation`.
+//
+// Read out of the table rather than spelled again wherever a usage line is
+// written. That copy lived in another package, where no compiler could compare
+// the two -- so a third profile would go unmentioned and a renamed one would be
+// offered under a spelling profile_named refuses.
+//
+// The allocator is explicit and never defaulted: the line outlives this
+// procedure. Free it with `delete`, passing the same allocator.
+profile_names :: proc(allocator: mem.Allocator) -> (offered: string) {
+	assert(allocator.procedure != nil, "the line outlives this procedure")
+	// What every caller depends on: there is always a choice to offer, because
+	// an enumeration with no members is not something this program has.
+	defer assert(len(offered) > 0, "offered a choice between no profiles at all")
+
+	out := strings.builder_make(allocator)
+	defer strings.builder_destroy(&out)
+
+	for profile in Merge_Profile {
+		if strings.builder_len(out) > 0 {
+			strings.write_byte(&out, '|')
+		}
+		strings.write_string(&out, profile_row(profile).name)
+	}
+	return strings.clone(strings.to_string(out), allocator)
 }
 
 // The profile a name stands for, or nothing where no profile carries it.
@@ -174,13 +221,13 @@ profile_named :: proc(name: string) -> (profile: Merge_Profile, known: bool) {
 	// Never asserted against the empty string: the name comes off a command line,
 	// which is outside this program, and nothing outside it may crash it
 	// (CLAUDE.md A8). It is refused through the return like any other spelling.
-	for row, candidate in PROFILES {
-		if row.name == name {
-			// The same missing-row check profile_name and profile_params make, at
-			// the third place the table is read (CLAUDE.md A4). A zeroed row
-			// answers to the empty name, so a caller passing "" would be handed a
-			// profile whose thresholds merge_paragraphs refuses.
-			assert(row.params.max_gap_ms > 0, "a named profile carries no thresholds")
+	//
+	// Compared through profile_row rather than against the range value, so every
+	// row is checked as the walk passes it -- including the zeroed one, which
+	// answers to the empty name and would otherwise hand a caller passing "" a
+	// profile whose thresholds merge_paragraphs refuses.
+	for candidate in Merge_Profile {
+		if profile_row(candidate).name == name {
 			return candidate, true
 		}
 	}
@@ -583,7 +630,7 @@ paragraph_close :: proc(s: ^Merge_State, p: Merge_Params, allocator: mem.Allocat
 	// the running total, so a counter that drifted from the builder is caught by
 	// the first of these and an arithmetic error by the second. Per Paragraph and
 	// never over the set: an assert sweeping every Paragraph is the expectation
-	// neither_shipped_profile_exceeds_its_own_character_cap already holds, and
+	// no_shipped_profile_exceeds_its_own_character_cap already holds, and
 	// pre-empting it would turn a named failure into several tests asserting at
 	// once, which is the runner hang CLAUDE.md documents.
 	held := strings.rune_count(said)
