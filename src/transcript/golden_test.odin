@@ -1,5 +1,6 @@
 package transcript
 
+import "core:mem"
 import "core:strings"
 import "core:testing"
 
@@ -52,8 +53,11 @@ GOLDEN_CONVERSATION :: #load("fixtures/engine-output.conversation.md", string)
 //
 // `language` is left empty here and filled in from the Engine's own output by
 // each case below, which is deliberate: it is the one front matter fact that
-// output can settle (ADR-0001), so a release that renames `result` shows up in
-// these bytes rather than nowhere.
+// output can settle (ADR-0001). Every case reads it out of the document it is
+// about to render and never out of the pristine fixture, which is what lets the
+// schema table below move it -- a release that renames `result` renders a
+// complete Transcript recording that nobody settled the language, and the row
+// for it is the only row in that table about a key the Cues do not live under.
 @(private)
 GOLDEN_CONTEXT :: Render_Context {
 	now            = SAMPLE_INSTANT,
@@ -90,11 +94,8 @@ GOLDEN_CASES := []Golden_Case {
 
 @(test)
 real_engine_output_renders_as_the_golden_transcript :: proc(t: ^testing.T) {
-	language, said := parse_language(ENGINE_JSON, context.allocator)
-	defer if said {
-		delete(language, context.allocator)
-	}
-	detected := said ? language : UNKNOWN
+	detected := parse_language(ENGINE_JSON, context.allocator)
+	defer delete(detected, context.allocator)
 
 	for c in GOLDEN_CASES {
 		rc := golden_context(c.profile, detected)
@@ -187,11 +188,21 @@ no_golden_transcript_carries_a_carriage_return :: proc(t: ^testing.T) {
 // One change to the Engine's output, and what rendering must do about it.
 @(private)
 Schema_Change :: struct {
-	what:  string,
-	from:  string,
-	to:    string,
-	// .None means the change must be ACCEPTED and render the golden unchanged.
-	fault: Parse_Fault,
+	what:     string,
+	from:     string,
+	to:       string,
+	// .None means the change must be ACCEPTED and render the golden with the
+	// language below written into it.
+	fault:    Parse_Fault,
+	// What the CHANGED document still settles about the detected language.
+	//
+	// Read out of the mutated document by the test, the way the shell reads it
+	// out of the file it is about to render. Read out of the PRISTINE fixture
+	// instead -- which is what this did -- no row in this table could move the
+	// one front matter field the Engine's own output settles, and the row below
+	// that renames `result` would have been checked against a language it could
+	// not possibly have affected.
+	language: string,
 }
 
 @(private, rodata)
@@ -201,46 +212,80 @@ SCHEMA_CHANGES := []Schema_Change {
 		from = `"transcription"`,
 		to = `"segments"`,
 		fault = .No_Transcription,
+		language = "en",
 	},
-	{what = "the offsets object renamed", from = `"offsets"`, to = `"spans"`, fault = .No_Offsets},
-	{what = "the text field renamed", from = `"text"`, to = `"words"`, fault = .No_Text},
-	{what = "the start offset renamed", from = `"from"`, to = `"begin"`, fault = .Offset_Missing},
+	{
+		what = "the offsets object renamed",
+		from = `"offsets"`,
+		to = `"spans"`,
+		fault = .No_Offsets,
+		language = "en",
+	},
+	{
+		what = "the text field renamed",
+		from = `"text"`,
+		to = `"words"`,
+		fault = .No_Text,
+		language = "en",
+	},
+	{
+		what = "the start offset renamed",
+		from = `"from"`,
+		to = `"begin"`,
+		fault = .Offset_Missing,
+		language = "en",
+	},
 	{
 		what = "the end offset removed",
 		from = `"to": 3480`,
 		to = `"unused": 3480`,
 		fault = .Offset_Missing,
+		language = "en",
 	},
 	{
 		// The shape that would otherwise ship: offsets arriving as the
 		// `hh:mm:ss,mmm` text the Engine already writes beside them. Guessing at
 		// what it meant is how a schema change becomes a Transcript full of
 		// plausible wrong timings.
-		what  = "an offset retyped from a number to a string",
-		from  = `"from": 0,`,
-		to    = `"from": "0",`,
-		fault = .Offset_Not_A_Number,
+		what     = "an offset retyped from a number to a string",
+		from     = `"from": 0,`,
+		to       = `"from": "0",`,
+		fault    = .Offset_Not_A_Number,
+		language = "en",
 	},
 	{
 		// THE NEGATIVE SPACE (CLAUDE.md A3). A field the Engine ADDS must render
 		// exactly as before: `-ojf` already adds a per-token array to every Cue,
 		// and refusing an unrecognised key would turn every Engine upgrade into a
 		// corrupt Transcript (ADR-0001).
-		what  = "a field added to a cue",
-		from  = `"text": " This is a recording`,
-		to    = `"confidence": 0.98, "text": " This is a recording`,
-		fault = .None,
+		what     = "a field added to a cue",
+		from     = `"text": " This is a recording`,
+		to       = `"confidence": 0.98, "text": " This is a recording`,
+		fault    = .None,
+		language = "en",
+	},
+	{
+		// The row this table could not previously hold, and the only one that
+		// moves a FRONT MATTER field rather than a Cue. `result` is where the
+		// Engine writes what it detected (ADR-0001), and it is the one fact that
+		// output settles.
+		//
+		// ACCEPTED, and deliberately so. Refusing a Recording because a key the
+		// Cues do not live under moved would turn an Engine upgrade into a failed
+		// Recording, which is the mistake ADR-0001 warns about; and ADR-0003 says
+		// absent provenance beats wrong provenance. So the Transcript is rendered
+		// in full, every other byte of it unchanged, and it records that nobody
+		// settled the language.
+		what     = "the result object renamed",
+		from     = `"result"`,
+		to       = `"outcome"`,
+		fault    = .None,
+		language = UNKNOWN,
 	},
 }
 
 @(test)
 an_engine_schema_change_is_refused_rather_than_rendered_empty :: proc(t: ^testing.T) {
-	language, said := parse_language(ENGINE_JSON, context.allocator)
-	defer if said {
-		delete(language, context.allocator)
-	}
-	rc := golden_context(.Monologue, said ? language : UNKNOWN)
-
 	for c in SCHEMA_CHANGES {
 		changed, _ := strings.replace_all(ENGINE_JSON, c.from, c.to, context.allocator)
 		defer delete(changed, context.allocator)
@@ -252,11 +297,24 @@ an_engine_schema_change_is_refused_rather_than_rendered_empty :: proc(t: ^testin
 			continue
 		}
 
+		// Out of the document under test and never out of the pristine one, so a
+		// change that moves the detected language is a change this table can see.
+		detected := parse_language(changed, context.allocator)
+		defer delete(detected, context.allocator)
+		testing.expectf(
+			t,
+			detected == c.language,
+			"%s: the language reads %q, want %q",
+			c.what,
+			detected,
+			c.language,
+		)
+
 		markdown, err := render_transcript(
 			"upgraded.json",
 			changed,
 			FIXTURE_DURATION,
-			rc,
+			golden_context(.Monologue, detected),
 			context.allocator,
 		)
 		defer delete(markdown, context.allocator)
@@ -270,7 +328,9 @@ an_engine_schema_change_is_refused_rather_than_rendered_empty :: proc(t: ^testin
 			c.fault,
 		)
 		if c.fault == .None {
-			testing.expectf(t, markdown == GOLDEN_MONOLOGUE, "%s: changed the transcript", c.what)
+			want := golden_reading(c.language, context.allocator)
+			defer delete(want, context.allocator)
+			testing.expectf(t, markdown == want, "%s: changed the transcript", c.what)
 			continue
 		}
 		// The whole of the criterion: caught, rather than handed to a reader as a
@@ -283,6 +343,37 @@ an_engine_schema_change_is_refused_rather_than_rendered_empty :: proc(t: ^testin
 			len(markdown),
 		)
 	}
+}
+
+// The golden, with the one field a schema change can move written as the row
+// says and every other byte of it exactly as committed.
+//
+// A substitution and not a second fixture: what the row claims is that ONLY the
+// language moved, and a second committed document would let anything else move
+// with it unnoticed.
+@(private)
+golden_reading :: proc(language: string, allocator: mem.Allocator) -> (document: string) {
+	assert(len(language) > 0, "a front matter field nobody settled is UNKNOWN, never empty")
+	// The golden is what the fixture renders as, and the fixture says `en`. Said
+	// here rather than left to a comparison to fail confusingly: a substitution
+	// that matched nothing hands the golden straight back and would pass every
+	// accepted row for the wrong reason (CLAUDE.md A6).
+	assert(
+		strings.contains(GOLDEN_MONOLOGUE, `language: "en"`),
+		"the golden carries no language line to move",
+	)
+
+	line := strings.concatenate({`language: "`, language, `"`}, allocator)
+	defer delete(line, allocator)
+
+	// ALWAYS a document of its own, whatever the substitution did. replace_all
+	// hands the input straight back when the two spellings are the same, and a
+	// caller freeing that would free the embedded fixture itself.
+	replaced, allocated := strings.replace_all(GOLDEN_MONOLOGUE, `language: "en"`, line, allocator)
+	if !allocated {
+		return strings.clone(GOLDEN_MONOLOGUE, allocator)
+	}
+	return replaced
 }
 
 // ---------------------------------------------------------------------------
@@ -382,11 +473,9 @@ one_saying_among_the_silence_is_still_a_transcript :: proc(t: ^testing.T) {
 
 @(test)
 rendering_the_same_input_twice_is_byte_identical :: proc(t: ^testing.T) {
-	language, said := parse_language(ENGINE_JSON, context.allocator)
-	defer if said {
-		delete(language, context.allocator)
-	}
-	rc := golden_context(.Conversation, said ? language : UNKNOWN)
+	detected := parse_language(ENGINE_JSON, context.allocator)
+	defer delete(detected, context.allocator)
+	rc := golden_context(.Conversation, detected)
 
 	first, first_err := render_transcript(
 		"engine-output.json",

@@ -110,11 +110,8 @@ re_render :: proc(arguments: []string) -> int {
 	// here in the shell where reading it is allowed, and the language, which is
 	// the one of them the Engine's own output can settle (ADR-0001).
 	rc.now = time.now()
-	language, said := transcript.parse_language(json_text, context.allocator)
-	defer if said {
-		delete(language, context.allocator)
-	}
-	rc.language = said ? language : transcript.UNKNOWN
+	rc.language = transcript.parse_language(json_text, context.allocator)
+	defer delete(rc.language, context.allocator)
 
 	return write_transcript(options.json_path, json_text, rc)
 }

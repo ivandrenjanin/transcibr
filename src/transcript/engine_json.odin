@@ -312,32 +312,29 @@ parse_cues :: proc(
 // document that is not Engine output has no language in it, and parse_cues is
 // what refuses that document and names it (CLAUDE.md A8).
 //
-// The language comes back CLONED and is freed with `delete` and the same
-// allocator -- but only where `said` is true, since nothing was allocated
-// otherwise. Explicit and never defaulted: it outlives this procedure and
+// A document that settles nothing is answered with UNKNOWN and never with an
+// empty string or a flag beside one. ADR-0003's rule is that absent provenance
+// beats wrong provenance, and UNKNOWN is how every front matter field spells
+// absent -- so the fold that turned "nothing" into that word was written at
+// every call site, four times, and every one of them also had to remember that
+// only one of the two answers owned memory.
+//
+// The language ALWAYS comes back CLONED, including the word for nobody knowing,
+// and is always freed with `delete` and the same allocator. One lifetime rule,
+// no fold anywhere. Explicit and never defaulted: it outlives this procedure and
 // crosses a worker boundary (ADR-0010).
-parse_language :: proc(
-	json_text: string,
-	allocator: mem.Allocator,
-) -> (
-	language: string,
-	said: bool,
-) {
+parse_language :: proc(json_text: string, allocator: mem.Allocator) -> (language: string) {
 	assert(
 		allocator.procedure != nil,
 		"the language outlives this procedure and needs a chosen allocator",
 	)
-	// Both sides of what the pair means (CLAUDE.md A3), at the one place both are
-	// in hand: nothing said is nothing to free, and something said is something a
-	// front matter field can be written from.
-	defer if said {
-		assert(len(language) > 0, "reported a language and handed back an empty one")
-	} else {
-		assert(len(language) == 0, "handed back a language while reporting none")
-	}
+	// What every caller depends on and no path below states on its own: there is
+	// always something to write into a front matter field, and always something
+	// to free (CLAUDE.md A3, A6).
+	defer assert(len(language) > 0, "handed back a front matter field with nothing in it")
 
 	if len(strings.trim_space(json_text)) == 0 {
-		return "", false
+		return strings.clone(UNKNOWN, allocator)
 	}
 
 	// The caller's allocator and never `context.temp_allocator`, which is
@@ -348,21 +345,21 @@ parse_language :: proc(
 
 	root, fault := decode_engine_json(json_text, mem.dynamic_arena_allocator(&scratch))
 	if fault != .None {
-		return "", false
+		return strings.clone(UNKNOWN, allocator)
 	}
 	body, is_object := root.(json.Object)
 	if !is_object {
-		return "", false
+		return strings.clone(UNKNOWN, allocator)
 	}
 	result, has_result := field(json.Object, body, "result")
 	if !has_result {
-		return "", false
+		return strings.clone(UNKNOWN, allocator)
 	}
 	detected, is_text := field(json.String, result, "language")
 	if !is_text || len(detected) == 0 {
-		return "", false
+		return strings.clone(UNKNOWN, allocator)
 	}
-	return strings.clone(detected, allocator), true
+	return strings.clone(detected, allocator)
 }
 
 // Decodes the Engine's JSON into a tree that lives on `scratch` and dies with
