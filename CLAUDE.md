@@ -237,6 +237,12 @@ cannot go stale unnoticed.
 Do not hand-roll the compiler invocation — the sweep also enforces that every package either
 collects tests or is declared test-less in `$OdinPackagesWithoutTests`.
 
+The notes below name identifiers in the compiler's `core` sources and never line numbers in them. A
+name is greppable, survives an upstream edit, and says which thing is meant; a line number in another
+repository is a claim with no guard on it at all. The one this file used to carry — a single range
+cited for two separate branches of `get_token` — was already wrong about one of them at the pinned
+compiler.
+
 **The test runner hangs when two or more tests assert concurrently.** One asserting test fails
 cleanly every time. Two or more either crash the process with no summary and no JSON report, or hang
 forever — and `-define:ODIN_TEST_THREADS=1` makes the hang *deterministic* rather than mitigating it.
@@ -255,17 +261,22 @@ refuses a file, and crashes on deep nesting.** Four traps, all measured, all wit
 
 `parse_integers` defaults to *false* on every entry point, so `12345` arrives as a `json.Float` and
 the natural `value.(json.Integer)` matches nothing at all — every number silently reads as its zero
-value, and a monotonicity check downstream still passes, because zero is monotonic. Pass the flag,
-and *also* accept `json.Float`: the tokenizer classifies on the decimal point **and on an `e`/`E`
-exponent** (`tokenizer.odin:264-271`), so `12345.0` and `1.2e4` both stay Floats with the flag on.
+value, and a monotonicity check downstream still passes, because zero is monotonic. Read the
+`json.Float`; do **not** reach for the flag. `get_token` classifies a number on the decimal point and
+on an `e`/`E` exponent, so `12345.0` and `1.2e4` stay Floats however the flag is set — a reader has
+to handle Floats regardless, and handling Integers as well buys nothing but the trap below.
 `DEFAULT_SPECIFICATION` is `JSON5` as well, which accepts trailing commas and comments — pass `.JSON`
 where the input is supposed to be strict.
 
-An integer token is read with `i, _ := strconv.parse_i64(token.text)` (`parser.odin:148`), and the
-discarded error is not the problem: `parse_i64` **wraps on overflow and returns `ok = true`**, so
-there is no failure to read even if you read it. `99999999999999999999999` arrives as
-`200376420520689663` and `2^127` arrives as `0`. Range-check every integer you take out of a
-`json.Value`; the magnitude is the only signal left.
+Passing the flag trades a number that is silently zero for one that is silently wrong. The `.Integer`
+case of `parse_value` reads its token with `i, _ := strconv.parse_i64(token.text)`, and the discarded
+error is not the problem: `parse_i64` **wraps on overflow and returns `ok = true`**, so there is no
+failure to read even if you read it. `99999999999999999999999` arrives as `200376420520689663` and
+`2^127` arrives as `0` — magnitudes a range check can still refuse — but `18446744073709556616`,
+which is 2^64 + 5000, arrives as `5000`, and nothing downstream can tell that from a real value. An
+f64 has no wrap to exploit: rounding is monotonic, so a literal outside the range arrives outside the
+range. Read the Float and range-check it strictly below 2^53, which is where f64 stops representing
+every integer and starts rounding one literal onto another.
 
 The parser leaks on several of its error paths: an object key parsed just before the value after it
 fails is never inserted into the object, so the cleanup that walks that object never frees it, and a
