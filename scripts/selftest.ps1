@@ -146,21 +146,25 @@ function New-FixtureMain {
 		[int] $Exit = 0
 	)
 
-	$body = "import `"core:fmt`"`nimport `"core:os`"`n`nmain :: proc() {`n"
+	# core:fmt is imported only where something is printed. -vet rejects an
+	# unused import, which is what the silent binary would otherwise carry --
+	# and printing an empty string to satisfy it reads as a bug in the fixture.
+	$imports = 'import "core:os"'
+	$print = ''
 	if ($Line -ne '') {
-		$body += "`tfmt.println(`"$Line`")`n"
+		$imports = "import `"core:fmt`"`n$imports"
+		$print = "`tfmt.println(`"$Line`")`n"
 	}
-	else {
-		# os is imported unconditionally so -vet stays happy either way.
-		$body += "`tfmt.print(`"`")`n"
-	}
-	$body += "`tos.exit($Exit)`n}`n"
-	return $body
+	return "$imports`n`nmain :: proc() {`n$print`tos.exit($Exit)`n}`n"
 }
 
 # A separate process, so the child's Set-StrictMode, exit code and $LASTEXITCODE
 # are the real ones a developer sees rather than this script's.
-function Invoke-FixtureScript {
+#
+# Started but NOT waited on, because one case needs several runs of the same
+# script in flight together -- run one after another they never overlap and that
+# case proves nothing. Every caller pairs this with Wait-FixtureScript.
+function Start-FixtureScript {
 	param(
 		[Parameter(Mandatory)] [string] $RepoRoot,
 		[Parameter(Mandatory)] [string] $Script,
@@ -170,7 +174,7 @@ function Invoke-FixtureScript {
 		# host's own flags end up passed to the script under test.
 		[string[]] $ScriptArguments = @(),
 		# Have the CHILD merge its own streams with 2>&1, the way a caller
-		# piping the script's whole output would. Redirection at the process
+		# piping the script's whole output would. Redirecting at the process
 		# level, as below, does not exercise that path at all.
 		[switch] $MergeStreams
 	)
@@ -182,7 +186,7 @@ function Invoke-FixtureScript {
 	$arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass')
 	if ($MergeStreams) {
 		if ($ScriptArguments.Count -gt 0) {
-			throw 'Invoke-FixtureScript cannot pass -ScriptArguments through -MergeStreams.'
+			throw 'Start-FixtureScript cannot pass -ScriptArguments through -MergeStreams.'
 		}
 		$arguments += @('-Command', "`"& '$scriptPath' 2>&1 | Out-Null; exit `$LASTEXITCODE`"")
 	}
@@ -190,67 +194,43 @@ function Invoke-FixtureScript {
 		$arguments += @('-File', "`"$scriptPath`"") + $ScriptArguments
 	}
 
-	$process = Start-Process -FilePath 'powershell.exe' `
-		-ArgumentList $arguments `
-		-WorkingDirectory $RepoRoot -NoNewWindow -Wait -PassThru `
+	$process = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments `
+		-WorkingDirectory $RepoRoot -NoNewWindow -PassThru `
 		-RedirectStandardOutput $outFile -RedirectStandardError $errFile
 
-	return [pscustomobject]@{
-		ExitCode = $process.ExitCode
-		Output   = Read-FixtureOutput -Files @($outFile, $errFile)
-	}
+	# Touching .Handle makes the Process object cache the native handle. Without
+	# -Wait it does not, and .ExitCode then reads back empty once the child is
+	# gone -- which the concurrency case would report as a collision.
+	$null = $process.Handle
+	return [pscustomobject]@{ Process = $process; Out = $outFile; Err = $errFile }
 }
 
-function Read-FixtureOutput {
-	param([Parameter(Mandatory)] [string[]] $Files)
+# What the run exited with and everything it printed, both streams in one string.
+function Wait-FixtureScript {
+	param([Parameter(Mandatory)] $Run)
 
+	$Run.Process.WaitForExit()
 	$text = ''
-	foreach ($file in $Files) {
+	foreach ($file in @($Run.Out, $Run.Err)) {
 		if (Test-Path -LiteralPath $file) {
 			$text += (Get-Content -LiteralPath $file -Raw)
 			Remove-Item -LiteralPath $file -Force
 		}
 	}
-	return $text
+	return [pscustomobject]@{ ExitCode = $Run.Process.ExitCode; Output = $text }
 }
 
-# Several runs of the same script started TOGETHER in one checkout -- what a
-# developer produces by running the tests in two terminals, and the only shape
-# in which the sweep's artefacts are shared. Started before any is waited on:
-# run sequentially they never overlap and the case proves nothing.
-function Invoke-FixtureScriptConcurrently {
+# The shape every case but one wants: start it, wait for it, read it.
+function Invoke-FixtureScript {
 	param(
 		[Parameter(Mandatory)] [string] $RepoRoot,
 		[Parameter(Mandatory)] [string] $Script,
-		[Parameter(Mandatory)] [int] $Count
+		[string[]] $ScriptArguments = @(),
+		[switch] $MergeStreams
 	)
 
-	$scriptPath = Join-Path (Join-Path $RepoRoot 'scripts') $Script
-	$started = @()
-	for ($i = 0; $i -lt $Count; $i++) {
-		$outFile = Join-Path $FixtureRoot "concurrent-$i-$([System.Guid]::NewGuid().ToString('N')).log"
-		$errFile = [System.IO.Path]::ChangeExtension($outFile, '.err.log')
-		$process = Start-Process -FilePath 'powershell.exe' `
-			-ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$scriptPath`"") `
-			-WorkingDirectory $RepoRoot -NoNewWindow -PassThru `
-			-RedirectStandardOutput $outFile -RedirectStandardError $errFile
-
-		# Touching .Handle makes the Process object cache the native handle.
-		# Without -Wait it does not, and .ExitCode then reads back empty once
-		# the child is gone -- which this case would report as a collision.
-		$null = $process.Handle
-		$started += [pscustomobject]@{ Process = $process; Out = $outFile; Err = $errFile }
-	}
-
-	$results = @()
-	foreach ($run in $started) {
-		$run.Process.WaitForExit()
-		$results += [pscustomobject]@{
-			ExitCode = $run.Process.ExitCode
-			Output   = Read-FixtureOutput -Files @($run.Out, $run.Err)
-		}
-	}
-	return $results
+	return Wait-FixtureScript -Run (Start-FixtureScript -RepoRoot $RepoRoot -Script $Script `
+			-ScriptArguments $ScriptArguments -MergeStreams:$MergeStreams)
 }
 
 # -------------------------------------------------------------- assertions --
@@ -376,9 +356,12 @@ Test-Case 'two sweeps at once in one checkout do not collide' {
 	# Artefact names fixed by package alone had each run deleting the report the
 	# other was about to write, and the linker failing on an executable the
 	# other still held: a spurious "collected ZERO tests" in an untouched tree.
-	$results = @(Invoke-FixtureScriptConcurrently -RepoRoot $repo -Script 'test.ps1' -Count 2)
-	foreach ($result in $results) {
-		Assert-Result -Result $result -Matching 'All 2 tests? passed'
+	#
+	# Both started before either is waited on -- that is the whole case. Waiting
+	# on the first before starting the second is two sequential runs.
+	$runs = @(1, 2 | ForEach-Object { Start-FixtureScript -RepoRoot $repo -Script 'test.ps1' })
+	foreach ($run in $runs) {
+		Assert-Result -Result (Wait-FixtureScript -Run $run) -Matching 'All 2 tests? passed'
 	}
 }
 
