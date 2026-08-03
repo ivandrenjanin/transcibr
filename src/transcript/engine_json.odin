@@ -143,8 +143,15 @@ FAULT := [Parse_Fault]Fault_Facts {
 		disposition = .Fail_The_Recording,
 	},
 	.Nothing_Said = {
-		says = "every cue is empty or silence; the engine transcribed no speech at all",
-		scope = .Input,
+		// What is actually CHECKED, and not what it implies. The check is on
+		// Paragraphs -- merge_paragraphs handed back none -- and the sentence used
+		// to be about Cues, which is a claim one step further on. The two coincide
+		// only because merge_paragraphs emits nothing exactly when no Cue is a
+		// Saying, and a diagnostic that states the inference rather than the
+		// observation sends a reader looking at the wrong thing the day they stop
+		// coinciding.
+		says        = "no paragraph could be made from it; nothing in it is speech",
+		scope       = .Input,
 		disposition = .Fail_The_Recording,
 	},
 	.Cue_Not_An_Object = {
@@ -200,14 +207,32 @@ FAULT := [Parse_Fault]Fault_Facts {
 	},
 }
 
+// One fault's row, checked.
+//
+// THE ONE PLACE THE TABLE IS READ, and the one place the missing row is caught.
+// The claim was made at three call sites -- disposition_of, error_message and
+// fault_at -- in two different wordings, all three about the same defect: a
+// Parse_Fault added without a row here still HAS a row, made of zeroes, so it
+// carries no sentence, no scope, and a disposition nobody chose. Said once,
+// where every field of a row is in hand. PROFILES had the same shape and
+// profile_row is what collapsed it.
+@(private)
+fault_facts :: proc(fault: Parse_Fault) -> (facts: Fault_Facts) {
+	assert(fault != .None, "the success value is not a fault and carries no facts")
+
+	facts = FAULT[fault]
+	assert(len(facts.says) > 0, "a fault was added to Parse_Fault without a row in FAULT")
+	// The negative space of the same missing row (CLAUDE.md A3): a row could carry
+	// a sentence and no scope, and error_message would then print a Cue's
+	// half-sentence as though it were about the file.
+	assert(facts.scope != .Unset, "a fault's row in FAULT names no scope")
+	return
+}
+
 // What ADR-0002 does with the input this fault was reported against.
 disposition_of :: proc(fault: Parse_Fault) -> Disposition {
 	assert(fault != .None, "a parse that did not fail has nothing to dispose of")
-	// The same missing-row check error_message makes, at the other place the
-	// table is read (CLAUDE.md A4). A fault added without an entry answers
-	// "quarantine and re-run" here, which is a sentence nobody wrote.
-	assert(len(FAULT[fault].says) > 0, "a fault was added to Parse_Fault without a row in FAULT")
-	return FAULT[fault].disposition
+	return fault_facts(fault).disposition
 }
 
 // Parses the Engine's JSON into Cues.
@@ -797,8 +822,7 @@ error_message :: proc(err: Parse_Error, allocator: mem.Allocator) -> string {
 		"the message outlives this procedure and needs a chosen allocator",
 	)
 
-	facts := FAULT[err.fault]
-	assert(len(facts.says) > 0, "a fault was added to Parse_Fault without a row in FAULT")
+	facts := fault_facts(err.fault)
 
 	// Which sentence is being printed decides the grammar, and the fault says
 	// which sentence it is. Reading that off the ordinal instead made an
@@ -831,10 +855,7 @@ fault_at :: proc(fault: Parse_Fault, json_name: string, cue: int) -> Parse_Error
 	assert(fault != .None, "a fault of .None is the success value and reports nothing")
 	assert(len(json_name) > 0, "an operating error must name the input it is reported against")
 
-	// The same missing-row check disposition_of and error_message make, at the
-	// third place the table is read (CLAUDE.md A4).
-	scope := FAULT[fault].scope
-	assert(scope != .Unset, "a fault was added to Parse_Fault without a row in FAULT")
+	scope := fault_facts(fault).scope
 
 	// The ordinal against the scope the fault declares, at the one place a
 	// Parse_Error is written, so no call site has to remember the convention
