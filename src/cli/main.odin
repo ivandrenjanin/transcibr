@@ -45,6 +45,11 @@ USAGE_ERROR :: 2
 OPERATING_ERROR :: 1
 
 main :: proc() {
+	// Every process is started with its own name in front of whatever else it
+	// was given, so an empty argv is a broken loader rather than a bare command
+	// line -- and the slice below would run off the end of it.
+	assert(len(os.args) > 0, "a process started with no argv at all, not even its own name")
+
 	if len(os.args) == 1 {
 		print_version()
 		return
@@ -87,6 +92,10 @@ re_render :: proc(arguments: []string) -> int {
 	if !ok {
 		return USAGE_ERROR
 	}
+	// The read side of what read_options promises on the way out (CLAUDE.md A4).
+	// An empty path is not a file the read below can name in its report, so the
+	// failure would arrive as `: Not_Exist` with nothing in front of the colon.
+	assert(len(options.json_path) > 0, "accepted a command line with nothing to render")
 
 	json_bytes, read_err := os.read_entire_file_from_path(options.json_path, context.allocator)
 	defer delete(json_bytes, context.allocator)
@@ -123,6 +132,13 @@ write_transcript :: proc(
 	rc: transcript.Render_Context,
 ) -> int {
 	assert(len(json_path) > 0, "a transcript must name the output it was rendered from")
+	// The front matter fields the renderer refuses to write empty, checked HERE
+	// so the diagnostic points at the shell that left one out rather than at the
+	// procedure that noticed -- the argument version.banner makes about its own
+	// preconditions (CLAUDE.md A4). Every one of them has a default, so an empty
+	// field is this binary forgetting rather than a fact nobody had.
+	assert(len(rc.source_display) > 0, "a transcript that names no source reached the renderer")
+	assert(len(rc.language) > 0, "a language nobody settled is UNKNOWN, never empty")
 
 	markdown, err := transcript.render_transcript(json_path, json_text, nil, rc, context.allocator)
 	defer delete(markdown, context.allocator)
@@ -147,6 +163,19 @@ write_transcript :: proc(
 // this program and nothing outside it may crash it (CLAUDE.md A8), so every
 // refusal below is a message and an exit code.
 read_options :: proc(arguments: []string) -> (o: Options, ok: bool) {
+	// The write side of what re_render and write_transcript check on the way in
+	// (CLAUDE.md A4): an accepted command line names something to render and
+	// leaves no front matter field empty. Its negative space is the other half --
+	// a refusal hands back nothing anybody should read.
+	defer if ok {
+		assert(len(o.json_path) > 0, "accepted a command line with nothing to render")
+		assert(len(o.rc.source_display) > 0, "accepted a command line that names no source")
+		assert(len(o.rc.model) > 0, "a model nobody named is UNKNOWN, never empty")
+		assert(len(o.rc.engine_version) > 0, "an engine nobody named is UNKNOWN, never empty")
+	} else {
+		assert(len(o.json_path) == 0, "refused a command line and kept what it asked for")
+	}
+
 	// What a Transcript records where nobody could settle it. Set BEFORE the
 	// loop, so a flag left off is "unknown" rather than an empty field the
 	// renderer would refuse.
