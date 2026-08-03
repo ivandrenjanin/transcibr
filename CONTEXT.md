@@ -29,6 +29,20 @@ One timestamped fragment of speech as the engine emits it — a start, an end, a
 Typically a few seconds long and cut mid-sentence.
 _Avoid_: segment, subtitle, line
 
+## Driving the engine
+
+**Process contract**:
+Everything pure about driving a child process: the command line one is started with, and the output
+lines it writes read back as progress and duration. One core module and one test seam over both
+halves (ADR-0017), which is why `src/process` is named for the module rather than for either half.
+_Avoid_: spawner, subprocess, command line, runner
+
+**Executable**:
+The path of the child transcibr starts — ffmpeg or the Engine — as it is spelled on the command
+line. Distinct from the program transcibr itself is: `program` meant both, and one of the two was
+always the wrong reading.
+_Avoid_: program, binary, command, exe
+
 ## Repetition
 
 **Saying**:
