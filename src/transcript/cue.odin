@@ -9,6 +9,7 @@
 package transcript
 
 import "core:mem"
+import "core:strings"
 
 // Milliseconds counted from the start of a Recording.
 //
@@ -33,6 +34,32 @@ Cue :: struct {
 	start: Millis,
 	end:   Millis,
 	text:  string,
+}
+
+// What was actually said in a Cue: its text with the Engine's padding taken off.
+//
+// The Engine writes a leading space on every Cue it emits, and writes an empty
+// or space-only Cue over silence, and neither of those is content. The parser
+// keeps them because it is lossless on purpose; every stage after it has to take
+// them off, and doing that in one place is what stops the two stages disagreeing
+// about what a Cue says.
+//
+// Repetition collapse compares Cues by this and not by the raw text: " you" and
+// "you " are one phrase said twice, and a comparison that could not tell would
+// leave a run uncollapsed over a stray byte the Engine chose. Paragraph merging
+// joins by this for the mirror-image reason -- prose that kept the padding
+// carries a double space at every Cue seam.
+spoken_text :: proc(cue: Cue) -> (said: string) {
+	said = strings.trim_space(cue.text)
+	// Both sides of what trimming is allowed to do (CLAUDE.md A3): it only ever
+	// takes bytes away, and what it leaves no longer starts with the one byte it
+	// exists to take away. The second is the claim every caller relies on and the
+	// only one a reader cannot check by looking (A6).
+	assert(len(said) <= len(cue.text), "trimming a cue's text added bytes to it")
+	if len(said) > 0 {
+		assert(said[0] != ' ', "a trimmed cue still carries the engine's padding")
+	}
+	return
 }
 
 // The 1-based position of the first Cue that breaks the ordering this package
