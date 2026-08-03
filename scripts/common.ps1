@@ -116,9 +116,23 @@ $OdinFormatConfig = Join-Path $RepoRoot 'odinfmt.json'
 # runtime type information carries the field names of every type a program
 # reflects over, and printer.Config's fifteen sit contiguously inside
 # odinfmt.exe, in this order, alongside Brace_Style's four members and
-# Newline_Style's two. That makes this list checkable against the one thing that
-# has a vote -- and if a future ols adds a key, odinfmt.json fails here naming
-# it, which is the outcome wanted: an unlisted key is a style nobody chose.
+# Newline_Style's two.
+#
+# CHECKED against it, on every run, and not merely read out of it once: the case
+# "the config schema is the key set inside the pinned odinfmt" in
+# scripts\selftest.ps1 searches $OdinfmtSha256's binary for these names as one
+# NUL-separated run, and fails on a rename, a reorder, a removal, a key inserted
+# mid-struct, or a sixteenth key appended after the last. That is what couples
+# this list to the pin above: the two are separate declarations that a single
+# case refuses to let disagree, so moving the pin without revisiting this list
+# fails CI rather than passing quietly.
+#
+# The coupling is what makes the check worth anything. An unlisted key is the
+# harmful direction -- odinfmt fills it from its own default in silence while
+# Confirm-OdinFormatConfig below passes, because that procedure compares
+# odinfmt.json against THIS LIST and both are files in this repository. Drop a
+# key from both and format.ps1 exits 0 having noticed nothing; the binary is the
+# only party to the question with a vote.
 $OdinFormatConfigSchema = [ordered]@{
 	character_width          = 'int'
 	spaces                   = 'int'

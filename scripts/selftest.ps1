@@ -47,7 +47,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 39
+$ExpectedCaseCount = 40
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -1232,6 +1232,113 @@ Test-Case 'a config key odinfmt would not read fails the format command by name'
 	Edit-FixtureFormatConfig -RepoRoot $sound -Edit { param($c) $c.tabs = $true }
 	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $sound -Script 'format.ps1') `
 		-Matching 'are formatted as odinfmt\.json says'
+}
+
+# Where a run of NUL-terminated names sits inside a byte image, and how many
+# places it sits in. The names must be adjacent and in the order given.
+#
+# Odin emits the field names of every type a program reflects over as
+# NUL-terminated strings, laid down contiguously and in declaration order, so a
+# struct's field names appear in the binary as exactly one such run. Searching
+# for the run is therefore a question the binary can answer NO to.
+function Find-ByteRun {
+	param(
+		[Parameter(Mandatory)] [string] $Image,
+		[Parameter(Mandatory)] [string[]] $Names
+	)
+
+	$needle = ($Names -join "`0") + "`0"
+	$offsets = @()
+	$at = 0
+	while ($true) {
+		$at = $Image.IndexOf($needle, $at, [System.StringComparison]::Ordinal)
+		if ($at -lt 0) {
+			break
+		}
+		$offsets += $at
+		$at += 1
+	}
+	return [pscustomobject]@{ Offsets = $offsets; Length = $needle.Length }
+}
+
+Test-Case 'the config schema is the key set inside the pinned odinfmt' -MaySkip {
+	# $OdinFormatConfigSchema was read out of the pinned binary once, by hand, and
+	# then nothing held it there. The comment beside it claimed that "if a future
+	# ols adds a key, odinfmt.json fails here naming it", and it would not have:
+	# the check compares odinfmt.json against the schema, and both are files in
+	# this repository. Dropping a key from the schema and from odinfmt.json
+	# together -- which is exactly the shape of a sixteenth key arriving upstream
+	# -- left format.ps1 exiting 0, naming nothing, with odinfmt quietly applying
+	# its own default for the key nobody had listed.
+	#
+	# So the schema is checked against the binary it was read out of, which is
+	# what makes moving the pin a decision about the schema too. Deterministic by
+	# construction: the binary is pinned by CONTENT, so while the pin holds this
+	# case is a fixed question about a fixed byte string and cannot flake. The
+	# only thing that can turn it red is the pin moving -- which is the moment
+	# somebody is supposed to look.
+	$odinfmt = Resolve-OdinFormatter -Optional
+	if ($odinfmt -eq '') {
+		Skip-Case 'odinfmt is not installed, and this case is a claim about the pinned build.'
+	}
+	$found = Get-FileSha256 -Path $odinfmt
+	if ($found -ne $OdinfmtSha256) {
+		Skip-Case "$odinfmt hashes to $found, not the pinned $OdinfmtSha256, and only the pinned build can answer this."
+	}
+
+	# Latin-1, alone among the encodings, maps every one of the 256 byte values to
+	# exactly one character and back. Decoding the image through it turns a byte
+	# search into IndexOf; UTF-8 would fold invalid sequences onto U+FFFD and lose
+	# the very bytes being searched for.
+	$bytes = [System.IO.File]::ReadAllBytes($odinfmt)
+	$image = [System.Text.Encoding]::GetEncoding(28591).GetString($bytes)
+
+	$keys = @($OdinFormatConfigSchema.Keys)
+	if ($keys.Count -lt 2) {
+		throw "the schema declares $($keys.Count) key(s), so this case would be searching for almost nothing."
+	}
+
+	$run = Find-ByteRun -Image $image -Names $keys
+	if ($run.Offsets.Count -ne 1) {
+		throw "the $($keys.Count) schema keys do not appear in $odinfmt as one contiguous run in that order (found $($run.Offsets.Count) such runs). printer.Config has been renamed, reordered, or had a key added in the middle of it: read the field list out of the newly pinned build and move `$OdinFormatConfigSchema with the pin."
+	}
+
+	# And nothing follows them. The run above is satisfied by a printer.Config
+	# that STARTS with these fifteen keys, which is exactly what a sixteenth key
+	# appended upstream would look like -- and an unlisted key is the harmful
+	# direction, because odinfmt fills it from its own default in silence while
+	# every check here passes. A sixteenth name is emitted directly after the
+	# fifteenth, so this byte is either the padding that ends the run or the first
+	# letter of a key nobody chose.
+	$after = $run.Offsets[0] + $run.Length
+	if ($after -ge $bytes.Length) {
+		throw "the schema's key run ends at the very end of $odinfmt, which is not a layout this case knows how to read."
+	}
+	if ($bytes[$after] -ne 0) {
+		$next = ($image.Substring($after, [math]::Min(40, $bytes.Length - $after)) -split "`0")[0]
+		throw "printer.Config carries at least one key past the $($keys.Count) in `$OdinFormatConfigSchema -- the name after '$($keys[-1])' is '$next'. An unlisted key takes odinfmt's own default in silence: add it to the schema and to odinfmt.json."
+	}
+
+	# The enum members too, and for the same reason in reverse. A member RENAMED
+	# upstream leaves odinfmt.json naming one that no longer exists, which odinfmt
+	# answers by leaving the field at its default and saying nothing, while the
+	# check here passes -- brace_style is "_1TBS" in this repository's own config,
+	# so that is a live path and not a hypothetical.
+	#
+	# Not bounded the way the keys are: a member ADDED upstream can only ever be
+	# refused here, and a refusal is somebody reading this comment rather than a
+	# style nobody chose.
+	foreach ($key in $keys) {
+		$expected = $OdinFormatConfigSchema[$key]
+		if (($expected -eq 'int') -or ($expected -eq 'bool')) {
+			continue
+		}
+		$members = @($expected -split '\|')
+		$enum = Find-ByteRun -Image $image -Names $members
+		if ($enum.Offsets.Count -ne 1) {
+			throw "the names '$($members -join ", ")' the schema accepts for '$key' do not appear in $odinfmt as one contiguous run in that order (found $($enum.Offsets.Count) such runs). Read the enum out of the newly pinned build and move `$OdinFormatConfigSchema with the pin."
+		}
+	}
 }
 
 Test-Case 'a formatter that is not installed warns the build locally and stops it under CI' {
