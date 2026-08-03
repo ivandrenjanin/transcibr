@@ -267,3 +267,241 @@ rejects_an_offset_before_the_start_of_the_recording :: proc(t: ^testing.T) {
 	testing.expect_value(t, err.fault, Parse_Fault.Negative_Offset)
 	testing.expect_value(t, err.cue, 1)
 }
+
+// ---------------------------------------------------------------------------
+// The ugly cases, as a table.
+//
+// Everything here is Engine output a Recording can genuinely produce, and every
+// one of them is a shape some stricter-looking parser gets wrong.
+// ---------------------------------------------------------------------------
+
+@(test)
+parses_the_ugly_cases :: proc(t: ^testing.T) {
+	Case :: struct {
+		name:     string,
+		json:     string,
+		expected: []Cue,
+	}
+
+	cases := []Case {
+		{
+			name = "single-cue.json",
+			json = `{"transcription": [{"offsets": {"from": 0, "to": 3480}, "text": " Alone."}]}`,
+			expected = []Cue{{0, 3_480, " Alone."}},
+		},
+		{
+			// The Engine emits these over silence. Dropping them shortens the
+			// Cue set the repetition filter downstream counts runs in, and a
+			// run it cannot see is a hallucination it cannot strip (ADR-0001).
+			name = "empty-text.json",
+			json = `{"transcription": [
+				{"offsets": {"from": 0,    "to": 1000}, "text": ""},
+				{"offsets": {"from": 1000, "to": 2000}, "text": " "},
+				{"offsets": {"from": 2000, "to": 3000}, "text": " Words."}
+			]}`,
+			expected = []Cue{{0, 1_000, ""}, {1_000, 2_000, " "}, {2_000, 3_000, " Words."}},
+		},
+		{
+			// Overlap is ordinary Engine output, and a check demanding a
+			// strictly increasing, disjoint sequence would look stricter while
+			// rejecting real Recordings.
+			name = "overlapping.json",
+			json = `{"transcription": [
+				{"offsets": {"from": 0,    "to": 5000}, "text": " first"},
+				{"offsets": {"from": 3000, "to": 8000}, "text": " second"},
+				{"offsets": {"from": 3000, "to": 4000}, "text": " third"}
+			]}`,
+			expected = []Cue {
+				{0, 5_000, " first"},
+				{3_000, 8_000, " second"},
+				{3_000, 4_000, " third"},
+			},
+		},
+		{
+			// Keys this parser has never heard of, at both levels. Rejecting
+			// them would turn an Engine upgrade into a corrupt Transcript, and
+			// `-ojf` already adds a per-token array to every Cue (ADR-0001).
+			name = "unexpected-fields.json",
+			json = `{
+				"systeminfo": "irrelevant",
+				"model": {"type": "large"},
+				"a_key_from_2027": [1, 2, 3],
+				"transcription": [{
+					"timestamps": {"from": "00:00:00,000", "to": "00:00:03,480"},
+					"offsets": {"from": 0, "to": 3480},
+					"text": " Words.",
+					"tokens": [{"text": " Words", "p": 0.98}]
+				}]
+			}`,
+			expected = []Cue{{0, 3_480, " Words."}},
+		},
+		{
+			// `offsets` is the source of truth, not `timestamps` (ADR-0001).
+			// The two disagree here so that a parser quietly re-deriving
+			// milliseconds from the hh:mm:ss,mmm text cannot pass.
+			name = "disagreeing-timestamps.json",
+			json = `{"transcription": [{
+				"timestamps": {"from": "00:00:11,111", "to": "00:00:22,222"},
+				"offsets": {"from": 4380, "to": 8440},
+				"text": " Words."
+			}]}`,
+			expected = []Cue{{4_380, 8_440, " Words."}},
+		},
+		{
+			// The other half of read_millis' trap. The tokenizer classifies on
+			// the decimal point, so these stay json.Float even with
+			// `parse_integers` on, and an Engine release that starts writing
+			// them this way must not silently zero every offset.
+			name = "float-offsets.json",
+			json = `{"transcription": [
+				{"offsets": {"from": 0.0,    "to": 3480.0}, "text": " one"},
+				{"offsets": {"from": 4.38e3, "to": 8440e0}, "text": " two"}
+			]}`,
+			expected = []Cue{{0, 3_480, " one"}, {4_380, 8_440, " two"}},
+		},
+		{
+			// Escapes are undone exactly once. Twice mangles a Transcript;
+			// not at all leaves a literal backslash-n mid-sentence.
+			name = "escaped-text.json",
+			json = `{"transcription": [{"offsets": {"from": 0, "to": 1000},
+				"text": " \"quoted\", a \\ backslash, and café."}]}`,
+			expected = []Cue{{0, 1_000, ` "quoted", a \ backslash, and café.`}},
+		},
+	}
+
+	for c in cases {
+		cues, err := parse_cues(c.name, c.json, FIXTURE_DURATION, context.allocator)
+		defer destroy_cues(cues, context.allocator)
+
+		if !testing.expectf(t, err.fault == .None, "%s: rejected with %v", c.name, err.fault) {
+			continue
+		}
+		if !testing.expectf(
+			t,
+			len(cues) == len(c.expected),
+			"%s: got %d cues, want %d",
+			c.name,
+			len(cues),
+			len(c.expected),
+		) {
+			continue
+		}
+		for want, i in c.expected {
+			testing.expectf(t, cues[i] == want, "%s: cue %d is %v, want %v", c.name, i + 1, cues[i], want)
+		}
+	}
+}
+
+@(test)
+rejects_the_ugly_cases :: proc(t: ^testing.T) {
+	Case :: struct {
+		name:  string,
+		json:  string,
+		fault: Parse_Fault,
+		cue:   int,
+	}
+
+	cases := []Case {
+		{
+			name = "no-transcription.json",
+			json = `{"systeminfo": "irrelevant", "result": {"language": "en"}}`,
+			fault = .No_Transcription,
+		},
+		{
+			name = "transcription-not-an-array.json",
+			json = `{"transcription": {"offsets": {"from": 0, "to": 1}, "text": " one"}}`,
+			fault = .No_Transcription,
+		},
+		{
+			// "Exit 0 but nothing transcribed" is a per-Recording failure, not
+			// a Transcript with no words in it (ADR-0002).
+			name = "no-cues.json",
+			json = `{"transcription": []}`,
+			fault = .No_Cues,
+		},
+		{
+			name = "not-an-object.json",
+			json = `[{"offsets": {"from": 0, "to": 1}, "text": " one"}]`,
+			fault = .Not_An_Object,
+		},
+		{
+			name = "cue-not-an-object.json",
+			json = `{"transcription": ["00:00:00,000 --> 00:00:03,480  One."]}`,
+			fault = .Cue_Not_An_Object,
+			cue = 1,
+		},
+		{
+			name = "no-offsets.json",
+			json = `{"transcription": [{"timestamps": {"from": "00:00:00,000"}, "text": " one"}]}`,
+			fault = .No_Offsets,
+			cue = 1,
+		},
+		{
+			name = "offsets-not-an-object.json",
+			json = `{"transcription": [{"offsets": [0, 3480], "text": " one"}]}`,
+			fault = .No_Offsets,
+			cue = 1,
+		},
+		{
+			name = "no-end-offset.json",
+			json = `{"transcription": [{"offsets": {"from": 0}, "text": " one"}]}`,
+			fault = .Offset_Missing,
+			cue = 1,
+		},
+		{
+			// The hh:mm:ss,mmm form in the wrong field. Reported rather than
+			// re-parsed: guessing at what the Engine meant is how a schema
+			// change becomes a Transcript full of plausible wrong timings.
+			name = "offset-as-text.json",
+			json = `{"transcription": [{"offsets": {"from": "00:00:00,000", "to": "00:00:03,480"},
+				"text": " one"}]}`,
+			fault = .Offset_Not_A_Number,
+			cue = 1,
+		},
+		{
+			name = "offset-not-whole.json",
+			json = `{"transcription": [{"offsets": {"from": 0, "to": 3480.5}, "text": " one"}]}`,
+			fault = .Offset_Not_Whole,
+			cue = 1,
+		},
+		{
+			// Past 2^53 an f64 no longer holds the value it was written with,
+			// so converting is guessing at a number nobody has.
+			name = "offset-out-of-range.json",
+			json = `{"transcription": [{"offsets": {"from": 0, "to": 1e300}, "text": " one"}]}`,
+			fault = .Offset_Out_Of_Range,
+			cue = 1,
+		},
+		{
+			name = "no-text.json",
+			json = `{"transcription": [{"offsets": {"from": 0, "to": 3480}}]}`,
+			fault = .No_Text,
+			cue = 1,
+		},
+		{
+			name = "text-not-a-string.json",
+			json = `{"transcription": [
+				{"offsets": {"from": 0,    "to": 1000}, "text": " one"},
+				{"offsets": {"from": 1000, "to": 2000}, "text": ["two"]}
+			]}`,
+			fault = .No_Text,
+			cue = 2,
+		},
+	}
+
+	for c in cases {
+		cues, err := parse_cues(c.name, c.json, FIXTURE_DURATION, context.allocator)
+		defer destroy_cues(cues, context.allocator)
+
+		testing.expectf(t, len(cues) == 0, "%s: handed back %d cues", c.name, len(cues))
+		testing.expectf(t, err.fault == c.fault, "%s: got %v, want %v", c.name, err.fault, c.fault)
+		testing.expectf(t, err.cue == c.cue, "%s: blamed cue %d, want %d", c.name, err.cue, c.cue)
+		testing.expectf(t, err.json_name == c.name, "%s: reported against %q", c.name, err.json_name)
+
+		// Every rejection renders, and every rendering names the input: a fault
+		// added without a sentence in FAULT_TEXT trips the assertion inside.
+		message := error_message(err, context.allocator)
+		defer delete(message, context.allocator)
+		testing.expectf(t, strings.contains(message, c.name), "%s: report does not name it", c.name)
+	}
+}
