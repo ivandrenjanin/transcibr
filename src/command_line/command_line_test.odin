@@ -1,5 +1,6 @@
 package command_line
 
+import "core:fmt"
 import "core:mem"
 import win32 "core:sys/windows"
 import "core:testing"
@@ -86,7 +87,106 @@ expect_round_trip :: proc(t: ^testing.T, program: string, arguments: []string, n
 	}
 }
 
+// Every argument in one table is round-tripped on its own AND with the whole
+// table passed as one argument list. Alone catches a case the builder mangles;
+// together catches a case whose damage only shows up as a neighbour's argument
+// -- a lost quote runs two of them into one, which a single-argument case cannot
+// see because there is no neighbour to run into.
+@(private)
+expect_each_and_all :: proc(t: ^testing.T, group: string, cases: []string) {
+	for value, i in cases {
+		expect_round_trip(t, EXE, {value}, tprint_case(group, i))
+	}
+	expect_round_trip(t, EXE, cases, group)
+	// A neighbour on each side, so a case that swallows the space after it is
+	// caught rather than absorbed by the end of the command line.
+	for value, i in cases {
+		expect_round_trip(t, EXE, {"-before", value, "-after"}, tprint_case(group, i))
+	}
+}
+
+@(private)
+EXE :: `C:\tools\ffmpeg.exe`
+
+@(private)
+tprint_case :: proc(group: string, index: int) -> string {
+	return fmt.tprintf("%s[%d]", group, index)
+}
+
 @(test)
 plain_arguments_round_trip :: proc(t: ^testing.T) {
-	expect_round_trip(t, `C:\tools\ffmpeg.exe`, {"-i", "in.mkv", "out.wav"}, "plain")
+	expect_round_trip(t, EXE, {"-i", "in.mkv", "out.wav"}, "plain")
+	expect_round_trip(t, EXE, {}, "no arguments at all")
+	expect_round_trip(t, EXE, {"only"}, "a single argument")
+}
+
+// Whitespace is the whole reason quoting exists here, and the set is EXACTLY
+// space and tab. Measured against CommandLineToArgvW: newline, carriage return,
+// vertical tab, form feed, U+00A0 and U+3000 do NOT split an argument, and
+// neither do any of cmd.exe's metacharacters -- there is no shell in this path,
+// so `^ & | % > <` are ordinary text. They are here to pin that: a builder that
+// "helpfully" quoted them would still be correct, but one that quoted them and
+// got the escaping wrong would not.
+@(private)
+WHITESPACE_CASES :: []string {
+	"C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe",
+	"a b",
+	" leading",
+	"trailing ",
+	"   ",
+	"a\tb",
+	"\ttab-led",
+	"tab-tailed\t",
+	"\t",
+	"mixed \t \t spacing",
+	"a\nb",
+	"a\rb",
+	"a\r\nb",
+	"a\vb",
+	"a\fb",
+	"caret^and&ampersand|pipe",
+	"percent%PATH%percent",
+	"redirect>out<in",
+	"\\\\server\\share with space\\file.mkv",
+}
+
+@(test)
+whitespace_arguments_round_trip :: proc(t: ^testing.T) {
+	expect_each_and_all(t, "whitespace", WHITESPACE_CASES)
+}
+
+// The backslash-before-quote rule, which is the part of Windows quoting that
+// people get wrong. A run of backslashes is literal UNLESS it meets a quote, and
+// the closing quote counts -- so `C:\path with space\` quoted naively ends in
+// `\"`, which is an escaped quote, and the argument runs on into the next one.
+//
+// This list is the one PR #25 verified its PowerShell quoter against, against a
+// real CommandLineToArgvW dumper.
+@(private)
+BACKSLASH_CASES :: []string {
+	`a"b`,
+	`a\"b`,
+	`a\\"b`,
+	`a\\\"b`,
+	`"`,
+	`""`,
+	`""""`,
+	`"quoted"`,
+	`\`,
+	`\\`,
+	`\\\`,
+	`\\\\`,
+	`C:\path with space\`,
+	`C:\path\`,
+	`C:\path\\`,
+	`ends with backslash \`,
+	`"leading quote`,
+	`trailing quote"`,
+	`-of:C:\cache\job "1"\`,
+	`\"\"\"`,
+}
+
+@(test)
+backslash_arguments_round_trip :: proc(t: ^testing.T) {
+	expect_each_and_all(t, "backslash", BACKSLASH_CASES)
 }

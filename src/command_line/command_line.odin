@@ -44,7 +44,7 @@ build :: proc(
 	write_program(&b, program)
 	for argument in arguments {
 		strings.write_byte(&b, ' ')
-		strings.write_string(&b, argument)
+		write_argument(&b, argument)
 	}
 
 	out := strings.to_string(b)
@@ -68,4 +68,78 @@ write_program :: proc(b: ^strings.Builder, program: string) {
 	strings.write_byte(b, '"')
 	strings.write_string(b, program)
 	strings.write_byte(b, '"')
+}
+
+// The characters that force an argument to be quoted, and there are exactly two
+// of them plus the quote itself.
+//
+// MEASURED against CommandLineToArgvW, not assumed: space and tab separate
+// arguments, and newline, carriage return, vertical tab, form feed, U+00A0 and
+// U+3000 do not. Neither do cmd.exe's metacharacters -- `^ & | % > <` are
+// ordinary text here, because CreateProcessW starts the child directly and there
+// is no shell anywhere in this path to interpret them.
+@(private)
+needs_quoting :: proc(argument: string) -> bool {
+	// An EMPTY argument must be quoted or it disappears: the child then reads the
+	// next flag as this argument's value, which is the silent misfire the whole
+	// package exists to prevent. Measured: `x.exe  -flag` and `x.exe "" -flag`
+	// give argc 2 and argc 3.
+	if len(argument) == 0 {
+		return true
+	}
+	return strings.index_any(argument, " \t\"") >= 0
+}
+
+// One argument, escaped the way CommandLineToArgvW un-escapes it.
+//
+// The rule that catches people out is the backslash one, and it is not "escape
+// every backslash". A run of backslashes is LITERAL unless it meets a quote; a
+// run of 2n before a quote is n backslashes and a structural quote, and 2n+1 is
+// n backslashes and a literal one. The closing quote counts as a quote, which is
+// why `C:\path with space\` -- quoted naively -- ends `\"` and runs on into the
+// next argument.
+//
+// Byte-wise rather than rune-wise on purpose: `\` and `"` are ASCII, and UTF-8
+// never encodes them as a continuation byte, so every non-ASCII byte is copied
+// through untouched and a surrogate pair cannot be split.
+@(private)
+write_argument :: proc(b: ^strings.Builder, argument: string) {
+	if !needs_quoting(argument) {
+		assert(len(argument) > 0, "an empty argument is never written unquoted")
+		strings.write_string(b, argument)
+		return
+	}
+
+	strings.write_byte(b, '"')
+	backslashes := 0
+	for i in 0 ..< len(argument) {
+		switch c := argument[i]; c {
+		case '\\':
+			backslashes += 1
+		case '"':
+			// Doubled, plus one to escape the quote that follows them.
+			write_backslashes(b, backslashes * 2 + 1)
+			backslashes = 0
+			strings.write_byte(b, '"')
+		case:
+			// Not before a quote, so literal and left alone.
+			write_backslashes(b, backslashes)
+			backslashes = 0
+			strings.write_byte(b, c)
+		}
+	}
+	// The closing quote is a quote like any other, so the run in front of it
+	// doubles too -- without this the argument ends in an ESCAPED quote and
+	// swallows everything after it.
+	write_backslashes(b, backslashes * 2)
+	strings.write_byte(b, '"')
+}
+
+@(private)
+write_backslashes :: proc(b: ^strings.Builder, count: int) {
+	assert(count >= 0, "a backslash run cannot be negative")
+
+	for _ in 0 ..< count {
+		strings.write_byte(b, '\\')
+	}
 }
