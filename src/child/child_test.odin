@@ -332,6 +332,36 @@ every_fault_says_whether_a_different_plan_would_help :: proc(t: ^testing.T) {
 	}
 }
 
+// The bound a caller gives stop is a BUDGET FOR THE WHOLE OF IT, and this is the
+// arithmetic that makes it one.
+//
+// It was two bounds before, one for the child and one for everything the child
+// started, and each got the whole number -- so a Stop press at the thirty-second
+// default could take a minute to come back, with a window that looks hung for
+// the second half of it (issue #16). What a caller asks for is how long it is
+// prepared to wait, not how long each of two waits it cannot see may take.
+//
+// Taken as two numbers rather than reading a clock inside, which is what makes
+// the interesting values reachable at all: a deadline already gone, one exactly
+// reached, and one so far away that a 64-bit subtraction would hand back
+// INFINITE -- an unbounded wait, which is the Stop press that never comes back
+// (issue #27) and the one answer this may never give.
+@(test)
+what_is_left_of_a_budget_is_never_all_of_it_again :: proc(t: ^testing.T) {
+	testing.expect_value(t, remaining_ms(1_000, 0), u32(1_000))
+	testing.expect_value(t, remaining_ms(1_000, 400), u32(600))
+	testing.expect_value(t, remaining_ms(1_000, 999), u32(1))
+	// Spent exactly, and spent over. Both are none left rather than an
+	// underflowed budget of forty-nine days (A3).
+	testing.expect_value(t, remaining_ms(1_000, 1_000), u32(0))
+	testing.expect_value(t, remaining_ms(1_000, 5_000), u32(0))
+	// The tick count is milliseconds since boot and the bound is a u32, so this
+	// deadline is not one stop can produce -- which is exactly why it is checked
+	// here rather than left to the caller's arithmetic being right forever.
+	far := win32.ULONGLONG(win32.INFINITE) + 10
+	testing.expect(t, remaining_ms(far, 0) != win32.INFINITE, "a budget rendered as INFINITE")
+}
+
 // The Engine writes progress to its diagnostic output for hours before it is
 // finished, and a progress bar that only moved when the run ended would be a
 // progress bar nobody could use (issue #9). So this is the case that says the

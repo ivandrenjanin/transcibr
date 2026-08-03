@@ -479,7 +479,7 @@ abandon :: proc(pi: ^win32.PROCESS_INFORMATION, fault: Fault) -> Error {
 	// held no file -- it never ran -- so the reason a caller waits does not
 	// apply here.
 	win32.TerminateProcess(pi.hProcess, TERMINATED_EXIT_CODE)
-	_ = win32.WaitForSingleObject(pi.hProcess, win32.DWORD(STOP_BOUND_MS))
+	_ = win32.WaitForSingleObject(pi.hProcess, win32.DWORD(ABANDON_BOUND_MS))
 	win32.CloseHandle(pi.hThread)
 	win32.CloseHandle(pi.hProcess)
 	return Error{fault = fault, last_error = code}
@@ -492,7 +492,43 @@ abandon :: proc(pi: ^win32.PROCESS_INFORMATION, fault: Fault) -> Error {
 // driver call can outlive it, and a Stop press that never comes back is the
 // window frozen with no way out. Thirty seconds is what scripts\common.ps1 gives
 // a killed process tree for the same reason, and the two agree on purpose.
+//
+// A BUDGET FOR THE WHOLE OF STOP and not for each wait inside it -- see stop.
 STOP_BOUND_MS :: u32(30_000)
+
+// How long a child that never ran is given, in milliseconds.
+//
+// Deliberately not STOP_BOUND_MS, and the difference is the whole reason it has
+// a name: an abandoned child was created SUSPENDED and has not executed one
+// instruction. It opened no file, started nothing and holds nothing, so there is
+// nothing here to wait for but the process object signalling, which is what
+// makes the two handle closes below safe. Thirty seconds of that is thirty
+// seconds before a refused start reaches a Recording's failure line, with the
+// rest of the Batch waiting behind it (ADR-0002).
+@(private)
+ABANDON_BOUND_MS :: u32(2_000)
+
+// What is left of a budget, in milliseconds.
+//
+// The two numbers are handed in rather than a clock read inside, which is what
+// makes the answer checkable: a deadline already gone and one exactly reached
+// are the values that matter and the ones a clock will not produce on request.
+//
+// Never INFINITE, whatever arithmetic led here. That is an unbounded wait, which
+// is the Stop press that never comes back (issue #27) -- and the property is
+// held in two places rather than one (A4): stop refuses that bound on the way in
+// and this refuses to produce it.
+@(private)
+remaining_ms :: proc(deadline: win32.ULONGLONG, now: win32.ULONGLONG) -> u32 {
+	if now >= deadline {
+		return 0
+	}
+	left := deadline - now
+	if left >= win32.ULONGLONG(win32.INFINITE) {
+		return win32.INFINITE - 1
+	}
+	return u32(left)
+}
 
 // Stops a child and does not come back until it is gone, or until the bound runs
 // out.
@@ -515,11 +551,19 @@ STOP_BOUND_MS :: u32(30_000)
 // Then the wait, which is the whole value: until everything has actually gone,
 // a file may still be open, and touching it is a sharing violation or a read of
 // something half written.
+//
+// `milliseconds` is a budget for THE WHOLE OF THIS and not for each of the two
+// waits below. Given to both it would be a bound that means half what it says:
+// at the thirty-second default a Stop press could take a minute to come back,
+// and for the second half of that the window has nothing to show and no way out
+// (issue #16).
 stop :: proc(c: ^Child, milliseconds: u32 = STOP_BOUND_MS) -> (stopped: bool) {
 	assert(c != nil, "there is no child here to stop")
 	assert(c.handle != nil, "a child that was never started cannot be stopped")
 	assert(c.tree != nil, "a started child always has a job object of its own")
+	assert(milliseconds != win32.INFINITE, "a Stop press that never comes back is a frozen window")
 
+	deadline := GetTickCount64() + win32.ULONGLONG(milliseconds)
 	// The answer is not read: a job object whose members have all already exited
 	// is the outcome being asked for, not an error. The WAIT below is the check.
 	TerminateJobObject(c.tree, TERMINATED_EXIT_CODE)
@@ -532,23 +576,29 @@ stop :: proc(c: ^Child, milliseconds: u32 = STOP_BOUND_MS) -> (stopped: bool) {
 	// Both halves are waited for (A3): the child itself, whose process object is
 	// the one definite signal there is, and then everything it started, which only
 	// the job object can account for.
-	if win32.WaitForSingleObject(c.handle, win32.DWORD(milliseconds)) != win32.WAIT_OBJECT_0 {
+	first := remaining_ms(deadline, GetTickCount64())
+	if win32.WaitForSingleObject(c.handle, win32.DWORD(first)) != win32.WAIT_OBJECT_0 {
 		return false
 	}
-	return job_emptied(c.tree, milliseconds)
+	return job_emptied(c.tree, deadline)
 }
 
-// Whether a job object has emptied, under a bound.
+// Whether a job object has emptied, before a deadline.
 //
 // Polled, because there is nothing to wait on: a job object signals when its
 // end-of-job TIME LIMIT is exceeded and never when its last process leaves, so
 // `ActiveProcesses` read in a loop is the only answer Windows offers. A
 // millisecond between reads, on a path taken once per stopped Recording.
+//
+// A DEADLINE and not a bound of its own, because the bound was already half
+// spent by the time this is reached -- see stop. The counter is read once before
+// the deadline is consulted, so a deadline already gone still gets the one
+// question that is usually enough: everything the job held is normally gone by
+// the time the child's own process object has signalled.
 @(private)
-job_emptied :: proc(job: win32.HANDLE, milliseconds: u32) -> bool {
+job_emptied :: proc(job: win32.HANDLE, deadline: win32.ULONGLONG) -> bool {
 	assert(job != nil, "there is no job object here to wait on")
 
-	deadline := GetTickCount64() + win32.ULONGLONG(milliseconds)
 	for {
 		accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
 		returned: win32.DWORD
