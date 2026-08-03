@@ -18,6 +18,15 @@ jobs:
     name: Build and test (Windows)
     runs-on: windows-latest
 
+    # Stated, never left to the platform's six-hour default. The scripts carry
+    # their own per-invocation ceiling ($OdinCommandTimeoutSeconds), and this is
+    # the backstop for everything they do not run: the toolchain download, and
+    # any future step. Generous against the minutes this job actually takes, so
+    # a slow runner is never mistaken for a hang -- the point is that a wedged
+    # job says so within the hour instead of holding a runner until tea time
+    # tomorrow.
+    timeout-minutes: 30
+
     steps:
       - name: Check out
         uses: actions/checkout@v5

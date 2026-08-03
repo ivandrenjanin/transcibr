@@ -22,10 +22,22 @@
 param(
 	# Run one test instead of sweeping, as <package>.<test>. Only that
 	# package is built, and a name that matches nothing is a failure.
-	[string] $TestName = ''
+	[string] $TestName = '',
+
+	# Wall-clock ceiling on ONE package's `odin test`, in seconds. Zero takes
+	# $OdinCommandTimeoutSeconds from scripts\common.ps1, which is the answer
+	# everywhere but scripts\selftest.ps1: it plants packages built to hang, and
+	# cannot wait ten minutes to find out that they did. Resolved after the
+	# dot-source below, because a param default is bound before it runs.
+	[ValidateRange(0, 86400)]
+	[int] $TimeoutSeconds = 0
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
+
+if ($TimeoutSeconds -eq 0) {
+	$TimeoutSeconds = $OdinCommandTimeoutSeconds
+}
 
 # No terminating error may leave a zero exit behind. That is how this script
 # once reported success after crashing before its own failure check.
@@ -98,12 +110,12 @@ foreach ($package in $packages) {
 		$arguments += "-define:ODIN_TEST_NAMES=$TestName"
 	}
 
-	# Invoked directly, never through cmd: hand-quoting a flag string breaks on
-	# the first checkout path containing a space, and PowerShell's own argument
-	# passing does not. Nothing is redirected either, so the runner's output
-	# reaches the console as it happens and $LASTEXITCODE stays trustworthy.
-	Invoke-NativeCommand -Command $odin -Arguments $arguments
-	$odinExit = $LASTEXITCODE
+	# Under a ceiling, because `odin test` RUNS what it builds and the runner
+	# hangs outright when two or more tests assert concurrently -- see
+	# $OdinCommandTimeoutSeconds. Nothing is redirected, so the runner's output
+	# still reaches the console as it happens.
+	$run = Invoke-NativeCommand -Command $odin -Arguments $arguments -TimeoutSeconds $TimeoutSeconds
+	$odinExit = $run.ExitCode
 
 	# The runner's machine-readable report, not its console prose. It writes no
 	# file at all when it collects nothing, which is itself the answer.
@@ -123,7 +135,15 @@ foreach ($package in $packages) {
 		Remove-Item -Force -ErrorAction SilentlyContinue
 
 	$expectedEmpty = ($OdinPackagesWithoutTests -contains $package.Name)
-	if ($odinExit -ne 0) {
+	# Read before anything else, because a run that was killed left no verdict
+	# to read: no summary, no JSON report, and an exit code that belongs to the
+	# kill rather than to the tests. Named against the package, since that is
+	# the only thing left pointing at what to go and look at.
+	if ($run.TimedOut) {
+		$failures += "$($package.Name): odin test did not finish within $TimeoutSeconds seconds and was killed"
+		Write-Host "-> FAILED (did not finish within $TimeoutSeconds seconds; killed)" -ForegroundColor Red
+	}
+	elseif ($odinExit -ne 0) {
 		$failures += "$($package.Name): odin exited $odinExit"
 		Write-Host "-> FAILED (odin exited $odinExit)" -ForegroundColor Red
 	}

@@ -30,6 +30,30 @@ $OdinVetFlags = @(
 # Packages import each other as `transcibr:<package>`.
 $OdinCollection = "-collection:transcibr=$SrcRoot"
 
+# The wall-clock ceiling on one `odin` invocation, in seconds.
+#
+# Nothing in the toolchain has one of its own. `odin test` builds a test
+# executable and then RUNS it, and that runner hangs outright when two or more
+# tests assert concurrently: the Windows signal handler records into a single
+# global slot and returns EXCEPTION_CONTINUE_SEARCH, so the faulting thread
+# races a main loop that must TerminateThread it, and a second concurrent
+# assertion overwrites the slot while TerminateThread abandons the locks of a
+# thread killed mid-log. One asserting test fails cleanly; two hang or crash,
+# and -define:ODIN_TEST_THREADS=1 makes the hang DETERMINISTIC rather than
+# mitigating it. See the cases in scripts\selftest.ps1 that pin this.
+#
+# Assertions are the failure mode this repository's whole design rests on
+# (CLAUDE.md section 1), so a sweep that waits forever for one is a developer's
+# terminal that never comes back and a CI job that burns the platform's
+# six-hour default before saying anything.
+#
+# Ten minutes, not one: this repository's whole sweep takes seconds, but a cold
+# CI runner compiling from an empty cache is exactly the run that must not be
+# killed for being slow. The ceiling exists to bound a HANG, not to police
+# speed. scripts\selftest.ps1 passes its own, far shorter, because it plants
+# packages built to hang and cannot wait ten minutes to find out that they did.
+$OdinCommandTimeoutSeconds = 600
+
 # The compiler this repository is pinned to, in its two spellings: the release
 # tag CI downloads, and the string that release's `odin version` prints. They
 # do not resemble each other and there is no deriving one from the other, so
@@ -101,25 +125,112 @@ function Resolve-OdinCompiler {
 	return $odin
 }
 
-# Run a native command, letting its output through to the console untouched.
-# Read $LASTEXITCODE immediately after; this deliberately returns nothing,
-# because anything it returned would be indistinguishable from the command's
-# own output on the same stream.
+# Kill a process and everything it started.
 #
-# $ErrorActionPreference drops to Continue for the call, and the assignment is
-# function-scoped so it lasts exactly that long. The test runner writes its
-# entire log to stderr; if a caller has merged the streams -- `.\scripts\test.ps1
-# 2>&1`, or `*>` to a file -- PowerShell wraps every one of those lines in an
-# ErrorRecord, and under 'Stop' the first INFO line of a perfectly good run
-# becomes a terminating error.
+# The TREE and not the process: `odin test` builds a test executable and then
+# runs it, so the thing that hangs is the compiler's child. Killing the compiler
+# alone leaves that child running, still holding the report file open and, in
+# this repository's real workload, a model resident in VRAM.
+#
+# taskkill rather than .Kill(), whose tree-killing overload arrived in .NET Core
+# 3.0 and is not on the .NET Framework that PowerShell 5.1 runs. Best effort
+# throughout: a process that exited between the wait and the kill is the outcome
+# being asked for, not an error to report.
+function Stop-ProcessTree {
+	param([Parameter(Mandatory)] [int] $Id)
+
+	$ErrorActionPreference = 'Continue'
+	& taskkill.exe '/T' '/F' '/PID' $Id 2>$null | Out-Null
+}
+
+# One argument, escaped the way CommandLineToArgvW un-escapes it.
+#
+# Windows has no array form of a command line -- CreateProcessW takes a single
+# string -- and Start-Process joins -ArgumentList with spaces and nothing else,
+# so `-out:C:\path with space\a.exe` arrives at the child as three arguments.
+# The .NET collection that does this properly, ProcessStartInfo.ArgumentList,
+# landed in .NET Core 2.1 and is not on the .NET Framework PowerShell 5.1 runs.
+#
+# Quote when the value holds a space, a tab or a quote; double any run of
+# backslashes that MEETS a quote, including the closing one, and leave every
+# other backslash alone. `C:\path with space\` is the case that rule exists for:
+# quoting it naively ends the argument in `\"`, which is an escaped quote.
+function ConvertTo-NativeArgument {
+	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Value)
+
+	if (($Value -ne '') -and ($Value -notmatch '[ \t"]')) {
+		return $Value
+	}
+
+	$quoted = New-Object System.Text.StringBuilder
+	[void] $quoted.Append('"')
+	$slashes = 0
+	foreach ($char in $Value.ToCharArray()) {
+		if ($char -eq '\') {
+			$slashes += 1
+			continue
+		}
+		if ($char -eq '"') {
+			[void] $quoted.Append('\', $slashes * 2 + 1)
+		}
+		else {
+			[void] $quoted.Append('\', $slashes)
+		}
+		$slashes = 0
+		[void] $quoted.Append($char)
+	}
+	[void] $quoted.Append('\', $slashes * 2)
+	[void] $quoted.Append('"')
+	return $quoted.ToString()
+}
+
+# Run a native command under a wall-clock ceiling, letting its output through to
+# the console untouched. Returns the exit code and whether the ceiling was hit.
+#
+# STARTED rather than invoked with `&`, because a synchronous native call cannot
+# be interrupted and nothing in the toolchain has a ceiling of its own -- see
+# $OdinCommandTimeoutSeconds for what hangs and why it matters.
+#
+# The child inherits this process's streams, so the runner's log still reaches
+# the console as it happens. It never enters the PowerShell pipeline, which is
+# what makes returning a value safe here where the `&` form's return would have
+# been indistinguishable from the command's own output. That also settles the
+# $ErrorActionPreference trap the `&` form carried: the test runner writes its
+# entire log to stderr, and a caller that merged the streams -- `.\scripts\test.ps1
+# 2>&1`, or `*>` to a file -- had PowerShell wrap every one of those lines in an
+# ErrorRecord, turning the first INFO line of a good run into a terminating
+# error under 'Stop'. PowerShell no longer sees those lines at all.
 function Invoke-NativeCommand {
 	param(
 		[Parameter(Mandatory)] [string] $Command,
-		[Parameter(Mandatory)] [AllowEmptyCollection()] [string[]] $Arguments
+		[Parameter(Mandatory)] [AllowEmptyCollection()] [string[]] $Arguments,
+		[Parameter(Mandatory)] [ValidateRange(1, 86400)] [int] $TimeoutSeconds
 	)
 
 	$ErrorActionPreference = 'Continue'
-	& $Command @Arguments
+	if ($Arguments.Count -eq 0) {
+		$started = Start-Process -FilePath $Command -NoNewWindow -PassThru
+	}
+	else {
+		$line = (@($Arguments | ForEach-Object { ConvertTo-NativeArgument -Value $_ }) -join ' ')
+		$started = Start-Process -FilePath $Command -ArgumentList $line -NoNewWindow -PassThru
+	}
+
+	# Touching .Handle makes the Process object cache the native handle. Without
+	# it .ExitCode reads back empty once the child is gone, and a perfectly good
+	# run reports no verdict at all.
+	$null = $started.Handle
+
+	if ($started.WaitForExit($TimeoutSeconds * 1000)) {
+		return [pscustomobject]@{ ExitCode = $started.ExitCode; TimedOut = $false }
+	}
+
+	Stop-ProcessTree -Id $started.Id
+	$code = -1
+	if ($started.WaitForExit(30000)) {
+		$code = $started.ExitCode
+	}
+	return [pscustomobject]@{ ExitCode = $code; TimedOut = $true }
 }
 
 # The same call with the output CAPTURED instead of passed through, for the two

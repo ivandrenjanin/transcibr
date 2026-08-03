@@ -237,6 +237,18 @@ cannot go stale unnoticed.
 Do not hand-roll the compiler invocation — the sweep also enforces that every package either
 collects tests or is declared test-less in `$OdinPackagesWithoutTests`.
 
+**The test runner hangs when two or more tests assert concurrently.** One asserting test fails
+cleanly every time. Two or more either crash the process with no summary and no JSON report, or hang
+forever — and `-define:ODIN_TEST_THREADS=1` makes the hang *deterministic* rather than mitigating it.
+The Windows signal handler records into a single global slot and returns `EXCEPTION_CONTINUE_SEARCH`,
+so the faulting thread races a main loop that has to `TerminateThread` it before the OS kills the
+process; a second concurrent assertion overwrites that slot, and `TerminateThread` on a thread killed
+mid-log abandons its locks. Nothing in the toolchain has a timeout: `testing.set_fail_timeout` is
+opt-in per test. `scripts\common.ps1` therefore runs every `odin` invocation under
+`$OdinCommandTimeoutSeconds` and kills the tree — the compiler spawns the test binary, so killing the
+compiler alone orphans it — and `.github/workflows/ci.yml` carries an explicit `timeout-minutes`.
+Do not remove either; a sweep with no ceiling is a CI job that burns six hours to say nothing.
+
 **`core:encoding/json` does not parse integers, and leaks when it refuses a file.** `parse_integers`
 defaults to *false* on every entry point, so `12345` arrives as a `json.Float` and the natural
 `value.(json.Integer)` matches nothing at all — every number silently reads as its zero value, and a
