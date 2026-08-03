@@ -427,12 +427,10 @@ ends_a_sentence :: proc(said: string) -> bool {
 	// checks the back, which is the end this procedure reads. By the same
 	// predicate, so a stop hidden behind a control byte cannot read as no stop at
 	// all here while spoken_text calls that byte silence.
-	if len(said) > 0 {
-		assert(
-			!says_nothing(rune(said[len(said) - 1])),
-			"asked whether text still ending on what nobody said ends a sentence",
-		)
-	}
+	assert(
+		!ends_on_silence(said),
+		"asked whether text still ending on what nobody said ends a sentence",
+	)
 
 	bare := strings.trim_right(said, SENTENCE_CLOSERS)
 	assert(len(bare) <= len(said), "trimming a sentence's closers added bytes to it")
@@ -540,18 +538,13 @@ word_split :: proc(said: string, room: int) -> (take, rest: string) {
 	// The two things the trims below rely on, both ends of one claim (CLAUDE.md
 	// A3): speech starts with speech and ends with speech, so nothing they take
 	// off either side can empty what is left of it.
-	assert(!says_nothing(rune(said[0])), "speech still opening on something nobody said")
-	assert(
-		!says_nothing(rune(said[len(said) - 1])),
-		"speech still ending on something nobody said",
-	)
-	defer if len(take) > 0 {
-		assert(!says_nothing(rune(take[0])), "a split opened prose on something nobody said")
-		assert(
-			!says_nothing(rune(take[len(take) - 1])),
-			"a split left something nobody said on the prose",
-		)
-	}
+	assert(!opens_on_silence(said), "speech still opening on something nobody said")
+	assert(!ends_on_silence(said), "speech still ending on something nobody said")
+	// Both ends of what it hands BACK, and unguarded like the pair above: the two
+	// paths that report nothing fits hand back an empty `take`, and speech nobody
+	// said anything in opens and ends on nothing at all.
+	defer assert(!opens_on_silence(take), "a split opened prose on something nobody said")
+	defer assert(!ends_on_silence(take), "a split left something nobody said on the prose")
 
 	if room <= 0 {
 		return "", said
@@ -600,7 +593,7 @@ character_split :: proc(said: string, room: int) -> (take, rest: string) {
 	// The same claim word_split makes about what it is handed, at the other carve
 	// (CLAUDE.md A4): the trims below take off what nobody said, and speech that
 	// opened on that would come back empty.
-	assert(!says_nothing(rune(said[0])), "speech still opening on something nobody said")
+	assert(!opens_on_silence(said), "speech still opening on something nobody said")
 	defer assert(len(take) > 0, "a carve that took no speech at all")
 
 	// Characters and not bytes, which is the whole reason this asks utf8 instead

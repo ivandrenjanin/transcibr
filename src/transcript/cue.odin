@@ -66,6 +66,42 @@ says_nothing :: proc(r: rune) -> bool {
 	return strings.is_space(r) || renders_as_nothing(r)
 }
 
+// Whether speech opens on, or ends on, something nobody said.
+//
+// BOTH ARE FALSE FOR THE EMPTY STRING, and that is the whole reason they exist.
+// There is no first or last byte of nothing to read, so every caller asking this
+// inline had to guard it -- and nine of them did, five behind an `if len(x) > 0`
+// wrapped over a pair of assertions, in three files. That is one off-by-one
+// decided five separate times, each of which could have been written the other
+// way round without the others noticing. Here it is decided once: speech nobody
+// said anything in does not open on silence, because it does not open on
+// anything.
+//
+// A BYTE and never a decoded rune, which is exact rather than merely cheap:
+// every byte of a multi-byte character is at or above 0x80 and says_nothing
+// answers no to all of them (see renders_as_nothing), so reading the last BYTE of
+// speech that ends in an accented character gives the answer decoding it would.
+//
+// Neither carries an assertion, by decision and not by drift -- CLAUDE.md A1's
+// carve-out for leaf predicates, recorded here because this file leans on it
+// harder than any other. Four of its procedures are one-line predicates, which
+// pulls its average under two on their own. There is no argument either of these
+// can be handed that is wrong: every string is an answer, the empty one included,
+// and refusing it is the very thing they were extracted to stop each caller doing
+// for itself. The checks are in the callers, which is where A1 says they belong
+// and where A4 wants them anyway -- spoken_text asserts both on the way out of a
+// trim, word_split asserts both on the way in and both again on what it hands
+// back, and write_prose asserts one on the way into the deliverable.
+@(private)
+opens_on_silence :: proc(said: string) -> bool {
+	return len(said) > 0 && says_nothing(rune(said[0]))
+}
+
+@(private)
+ends_on_silence :: proc(said: string) -> bool {
+	return len(said) > 0 && says_nothing(rune(said[len(said) - 1]))
+}
+
 // What was actually said in a Cue: its text with everything nobody said taken
 // off either end.
 //
@@ -103,15 +139,11 @@ spoken_text :: proc(cue: Cue) -> (said: string) {
 	// exists to take away. The last two are the claims every caller relies on and
 	// the only ones a reader cannot check by looking (A6) -- ends_a_sentence reads
 	// the tail, write_prose reads both, and word_split asserts the pair again on
-	// what it is handed.
+	// what it is handed. Unguarded, because the predicates answer for the empty
+	// string: a Cue that said nothing said nothing at either end.
 	assert(len(said) <= len(cue.text), "trimming a cue's text added bytes to it")
-	if len(said) > 0 {
-		assert(!says_nothing(rune(said[0])), "a trimmed cue still opens on a byte nobody said")
-		assert(
-			!says_nothing(rune(said[len(said) - 1])),
-			"a trimmed cue still ends on a byte nobody said",
-		)
-	}
+	assert(!opens_on_silence(said), "a trimmed cue still opens on a byte nobody said")
+	assert(!ends_on_silence(said), "a trimmed cue still ends on a byte nobody said")
 	return
 }
 

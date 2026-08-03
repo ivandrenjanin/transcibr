@@ -396,11 +396,11 @@ write_prose :: proc(out: ^strings.Builder, said: string) {
 	assert(len(prose) > 0, "a paragraph holding nothing a reader could see reached the renderer")
 	// The other end of the same pair, and the end this procedure does NOT strip:
 	// a trailing byte nobody said is spent against the character cap and reaches
-	// the deliverable as a Paragraph ending in nothing. Guarded by the length
-	// above rather than repeated by it -- there is no last byte of an empty
-	// string to read.
+	// the deliverable as a Paragraph ending in nothing. Standing on its own rather
+	// than under a guard, because ends_on_silence answers for the empty string --
+	// the length above is its own claim and no longer this one's precondition.
 	assert(
-		!says_nothing(rune(prose[len(prose) - 1])),
+		!ends_on_silence(prose),
 		"a paragraph ending on something nobody said reached the renderer",
 	)
 
