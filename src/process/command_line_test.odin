@@ -143,9 +143,11 @@ EXE :: `C:\tools\ffmpeg.exe`
 // The label one case is reported under, and `how` is not decoration: every value
 // in a table is round-tripped more than once -- alone, and again flanked by
 // neighbours -- so the group and the index together do not identify a run.
-// Measured on a deliberately broken builder, both runs reported `backslash[12]`,
-// and the two say different things: alone means the value itself is mangled,
-// flanked means the damage only shows as a neighbour's argument.
+// RE-MEASURED after the tables were renamed, on a builder that leaves the run
+// before an argument's closing quote undoubled: both runs report
+// `quote-and-backslash[12]`, and the two say different things -- alone means the
+// value itself is mangled, flanked means the damage only shows as a neighbour's
+// argument.
 @(private)
 tprint_case :: proc(group: string, index: int, how: string) -> string {
 	return fmt.tprintf("%s[%d] %s", group, index, how)
@@ -164,13 +166,11 @@ plain_arguments_round_trip :: proc(t: ^testing.T) {
 	expect_round_trip(t, EXE, {"only"}, "a single argument")
 }
 
-// Whitespace is the whole reason quoting exists here, and the set is EXACTLY
-// space and tab. Measured against CommandLineToArgvW: newline, carriage return,
-// vertical tab, form feed, U+00A0 and U+3000 do NOT split an argument, and
-// neither do any of cmd.exe's metacharacters -- there is no shell in this path,
-// so `^ & | % > <` are ordinary text. They are here to pin that: a builder that
-// "helpfully" quoted them would still be correct, but one that quoted them and
-// got the escaping wrong would not.
+// Whitespace is the whole reason quoting exists here, and the set that separates
+// an argument is EXACTLY space and tab. Measured against CommandLineToArgvW:
+// newline, carriage return, vertical tab, form feed, U+00A0 and U+3000 do NOT
+// split one, and they are here so that a builder which starts quoting them is
+// still checked rather than merely still correct.
 @(private)
 WHITESPACE_CASES :: []string {
 	"C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe",
@@ -188,15 +188,34 @@ WHITESPACE_CASES :: []string {
 	"a\r\nb",
 	"a\vb",
 	"a\fb",
-	"caret^and&ampersand|pipe",
-	"percent%PATH%percent",
-	"redirect>out<in",
 	"\\\\server\\share with space\\file.mkv",
 }
 
 @(test)
 whitespace_arguments_round_trip :: proc(t: ^testing.T) {
 	expect_each_and_all(t, "whitespace", WHITESPACE_CASES)
+}
+
+// cmd.exe's metacharacters, which are not whitespace and were sitting in the
+// table above being called it -- so a failure reading `whitespace[16]` pointed
+// at `percent%PATH%percent`, and the label is the entire reason tprint_case
+// exists.
+//
+// Measured against CommandLineToArgvW: `^ & | % > <` are ORDINARY TEXT here.
+// CreateProcessW starts the child directly and there is no shell anywhere in
+// this path to interpret them, so nothing about them needs quoting -- which is
+// what these pin. A builder that quoted them anyway would still be correct; one
+// that quoted them and got the escaping wrong would not.
+@(private)
+METACHARACTER_CASES :: []string {
+	"caret^and&ampersand|pipe",
+	"percent%PATH%percent",
+	"redirect>out<in",
+}
+
+@(test)
+metacharacter_arguments_round_trip :: proc(t: ^testing.T) {
+	expect_each_and_all(t, "metacharacter", METACHARACTER_CASES)
 }
 
 // An empty argument survives as an argument.
@@ -246,6 +265,10 @@ empty_arguments_round_trip_in_every_position :: proc(t: ^testing.T) {
 // the closing quote counts -- so `C:\path with space\` quoted naively ends in
 // `\"`, which is an escaped quote, and the argument runs on into the next one.
 //
+// Named for the rule and not for the byte: nine of these carry no backslash at
+// all, and `BACKSLASH_CASES` had a reader looking for one. It is the interaction
+// that is under test, and either character alone is half of it.
+//
 // THIS IS NOT THE POWERSHELL QUOTER'S LIST, and the difference is worth stating
 // because the two are easy to assume into one. There are two quoters -- this one
 // and ConvertTo-NativeArgument in scripts/common.ps1 -- and they have separate
@@ -263,7 +286,7 @@ empty_arguments_round_trip_in_every_position :: proc(t: ^testing.T) {
 // says; it does NOT make either list the other's source, and adding to one still
 // does nothing for the other.
 @(private)
-BACKSLASH_CASES :: []string {
+QUOTE_AND_BACKSLASH_CASES :: []string {
 	`a"b`,
 	`a\"b`,
 	`a\\"b`,
@@ -293,8 +316,8 @@ BACKSLASH_CASES :: []string {
 }
 
 @(test)
-backslash_arguments_round_trip :: proc(t: ^testing.T) {
-	expect_each_and_all(t, "backslash", BACKSLASH_CASES)
+quote_and_backslash_arguments_round_trip :: proc(t: ^testing.T) {
+	expect_each_and_all(t, "quote-and-backslash", QUOTE_AND_BACKSLASH_CASES)
 }
 
 // Non-ASCII survives the trip, including outside the Basic Multilingual Plane,
@@ -668,8 +691,14 @@ UNENCODABLE_CASES :: []string {
 // this package can name which argument was at fault, and a user-reachable refusal
 // pushed into the shell is one nothing tests.
 //
-// Both halves are checked, because either alone can rot. Refusing everything
-// would satisfy the first and is caught by the second.
+// Both halves matter, because the first alone is satisfied by refusing
+// everything. The OTHER half is not repeated here, and this is where a reader
+// looks for it: `non_ascii_arguments_round_trip` runs every NON_ASCII_CASES value
+// three ways through `expect_round_trip`, which builds it (so the fault is .None)
+// and hands the line to `argv_of`, which converts it with the same
+// `utf8_to_utf16` and expects a non-nil result. The loop that used to sit at the
+// end of this procedure asserted those two properties a fourth and fifth time,
+// on the same table, from the same entry point.
 @(test)
 what_the_builder_accepts_is_what_windows_can_encode :: proc(t: ^testing.T) {
 	for value, i in UNENCODABLE_CASES {
@@ -694,22 +723,6 @@ what_the_builder_accepts_is_what_windows_can_encode :: proc(t: ^testing.T) {
 			i,
 			executable_err.fault,
 		)
-	}
-
-	// The other direction, and the one that stops "refuse everything" from
-	// passing: every case the rest of this file round-trips is still accepted,
-	// and the line it produces really does convert. argv_of asserts exactly that
-	// on every case in this file, so the suite as a whole is the second half --
-	// this pins the non-ASCII table, which is where a check that was too strict
-	// would bite first.
-	for value, i in NON_ASCII_CASES {
-		line, err := build_command_line(EXE, {value}, context.allocator)
-		defer delete(line, context.allocator)
-		testing.expectf(t, err.fault == .None, "non-ascii[%d]: refused with %v", i, err.fault)
-
-		wide := win32.utf8_to_utf16(line, context.allocator)
-		defer delete(wide, context.allocator)
-		testing.expectf(t, wide != nil, "non-ascii[%d]: accepted a line Windows cannot encode", i)
 	}
 }
 
