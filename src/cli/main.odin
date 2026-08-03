@@ -13,5 +13,7 @@ PROGRAM :: "transcibr-cli"
 main :: proc() {
 	line := version.banner(PROGRAM, version.CURRENT, context.allocator)
 	defer delete(line, context.allocator)
+	// Read-side half of the pair `banner` asserts on the way out (A4).
+	assert(len(line) > len(PROGRAM), "banner carries no version after the program name")
 	fmt.println(line)
 }

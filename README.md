@@ -2,8 +2,9 @@
 
 Local transcription tool. Converts video and audio files into text transcripts using Whisper.
 
-> **Status: pre-implementation.** The specification is being written in `docs/spec/`. There is no
-> build, no usage, and no releases yet.
+> **Status: early implementation.** The specification is in `docs/spec/`. The build and test
+> commands work (see [Building from source](#building-from-source)); `transcibr-cli` currently
+> reports its version and nothing else. There are no releases yet.
 
 ## What it does
 
@@ -99,7 +100,35 @@ Already have the engine, a model, or FFmpeg elsewhere on disk? Point transcibr a
 and skip the downloads entirely.
 
 Building from source additionally needs the Odin compiler and the MSVC toolset, which Odin links
-through on Windows. Exact pinned versions land here once the specification is settled.
+through on Windows.
+
+## Building from source
+
+Two commands, and CI runs the same two on every push.
+
+```powershell
+.\scripts\build.ps1     # -> build\transcibr-cli.exe
+.\scripts\test.ps1      # every package under src\
+```
+
+The Odin compiler is pinned to release `dev-2026-07a`. The scripts look for it in `$env:ODIN`, then
+on `PATH`, then at `C:\Odin\dist\odin.exe`, so it does not need to be on `PATH`.
+
+Both commands pass the full vet set with warnings as errors, and the test command additionally sets
+`ODIN_TEST_FAIL_ON_BAD_MEMORY=true` — it defaults to false, which would let a procedure that leaks
+its returned slice pass with a warning (ADR-0010).
+
+**`odin test` collects test procedures from one package only**, and on a package with none it prints
+`No tests to run.` and exits 0. `test.ps1` therefore discovers every package under `src\` rather than
+naming one, counts the tests the runner reports finishing, and fails when that total is zero — a run
+that executes nothing is a failure, not a pass. To run a single test, call the compiler directly:
+
+```powershell
+C:\Odin\dist\odin.exe test src\version -collection:transcibr=src `
+    -vet -vet-tabs -strict-style -vet-style -warnings-as-errors -disallow-do `
+    -define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true `
+    -define:ODIN_TEST_NAMES=version.banner_names_the_program_and_its_version
+```
 
 ## License
 
