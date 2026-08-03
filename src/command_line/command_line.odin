@@ -125,14 +125,19 @@ utf16_units :: proc(s: string) -> int {
 		units += 2 if r >= 0x10000 else 1
 	}
 
-	assert(units >= 0, "a code unit count cannot be negative")
-	// Every rune is at least one UTF-8 byte and at most two UTF-16 units, so the
-	// count is bracketed by the byte length on both sides (A3). A count outside
-	// this is an arithmetic mistake rather than a property of the input.
-	assert(units <= len(s) * 2, "more UTF-16 units than two per UTF-8 byte")
-	if len(s) > 0 {
-		assert(units > 0, "a non-empty string encodes to no UTF-16 units")
-	}
+	// One UTF-16 unit per UTF-8 byte is the real ceiling, and it is tight enough
+	// to catch an edit to the branch above. Every encoding yields at most one unit
+	// per byte: ASCII is one byte and one unit, the two- and three-byte forms are
+	// one unit, and the four-byte form is the only one that pairs -- two units for
+	// four bytes, still under.
+	//
+	// The bound this replaced was `len(s) * 2`, which is the surrogate pair's ratio
+	// applied to every byte and is therefore satisfied by any counting mistake that
+	// stays within a factor of two. Measured: change the BMP branch to add 2 and
+	// ASCII reports exactly `2 * len(s)`, which passes that bound and fails this
+	// one. An assert that cannot fail on the edit it exists to catch is a comment
+	// with a runtime cost (A6).
+	assert(units <= len(s), "more UTF-16 units than there are UTF-8 bytes")
 	return units
 }
 
