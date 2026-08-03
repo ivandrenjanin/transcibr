@@ -137,19 +137,22 @@ $OdinFormatConfigSchema = [ordered]@{
 	align_struct_values      = 'bool'
 }
 
-# Directories the formatting sweep does not walk. A deny list of DIRECTORIES,
-# never a list of files: the files are discovered (Get-OdinSource), which is the
-# whole point -- a hand-maintained file list stops covering the file somebody
-# adds tomorrow, and nothing says so.
+# Directories the formatting sweep does not walk, as absolute paths ending in a
+# separator, which is the form Get-OdinSource compares against. A deny list of
+# DIRECTORIES, never a list of files: the files are discovered (Get-OdinSource),
+# which is the whole point -- a hand-maintained file list stops covering the file
+# somebody adds tomorrow, and nothing says so.
 #
 # Each entry holds no authored Odin by construction: git's object store, the
 # compiler's own output, and the throwaway prototypes .gitignore already keeps
-# out of the repository.
+# out of the repository. The compiler's output is $BuildRoot itself and not the
+# string 'build' beside it -- spelled twice, the two move apart and the sweep
+# starts walking the directory it was told to skip.
 $OdinFormatExcludedDirectories = @(
-	'.git'
-	'build'
-	'.scratch'
-)
+	(Join-Path $RepoRoot '.git')
+	$BuildRoot
+	(Join-Path $RepoRoot '.scratch')
+) | ForEach-Object { [System.IO.Path]::GetFullPath($_) + [System.IO.Path]::DirectorySeparatorChar }
 
 # The binaries this repository produces. Data rather than prose, so the GUI
 # binary ADR-0004 promises is one more entry here and not a rewrite:
@@ -417,7 +420,7 @@ function Read-NativeOutput {
 	)
 
 	$ErrorActionPreference = 'Continue'
-	$capture = Join-Path ([System.IO.Path]::GetTempPath()) "transcibr-$PID-$([System.Guid]::NewGuid().ToString('N')).out"
+	$capture = New-CapturePath -Extension 'out'
 	try {
 		$started = Start-NativeProcess -Command $Command -Arguments $Arguments -OutFile $capture
 		$run = Wait-ProcessTree -Process $started -TimeoutSeconds $TimeoutSeconds
@@ -684,7 +687,9 @@ function Confirm-OdinFormatConfig {
 #
 # Started through Start-NativeProcess like every other child this repository
 # runs -- the Windows argv quoter is not optional the moment a checkout path
-# holds a space, and nothing in the toolchain has a timeout of its own.
+# holds a space, and nothing in the toolchain has a timeout of its own -- and
+# captured through New-CapturePath like every other child's output, so the file
+# this leaves behind when killed is a file something sweeps.
 function Format-OdinSource {
 	param(
 		[Parameter(Mandatory)] [string] $Odinfmt,
@@ -693,7 +698,7 @@ function Format-OdinSource {
 	)
 
 	$ErrorActionPreference = 'Continue'
-	$capture = Join-Path ([System.IO.Path]::GetTempPath()) "transcibr-fmt-$PID-$([System.Guid]::NewGuid().ToString('N')).odin"
+	$capture = New-CapturePath -Extension 'odin'
 	try {
 		$arguments = @("-path:$Path", "-config:$OdinFormatConfig")
 		$started = Start-NativeProcess -Command $Odinfmt -Arguments $arguments -OutFile $capture
@@ -737,21 +742,27 @@ function Format-OdinSource {
 	}
 }
 
-# The src-relative name of a package directory, forward-slashed: `version`,
-# `cli`, `net/winhttp`. Used as the sweep's label and as the key the test-less
-# list is matched against.
+# A path as it is spelled relative to a root, forward-slashed: `version`,
+# `net/winhttp`, `src/version/version.odin`. The empty string is the root itself.
 #
 # Guarded rather than a bare Substring: a subst drive, a UNC path or a
-# junctioned checkout can hand back a path that does not share a prefix with
-# $SrcRoot at all, and trimming a length off that yields a garbled label or an
+# junctioned checkout can hand back a path that does not share a prefix with the
+# root at all, and trimming a length off that yields a garbled label or an
 # exception. Showing the whole path is the honest answer in that case.
-function Get-OdinPackageName {
-	param([Parameter(Mandatory)] [string] $Path)
+#
+# One copy, used by both callers. Get-OdinSource carried its own, under a
+# comment saying it was "Guarded like Get-OdinPackageName" -- so the duplication
+# had already been noticed and written down instead of removed.
+function Get-RelativeName {
+	param(
+		[Parameter(Mandatory)] [string] $Path,
+		[Parameter(Mandatory)] [string] $Root
+	)
 
 	$full = [System.IO.Path]::GetFullPath($Path)
-	$root = $SrcRoot.TrimEnd('\', '/')
+	$root = $Root.TrimEnd('\', '/')
 	if ($full.Equals($root, [System.StringComparison]::OrdinalIgnoreCase)) {
-		return 'src'
+		return ''
 	}
 
 	$prefix = $root + [System.IO.Path]::DirectorySeparatorChar
@@ -760,6 +771,37 @@ function Get-OdinPackageName {
 	}
 
 	return $full
+}
+
+# The src-relative name of a package directory: `version`, `cli`, `net/winhttp`.
+# Used as the sweep's label and as the key the test-less list is matched against.
+function Get-OdinPackageName {
+	param([Parameter(Mandatory)] [string] $Path)
+
+	$name = Get-RelativeName -Path $Path -Root $SrcRoot
+	if ($name -eq '') {
+		return 'src'
+	}
+	return $name
+}
+
+# Every .odin file under a root, as FileInfo.
+#
+# -Filter rather than a bare walk plus a Where-Object: the filter is applied by
+# the filesystem, and the repository root holds several hundred files inside
+# .git alone that there is no reason to materialise and then discard. The
+# extension is checked afterwards ALL THE SAME -- Windows matches a -Filter
+# against a file's 8.3 short name as well as its long one, so `*.odin` also
+# matches a `notes.odinography` whose short name happens to end `.ODI`.
+#
+# -Force walks hidden directories and -ErrorAction Stop turns an unreadable one
+# into a crash: discovery that silently returns a short list is the one failure
+# a user cannot detect (ADR-0009), and it reads as a clean pass.
+function Get-OdinFile {
+	param([Parameter(Mandatory)] [string] $Root)
+
+	return Get-ChildItem -LiteralPath $Root -Recurse -File -Force -Filter '*.odin' -ErrorAction Stop |
+		Where-Object { $_.Extension -eq '.odin' }
 }
 
 # Every directory under src\ holding at least one .odin file is a package.
@@ -776,19 +818,16 @@ function Get-OdinPackageName {
 # in @(); scripts\selftest.ps1 keeps a one-package repository in the suite so
 # that contract cannot rot again.
 function Get-OdinPackage {
-	$sources = Get-ChildItem -LiteralPath $SrcRoot -Recurse -File -Force -ErrorAction Stop |
-		Where-Object { $_.Extension -eq '.odin' }
+	$directories = @(Get-OdinFile -Root $SrcRoot | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique)
 
-	$directories = @($sources | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique)
-
-	$packages = @()
+	$packages = [System.Collections.Generic.List[object]]::new()
 	foreach ($directory in $directories) {
-		$packages += [pscustomobject]@{
-			Path = $directory
-			Name = Get-OdinPackageName -Path $directory
-		}
+		$packages.Add([pscustomobject]@{
+				Path = $directory
+				Name = Get-OdinPackageName -Path $directory
+			})
 	}
-	return $packages
+	return $packages.ToArray()
 }
 
 # Every .odin file in the repository, wherever it lives. Discovered rather than
@@ -807,18 +846,11 @@ function Get-OdinPackage {
 # Wrapped in @() by EVERY caller: PowerShell unrolls a one-element result to a
 # bare object, and under Set-StrictMode `.Count` on that throws.
 function Get-OdinSource {
-	$excluded = @($OdinFormatExcludedDirectories | ForEach-Object {
-			[System.IO.Path]::GetFullPath((Join-Path $RepoRoot $_)) + [System.IO.Path]::DirectorySeparatorChar
-		})
-
-	$found = Get-ChildItem -LiteralPath $RepoRoot -Recurse -File -Force -ErrorAction Stop |
-		Where-Object { $_.Extension -eq '.odin' }
-
-	$sources = @()
-	foreach ($file in $found) {
+	$sources = [System.Collections.Generic.List[object]]::new()
+	foreach ($file in @(Get-OdinFile -Root $RepoRoot)) {
 		$full = [System.IO.Path]::GetFullPath($file.FullName)
 		$skip = $false
-		foreach ($directory in $excluded) {
+		foreach ($directory in $OdinFormatExcludedDirectories) {
 			if ($full.StartsWith($directory, [System.StringComparison]::OrdinalIgnoreCase)) {
 				$skip = $true
 				break
@@ -830,18 +862,9 @@ function Get-OdinSource {
 
 		# Repository-relative and forward-slashed, so the report names
 		# `src/version/version.odin` rather than a machine-specific absolute path.
-		# Guarded like Get-OdinPackageName: a subst drive or a junctioned checkout
-		# can hand back a path sharing no prefix with $RepoRoot at all, and showing
-		# the whole path is the honest answer there.
-		$prefix = $RepoRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
-		$name = $full
-		if ($full.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-			$name = $full.Substring($prefix.Length).Replace('\', '/')
-		}
-
-		$sources += [pscustomobject]@{ Path = $full; Name = $name }
+		$sources.Add([pscustomobject]@{ Path = $full; Name = (Get-RelativeName -Path $full -Root $RepoRoot) })
 	}
-	return $sources
+	return $sources.ToArray()
 }
 
 # How many .odin files were looked at, and which of them odinfmt would rewrite,
@@ -978,12 +1001,42 @@ function Assert-OdinFormatting {
 # this run's verdict to deliver, and reclamation is not what either command is
 # being asked for.
 function Remove-StaleTestArtefact {
-	param([Parameter(Mandatory)] [string] $Root)
+	param(
+		[Parameter(Mandatory)] [string] $Root,
+		# Which files under $Root are this repository's to reclaim. Everything,
+		# under a directory this repository owns; NAMED, under one it merely
+		# borrows -- the system temp directory belongs to the user and to every
+		# other program on the machine.
+		[string] $Pattern = '*'
+	)
 
 	$cutoff = (Get-Date).AddDays(-1)
-	Get-ChildItem -LiteralPath $Root -File -Force -ErrorAction SilentlyContinue |
+	Get-ChildItem -LiteralPath $Root -File -Force -Filter $Pattern -ErrorAction SilentlyContinue |
 		Where-Object { $_.LastWriteTime -lt $cutoff } |
 		Remove-Item -Force -ErrorAction SilentlyContinue
+}
+
+# Where one child's captured output goes, named for the run that made it.
+#
+# ONE recipe. There were three, each spelling its own GUID-named temp file, and
+# not one of them was ever swept: every capture is deleted on the way out, so
+# what survives is what a KILLED run left behind -- in the system temp
+# directory, which nobody looks in and which only grows. Reclaimed here the same
+# way build\odin-test is, filtered to this repository's own names so the sweep
+# is never pointed at somebody else's files.
+#
+# Swept once per process rather than once per capture: the sweep costs a
+# directory listing, and there is one of these per .odin file.
+$script:SweptCaptures = $false
+function New-CapturePath {
+	param([Parameter(Mandatory)] [string] $Extension)
+
+	$root = [System.IO.Path]::GetTempPath()
+	if (-not $script:SweptCaptures) {
+		$script:SweptCaptures = $true
+		Remove-StaleTestArtefact -Root $root -Pattern 'transcibr-capture-*'
+	}
+	return Join-Path $root "transcibr-capture-$PID-$([System.Guid]::NewGuid().ToString('N')).$Extension"
 }
 
 # A directory that exists and contains no space, for `odin test` to write the

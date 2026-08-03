@@ -18,6 +18,13 @@
 # perfectly well and matches nothing.
 *.odin text eol=crlf
 
+# The commands themselves, for the same reason and by the same argument. Nothing
+# compares their bytes today, so this is consistency rather than a fix -- but
+# they are Windows PowerShell scripts in a Windows-only repository, and the
+# alternative is that what a contributor checks out here depends on a setting
+# nobody committed.
+*.ps1 text eol=crlf
+
 # A fixture is EVIDENCE, not source.
 #
 # src\transcript\fixtures\ holds one real whisper.cpp run committed exactly as
