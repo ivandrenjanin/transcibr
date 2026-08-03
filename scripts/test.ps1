@@ -52,9 +52,8 @@ if ($focused) {
 	}
 }
 
-# The test executables and the runner's reports both land here. Space-free
-# because `odin test` runs the binary it builds through an unquoted command
-# line -- see Get-OdinTestRoot.
+# The test executables and the runner's reports both land here, in a directory
+# chosen space-free and swept of what earlier runs left -- see Get-OdinTestRoot.
 $testRoot = Get-OdinTestRoot
 
 $failures = @()
@@ -69,11 +68,9 @@ foreach ($package in $packages) {
 	# The stem every artefact of this package's run is named from. Two
 	# properties, neither optional:
 	#
-	# No space, whatever the package directory is called. `odin test` re-parses
-	# the -out: path on an unquoted command line, so src\my pkg\ otherwise exits
-	# -1 with "Unknown argument encountered 'pkg.exe'" and the sweep runs
-	# nothing -- the same defect Get-OdinTestRoot closes for the checkout path,
-	# reintroduced one directory further down.
+	# No space, whatever the package DIRECTORY is called: exactly the defect
+	# Get-OdinTestRoot documents for the checkout path, reintroduced one
+	# directory further down by naming the stem after src\my pkg\.
 	#
 	# Unique to this run. Two sweeps in one checkout share $testRoot, and on a
 	# name fixed by package alone each deletes the report the other is about to

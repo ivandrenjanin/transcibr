@@ -242,7 +242,9 @@ it builds through a command line it does not quote, so a space is re-parsed as a
 separator and the compiler exits `-1` with `Unknown argument encountered '<second word>'`. The
 default output path comes from the working directory, so a checkout under `C:\Users\John Smith\`
 fails before a single test runs, and CI never catches it because a runner's path has no spaces.
-`scripts\common.ps1` falls back to the 8.3 short name. `odin build` is unaffected.
+`scripts\common.ps1` CHOOSES a space-free directory rather than sanitising one out of the 8.3 short
+name — 8.3 generation is a per-volume policy that can be off, and it does not apply retroactively to
+a directory that already exists. `odin build` is unaffected.
 
 **Win32 subprocess handling needs hand-rolled `CreateProcessW`.** `core:os` spawns children with
 `CREATE_UNICODE_ENVIRONMENT` and `NORMAL_PRIORITY_CLASS` only, and `Process_Desc` has no field for
