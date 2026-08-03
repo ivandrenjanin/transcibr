@@ -44,24 +44,10 @@ $script:Failures = @()
 $script:Skips = @()
 $script:Passes = 0
 
-# "A test run that executes nothing is a failure, not a pass" -- the thesis of
-# the script this file guards, turned on this file. Both values are DECLARED
-# rather than counted from the cases that happened to run, because a count
-# taken from what ran cannot notice that nothing did: deleting a case, or
-# breaking the setup every case shares, then reads as a clean sweep of the
-# cases that survived.
-#
-# Keep $ExpectedCaseCount in step with the cases below; a mismatch either way
-# fails the run. Skipping is deny-by-default, same as $OdinPackagesWithoutTests
-# in common.ps1: a case may end in a skip only if it is named here.
+# DECLARED, never counted from the cases that happened to run: a count taken
+# from what ran cannot notice that nothing did. Keep it in step with the cases
+# below -- a mismatch either way fails the run.
 $ExpectedCaseCount = 22
-#
-# One entry, and it earns it: a token holding SeBackupPrivilege walks straight
-# past the deny that case plants, so that machine cannot set the case up. An
-# allowance for a case that cannot skip is an allowance nobody ever checks.
-$CasesAllowedToSkip = @(
-	'an unreadable directory fails discovery rather than shortening it'
-)
 
 # A skip is signalled by throwing THIS OBJECT and nothing else, matched on
 # reference identity of an instance private to this file.
@@ -238,7 +224,13 @@ function Invoke-FixtureScript {
 function Test-Case {
 	param(
 		[Parameter(Mandatory)] [string] $Name,
-		[Parameter(Mandatory)] [scriptblock] $Body
+		[Parameter(Mandatory)] [scriptblock] $Body,
+		# Deny-by-default, the policy $OdinPackagesWithoutTests keeps in
+		# common.ps1: Skip-Case is a FAILURE unless the case carries this. It is
+		# carried by the case rather than by a list of names, because a list
+		# keyed on a case's display string drops its allowance on a rename --
+		# turning renaming a case into a failed run, for no other reason.
+		[switch] $MaySkip
 	)
 
 	Write-Host ''
@@ -249,22 +241,26 @@ function Test-Case {
 		$script:Passes += 1
 	}
 	catch {
-		if ([object]::ReferenceEquals($_.TargetObject, $SkipSignal)) {
-			# A case whose SETUP this machine refused, which is not the same as
-			# the case failing. Reported, never silent, and still checked
-			# against $CasesAllowedToSkip in the summary.
-			Write-Host "    SKIP: $($SkipSignal.Reason)" -ForegroundColor Yellow
-			$script:Skips += [pscustomobject]@{ Name = $Name; Reason = $SkipSignal.Reason }
-		}
-		else {
+		if (-not [object]::ReferenceEquals($_.TargetObject, $SkipSignal)) {
 			Write-Host "    FAIL: $($_.Exception.Message)" -ForegroundColor Red
 			$script:Failures += "$Name -- $($_.Exception.Message)"
+		}
+		elseif (-not $MaySkip) {
+			$why = "skipped, and it does not carry -MaySkip: $($SkipSignal.Reason)"
+			Write-Host "    FAIL: $why" -ForegroundColor Red
+			$script:Failures += "$Name -- $why"
+		}
+		else {
+			# A case whose SETUP this machine refused, which is not the same as
+			# the case failing. Reported, never silent: the summary lists skips
+			# even when everything else passes.
+			Write-Host "    SKIP: $($SkipSignal.Reason)" -ForegroundColor Yellow
+			$script:Skips += [pscustomobject]@{ Name = $Name; Reason = $SkipSignal.Reason }
 		}
 	}
 }
 
-# A case this machine cannot set up. Distinct from a failure, and loud either
-# way -- the summary lists skips even when everything else passes.
+# A case this machine cannot set up, from inside the case's own body.
 function Skip-Case {
 	param([Parameter(Mandatory)] [string] $Reason)
 	$SkipSignal.Reason = $Reason
@@ -395,7 +391,9 @@ Test-Case 'a hidden package is discovered, not skipped' {
 	Assert-Result -Result $result -Fails -Matching 'concealed'
 }
 
-Test-Case 'an unreadable directory fails discovery rather than shortening it' {
+# The one case that may skip: a token holding SeBackupPrivilege walks straight
+# past the deny it plants, so that machine cannot set it up.
+Test-Case 'an unreadable directory fails discovery rather than shortening it' -MaySkip {
 	$repo = New-FixtureRepo 'unreadable-directory'
 	Add-FixturePackage -RepoRoot $repo -Name 'readable' -Test 'passing' | Out-Null
 	$locked = Add-FixturePackage -RepoRoot $repo -Name 'locked' -Test 'failing'
@@ -651,9 +649,6 @@ if ($script:Skips.Count -gt 0) {
 	Write-Host "Cases skipped: $($script:Skips.Count)" -ForegroundColor Yellow
 	foreach ($skip in $script:Skips) {
 		Write-Host "  - $($skip.Name) -- $($skip.Reason)" -ForegroundColor Yellow
-		if ($CasesAllowedToSkip -notcontains $skip.Name) {
-			$script:Failures += "$($skip.Name): skipped, and it is not named in `$CasesAllowedToSkip"
-		}
 	}
 	Write-Host ''
 }
