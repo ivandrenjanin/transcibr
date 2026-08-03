@@ -879,13 +879,23 @@ held_by_the_child :: proc(c: ^Child, path: string) -> bool {
 // The job's counter said 2 in every one of those 22 runs, the passing one
 // included.
 //
-// MEASURED against all three ways of getting stop wrong:
+// MEASURED against the two ways of getting stop wrong that this case catches:
 //
 //   terminate the child and not the tree   -> "stop came back with 2 process(es)
 //                                             the child started still running"
 //   terminate and come straight back       -> "stop came back with the child
 //                                             still running", at once
-//   wait for the child and not the job     -> the same counter, same message
+//
+// AND ONE IT DOES NOT, which this comment claimed for a while and no longer
+// does. Keep the terminate and delete stop's wait on the job object and this
+// case still passes -- 16 runs of 16 alone, 4 of 4 under the suite's six
+// concurrent cases. TerminateJobObject is TerminateProcess applied to every
+// member, so on this machine everything the child started is already gone by
+// the time the child's own process object signals: the counter reads 0 whether
+// stop looked or not. The terminate is what empties the job here, and the wait
+// is what would notice on the run where it did not.
+// stop_is_false_while_something_the_child_started_is_still_running is what pins
+// that, and it has to withhold the terminate to do it.
 //
 // The path goes in as its OWN argument rather than inside a command string, and
 // that is not a style choice. build_command_line quotes an argument that holds a
@@ -954,4 +964,126 @@ a_stopped_child_has_let_go_of_the_file_it_held :: proc(t: ^testing.T) {
 		freed_within_bound(path),
 		"the file the child held was still open when stop came back",
 	)
+}
+
+// The access right that asks a job object what it holds, and NOT the one that
+// ends it: `JOB_OBJECT_QUERY` is 0x0004 and `JOB_OBJECT_TERMINATE` is 0x0008, so
+// a handle duplicated with the first alone is refused the second. The case below
+// is built on exactly that gap.
+@(private)
+JOB_OBJECT_QUERY :: win32.DWORD(0x0004)
+
+// A second handle to the same job object that may ask what it holds and may not
+// end it. nil where Windows would not make one.
+@(private)
+query_only_view :: proc(job: win32.HANDLE) -> win32.HANDLE {
+	assert(job != nil, "there is no job object here to duplicate")
+
+	view: win32.HANDLE
+	me := win32.GetCurrentProcess()
+	if !win32.DuplicateHandle(me, job, me, &view, JOB_OBJECT_QUERY, false, 0) {
+		return nil
+	}
+	assert(view != nil, "DuplicateHandle reported success and handed back nothing")
+	return view
+}
+
+// The bound given to the stop that must answer false, in milliseconds.
+//
+// Short on purpose and not a discrimination of its own: the job object it is
+// asked about holds a process with twenty-five seconds left, so this is only how
+// long the case is willing to watch stop fail to see it empty. The mutant it
+// exists to catch answers before any of it is spent.
+@(private)
+LINGER_BOUND_MS :: u32(500)
+
+// THE CASE THAT PINS THE SECOND WAIT, and the reason it is written this strangely
+// is that the straightforward spelling of it cannot fail.
+//
+// `TerminateJobObject` is `TerminateProcess` applied to every member, so on this
+// machine the members are all gone by the time the child's own process object
+// signals -- and `stop` reduced to terminate-then-wait-for-the-child passes the
+// case next door 16 runs of 16. Everything the child started really has stopped;
+// it is just that nothing measured whether stop CHECKED. The state the second
+// wait exists for is a member that outlives the terminate, and this repository
+// cannot wedge a process in a driver call on demand.
+//
+// So the terminate is withheld instead, which produces that state exactly: the
+// child exits by itself leaving a grandchild running, and stop is handed a view
+// of the job object that may ASK what it holds and may not END it. Everything the
+// procedure does is real -- the same `stop`, a real child, a real job object, the
+// kernel's own counter -- and the one thing standing still is the member that has
+// not gone. `false` is then the only correct answer, and it can only come from
+// the wait: with it deleted stop has nothing left to answer from but the child's
+// process object, which signalled long before.
+//
+// WHAT THIS DOES NOT MEASURE: that a grandchild ever survives a real
+// `TerminateJobObject`. It does not on this machine and may on a loaded one --
+// that is the hazard, not the claim. The claim is the one a reader needs and the
+// one a refactor can delete: after the child has gone, stop asks the job object,
+// and a job object that has not emptied is not a stop.
+//
+// The pair is what pins it from both sides (A3). This says stop answers false
+// while a member is still running; a_stopped_child_has_let_go_of_the_file_it_held
+// says it answers true once nothing is, so neither a deleted wait nor a wait
+// hard-wired to false survives both.
+@(test)
+stop_is_false_while_something_the_child_started_is_still_running :: proc(t: ^testing.T) {
+	group, group_err := job_object_open()
+	defer job_object_close(&group)
+	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+		return
+	}
+
+	name := lonely_signal("outlived", context.allocator)
+	defer delete(name, context.allocator)
+	seconds := fmt.aprintf("%d", LONGER_SECONDS, allocator = context.allocator)
+	defer delete(seconds, context.allocator)
+
+	// `start /b` creates the process and RETURNS, so cmd exits with a grandchild
+	// still running -- and still in the child's own job object, because job
+	// membership is inherited and nothing here breaks away.
+	arguments := [?]string{"/c", "start", "/b", "waitfor", "/t", seconds, name}
+	c, err := start(&group, CMD, arguments[:], context.allocator)
+	defer close(&c)
+	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
+		return
+	}
+
+	if !testing.expect(t, wait(&c, BOUND_MS), "the child did not exit within the bound") {
+		return
+	}
+	// The instrument, before anything is proved by it: with nothing left in the
+	// job object there is nothing for stop to fail to see.
+	if !testing.expect(t, job_holds(c.tree) > 0, "the child left nothing running behind it") {
+		return
+	}
+
+	view := query_only_view(c.tree)
+	if !testing.expect(t, view != nil, "Windows would not duplicate the job object handle") {
+		return
+	}
+	defer win32.CloseHandle(view)
+
+	// Both handles are BORROWED, so this is never closed: they are given back above.
+	probe := Child {
+		handle = c.handle,
+		tree   = view,
+	}
+	testing.expect(
+		t,
+		!stop(&probe, LINGER_BOUND_MS),
+		"stop said it had stopped a child with something it started still running",
+	)
+	// Through the handle that CAN terminate, so it is the kernel's answer and not
+	// the view's. This is what says the case measured the wait rather than a
+	// terminate that quietly did the work.
+	testing.expect(
+		t,
+		job_holds(c.tree) > 0,
+		"the job object emptied anyway, so nothing here was standing still",
+	)
+
+	// The same child through a handle that may end it, which is also the cleanup.
+	testing.expect(t, stop(&c, STOP_BOUND), "the child's tree did not stop within the bound")
 }
