@@ -199,8 +199,22 @@ empty_arguments_round_trip_in_every_position :: proc(t: ^testing.T) {
 // the closing quote counts -- so `C:\path with space\` quoted naively ends in
 // `\"`, which is an escaped quote, and the argument runs on into the next one.
 //
-// This list is the one PR #25 verified its PowerShell quoter against, against a
-// real CommandLineToArgvW dumper.
+// THIS IS NOT THE POWERSHELL QUOTER'S LIST, and the difference is worth stating
+// because the two are easy to assume into one. There are two quoters -- this one
+// and ConvertTo-NativeArgument in scripts/common.ps1 -- and they have separate
+// corpora: the PowerShell side pins seven values in scripts/selftest.ps1, under
+// `every argument survives the trip through a native command line`, against a
+// dumper that prints the argv it received. Nothing keeps the two lists in step,
+// so a case added here to pin a newly-found bug does not protect that side, and
+// a case added there does not protect this one.
+//
+// What IS true, and the reason the last three entries below are here: every one
+// of those seven values is now covered on this side. Three are covered by shape
+// rather than by literal -- `''` by empty_arguments_round_trip_in_every_position,
+// `plain` by plain_arguments_round_trip, `two words` by WHITESPACE_CASES -- and
+// the remaining four appear verbatim in the table below. Covered is all that
+// says; it does NOT make either list the other's source, and adding to one still
+// does nothing for the other.
 @(private)
 BACKSLASH_CASES :: []string {
 	`a"b`,
@@ -223,6 +237,12 @@ BACKSLASH_CASES :: []string {
 	`trailing quote"`,
 	`-of:C:\cache\job "1"\`,
 	`\"\"\"`,
+	// The three shapes the PowerShell corpus pins that nothing here covered: a
+	// quoted run inside a word, a bare word ending in a doubled run, and a flag
+	// whose value carries both a space and a quote.
+	`a"quoted"b`,
+	`trailing\\`,
+	`-define:NAME=a b"c`,
 }
 
 @(test)
