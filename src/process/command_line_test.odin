@@ -754,6 +754,45 @@ the_ceiling_is_counted_in_utf16_code_units :: proc(t: ^testing.T) {
 	}
 }
 
+// The other direction of the same rule, and the DANGEROUS one.
+//
+// The case above pins the SAFE mistake: count bytes, and a line that fits is
+// refused -- loudly, with a Build_Error naming the fault, and nothing is lost.
+// This pins the mistake MAX_COMMAND_LINE_UNITS actually warns about, which
+// nothing held: "counting runes accepts ones that do not [fit], and Windows
+// truncates rather than complaining". Every other ceiling case in this file is
+// pure ASCII, where runes, bytes and units are the same number and a rune count
+// cannot be told apart from a unit count.
+//
+// MEASURED on a builder counting one unit per rune: a 20,000-emoji argument
+// builds a 40,027-unit line, `build_command_line` accepts it, CreateProcessW
+// truncates it at 32,767, and the child receives argc 2 where 4 went in --
+// `--output` and the file after it silently gone. No error anywhere, which is
+// the whole point: the safe direction fails a job, this one runs the wrong one.
+@(test)
+a_line_that_only_fits_when_runes_are_counted_is_refused :: proc(t: ^testing.T) {
+	// Past the BMP: one rune, four UTF-8 bytes, TWO UTF-16 code units. 17,000 of
+	// them is 34,000 units and over the ceiling, while the rune count is half of
+	// that and comfortably under it.
+	runes := 17_000
+	body := strings.repeat("\U0001F600", runes, context.allocator)
+	defer delete(body, context.allocator)
+
+	line, err := build_command_line(EXE, {body}, context.allocator)
+	defer delete(line, context.allocator)
+	testing.expect_value(t, err.fault, Build_Fault.Too_Long)
+	testing.expect_value(t, len(line), 0)
+
+	// Load-bearing only while the RUNE count stays under the ceiling: a body long
+	// enough to be refused on runes as well would pass here for the wrong reason
+	// and stop killing the mutant it exists for.
+	testing.expect(
+		t,
+		runes < MAX_COMMAND_LINE_UNITS,
+		"the case no longer fits under the ceiling counted in RUNES",
+	)
+}
+
 // The largest line that still fits, and the smallest that does not -- the two
 // sides of the boundary, so an off-by-one in either direction is caught (A3).
 @(test)
