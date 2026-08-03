@@ -416,11 +416,13 @@ SILENT_OUTPUTS := []string {
 	// Bytes a text editor renders as nothing at all. Well-formed JSON, a Cue
 	// that is not empty, and still nobody said anything.
 	//
-	// Written as JSON's own escapes and never as the raw bytes. RFC 8259 forbids
-	// an unescaped U+0000-U+001F inside a string, so the raw form made this row's
-	// own claim to be well-formed JSON false -- and it was invisible in an editor
-	// and in every diff, which is the harder half: a byte nobody can see is not
-	// something a reviewer can check, and this table is evidence.
+	// The same two bytes as SILENCE_AS_BYTES, which every other suite in this
+	// package spells through that constant. This row cannot: written as JSON's own
+	// escapes and never as the raw bytes, because RFC 8259 forbids an unescaped
+	// U+0000-U+001F inside a string, so the raw form made this row's own claim to
+	// be well-formed JSON false -- and it was invisible in an editor and in every
+	// diff, which is the harder half: a byte nobody can see is not something a
+	// reviewer can check, and this table is evidence.
 	`{"transcription": [{"offsets": {"from": 0, "to": 30000}, "text": " \u0001\u007f "}]}`,
 }
 

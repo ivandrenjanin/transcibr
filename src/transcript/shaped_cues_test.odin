@@ -1,6 +1,30 @@
+// Fixtures more than one suite in this package needs, so that a shape or a
+// spelling cannot be maintained in two places and drift.
 package transcript
 
 import "core:mem"
+
+// The Engine's silence written as BYTES rather than as spaces: a space, a control
+// character, DEL, a space.
+//
+// ONE SPELLING, and it had three. A literal in the repetition suite, the same
+// bytes again inside a procedure in the render suite where they carried no name
+// to search for, and the JSON escapes in the golden suite -- three copies of the
+// exact edge says_nothing draws, any one of which could be moved to a byte the
+// predicate answers differently about while the other two went on claiming to
+// cover it.
+//
+// A Cue holding this is not a Saying. CONTEXT.md says the Engine's empty and
+// space-only Cues over silence are not Sayings, and a Cue a text editor renders
+// as nothing at all is that same statement written in bytes.
+//
+// The golden suite keeps a spelling of its own and has to: its fixtures are JSON,
+// RFC 8259 forbids an unescaped U+0000-U+001F inside a string, and the raw bytes
+// there made that row's own claim to be well-formed JSON false. It writes
+// `\u0001` and `\u007f` in JSON's own escapes, and names this constant
+// beside them.
+@(private)
+SILENCE_AS_BYTES :: " \x01\x7f "
 
 // One Cue described the way a Recording is heard rather than the way the Engine
 // writes it down: how much silence sits in front of it, how long it runs, and

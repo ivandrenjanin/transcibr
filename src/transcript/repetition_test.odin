@@ -423,7 +423,7 @@ a_cue_of_bytes_nobody_said_carries_a_repetition_run_on :: proc(t: ^testing.T) {
 	shape := make([dynamic]Shaped_Cue, context.allocator)
 	defer delete(shape)
 	say_repeatedly(&shape, " you", 8, 16_900, 0)
-	append(&shape, Shaped_Cue{duration_ms = 9_000, text = " \x01\x7f "})
+	append(&shape, Shaped_Cue{duration_ms = 9_000, text = SILENCE_AS_BYTES})
 	say_repeatedly(&shape, " you", 8, 16_900, 0)
 
 	cues := shaped_cues(shape[:], context.allocator)

@@ -566,7 +566,7 @@ speech_that_opens_with_a_flattened_byte_still_cannot_open_a_block :: proc(t: ^te
 // Paragraph whose whole prose flattens to whitespace.
 @(test)
 a_cue_holding_nothing_a_reader_could_see_is_not_a_saying :: proc(t: ^testing.T) {
-	silent := []string{"", " ", "   ", "\x01", " \x01\x7f ", "\r\n\t\v"}
+	silent := []string{"", " ", "   ", "\x01", SILENCE_AS_BYTES, "\r\n\t\v"}
 	for text, i in silent {
 		testing.expectf(
 			t,
