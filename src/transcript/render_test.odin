@@ -168,14 +168,25 @@ the_document_ends_with_exactly_one_newline :: proc(t: ^testing.T) {
 // can never open a line with `##`, because escaping puts a backslash in front of
 // a `#` that lands there.
 @(private)
-anchors_in :: proc(markdown: string) -> int {
+anchors_in :: proc(markdown: string) -> (found: int) {
+	assert(len(markdown) > 0, "an empty document is not a transcript to count anchors in")
+	// Both ends of what a count can be (CLAUDE.md A3), so a case reading zero is
+	// reading an answer rather than a helper that quietly gave up.
+	defer assert(found >= 0, "counted a negative number of anchors")
+
 	return strings.count(markdown, "\n## ")
 }
 
 // The first Anchor's time, without its heading or its newline, or "" where the
 // document carries no Anchor at all.
 @(private)
-first_anchor_of :: proc(markdown: string) -> string {
+first_anchor_of :: proc(markdown: string) -> (reads: string) {
+	assert(len(markdown) > 0, "an empty document is not a transcript to read an anchor out of")
+	// An Anchor is `hh:mm:ss` and never a line: read past the newline it ends at
+	// and every case comparing against a time would be comparing against the
+	// prose beneath it as well (CLAUDE.md A6).
+	defer assert(strings.index_byte(reads, '\n') == -1, "read more than one line as an anchor")
+
 	opening := "\n## "
 	at := strings.index(markdown, opening)
 	if at < 0 {
@@ -385,15 +396,18 @@ body_of :: proc(markdown: string) -> string {
 // One piece of speech through the renderer, against the bytes the body must
 // hold.
 //
-// Four tables below asked exactly this question and each spelled the same six
-// lines to ask it -- render, defer the delete, concatenate the trailing newline,
-// defer that delete, compare, report. What differed between them was the table,
-// which is the only thing that should.
+// Every case below asks exactly this question, and each of them spelled the same
+// six lines to ask it -- render, defer the delete, concatenate the trailing
+// newline, defer that delete, compare, report. What differs between them is the
+// speech, which is the only thing that should.
 //
 // #caller_location, so a failure names the case that failed rather than naming
 // this.
 @(private)
 expect_body :: proc(t: ^testing.T, said, writes: string, loc := #caller_location) {
+	assert(t != nil, "there is no test here to report a body against")
+	assert(len(said) > 0, "a paragraph with nothing said in it is not speech to render")
+
 	paragraphs := []Paragraph{{0, 1_000, said}}
 	out := render_markdown(paragraphs, SAMPLE_CONTEXT, ANCHOR_INTERVAL_MS, context.allocator)
 	defer delete(out, context.allocator)
@@ -577,15 +591,10 @@ a_cue_holding_nothing_a_reader_could_see_is_not_a_saying :: proc(t: ^testing.T) 
 // three dashes among them.
 @(test)
 a_line_break_inside_speech_never_reaches_the_document :: proc(t: ^testing.T) {
-	said := "Speech that carries\n--- a break\rand a return\tand a tab."
-	paragraphs := []Paragraph{{0, 1_000, said}}
-	out := render_markdown(paragraphs, SAMPLE_CONTEXT, ANCHOR_INTERVAL_MS, context.allocator)
-	defer delete(out, context.allocator)
-
-	testing.expect_value(
+	expect_body(
 		t,
-		body_of(out),
-		"Speech that carries --- a break and a return and a tab.\n",
+		"Speech that carries\n--- a break\rand a return\tand a tab.",
+		"Speech that carries --- a break and a return and a tab.",
 	)
 }
 

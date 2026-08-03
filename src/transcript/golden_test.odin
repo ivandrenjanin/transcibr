@@ -287,8 +287,15 @@ SCHEMA_CHANGES := []Schema_Change {
 @(test)
 an_engine_schema_change_is_refused_rather_than_rendered_empty :: proc(t: ^testing.T) {
 	for c in SCHEMA_CHANGES {
-		changed, _ := strings.replace_all(ENGINE_JSON, c.from, c.to, context.allocator)
-		defer delete(changed, context.allocator)
+		// The allocated flag is READ, not discarded. replace_all hands the input
+		// straight back when nothing matched, and freeing that frees the embedded
+		// fixture itself -- golden_reading below documents the identical hazard and
+		// handles it, and the row that reaches it here is exactly the one the check
+		// beneath this reports.
+		changed, allocated := strings.replace_all(ENGINE_JSON, c.from, c.to, context.allocator)
+		defer if allocated {
+			delete(changed, context.allocator)
+		}
 
 		// The mutation itself, checked before what it produces: a `from` that
 		// matched nothing would leave every row below testing the untouched

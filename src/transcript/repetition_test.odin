@@ -405,6 +405,46 @@ an_invention_with_silence_written_through_it_still_collapses :: proc(t: ^testing
 	testing.expect_value(t, sayings, PINNED_COLLAPSE.max_run)
 }
 
+// The Engine's silence written as BYTES rather than as spaces, which is the edge
+// says_nothing moved and the one this file had no fixture for.
+//
+// A Cue of control characters is not a Saying: CONTEXT.md says the Engine's empty
+// and space-only Cues over silence are not Sayings, and a Cue a text editor
+// renders as nothing at all is that same statement in bytes. So it carries a run
+// ON, exactly as an empty Cue does and for the same reason.
+//
+// Counted as a Saying it was a DIFFERENT phrase standing between the eighth and
+// the ninth "you", and it split ADR-0001's measured invention into two runs of
+// eight. Neither reaches invention_at, so neither collapses, and sixteen
+// paragraphs reading "you" reach the reader -- over one stray byte the Engine
+// chose to write. Seventeen Cues came back where three do now.
+@(test)
+a_cue_of_bytes_nobody_said_carries_a_repetition_run_on :: proc(t: ^testing.T) {
+	shape := make([dynamic]Shaped_Cue, context.allocator)
+	defer delete(shape)
+	say_repeatedly(&shape, " you", 8, 16_900, 0)
+	append(&shape, Shaped_Cue{duration_ms = 9_000, text = " \x01\x7f "})
+	say_repeatedly(&shape, " you", 8, 16_900, 0)
+
+	cues := shaped_cues(shape[:], context.allocator)
+	defer delete(cues, context.allocator)
+	testing.expect_value(t, len(cues), 17)
+
+	kept := collapse_repetition(cues, PINNED_COLLAPSE, context.allocator)
+	defer destroy_cues(kept, context.allocator)
+
+	// THREE, spelled out, and the same three the unbroken run collapses to: the
+	// byte between the two halves changed nothing about what was said.
+	testing.expect_value(t, len(kept), 3)
+	sayings := 0
+	for cue in kept {
+		if len(spoken_text(cue)) > 0 {
+			sayings += 1
+		}
+	}
+	testing.expect_value(t, sayings, PINNED_COLLAPSE.max_run)
+}
+
 // The negative space of that (CLAUDE.md A3). Silence is identical to silence, so
 // a run walk that counted CUES rather than sayings makes eight minutes of the
 // Engine's own silence Cues an invention and deletes all but three of them --
