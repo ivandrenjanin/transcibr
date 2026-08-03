@@ -382,6 +382,30 @@ body_of :: proc(markdown: string) -> string {
 	return rest[2:]
 }
 
+// One piece of speech through the renderer, against the bytes the body must
+// hold.
+//
+// Four tables below asked exactly this question and each spelled the same six
+// lines to ask it -- render, defer the delete, concatenate the trailing newline,
+// defer that delete, compare, report. What differed between them was the table,
+// which is the only thing that should.
+//
+// #caller_location, so a failure names the case that failed rather than naming
+// this.
+@(private)
+expect_body :: proc(t: ^testing.T, said, writes: string, loc := #caller_location) {
+	paragraphs := []Paragraph{{0, 1_000, said}}
+	out := render_markdown(paragraphs, SAMPLE_CONTEXT, ANCHOR_INTERVAL_MS, context.allocator)
+	defer delete(out, context.allocator)
+
+	// The trailing newline is the document's and not the speech's: a Paragraph is
+	// one line, and the line has to end.
+	want := strings.concatenate({writes, "\n"}, context.allocator)
+	defer delete(want, context.allocator)
+
+	testing.expectf(t, body_of(out) == want, "%q came out as %q", said, body_of(out), loc = loc)
+}
+
 // Speech carrying nothing Markdown reads as structure. Every one of these must
 // arrive byte for byte.
 @(private, rodata)
@@ -403,13 +427,7 @@ ORDINARY_PROSE := []string {
 @(test)
 ordinary_prose_reaches_the_reader_exactly_as_it_was_said :: proc(t: ^testing.T) {
 	for said in ORDINARY_PROSE {
-		paragraphs := []Paragraph{{0, 1_000, said}}
-		out := render_markdown(paragraphs, SAMPLE_CONTEXT, ANCHOR_INTERVAL_MS, context.allocator)
-		defer delete(out, context.allocator)
-
-		want := strings.concatenate({said, "\n"}, context.allocator)
-		defer delete(want, context.allocator)
-		testing.expectf(t, body_of(out) == want, "%q was mangled into %q", said, body_of(out))
+		expect_body(t, said, said)
 	}
 }
 
@@ -444,13 +462,7 @@ INLINE_ESCAPE_CASES := []Escape_Case {
 @(test)
 what_markdown_reads_as_structure_is_escaped_wherever_it_falls :: proc(t: ^testing.T) {
 	for c in INLINE_ESCAPE_CASES {
-		paragraphs := []Paragraph{{0, 1_000, c.said}}
-		out := render_markdown(paragraphs, SAMPLE_CONTEXT, ANCHOR_INTERVAL_MS, context.allocator)
-		defer delete(out, context.allocator)
-
-		want := strings.concatenate({c.writes, "\n"}, context.allocator)
-		defer delete(want, context.allocator)
-		testing.expectf(t, body_of(out) == want, "%q came out as %q", c.said, body_of(out))
+		expect_body(t, c.said, c.writes)
 	}
 }
 
@@ -478,13 +490,7 @@ BLOCK_START_CASES := []Escape_Case {
 @(test)
 speech_that_opens_a_paragraph_like_a_block_is_escaped :: proc(t: ^testing.T) {
 	for c in BLOCK_START_CASES {
-		paragraphs := []Paragraph{{0, 1_000, c.said}}
-		out := render_markdown(paragraphs, SAMPLE_CONTEXT, ANCHOR_INTERVAL_MS, context.allocator)
-		defer delete(out, context.allocator)
-
-		want := strings.concatenate({c.writes, "\n"}, context.allocator)
-		defer delete(want, context.allocator)
-		testing.expectf(t, body_of(out) == want, "%q came out as %q", c.said, body_of(out))
+		expect_body(t, c.said, c.writes)
 	}
 }
 
@@ -500,13 +506,7 @@ BLOCK_STARTERS_MID_LINE := []string {
 @(test)
 a_block_character_away_from_the_start_of_a_line_is_left_alone :: proc(t: ^testing.T) {
 	for said in BLOCK_STARTERS_MID_LINE {
-		paragraphs := []Paragraph{{0, 1_000, said}}
-		out := render_markdown(paragraphs, SAMPLE_CONTEXT, ANCHOR_INTERVAL_MS, context.allocator)
-		defer delete(out, context.allocator)
-
-		want := strings.concatenate({said, "\n"}, context.allocator)
-		defer delete(want, context.allocator)
-		testing.expectf(t, body_of(out) == want, "%q was mangled into %q", said, body_of(out))
+		expect_body(t, said, said)
 	}
 }
 
@@ -542,13 +542,7 @@ FLATTENED_START_CASES := []Escape_Case {
 @(test)
 speech_that_opens_with_a_flattened_byte_still_cannot_open_a_block :: proc(t: ^testing.T) {
 	for c in FLATTENED_START_CASES {
-		paragraphs := []Paragraph{{0, 1_000, c.said}}
-		out := render_markdown(paragraphs, SAMPLE_CONTEXT, ANCHOR_INTERVAL_MS, context.allocator)
-		defer delete(out, context.allocator)
-
-		want := strings.concatenate({c.writes, "\n"}, context.allocator)
-		defer delete(want, context.allocator)
-		testing.expectf(t, body_of(out) == want, "%q came out as %q", c.said, body_of(out))
+		expect_body(t, c.said, c.writes)
 	}
 }
 
