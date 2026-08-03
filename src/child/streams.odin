@@ -80,7 +80,16 @@ open_streams :: proc() -> (s: Streams, err: Error) {
 	// The reader's end is this process's alone. A child holding a copy of it is a
 	// second thing keeping the pipe alive, and a caller waiting for end of stream
 	// would wait on a pipe the child itself is propping open.
-	win32.SetHandleInformation(s.read, win32.HANDLE_FLAG_INHERIT, 0)
+	//
+	// ASSERTED and not reported, which is the boundary rule read the right way
+	// round (A8). Nothing outside this program is involved: the handle is one
+	// CreatePipe produced two lines above and reported success for, and the only
+	// way this call refuses it is that it is not a handle. A handle table this
+	// package cannot reason about is corrupt internal state, and every guarantee
+	// here rests on handle identity -- so the crash belongs at the point of
+	// corruption rather than in whatever later reads the wrong pipe.
+	private := win32.SetHandleInformation(s.read, win32.HANDLE_FLAG_INHERIT, 0)
+	assert(bool(private), "a pipe end this package created would not be made private")
 	return s, Error{}
 }
 

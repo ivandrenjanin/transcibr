@@ -230,16 +230,18 @@ job_object_close :: proc(group: ^Job_Object) {
 	group.handle = nil
 }
 
-// A process identifier, which is NOT an integer and must not pass for one (T2).
-//
-// Worth the distinct type for a reason beyond tidiness: a pid is stale the moment
-// the process exits and Windows recycles it, so it is safe to print and never
-// safe to act on. Everything this package does to a child goes through the
-// handle, which names that one process for as long as it is held.
-Child_ID :: distinct u32
-
 // One started child. The caller owns every handle in it and gives them all back
 // with close.
+//
+// THERE IS NO PROCESS IDENTIFIER HERE, and the omission is the decision rather
+// than an oversight. A pid is stale the moment the process exits and Windows
+// recycles it, so a stored one is a number that silently starts naming somebody
+// else's application -- and a late terminate against it is CLAUDE.md's own
+// warning, arriving as a killed browser. Everything this package does to a child
+// goes through a HANDLE, which names that one process for exactly as long as it
+// is held and refuses to name anything after. One was carried here for a while,
+// written and zeroed and never read; a reader who wants one back should add a
+// caller that needs it in the same change, and should read this first.
 Child :: struct {
 	handle:      win32.HANDLE,
 	thread:      win32.HANDLE,
@@ -257,7 +259,6 @@ Child :: struct {
 	// keeps: the write end is the child's and is closed here the moment the child
 	// has its copy, which is what lets this one report end of stream.
 	diagnostics: win32.HANDLE,
-	id:          Child_ID,
 	// Remembered rather than re-derived, because end of stream is reported ONCE by
 	// the pipe and a caller that asks again after draining would otherwise get a
 	// fresh failure instead of the answer it already had.
@@ -278,6 +279,24 @@ Child :: struct {
 @(private)
 CREATION_FLAGS ::
 	win32.CREATE_NO_WINDOW | win32.CREATE_SUSPENDED | win32.EXTENDED_STARTUPINFO_PRESENT
+
+// The flag this package exists for, held by the COMPILER.
+//
+// It restates the line above and that is the entire point of it. Every automated
+// proxy for "no console window appears" was measured against the mutation that
+// deletes CREATE_NO_WINDOW and stayed green -- see the head of child_test.odin,
+// which withdrew a case for exactly that -- so with this gone the one criterion
+// this package was written to meet has nothing but a hand-run harness behind it.
+// This does fail on that edit, and it fails before a test runs -- MEASURED: with
+// CREATE_NO_WINDOW deleted, `scripts\test.ps1` reports `Compile time assertion`
+// against this line and collects zero tests. It fires wherever this package is
+// COMPILED, which today is the sweep and not scripts\build.ps1, because the only
+// target built so far does not import it yet (issue #15).
+//
+// What it does NOT claim: that no window appears. That is a property of a
+// windowed binary and is checked by hand. This claims only that the flag is
+// still in the word, which is the part a refactor can quietly drop.
+#assert(CREATION_FLAGS & win32.CREATE_NO_WINDOW != 0)
 
 // Starts one child, hidden, inside the caller's job object.
 //
@@ -383,12 +402,7 @@ start_into :: proc(
 		win32.CloseHandle(tree)
 		return {}, refused
 	}
-	return Child {
-		handle = pi.hProcess,
-		thread = pi.hThread,
-		tree = tree,
-		id = Child_ID(pi.dwProcessId),
-	}, Error{}
+	return Child{handle = pi.hProcess, thread = pi.hThread, tree = tree}, Error{}
 }
 
 // The `CreateProcessW` call itself, suspended and with no window of any kind.
@@ -684,6 +698,5 @@ close :: proc(c: ^Child) {
 		win32.CloseHandle(c.tree)
 		c.tree = nil
 	}
-	c.id = 0
 	c.at_end = false
 }

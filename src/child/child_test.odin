@@ -562,13 +562,20 @@ a_child_inherits_nothing_but_the_streams_it_was_given :: proc(t: ^testing.T) {
 	defer delete(alive, context.allocator)
 	c, err := start(&group, CMD, {"/c", alive}, context.allocator)
 	defer close(&c)
-	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
-		return
-	}
 
 	// This process gives up its own copy of the stand-in write end. Nothing else
 	// should hold one, so the read end is at end of stream immediately.
+	//
+	// Before the refusal below and not after, which is not tidiness: this is the
+	// one handle pair in the suite with no `defer` behind it -- close_child_side
+	// asserts on streams it has already given back, so it cannot be deferred AND
+	// called here -- and a start that refused used to return past it, leaking the
+	// write end and the null device. The spawn is over either way, so the claim
+	// this case makes is unaffected by giving them back a line earlier.
 	close_child_side(&other)
+	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
+		return
+	}
 
 	said := strings.builder_make(context.allocator)
 	defer strings.builder_destroy(&said)
