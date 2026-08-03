@@ -212,3 +212,58 @@ accepts_a_cue_set_that_starts_at_offset_zero :: proc(t: ^testing.T) {
 	testing.expect_value(t, cues[0].start, Millis(0))
 	testing.expect_value(t, cues[0].end, Millis(3_480))
 }
+
+// ---------------------------------------------------------------------------
+// Ordering: rejected on the way IN, asserted on the way OUT.
+//
+// The Engine is outside this program, so output that goes backwards is an
+// operating error naming the Cue that does it (CLAUDE.md A8). What parse_cues
+// then ASSERTS is its own promise about what it hands back, which is a different
+// claim reached by a different route (A4).
+// ---------------------------------------------------------------------------
+
+@(test)
+real_engine_output_is_ordered_on_the_way_out :: proc(t: ^testing.T) {
+	cues, err := parse_cues("engine-output.json", ENGINE_JSON, FIXTURE_DURATION, context.allocator)
+	defer destroy_cues(cues, context.allocator)
+
+	testing.expect_value(t, err.fault, Parse_Fault.None)
+	testing.expect(t, cues_are_ordered(cues), "the parser promises an ordered set and did not deliver one")
+	testing.expect_value(t, first_disordered_cue(cues), 0)
+}
+
+@(test)
+rejects_cues_that_go_backwards :: proc(t: ^testing.T) {
+	text := `{"transcription": [
+		{"offsets": {"from": 4000, "to": 8000}, "text": " second"},
+		{"offsets": {"from": 1000, "to": 3000}, "text": " first"}
+	]}`
+	cues, err := parse_cues("backwards.json", text, FIXTURE_DURATION, context.allocator)
+	defer destroy_cues(cues, context.allocator)
+
+	testing.expect(t, len(cues) == 0, "handed back a cue set that goes backwards")
+	testing.expect_value(t, err.fault, Parse_Fault.Cues_Out_Of_Order)
+	testing.expect_value(t, err.cue, 2)
+}
+
+@(test)
+rejects_a_cue_that_ends_before_it_starts :: proc(t: ^testing.T) {
+	text := `{"transcription": [{"offsets": {"from": 8000, "to": 4000}, "text": " backwards"}]}`
+	cues, err := parse_cues("inverted.json", text, FIXTURE_DURATION, context.allocator)
+	defer destroy_cues(cues, context.allocator)
+
+	testing.expect(t, len(cues) == 0, "handed back a cue that ends before it starts")
+	testing.expect_value(t, err.fault, Parse_Fault.Cue_Ends_Before_It_Starts)
+	testing.expect_value(t, err.cue, 1)
+}
+
+@(test)
+rejects_an_offset_before_the_start_of_the_recording :: proc(t: ^testing.T) {
+	text := `{"transcription": [{"offsets": {"from": -500, "to": 4000}, "text": " early"}]}`
+	cues, err := parse_cues("negative.json", text, FIXTURE_DURATION, context.allocator)
+	defer destroy_cues(cues, context.allocator)
+
+	testing.expect(t, len(cues) == 0, "handed back a cue starting before the recording")
+	testing.expect_value(t, err.fault, Parse_Fault.Negative_Offset)
+	testing.expect_value(t, err.cue, 1)
+}
