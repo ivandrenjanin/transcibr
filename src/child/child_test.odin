@@ -1,0 +1,1089 @@
+package child
+
+import "core:fmt"
+import "core:os"
+import "core:strings"
+import win32 "core:sys/windows"
+import "core:testing"
+import "core:time"
+import "transcibr:process"
+
+// The one Win32 entry point this suite asks its questions through, declared
+// HERE and not beside the ones the package itself calls.
+//
+// The argument is command_line_test.odin's, measured on that side and carried
+// over: a `_test.odin` file is type-checked in an ordinary build but nothing in
+// it is linked into one, so a probe declared here costs the shipped image
+// nothing. Declared beside the spawner's own bindings they would read as
+// something the spawner uses, and nothing anywhere would say otherwise.
+//
+// A second `foreign import` of the same library under a second name, because one
+// name cannot be bound twice in one package. It is the same Kernel32.
+foreign import kernel32_probe "system:Kernel32.lib"
+
+@(default_calling_convention = "system")
+foreign kernel32_probe {
+	IsProcessInJob :: proc(ProcessHandle: win32.HANDLE, JobHandle: win32.HANDLE, Result: ^win32.BOOL) -> win32.BOOL ---
+}
+
+// NO CASE HERE COVERS THE CONSOLE-WINDOW CRITERION, and that is a finding rather
+// than an omission -- the pull request records the hand verification instead.
+//
+// The criterion is "no console window appears, from a windowed binary", and a
+// windowed binary is what does not exist yet (issue #15). The proxy that looks
+// obvious is `GetConsoleProcessList`: start a child, ask whether it joined this
+// process's console, and require that it did not. MEASURED against a spike
+// spawning the same child five ways, that proxy answers a different question.
+//
+//   no flags, no std handles     on this console: TRUE
+//   STARTF_USESTDHANDLES alone   on this console: false
+//   handle list                  on this console: false
+//   CREATE_NO_WINDOW alone       on this console: false
+//   CREATE_NO_WINDOW + list      on this console: false
+//
+// Redirecting the standard handles is what takes a child off that list, so the
+// proxy stays green with CREATE_NO_WINDOW deleted -- measured that way too, on
+// this suite, before the case was withdrawn. A case that cannot fail on the edit
+// it exists to catch is a comment with a runtime cost, and this repository has
+// already learned that once, in utf16_units next door.
+//
+// What replaced it is a windowed harness run by hand against a control, and it is
+// the criterion rather than a proxy for it: a GUI-subsystem binary started with
+// no console of its own starts two children, once through this package and once
+// through core:os.process_start. Through core:os a visible window appears; through
+// this package none does. The pull request records the runs.
+//
+// Every child this suite starts is BOUNDED, and that is a rule rather than a
+// habit: `odin test` runs what it builds, and a test that starts a child which
+// never exits wedges the sweep behind scripts\common.ps1's ten-minute ceiling
+// with nothing naming the case that did it (issue #27). Every bound below is
+// load-bearing.
+//
+// A long-lived child is one told to wait for a signal nobody sends, so it ends by
+// itself after its own timeout even if this suite never gets to it -- see
+// stays_alive for why every one of them waits on a DIFFERENT signal.
+@(private)
+ALIVE_SECONDS :: 5
+
+// The one case that has to still be running long after a bound has run out; see
+// KILL_BOUND_MS.
+@(private)
+LONGER_SECONDS :: 25
+
+// The ceiling on waiting for any child to exit. Generous against a cold or
+// loaded machine and still far under the sweep's own budget: what it bounds is a
+// HANG, not slowness. A child that has to be killed to meet it FAILS a case
+// rather than wedging one, which is the whole point of asking for a bound
+// instead of INFINITE.
+@(private)
+BOUND_MS :: u32(60_000)
+
+// The bound on waiting for a child that a closed job object should have ended.
+//
+// MEASURED, and the reason it is not BOUND_MS: the job-object case below first
+// waited sixty seconds for the child to end, and with the kill-on-close limit
+// mutated away it STILL passed -- because the child ends by itself well inside
+// sixty seconds, and the case could not tell "the job object ended it" from "it
+// finished". A wait bound has to be far shorter than the child's own life or it
+// measures the child's patience instead of the mechanism. Closing a job object
+// ends its members in microseconds, so five seconds is generous by four orders of
+// magnitude and still twenty short of the child.
+@(private)
+KILL_BOUND_MS :: u32(5_000)
+
+// The ceiling on waiting for a child to SAY something, which is a shorter wait
+// than waiting for one to finish and is bounded separately for that reason.
+@(private)
+SAY_BOUND :: 20 * time.Second
+
+// Found on PATH rather than spelled absolutely, which is what a bare name asks
+// CreateProcessW to do -- and safely, because argv[0] is always quoted (see
+// start). %SystemRoot%\System32 is on the PATH of every Windows session.
+@(private)
+CMD :: "cmd.exe"
+
+// Everything the child has said that has arrived so far, appended, and whether
+// the pipe has reached end of stream.
+//
+// Never blocks and never spins on a child that is quiet: `read_diagnostics`
+// answers what is there NOW, which is the property the case about reading a
+// running child is measuring.
+@(private)
+drain :: proc(t: ^testing.T, c: ^Child, into: ^strings.Builder) -> (at_end: bool) {
+	buffer: [4096]u8
+	for {
+		n, done, err := read_diagnostics(c, buffer[:])
+		if !testing.expectf(t, err.fault == .None, "reading diagnostics: %v", err.fault) {
+			return true
+		}
+		strings.write_bytes(into, buffer[:n])
+		if done {
+			return true
+		}
+		if n == 0 {
+			return false
+		}
+	}
+}
+
+// Reads until the child has said something in particular, or until the bound
+// runs out. False means it never did.
+@(private)
+read_until :: proc(t: ^testing.T, c: ^Child, marker: string, into: ^strings.Builder) -> bool {
+	started := time.tick_now()
+	for time.tick_since(started) < SAY_BOUND {
+		at_end := drain(t, c, into)
+		if strings.contains(strings.to_string(into^), marker) {
+			return true
+		}
+		if at_end {
+			return false
+		}
+		time.sleep(5 * time.Millisecond)
+	}
+	return false
+}
+
+// A path under the user's temp directory, named for this run so two sweeps in
+// one checkout cannot write each other's file. The caller owns it and removes
+// the file.
+@(private)
+scratch_path :: proc(t: ^testing.T, name: string, allocator := context.allocator) -> string {
+	directory := os.get_env("TEMP", allocator)
+	defer delete(directory, allocator)
+	testing.expect(t, len(directory) > 0, "TEMP names nowhere to put a scratch file")
+
+	return fmt.aprintf(
+		"%s\\transcibr-child-%d-%s.txt",
+		directory,
+		win32.GetCurrentProcessId(),
+		name,
+		allocator = allocator,
+	)
+}
+
+// The name of a signal nobody ever sends, unique to this run AND to the case that
+// asks for it.
+//
+// UNIQUE IS NOT TIDINESS. `waitfor` registers its signal name machine-wide, and a
+// second instance asking for a name already registered fails at once with
+// "ERROR: Cannot wait for the specified signal" -- measured directly, and
+// measured the hard way first. Five cases here shared one name, and under the
+// sweep's own concurrency the children that were supposed to outlive a check
+// exited immediately instead, turning a different case red on each run. The
+// process identifier keeps two sweeps in one checkout apart as well, which is a
+// thing scripts\selftest.ps1 does on purpose.
+@(private)
+lonely_signal :: proc(tag: string, allocator := context.allocator) -> string {
+	assert(len(tag) > 0, "a signal name shared by two cases is a signal one of them cannot have")
+
+	return fmt.aprintf(
+		"transcibrNoSignal%d%s",
+		win32.GetCurrentProcessId(),
+		tag,
+		allocator = allocator,
+	)
+}
+
+// A command that keeps a child running and then ends it, whatever this suite does
+// or fails to do: `waitfor /t` returns on its own when nobody signals it, and
+// nothing here ever signals anything.
+@(private)
+stays_alive :: proc(seconds: int, tag: string, allocator := context.allocator) -> string {
+	name := lonely_signal(tag, allocator)
+	defer delete(name, allocator)
+
+	return fmt.aprintf("waitfor /t %d %s", seconds, name, allocator = allocator)
+}
+
+@(test)
+a_child_runs_and_reports_the_code_it_exited_with :: proc(t: ^testing.T) {
+	group, group_err := job_object_open()
+	defer job_object_close(&group)
+	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+		return
+	}
+
+	c, err := start(&group, CMD, {"/c", "exit 7"}, context.allocator)
+	defer close(&c)
+	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
+		return
+	}
+
+	testing.expect(t, wait(&c, BOUND_MS), "the child did not exit within the bound")
+	code, exited := exit_code(&c)
+	testing.expect(t, exited, "a child that was waited for reports that it is still running")
+	testing.expect_value(t, code, u32(7))
+}
+
+// A8: an executable path arrives from outside -- a settings field, a discovered
+// tool -- so one that names nothing is an operating error reported through the
+// return, never an assertion. The message names the fault so a Recording's
+// failure line can carry it.
+@(test)
+an_executable_that_is_not_there_is_refused_rather_than_asserted :: proc(t: ^testing.T) {
+	group, group_err := job_object_open()
+	defer job_object_close(&group)
+	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+		return
+	}
+
+	c, err := start(&group, "transcibr-no-such-executable.exe", {}, context.allocator)
+	defer close(&c)
+	testing.expect_value(t, err.fault, Fault.Not_Started)
+
+	message := error_message(err, context.allocator)
+	defer delete(message, context.allocator)
+	testing.expect(t, len(message) > 0, "a refusal rendered as nothing at all")
+}
+
+// The Process contract's own refusals reach the caller intact rather than being
+// flattened into "could not start": a NUL in an argument names the argument it
+// was in, and that is the only handle anybody has on which setting to go and fix.
+@(test)
+a_command_line_that_cannot_be_spelled_is_refused_before_anything_starts :: proc(t: ^testing.T) {
+	group, group_err := job_object_open()
+	defer job_object_close(&group)
+	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+		return
+	}
+
+	c, err := start(&group, CMD, {"/c", "exit\x000"}, context.allocator)
+	defer close(&c)
+	testing.expect_value(t, err.fault, Fault.Bad_Command_Line)
+	testing.expect_value(t, err.build.argument, 2)
+
+	message := error_message(err, context.allocator)
+	defer delete(message, context.allocator)
+	testing.expect(t, len(message) > 0, "a refusal rendered as nothing at all")
+}
+
+// Every fault renders as a line a Recording's failure row can carry: a sentence
+// of its own, and the Windows code behind it.
+//
+// WALKED over the whole enumeration rather than written case by case, which is
+// the half that rots. The compiler already refuses a Fault added without a row
+// in FAULT -- FAULT is an enumerated array, and `Unhandled enumerated array
+// case` is a build failure. What nothing catches is a row that is PRESENT and
+// EMPTY, and a Recording whose failure line reads " (Windows error 5)" is a
+// failure nobody can act on. This is the guard the transcript package has had
+// since ticket #3 and the Process contract has had since ticket #6.
+//
+// The emptiness is read off the table BEFORE the render, and not left to
+// fault_says's own assertion, because a test that trips an assertion takes the
+// whole runner down with it rather than naming a case (issue #22).
+//
+// Two faults are skipped BY NAME, so neither can be skipped by accident: `.None`
+// is the success value and is not a fault, and `.Bad_Command_Line`'s sentence
+// belongs to the package that refused -- which
+// a_command_line_that_cannot_be_spelled_is_refused_before_anything_starts
+// covers end to end, message included.
+@(test)
+every_fault_renders_a_line_a_failure_row_can_carry :: proc(t: ^testing.T) {
+	for fault in Fault {
+		if fault == .None {
+			continue
+		}
+		if fault == .Bad_Command_Line {
+			continue
+		}
+		if !testing.expectf(t, len(FAULT[fault]) > 0, "%v has an empty row in FAULT", fault) {
+			continue
+		}
+
+		message := error_message(Error{fault = fault, last_error = 5}, context.allocator)
+		defer delete(message, context.allocator)
+		want := fmt.tprintf("%s (Windows error 5)", FAULT[fault])
+		testing.expectf(t, message == want, "%v rendered <%s>, wanted <%s>", fault, message, want)
+	}
+}
+
+// Every fault says whether a different plan would make the same job run, and
+// walked for the same reason: a fault added here answers from the table or from
+// nothing at all.
+//
+// Nothing this package refuses for itself is re-plannable -- a missing
+// executable, a job object that would not open and a resume that failed are one
+// answer, and it is that this Recording fails and the Batch carries on
+// (ADR-0002). `.Bad_Command_Line` is the exception and does not answer at all: it
+// delegates, and the Process contract calls a line that is merely too long
+// re-plannable. Both of its readings are exercised, so a delegation answering
+// from the wrong side would be visible here.
+@(test)
+every_fault_says_whether_a_different_plan_would_help :: proc(t: ^testing.T) {
+	for fault in Fault {
+		if fault == .None {
+			continue
+		}
+		err := Error {
+			fault = fault,
+		}
+		if fault == .Bad_Command_Line {
+			err.build = process.Build_Error {
+				fault = .Too_Long,
+			}
+			testing.expect_value(t, disposition_of(err), process.Disposition.Shorten_And_Replan)
+			err.build = process.Build_Error {
+				fault = .Nul_In_Argument,
+			}
+		}
+		got := disposition_of(err)
+		testing.expectf(t, got == .Fail_The_Job, "%v is %v, want Fail_The_Job", fault, got)
+	}
+}
+
+// The bound a caller gives stop is a BUDGET FOR THE WHOLE OF IT, and this is the
+// arithmetic that makes it one.
+//
+// It was two bounds before, one for the child and one for everything the child
+// started, and each got the whole number -- so a Stop press at the thirty-second
+// default could take a minute to come back, with a window that looks hung for
+// the second half of it (issue #16). What a caller asks for is how long it is
+// prepared to wait, not how long each of two waits it cannot see may take.
+//
+// Taken as two numbers rather than reading a clock inside, which is what makes
+// the interesting values reachable at all: a deadline already gone, one exactly
+// reached, and one so far away that a 64-bit subtraction would hand back
+// INFINITE -- an unbounded wait, which is the Stop press that never comes back
+// (issue #27) and the one answer this may never give.
+@(test)
+what_is_left_of_a_budget_is_never_all_of_it_again :: proc(t: ^testing.T) {
+	testing.expect_value(t, remaining_ms(1_000, 0), u32(1_000))
+	testing.expect_value(t, remaining_ms(1_000, 400), u32(600))
+	testing.expect_value(t, remaining_ms(1_000, 999), u32(1))
+	// Spent exactly, and spent over. Both are none left rather than an
+	// underflowed budget of forty-nine days (A3).
+	testing.expect_value(t, remaining_ms(1_000, 1_000), u32(0))
+	testing.expect_value(t, remaining_ms(1_000, 5_000), u32(0))
+	// The tick count is milliseconds since boot and the bound is a u32, so this
+	// deadline is not one stop can produce -- which is exactly why it is checked
+	// here rather than left to the caller's arithmetic being right forever.
+	far := win32.ULONGLONG(win32.INFINITE) + 10
+	testing.expect(t, remaining_ms(far, 0) != win32.INFINITE, "a budget rendered as INFINITE")
+}
+
+// The Engine writes progress to its diagnostic output for hours before it is
+// finished, and a progress bar that only moved when the run ended would be a
+// progress bar nobody could use (issue #9). So this is the case that says the
+// output arrives WHILE the child runs: the child speaks, waits, and speaks
+// again, and the first line is read back with the child demonstrably still
+// alive.
+@(test)
+diagnostic_output_is_readable_while_the_child_is_still_running :: proc(t: ^testing.T) {
+	group, group_err := job_object_open()
+	defer job_object_close(&group)
+	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+		return
+	}
+
+	alive := stays_alive(ALIVE_SECONDS, "readwhilerunning")
+	defer delete(alive, context.allocator)
+	command := fmt.aprintf(
+		"echo first 1>&2 & %s & echo second 1>&2",
+		alive,
+		allocator = context.allocator,
+	)
+	defer delete(command, context.allocator)
+	c, err := start(&group, CMD, {"/c", command}, context.allocator)
+	defer close(&c)
+	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
+		return
+	}
+
+	said := strings.builder_make(context.allocator)
+	defer strings.builder_destroy(&said)
+	testing.expect(t, read_until(t, &c, "first", &said), "the child's first line never arrived")
+
+	// The whole claim, in one line: the bytes above were read out of a process
+	// that has not finished. Its negative space is checked too (A3) -- the second
+	// line cannot have arrived yet, so a reading that only worked because the
+	// child had already run to completion fails here.
+	_, exited := exit_code(&c)
+	testing.expect(
+		t,
+		!exited,
+		"the child had already exited, so nothing was read from a running one",
+	)
+	testing.expect(
+		t,
+		!strings.contains(strings.to_string(said), "second"),
+		"the child said everything at once",
+	)
+
+	testing.expect(t, wait(&c, BOUND_MS), "the child did not exit within the bound")
+	testing.expect(t, drain(t, &c, &said), "the pipe never reached end of stream")
+	testing.expect(
+		t,
+		strings.contains(strings.to_string(said), "second"),
+		"the child's last line was lost",
+	)
+}
+
+// End of stream is what tells a reader the child has said everything it is going
+// to. It arrives because the PARENT closes its own copy of the write end after
+// the child is created: keep that copy and the pipe stays open forever, however
+// long the child has been gone.
+@(test)
+the_diagnostic_pipe_reaches_end_of_stream_once_the_child_is_gone :: proc(t: ^testing.T) {
+	group, group_err := job_object_open()
+	defer job_object_close(&group)
+	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+		return
+	}
+
+	c, err := start(&group, CMD, {"/c", "echo the whole story 1>&2"}, context.allocator)
+	defer close(&c)
+	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
+		return
+	}
+
+	testing.expect(t, wait(&c, BOUND_MS), "the child did not exit within the bound")
+
+	said := strings.builder_make(context.allocator)
+	defer strings.builder_destroy(&said)
+	testing.expect(
+		t,
+		read_until(t, &c, "the whole story", &said),
+		"the child's line never arrived",
+	)
+	testing.expect(t, drain(t, &c, &said), "the pipe never reached end of stream")
+}
+
+// ADR-0004's measured case: the Engine writes every Cue to standard output during
+// inference -- 14,468 bytes for twenty minutes of audio, against a default pipe
+// buffer of a few kilobytes -- so an undrained stdout pipe wedges the child early
+// in the first Recording, with nothing to show for it.
+//
+// The child here writes a quarter of a megabyte to standard output and then says
+// one word on its diagnostic output. Both halves are the test: reaching the word
+// is what proves the child was never blocked, and it cannot be reached by a child
+// stopped part-way through the first half.
+//
+// MEASURED against the mutant it exists to catch. Point hStdOutput at the
+// diagnostic pipe instead of the null device and this case fails in exactly the
+// way ADR-0004 describes -- the child wedges at the pipe buffer and never
+// finishes, and the case reports "the child never finished writing to standard
+// output" after its full sixty-second bound.
+@(test)
+standard_output_goes_to_the_null_device :: proc(t: ^testing.T) {
+	path := scratch_path(t, "stdout-volume")
+	defer delete(path, context.allocator)
+	bulk := strings.repeat(
+		"transcibr writes a great deal to standard output.\r\n",
+		5000,
+		context.allocator,
+	)
+	defer delete(bulk, context.allocator)
+	if !testing.expect_value(t, os.write_entire_file(path, transmute([]u8)bulk), nil) {
+		return
+	}
+	defer os.remove(path)
+
+	group, group_err := job_object_open()
+	defer job_object_close(&group)
+	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+		return
+	}
+
+	// `&&` and not `&`, and the path as its OWN argument. Both are what make this
+	// case say anything at all.
+	//
+	// `&&` runs the echo only if `type` SUCCEEDED, so the word arriving is proof
+	// the whole file went to standard output rather than proof the child reached
+	// the end of its command line. With a plain `&` the case passed whether the
+	// file was read or not -- which it was not, because the path was inside a
+	// single command string: build_command_line escapes a quote as `\"`, which is
+	// the rule CommandLineToArgvW reads and NOT the rule cmd.exe reads, so cmd was
+	// handed a path with backslashes still on it and `type` failed every time.
+	c, err := start(
+		&group,
+		CMD,
+		{"/c", "type", path, "&&", "echo", "drained", "1>&2"},
+		context.allocator,
+	)
+	defer close(&c)
+	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
+		return
+	}
+
+	testing.expect(t, wait(&c, BOUND_MS), "the child never finished writing to standard output")
+
+	said := strings.builder_make(context.allocator)
+	defer strings.builder_destroy(&said)
+	testing.expect(
+		t,
+		read_until(t, &c, "drained", &said),
+		"the child never got past its standard output",
+	)
+}
+
+// THE CASE THAT CARRIES THE HANDLE-INHERITANCE CRITERION, and it is written this
+// way because the obvious spelling of it cannot fail.
+//
+// `bInheritHandles = TRUE` hands a child EVERY inheritable handle this process
+// holds at that instant, not merely the ones it was given -- so two spawns
+// overlapping by microseconds leave the second child holding the first's pipe,
+// and the first's pipe then never reports end of stream however long ago that
+// child exited. A reader draining until end of stream waits forever, and nothing
+// anywhere says why.
+//
+// Spawning two children and watching is not a test of that: this package closes
+// its copy of a write end the moment the child has one, so a second spawn STARTED
+// AFTERWARDS has nothing left to inherit and passes whatever the flags say. What
+// makes the failure real is the window between CreatePipe and that close, and a
+// case that has to hit a window is a case that passes by luck.
+//
+// So the window is stood still instead. An inheritable pipe is opened HERE and
+// held open across a spawn -- which is exactly the state another spawn is in
+// mid-flight -- and the child must not come away with it.
+@(test)
+a_child_inherits_nothing_but_the_streams_it_was_given :: proc(t: ^testing.T) {
+	group, group_err := job_object_open()
+	defer job_object_close(&group)
+	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+		return
+	}
+
+	// Another spawn's handles, caught mid-flight: inheritable, and in this
+	// process's table at the moment the child below is created.
+	other, other_err := open_streams()
+	if !testing.expectf(t, other_err.fault == .None, "no stand-in pipe: %v", other_err.fault) {
+		return
+	}
+	// A Child that was never started, carrying nothing but the read end -- so
+	// close gives back exactly the one handle this case still owns, and the pipe
+	// is read back through the package's own definition of end of stream.
+	listener := Child {
+		diagnostics = other.read,
+	}
+	defer close(&listener)
+
+	alive := stays_alive(ALIVE_SECONDS, "inheritance")
+	defer delete(alive, context.allocator)
+	c, err := start(&group, CMD, {"/c", alive}, context.allocator)
+	defer close(&c)
+
+	// This process gives up its own copy of the stand-in write end. Nothing else
+	// should hold one, so the read end is at end of stream immediately.
+	//
+	// Before the refusal below and not after, which is not tidiness: this is the
+	// one handle pair in the suite with no `defer` behind it -- close_child_side
+	// asserts on streams it has already given back, so it cannot be deferred AND
+	// called here -- and a start that refused used to return past it, leaking the
+	// write end and the null device. The spawn is over either way, so the claim
+	// this case makes is unaffected by giving them back a line earlier.
+	close_child_side(&other)
+	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
+		return
+	}
+
+	said := strings.builder_make(context.allocator)
+	defer strings.builder_destroy(&said)
+	testing.expect(
+		t,
+		drain(t, &listener, &said),
+		"a running child is holding a pipe it was never given open",
+	)
+	// The negative space (A3): end of stream arrived while the child was still
+	// running, so it is the handle table being right and not the child being gone.
+	_, exited := exit_code(&c)
+	testing.expect(
+		t,
+		!exited,
+		"the child had already exited, so nothing was proved about inheritance",
+	)
+}
+
+// The criterion as a reader states it: two children at once, and the one that
+// finishes reports end of stream on its own pipe while the other is still going.
+//
+// Weaker than the case above and kept for what it does cover -- the parent
+// closing its own copy of each write end, and two children not being confused for
+// one another -- rather than for the inheritance rule itself.
+@(test)
+one_childs_pipe_ends_while_another_child_is_still_running :: proc(t: ^testing.T) {
+	group, group_err := job_object_open()
+	defer job_object_close(&group)
+	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+		return
+	}
+
+	brief, brief_err := start(&group, CMD, {"/c", "echo brief 1>&2"}, context.allocator)
+	defer close(&brief)
+	alive := stays_alive(ALIVE_SECONDS, "twoatonce")
+	defer delete(alive, context.allocator)
+	lasting, lasting_err := start(&group, CMD, {"/c", alive}, context.allocator)
+	defer close(&lasting)
+	if !testing.expectf(t, brief_err.fault == .None, "the brief child: %v", brief_err.fault) {
+		return
+	}
+	if !testing.expectf(
+		t,
+		lasting_err.fault == .None,
+		"the lasting child: %v",
+		lasting_err.fault,
+	) {
+		return
+	}
+
+	testing.expect(t, wait(&brief, BOUND_MS), "the brief child did not exit within the bound")
+
+	said := strings.builder_make(context.allocator)
+	defer strings.builder_destroy(&said)
+	testing.expect(
+		t,
+		read_until(t, &brief, "brief", &said),
+		"the brief child's line never arrived",
+	)
+	testing.expect(
+		t,
+		drain(t, &brief, &said),
+		"the brief child's pipe never reached end of stream",
+	)
+
+	_, exited := exit_code(&lasting)
+	testing.expect(t, !exited, "the lasting child was gone, so nothing ran alongside anything")
+}
+
+// Half of the criterion about killing the parent, and the half that can be
+// automated: the job object really carries the limit that ends its members when
+// its last handle closes, and the child really is in it.
+//
+// The other half -- that a parent killed outright leaves no child behind -- is
+// the same mechanism seen from outside, because process exit is nothing more
+// than the kernel closing the handles a process held. It is verified by hand and
+// recorded in the pull request; no test can meaningfully kill the process it is
+// running in.
+@(test)
+a_child_is_put_in_a_job_object_that_ends_its_members_when_it_closes :: proc(t: ^testing.T) {
+	group, group_err := job_object_open()
+	defer job_object_close(&group)
+	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+		return
+	}
+
+	limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+	returned: win32.DWORD
+	read := QueryInformationJobObject(
+		group.handle,
+		JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+		rawptr(&limits),
+		size_of(limits),
+		&returned,
+	)
+	if !testing.expect(t, bool(read), "the job object would not say what limits it carries") {
+		return
+	}
+	testing.expect(
+		t,
+		limits.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE != 0,
+		"the job object does not end its members when it closes, so it contains nothing",
+	)
+
+	alive := stays_alive(ALIVE_SECONDS, "jobmembership")
+	defer delete(alive, context.allocator)
+	c, err := start(&group, CMD, {"/c", alive}, context.allocator)
+	defer close(&c)
+	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
+		return
+	}
+
+	inside: win32.BOOL
+	asked := IsProcessInJob(c.handle, group.handle, &inside)
+	testing.expect(t, bool(asked), "Windows would not say whether the child is in the job object")
+	testing.expect(t, bool(inside), "the child was started outside the job object it was given")
+}
+
+// The mechanism itself, exercised: a running child ends when the job object
+// holding it is closed, and it ends because of that and not because it had
+// already finished.
+@(test)
+closing_the_job_object_ends_a_child_that_is_still_running :: proc(t: ^testing.T) {
+	group, group_err := job_object_open()
+	// Closed part-way through on purpose. The defer is still here and is still
+	// worth having: it is a no-op on a job object already given back, and it is
+	// what covers every early return above that point.
+	defer job_object_close(&group)
+	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+		return
+	}
+
+	alive := stays_alive(LONGER_SECONDS, "jobclose")
+	defer delete(alive, context.allocator)
+	c, err := start(&group, CMD, {"/c", alive}, context.allocator)
+	defer close(&c)
+	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
+		return
+	}
+
+	// The instrument, before anything is proved by it: a child that had already
+	// exited would make the next three lines pass for the wrong reason.
+	_, early := exit_code(&c)
+	if !testing.expect(t, !early, "the child was already gone before the job object closed") {
+		return
+	}
+
+	job_object_close(&group)
+
+	testing.expect(t, wait(&c, KILL_BOUND_MS), "the child outlived the job object that held it")
+	_, gone := exit_code(&c)
+	testing.expect(t, gone, "the child never exited after its job object closed")
+}
+
+// Whether this process can take the file for itself, which is how "the child has
+// let go of it" is asked without guessing at what the child opened it with.
+//
+// A share mode of zero conflicts with EVERY other open handle whatever sharing
+// that handle allowed, so this answers false while anyone at all holds the file
+// and true the moment nobody does. False also means the file is not there, which
+// is why the case below waits for it to appear first.
+@(private)
+taken_exclusively :: proc(path: string) -> bool {
+	wide := win32.utf8_to_utf16(path, context.allocator)
+	defer delete(wide, context.allocator)
+
+	handle := win32.CreateFileW(
+		win32.wstring(raw_data(wide)),
+		win32.GENERIC_WRITE,
+		0,
+		nil,
+		win32.OPEN_EXISTING,
+		win32.FILE_ATTRIBUTE_NORMAL,
+		nil,
+	)
+	if handle == win32.INVALID_HANDLE_VALUE {
+		return false
+	}
+	win32.CloseHandle(handle)
+	return true
+}
+
+// The bound this case gives stop, and it is the case's whole discrimination.
+//
+// MEASURED. With stop's own thirty-second default, a stop that terminated only
+// the child and not the tree still PASSED -- it waited twenty-five seconds for
+// the process the child had started to finish on its own, and then everything was
+// true. Correct on that child and useless on a real one: the Engine holds its
+// output for hours, so "eventually it finished by itself" is not stopping.
+// Terminating a job object ends its members in microseconds, so three seconds
+// passes the mechanism and fails the impostor.
+@(private)
+STOP_BOUND :: u32(3_000)
+
+// The bound on waiting for a file to come free after its holder is gone.
+//
+// Not slack in the claim being made, and it has to be read against the
+// twenty-five seconds the child would still be holding the file if stop had come
+// back early: three seconds is an eighth of that, so a stop that left the child
+// running still fails. What it absorbs is somebody ELSE opening the file in the
+// instant after the child let go -- real-time virus scanning opens a file when
+// its last handle closes, which is exactly this moment, and that is a race no
+// case here can win by asserting harder. Without it this case failed about one
+// sweep in three.
+@(private)
+FREED_BOUND :: 3 * time.Second
+
+// Whether the file comes free, under that bound.
+@(private)
+freed_within_bound :: proc(path: string) -> bool {
+	started := time.tick_now()
+	for {
+		if taken_exclusively(path) {
+			return true
+		}
+		if time.tick_since(started) >= FREED_BOUND {
+			return false
+		}
+		time.sleep(5 * time.Millisecond)
+	}
+}
+
+// How many processes the child's own job object holds once the child has got as
+// far as the state the case below is about: cmd.exe, its conhost.exe, and the
+// waitfor.exe cmd starts to do the waiting. Read back BY NAME from the job's
+// process-id list, not counted from a diagram.
+//
+// MEASURED, and it is the whole reliability of that case. `cmd /c (waitfor ...)
+// > path` opens the redirect BEFORE it starts waitfor, so the file reads as held
+// while CMD ALONE holds it -- and in that instant there is no grandchild to
+// leave behind, so a stop reduced to ADR-0004's literal rule passes. Probed with
+// a poll tight enough to see it: in 12 runs of 12 the file first read as held
+// with the job holding TWO processes, and the third arrived about 1.2 ms later.
+// Whether a five-millisecond poll lands inside that window is luck, and it was
+// measured as such -- the literal-rule mutant passed 4 of 12 runs.
+//
+// So the count is what is waited for and the file is only the other half. Three
+// means waitfor.exe is up and holding the handle it inherited, which is the
+// state a process-only terminate is supposed to fail on.
+@(private)
+HOLDERS_OF_THE_FILE :: u32(3)
+
+// How many processes a job object is holding right now, or zero where Windows
+// would not say. The same counter `job_emptied` reads, asked for a different
+// number: there, that it has reached zero; here, that it has got as far as three.
+@(private)
+job_holds :: proc(job: win32.HANDLE) -> u32 {
+	accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+	returned: win32.DWORD
+	read := QueryInformationJobObject(
+		job,
+		JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
+		rawptr(&accounting),
+		size_of(accounting),
+		&returned,
+	)
+	if !read {
+		return 0
+	}
+	return u32(accounting.ActiveProcesses)
+}
+
+// Waits until the child has started the process that holds the file, and that
+// file is held, under a bound. A child that never got that far would make the
+// case below pass on a file nobody was holding -- or, worse and measurably,
+// on a file held by a process the mutant it exists to catch does terminate.
+@(private)
+held_by_the_child :: proc(c: ^Child, path: string) -> bool {
+	assert(c != nil, "there is no child here to wait on")
+	assert(c.tree != nil, "a started child always has a job object of its own")
+
+	started := time.tick_now()
+	for time.tick_since(started) < SAY_BOUND {
+		if job_holds(c.tree) >= HOLDERS_OF_THE_FILE {
+			if os.exists(path) && !taken_exclusively(path) {
+				return true
+			}
+		}
+		time.sleep(5 * time.Millisecond)
+	}
+	return false
+}
+
+// Stopping a child is TERMINATE THE TREE then WAIT FOR IT TO EMPTY, and the wait
+// is the whole value: until everything the child started has gone, a file may
+// still be open, and the next thing transcibr does to a stopped child is move,
+// delete or re-run against the artifacts it was writing (ADR-0002).
+//
+// TWO measurements, and they are not redundant. The file is the CONSEQUENCE a
+// caller cares about, and the emptied job object is the CLAIM: an exclusive open
+// conflicts with any handle at all, so the file comes free only when nothing
+// holds it, and the job's own process count says whether anything the child
+// started is still running at all.
+//
+// The file alone is not enough, and that was measured rather than reasoned
+// about. Terminating cmd.exe tears down the console it owned, and the grandchild
+// on that console begins exiting too -- so `waitfor.exe` sometimes lets go of
+// the file within milliseconds and sometimes holds it for longer than any bound
+// this case can afford. Over 22 runs of the ADR-0004-literal mutant the file
+// came free at once in 1: the mutant PASSED, having left two processes running.
+// The job's counter said 2 in every one of those 22 runs, the passing one
+// included.
+//
+// MEASURED against the two ways of getting stop wrong that this case catches:
+//
+//   terminate the child and not the tree   -> "stop came back with 2 process(es)
+//                                             the child started still running"
+//   terminate and come straight back       -> "stop came back with the child
+//                                             still running", at once
+//
+// AND ONE IT DOES NOT, which this comment claimed for a while and no longer
+// does. Keep the terminate and delete stop's wait on the job object and this
+// case still passes -- 16 runs of 16 alone, 4 of 4 under the suite's six
+// concurrent cases. TerminateJobObject is TerminateProcess applied to every
+// member, so on this machine everything the child started is already gone by
+// the time the child's own process object signals: the counter reads 0 whether
+// stop looked or not. The terminate is what empties the job here, and the wait
+// is what would notice on the run where it did not.
+// stop_is_false_while_something_the_child_started_is_still_running is what pins
+// that, and it has to withhold the terminate to do it.
+//
+// The path goes in as its OWN argument rather than inside a command string, and
+// that is not a style choice. build_command_line quotes an argument that holds a
+// space and escapes a quote inside one as `\"` -- which is the rule
+// CommandLineToArgvW reads and NOT the rule cmd.exe reads, so a quoted path
+// buried in a single command string reaches cmd with the backslashes still on
+// it. As its own argument it is quoted once, by us, and cmd sees a path. Spelled
+// as SEPARATE, space-free arguments so that only the path is quoted: cmd.exe
+// strips the outer quotes of a `/c` string when its first character is one, and
+// the quote it removes is the LAST on the line -- which would be the path's own
+// closing quote on a machine whose temp directory holds a space.
+@(test)
+a_stopped_child_has_let_go_of_the_file_it_held :: proc(t: ^testing.T) {
+	path := scratch_path(t, "held-open")
+	defer delete(path, context.allocator)
+	defer os.remove(path)
+
+	group, group_err := job_object_open()
+	defer job_object_close(&group)
+	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+		return
+	}
+
+	name := lonely_signal("heldopen", context.allocator)
+	defer delete(name, context.allocator)
+	block := fmt.aprintf("%s)", name, allocator = context.allocator)
+	defer delete(block, context.allocator)
+	seconds := fmt.aprintf("%d", LONGER_SECONDS, allocator = context.allocator)
+	defer delete(seconds, context.allocator)
+
+	arguments := [?]string{"/c", "(waitfor", "/t", seconds, block, ">", path}
+	c, err := start(&group, CMD, arguments[:], context.allocator)
+	defer close(&c)
+	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
+		return
+	}
+
+	if !testing.expect(
+		t,
+		held_by_the_child(&c, path),
+		"the child never got as far as holding the file through a process of its own",
+	) {
+		return
+	}
+
+	testing.expect(t, stop(&c, STOP_BOUND), "the child did not stop within the bound")
+
+	// Asked FIRST and with no waiting of any kind: this is what catches a stop
+	// that terminated and came straight back. The two below are the other half --
+	// what the child, or anything the child started, was still holding.
+	_, gone := exit_code(&c)
+	testing.expect(t, gone, "stop came back with the child still running")
+	// THE CLAIM STOP ACTUALLY MAKES, and the one reading of it that does not
+	// flake: nothing the child started is still running. Read straight from the
+	// kernel's own counter rather than from the procedure that was supposed to
+	// have waited on it, and read with no waiting, so a stop that skipped the wait
+	// has nothing to hide behind.
+	testing.expectf(
+		t,
+		job_holds(c.tree) == 0,
+		"stop came back with %d process(es) the child started still running",
+		job_holds(c.tree),
+	)
+	testing.expect(
+		t,
+		freed_within_bound(path),
+		"the file the child held was still open when stop came back",
+	)
+}
+
+// The access right that asks a job object what it holds, and NOT the one that
+// ends it: `JOB_OBJECT_QUERY` is 0x0004 and `JOB_OBJECT_TERMINATE` is 0x0008, so
+// a handle duplicated with the first alone is refused the second. The case below
+// is built on exactly that gap.
+@(private)
+JOB_OBJECT_QUERY :: win32.DWORD(0x0004)
+
+// A second handle to the same job object that may ask what it holds and may not
+// end it. nil where Windows would not make one.
+@(private)
+query_only_view :: proc(job: win32.HANDLE) -> win32.HANDLE {
+	assert(job != nil, "there is no job object here to duplicate")
+
+	view: win32.HANDLE
+	me := win32.GetCurrentProcess()
+	if !win32.DuplicateHandle(me, job, me, &view, JOB_OBJECT_QUERY, false, 0) {
+		return nil
+	}
+	assert(view != nil, "DuplicateHandle reported success and handed back nothing")
+	return view
+}
+
+// The bound given to the stop that must answer false, in milliseconds.
+//
+// Short on purpose and not a discrimination of its own: the job object it is
+// asked about holds a process with twenty-five seconds left, so this is only how
+// long the case is willing to watch stop fail to see it empty. The mutant it
+// exists to catch answers before any of it is spent.
+@(private)
+LINGER_BOUND_MS :: u32(500)
+
+// THE CASE THAT PINS THE SECOND WAIT, and the reason it is written this strangely
+// is that the straightforward spelling of it cannot fail.
+//
+// `TerminateJobObject` is `TerminateProcess` applied to every member, so on this
+// machine the members are all gone by the time the child's own process object
+// signals -- and `stop` reduced to terminate-then-wait-for-the-child passes the
+// case next door 16 runs of 16. Everything the child started really has stopped;
+// it is just that nothing measured whether stop CHECKED. The state the second
+// wait exists for is a member that outlives the terminate, and this repository
+// cannot wedge a process in a driver call on demand.
+//
+// So the terminate is withheld instead, which produces that state exactly: the
+// child exits by itself leaving a grandchild running, and stop is handed a view
+// of the job object that may ASK what it holds and may not END it. Everything the
+// procedure does is real -- the same `stop`, a real child, a real job object, the
+// kernel's own counter -- and the one thing standing still is the member that has
+// not gone. `false` is then the only correct answer, and it can only come from
+// the wait: with it deleted stop has nothing left to answer from but the child's
+// process object, which signalled long before.
+//
+// WHAT THIS DOES NOT MEASURE: that a grandchild ever survives a real
+// `TerminateJobObject`. It does not on this machine and may on a loaded one --
+// that is the hazard, not the claim. The claim is the one a reader needs and the
+// one a refactor can delete: after the child has gone, stop asks the job object,
+// and a job object that has not emptied is not a stop.
+//
+// The pair is what pins it from both sides (A3). This says stop answers false
+// while a member is still running; a_stopped_child_has_let_go_of_the_file_it_held
+// says it answers true once nothing is, so neither a deleted wait nor a wait
+// hard-wired to false survives both.
+@(test)
+stop_is_false_while_something_the_child_started_is_still_running :: proc(t: ^testing.T) {
+	group, group_err := job_object_open()
+	defer job_object_close(&group)
+	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+		return
+	}
+
+	name := lonely_signal("outlived", context.allocator)
+	defer delete(name, context.allocator)
+	seconds := fmt.aprintf("%d", LONGER_SECONDS, allocator = context.allocator)
+	defer delete(seconds, context.allocator)
+
+	// `start /b` creates the process and RETURNS, so cmd exits with a grandchild
+	// still running -- and still in the child's own job object, because job
+	// membership is inherited and nothing here breaks away.
+	arguments := [?]string{"/c", "start", "/b", "waitfor", "/t", seconds, name}
+	c, err := start(&group, CMD, arguments[:], context.allocator)
+	defer close(&c)
+	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
+		return
+	}
+
+	if !testing.expect(t, wait(&c, BOUND_MS), "the child did not exit within the bound") {
+		return
+	}
+	// The instrument, before anything is proved by it: with nothing left in the
+	// job object there is nothing for stop to fail to see.
+	if !testing.expect(t, job_holds(c.tree) > 0, "the child left nothing running behind it") {
+		return
+	}
+
+	view := query_only_view(c.tree)
+	if !testing.expect(t, view != nil, "Windows would not duplicate the job object handle") {
+		return
+	}
+	defer win32.CloseHandle(view)
+
+	// Both handles are BORROWED, so this is never closed: they are given back above.
+	probe := Child {
+		handle = c.handle,
+		tree   = view,
+	}
+	testing.expect(
+		t,
+		!stop(&probe, LINGER_BOUND_MS),
+		"stop said it had stopped a child with something it started still running",
+	)
+	// Through the handle that CAN terminate, so it is the kernel's answer and not
+	// the view's. This is what says the case measured the wait rather than a
+	// terminate that quietly did the work.
+	testing.expect(
+		t,
+		job_holds(c.tree) > 0,
+		"the job object emptied anyway, so nothing here was standing still",
+	)
+
+	// The same child through a handle that may end it, which is also the cleanup.
+	testing.expect(t, stop(&c, STOP_BOUND), "the child's tree did not stop within the bound")
+}
