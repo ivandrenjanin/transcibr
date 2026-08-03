@@ -53,6 +53,18 @@ Build_Error :: enum u8 {
 // ones that do not, and Windows truncates rather than complaining.
 MAX_COMMAND_LINE_UNITS :: 32767
 
+// What one argument costs beyond twice its bytes: the separating space and the
+// two quotes that may go around it.
+//
+// Twice its bytes is the escaping's own worst case, and it is reached rather than
+// merely bounded -- an argument of nothing but quotes writes `\"` for every one,
+// and `\\\\"` writes nine backslashes and a quote for five bytes. No byte can
+// cost more: a quote becomes two, a backslash becomes at most two, and everything
+// else is copied through. So the reservation below never runs short, which is
+// what the assertion after the build checks rather than assumes.
+@(private)
+MAX_ESCAPED_OVERHEAD :: 3
+
 // Builds the command line for one child. The caller owns the returned string and
 // frees it with `delete`; nothing is allocated on any error path.
 //
@@ -76,13 +88,17 @@ build :: proc(
 	if strings.index_byte(program, 0) >= 0 {
 		return "", .Embedded_Nul
 	}
+	// The reservation is accumulated by the scan that has to walk these anyway, so
+	// it costs nothing beyond the addition. See MAX_ESCAPED_OVERHEAD.
+	reserve := len(program) + 2
 	for argument in arguments {
 		if strings.index_byte(argument, 0) >= 0 {
 			return "", .Embedded_Nul
 		}
+		reserve += 2 * len(argument) + MAX_ESCAPED_OVERHEAD
 	}
 
-	b := strings.builder_make(allocator)
+	b := strings.builder_make(0, reserve, allocator)
 	write_program(&b, program)
 	for argument in arguments {
 		strings.write_byte(&b, ' ')
@@ -90,6 +106,11 @@ build :: proc(
 	}
 
 	out := strings.to_string(b)
+	// The reservation's own check (A4): it is a claim about how far the escaping
+	// above can expand its input, and this is the read side of it. A rule that
+	// grew an argument past twice its bytes would otherwise just reallocate, and
+	// the bound would go quietly wrong instead of loudly.
+	assert(len(out) <= reserve, "the escaping outgrew the reservation made for it")
 	assert(
 		len(out) >= len(program) + 2,
 		"the command line is shorter than the quoted program path",
