@@ -47,7 +47,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 25
+$ExpectedCaseCount = 26
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -605,6 +605,33 @@ Test-Case 'a test that never returns is killed and reported against its package'
 		-ScriptArguments @('-TimeoutSeconds', "$FixtureTimeoutSeconds")
 	Assert-Result -Result $result -Fails -Matching 'wedged'
 	Assert-Result -Result $result -Fails -Matching "did not finish within $FixtureTimeoutSeconds"
+}
+
+# The ceilings against each other and against the job they have to report from.
+#
+# Three numbers in two files, and the relationship between them is the whole
+# point: one package's ceiling times however many packages exist is not a bound
+# anybody chose, and a sweep bound at or past the CI job's own timeout is a hang
+# reported by GitHub -- which names no package, prints no output, and uploads no
+# report -- rather than by the sweep. Checked rather than written down, because
+# the fourth package is exactly when nobody re-reads the comment.
+Test-Case 'the sweep budget fits inside the CI job that has to report it' {
+	$workflow = Join-Path $RepoRoot '.github\workflows\ci.yml'
+	if (-not (Test-Path -LiteralPath $workflow)) {
+		throw "no $workflow to read the job timeout out of."
+	}
+	$declared = [regex]::Match((Get-Content -LiteralPath $workflow -Raw), '(?m)^\s*timeout-minutes:\s*(\d+)')
+	if (-not $declared.Success) {
+		throw "no timeout-minutes in $workflow, so the job falls back to the platform's six-hour default."
+	}
+
+	$job = [int] $declared.Groups[1].Value * 60
+	if ($OdinSweepTimeoutSeconds -lt $OdinCommandTimeoutSeconds) {
+		throw "the sweep's $OdinSweepTimeoutSeconds-second budget is below one package's $OdinCommandTimeoutSeconds, so a single slow package is killed by the sweep rather than by its own ceiling."
+	}
+	if ($OdinSweepTimeoutSeconds -ge $job) {
+		throw "the sweep's $OdinSweepTimeoutSeconds-second budget reaches the CI job's own $job, so a hang is reported by the job timeout, which names nothing, rather than by the sweep naming the package."
+	}
 }
 
 Test-Case 'a test that leaks its returned slice fails rather than warns' {
