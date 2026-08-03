@@ -8,16 +8,11 @@ package version
 
 import "core:fmt"
 import "core:mem"
+import "core:strings"
 
-// A semantic version.
-//
-// The widths are explicit but T1 does not compel them here: nothing serializes
-// a Version yet, and the sidecar ADR-0003 specifies records the ENGINE's
-// version, not transcibr's. They stay because a version component is a small
-// non-negative number that means the same thing on every target -- which `int`,
-// signed and target-width, does not say -- and because a build identifier is
-// the kind of value that ends up written down. Should it ever be, T1 will
-// require exactly this and the byte image will already be pinned.
+// A semantic version. The components are `u32` because a version component is
+// a small non-negative count that means the same thing on every target, which
+// `int` -- signed, and as wide as the target -- does not say.
 Version :: struct {
 	major: u32,
 	minor: u32,
@@ -35,7 +30,16 @@ CURRENT :: Version{major = 0, minor = 1, patch = 0}
 banner :: proc(program: string, v: Version, allocator: mem.Allocator) -> string {
 	assert(len(program) > 0, "program name must not be empty")
 	assert(v != Version{}, "version must be set; an all-zero version is uninitialised state")
+
 	out := fmt.aprintf("%s %d.%d.%d", program, v.major, v.minor, v.patch, allocator = allocator)
+
+	// The shape a caller reads back off this line, asserted on the side that
+	// writes it. main asserts the same four facts on the way in (CLAUDE.md
+	// A4), and this is the side that can be wrong: a program name carrying a
+	// newline renders a banner no reader can split, and only this end sees it.
+	assert(strings.has_prefix(out, program), "banner does not name the program it was given")
 	assert(len(out) > len(program), "banner carries no version after the program name")
+	assert(out[len(program)] == ' ', "banner does not separate the program name from the version")
+	assert(strings.index_byte(out, '\n') == -1, "banner rendered more than one line")
 	return out
 }
