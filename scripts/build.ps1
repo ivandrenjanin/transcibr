@@ -1,51 +1,80 @@
 # The build command.
 #
 #   .\scripts\build.ps1
+#   .\scripts\build.ps1 -Configuration release
 #
-# Produces build\transcibr-cli.exe, a console-subsystem binary (ADR-0004),
-# under the full vet set with warnings as errors.
+# Produces every binary in $OdinTargets under the full vet set with warnings as
+# errors, then verifies each one: the subsystem recorded in its PE header
+# (ADR-0004) and, for a target that can be run headless, that it starts and
+# reports its version. Those checks live here rather than in CI because a
+# developer who breaks them should find out from the build command, not from a
+# red pipeline half an hour later.
 
 [CmdletBinding()]
 param(
+	# debug builds with symbols for a debugger; release optimises for speed.
+	# CI runs both, so neither configuration rots.
 	[ValidateSet('debug', 'release')]
 	[string] $Configuration = 'debug'
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
 
-$odin = Resolve-OdinCompiler
-Write-Host "Odin:   $odin"
-
-if (-not (Test-Path -LiteralPath $BuildRoot)) {
-	New-Item -ItemType Directory -Path $BuildRoot | Out-Null
-}
-
-$out = Join-Path $BuildRoot 'transcibr-cli.exe'
-
-# -subsystem:console is stated rather than assumed. It is already the default
-# for a package named main, but the GUI binary this repository will also carry
-# (ADR-0004) differs from this one by exactly that flag, so neither is implicit.
-$arguments = @(
-	'build'
-	(Join-Path $SrcRoot 'cli')
-	$OdinCollection
-	"-out:$out"
-	'-subsystem:console'
-) + $OdinVetFlags
-
-if ($Configuration -eq 'release') {
-	$arguments += '-o:speed'
-}
-
-Write-Host "Build:  $Configuration -> $out"
-Write-Host ''
-
-& $odin @arguments
-if ($LASTEXITCODE -ne 0) {
+trap {
 	Write-Host ''
-	Write-Host "BUILD FAILED (odin exited $LASTEXITCODE)" -ForegroundColor Red
+	Write-Host "BUILD FAILED: $($_.Exception.Message)" -ForegroundColor Red
 	exit 1
 }
 
+$odin = Resolve-OdinCompiler
+Write-Host "Odin:   $odin ($OdinVersionPin)"
+Write-Host "Build:  $Configuration"
+
+New-Item -ItemType Directory -Path $BuildRoot -Force | Out-Null
+
+foreach ($target in $OdinTargets) {
+	$out = Join-Path $BuildRoot "$($target.Name).exe"
+
+	$arguments = @(
+		'build'
+		(Join-Path $SrcRoot $target.Package)
+		$OdinCollection
+		"-out:$out"
+		"-subsystem:$($target.Subsystem)"
+	) + $OdinVetFlags
+
+	if ($Configuration -eq 'release') {
+		$arguments += '-o:speed'
+	}
+	else {
+		$arguments += '-debug'
+	}
+
+	Write-Host ''
+	Write-Host "=== $($target.Name) ($($target.Subsystem)) ===" -ForegroundColor Cyan
+
+	& $odin @arguments
+	if ($LASTEXITCODE -ne 0) {
+		Write-Host ''
+		Write-Host "BUILD FAILED: odin exited $LASTEXITCODE building $($target.Name)." -ForegroundColor Red
+		exit 1
+	}
+
+	# Read out of the image rather than trusted from the flag that went in.
+	Assert-PeSubsystem -Path $out -Subsystem $target.Subsystem
+	Write-Host "-> $out is subsystem $($target.Subsystem)" -ForegroundColor Green
+
+	if ($target.Smoke) {
+		$printed = (& $out | Out-String).Trim()
+		if ($LASTEXITCODE -ne 0) {
+			throw "$($target.Name) exited $LASTEXITCODE, expected 0."
+		}
+		if ($printed -notmatch "^$([regex]::Escape($target.Name)) \d+\.\d+\.\d+$") {
+			throw "$($target.Name) did not report a version; printed '$printed'."
+		}
+		Write-Host "-> $($target.Name) printed: $printed" -ForegroundColor Green
+	}
+}
+
 Write-Host ''
-Write-Host "Built $out" -ForegroundColor Green
+Write-Host "Built $($OdinTargets.Count) of $($OdinTargets.Count) targets into $BuildRoot" -ForegroundColor Green
