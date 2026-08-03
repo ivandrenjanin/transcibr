@@ -18,7 +18,7 @@ import "core:strings"
 // A threshold on elapsed time therefore deletes real speech at the slow end and
 // waves the Engine through at the fast one, whichever way it is turned. The
 // number of sayings does neither: both inventions ADR-0001 measured hold 16 and
-// 17 of them, and the longest real repetition collected holds eleven.
+// 17 of them, and the longest row of REAL_REPETITIONS holds eleven.
 Collapse_Params :: struct {
 	// How many SAYINGS of an invented run survive it. Three rather than one: the
 	// run is dropped where it is INVENTED, and a Transcript that reads "you. you.
@@ -41,10 +41,16 @@ Collapse_Params :: struct {
 // looking for it.
 //
 // The evidence supports a BAND rather than a number -- above eleven, the longest
-// real repetition collected, and at or below sixteen, the shorter of the two
-// inventions ADR-0001 measured. Fourteen is the middle of it, which is the value
-// furthest from both ways of being wrong. What the remaining false positives
-// cost, and why they are paid rather than tuned away, is ADR-0016.
+// row of REAL_REPETITIONS, and at or below sixteen, the shorter of the two
+// inventions ADR-0001 measured. The two ends are not equally well founded: the
+// upper one was measured on a real recording, the lower one is the ceiling of a
+// hand-written table. So fourteen sits high in the band because the floor is
+// UNKNOWN, not because it is the midpoint of anything.
+//
+// Fourteen rather than sixteen is a judgement a maintainer may overrule, and the
+// tests pin the band rather than the value -- 11 fails, 12 through 16 pass, 17
+// fails. What the remaining false positives cost, why they are paid rather than
+// tuned away, and what moving to sixteen would buy, is ADR-0016.
 COLLAPSE_THRESHOLDS :: Collapse_Params {
 	max_run      = 3,
 	invention_at = 14,

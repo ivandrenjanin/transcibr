@@ -51,21 +51,58 @@ time, and no threshold on rate, can put those two on opposite sides of a line, b
 they measure the real speech is further out than the invention.
 
 The count separates them cleanly and with margin: 16 and 17 for the measured inventions, and eleven
-for the longest real repetition collected.
+for the longest run in this repository's table of real repetition. Those two numbers are not the
+same kind of number, and the next section says which is which.
 
 ## Why 14
 
-The evidence supports a **band**, not a number: above eleven, the longest real repetition in the
-collected material, and at or below sixteen, the shorter of the two measured inventions. Fourteen is
-the middle of that band, which is the value furthest from both ways of being wrong. `src/transcript`
-pins the band rather than the value — a ceiling of 11 fails, 12 and 16 pass, 17 fails — because
-pinning a single value inside a band would be pinning taste and calling it truth.
+The evidence supports a **band**, not a number — but the two ends of that band are not equally well
+founded, and this section exists to say so rather than to present a range and let the reader assume
+both edges were observed.
+
+**The upper bound is measured.** At or below sixteen, because sixteen is the shorter of the two runs
+ADR-0001 observed on a real 20-minute excerpt, and any ceiling above it hands that run to the reader
+intact. It has provenance: a recording, an engine, and a re-measurement with VAD enabled (ADR-0005)
+confirming the engine produced both runs rather than the speaker.
+
+**The lower bound is not measured.** Above eleven, because eleven is the largest `count` in
+`REAL_REPETITIONS` in `src/transcript/repetition_test.odin` — eleven hand-written rows of plausible
+speech, chosen to span the clock from a stutter to a call-hold announcement. No recording was made
+and no rig was run, so this ADR cannot state measurement conditions for that end the way ADR-0001
+and ADR-0007 state theirs. Eleven is the ceiling of a **table**, written by the same hand that chose
+the threshold; it is not the ceiling of human repetition, and the next section says as much when it
+names a protest chant, a 40-repetition guided meditation and a language drill as real speech well
+above eleven.
+
+So one end of the band is an observation and the other is an assumption, and **the threshold sits as
+high in the band as it does precisely because the lower bound is unknown.** The headroom above
+eleven is not margin won by measurement; it is speech the filter declines to delete on the strength
+of a number nobody has measured.
+
+`src/transcript` pins the band rather than the value — a ceiling of 11 fails, 12 and 16 pass, 17
+fails — because pinning a single value inside a band would be pinning taste and calling it truth.
+
+**Fourteen rather than sixteen is a judgement, and a maintainer may overrule it.** Nothing in
+evidence chooses between them: neither a measured invention nor a row of the table falls anywhere in
+`{12, 13, 14, 15, 16}`, so the contested region is empty from both directions. What fourteen buys is
+coverage of an invention of fourteen or fifteen sayings — one *shorter* than either run ever
+measured. Sixteen is a sample minimum drawn from n=2, and a filter calibrated at the shortest
+invention ever observed catches nothing shorter than it; two samples say nothing about that tail.
+What fourteen costs is real speech of exactly fourteen or fifteen sayings, deleted silently — and by
+the visibility asymmetry in the next section, that is the worse of the two harms.
+
+That asymmetry is a live argument for sixteen, and this ADR declines it for one reason: the closing
+rule below forbids revisiting the threshold without new measurement, and none was taken. Moving to
+sixteen on the strength of a lower bound that has just been shown to be unmeasured would replace one
+unearned number with another. **A maintainer who weighs the asymmetry above the small-sample worry
+should move it to sixteen** — the band pins accept it, both measured inventions still collapse, and
+strictly more real speech survives.
 
 The count that *survives* a collapse stays at three. A run is dropped where it is invented, and a
 transcript reading "you. you. you." tells a reader the engine ran on over silence where a single
 "you." reads as something the speaker said. Three is not a second discriminator and must never be
 used as one: the ceiling sits above it, and a ceiling at `max_run + 1` is a cap on length alone,
-which deletes ten of the eleven real repetitions collected.
+which deletes ten of the table's eleven rows of real repetition.
 
 ## The accepted false positive
 
@@ -79,14 +116,15 @@ false positive this can still make is cheap"; it was not cheap, and under the ol
 class it applied to was very much larger — a 40-cue meditation spanning 591 seconds came back as
 three cues ending at 45 seconds, nine and a quarter minutes of real speech gone. The count ceiling
 does not eliminate the class, it narrows it to material that repeats one phrase verbatim more than
-thirteen times over, and every pattern in the collected table now survives whole.
+thirteen times over, and every pattern in the table now survives whole.
 
 The reason it is paid rather than tuned away: the alternative is a missed invention, and ADR-0001
 records that as the failure this feature exists to prevent. The two harms are not symmetric in
 visibility — a missed invention is four minutes of *"you"* that anybody spots on sight, while
-deleted speech is silent — which is precisely why the threshold sits at the top half of its
-supported band rather than the bottom, and why the case that holds it *down* (real speech surviving)
-is the one the test file says matters more.
+deleted speech is silent — which is why the case pinning the band's floor (real speech surviving) is
+the one the test file says matters more. Followed all the way, that same asymmetry argues for
+sixteen rather than fourteen; *Why 14* records that argument and says what declining it costs,
+rather than leaving it unstated.
 
 ## Consequences
 
@@ -110,5 +148,5 @@ the merge profiles. The shipped constant is named `COLLAPSE_THRESHOLDS` and not 
 there is no second set for a default to be chosen over.
 
 Not revisited without new measurement. The band is set by exactly two observed inventions and one
-table of collected real repetition; a third measured invention below fourteen sayings, or a real
+hand-written table of real repetition; a third measured invention below fourteen sayings, or a real
 repetition above thirteen appearing in actual output, reopens this.

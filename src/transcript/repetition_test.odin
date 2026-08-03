@@ -178,9 +178,10 @@ REAL_REPETITIONS := []Real_Repetition {
 		gap_ms = 27_600,
 	},
 	{
-		// The longest real repetition collected, and the row that pins the
-		// ceiling from below: eleven sayings across two and three-quarter
-		// minutes of a guided meditation.
+		// The longest row in this table, and the one that pins the ceiling from
+		// below: eleven sayings across two and three-quarter minutes of a guided
+		// meditation. The ceiling of the TABLE, not of human repetition -- no rig
+		// was ever run for this end of the band, and ADR-0016 says so plainly.
 		name = "a guided meditation",
 		text = " Breathe in, and out.",
 		count = 11,
