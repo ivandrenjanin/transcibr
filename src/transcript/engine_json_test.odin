@@ -55,10 +55,11 @@ parses_real_engine_output_into_cues :: proc(t: ^testing.T) {
 		// duration here would hide the very thing that stage looks for.
 		{30_000, 59_980, " Thank you."},
 	}
+	// A Cue is comparable, so this is one question and not three, and a failure
+	// prints the whole Cue rather than the field that happened to be checked
+	// first.
 	for want, i in expected {
-		testing.expect_value(t, cues[i].start, want.start)
-		testing.expect_value(t, cues[i].end, want.end)
-		testing.expect_value(t, cues[i].text, want.text)
+		testing.expect_value(t, cues[i], want)
 	}
 }
 
@@ -285,9 +286,10 @@ accepts_a_cue_set_that_starts_at_offset_zero :: proc(t: ^testing.T) {
 // Ordering: rejected on the way IN, asserted on the way OUT.
 //
 // The Engine is outside this program, so output that goes backwards is an
-// operating error naming the Cue that does it (CLAUDE.md A8). What parse_cues
-// then ASSERTS is its own promise about what it hands back, which is a different
-// claim reached by a different route (A4).
+// operating error naming the Cue that does it (CLAUDE.md A8) -- the three
+// shapes that can be are rows in REJECTED_CASES below. What parse_cues then
+// ASSERTS is its own promise about what it hands back, which is a different
+// claim reached by a different route (A4), and that is what this observes.
 // ---------------------------------------------------------------------------
 
 @(test)
@@ -300,169 +302,140 @@ real_engine_output_is_ordered_on_the_way_out :: proc(t: ^testing.T) {
 	testing.expect_value(t, first_disordered_cue(cues), 0)
 }
 
-@(test)
-rejects_cues_that_go_backwards :: proc(t: ^testing.T) {
-	text := `{"transcription": [
-		{"offsets": {"from": 4000, "to": 8000}, "text": " second"},
-		{"offsets": {"from": 1000, "to": 3000}, "text": " first"}
-	]}`
-	cues, err := parse_cues("backwards.json", text, FIXTURE_DURATION, context.allocator)
-	defer destroy_cues(cues, context.allocator)
-
-	testing.expect(t, len(cues) == 0, "handed back a cue set that goes backwards")
-	testing.expect_value(t, err.fault, Parse_Fault.Cues_Out_Of_Order)
-	testing.expect_value(t, err.cue, 2)
-}
-
-@(test)
-rejects_a_cue_that_ends_before_it_starts :: proc(t: ^testing.T) {
-	text := `{"transcription": [{"offsets": {"from": 8000, "to": 4000}, "text": " backwards"}]}`
-	cues, err := parse_cues("inverted.json", text, FIXTURE_DURATION, context.allocator)
-	defer destroy_cues(cues, context.allocator)
-
-	testing.expect(t, len(cues) == 0, "handed back a cue that ends before it starts")
-	testing.expect_value(t, err.fault, Parse_Fault.Cue_Ends_Before_It_Starts)
-	testing.expect_value(t, err.cue, 1)
-}
-
-@(test)
-rejects_an_offset_before_the_start_of_the_recording :: proc(t: ^testing.T) {
-	text := `{"transcription": [{"offsets": {"from": -500, "to": 4000}, "text": " early"}]}`
-	cues, err := parse_cues("negative.json", text, FIXTURE_DURATION, context.allocator)
-	defer destroy_cues(cues, context.allocator)
-
-	testing.expect(t, len(cues) == 0, "handed back a cue starting before the recording")
-	testing.expect_value(t, err.fault, Parse_Fault.Negative_Offset)
-	testing.expect_value(t, err.cue, 1)
-}
-
 // ---------------------------------------------------------------------------
-// The ugly cases, as a table.
+// The ugly cases, as two tables.
 //
+// At package scope rather than inside the tests that read them. A table is
+// DATA, and data written into a procedure body is what carried both of these
+// past the 70-line limit (CLAUDE.md F1) -- which exempts nothing, tests
+// included. What is left below each table is the test: the same four questions
+// asked of every row.
+// ---------------------------------------------------------------------------
+
+// One shape the parser must accept, and the Cues it must produce from it.
+Accepted_Case :: struct {
+	name:     string,
+	json:     string,
+	expected: []Cue,
+}
+
 // Everything here is Engine output a Recording can genuinely produce, and every
 // one of them is a shape some stricter-looking parser gets wrong.
-// ---------------------------------------------------------------------------
+@(private, rodata)
+ACCEPTED_CASES := []Accepted_Case {
+	{
+		name = "single-cue.json",
+		json = `{"transcription": [{"offsets": {"from": 0, "to": 3480}, "text": " Alone."}]}`,
+		expected = []Cue{{0, 3_480, " Alone."}},
+	},
+	{
+		// The Engine emits these over silence. Dropping them shortens the
+		// Cue set the repetition filter downstream counts runs in, and a
+		// run it cannot see is a hallucination it cannot strip (ADR-0001).
+		name = "empty-text.json",
+		json = `{"transcription": [
+			{"offsets": {"from": 0,    "to": 1000}, "text": ""},
+			{"offsets": {"from": 1000, "to": 2000}, "text": " "},
+			{"offsets": {"from": 2000, "to": 3000}, "text": " Words."}
+		]}`,
+		expected = []Cue{{0, 1_000, ""}, {1_000, 2_000, " "}, {2_000, 3_000, " Words."}},
+	},
+	{
+		// Overlap is ordinary Engine output, and a check demanding a
+		// strictly increasing, disjoint sequence would look stricter while
+		// rejecting real Recordings.
+		name = "overlapping.json",
+		json = `{"transcription": [
+			{"offsets": {"from": 0,    "to": 5000}, "text": " first"},
+			{"offsets": {"from": 3000, "to": 8000}, "text": " second"},
+			{"offsets": {"from": 3000, "to": 4000}, "text": " third"}
+		]}`,
+		expected = []Cue {
+			{0, 5_000, " first"},
+			{3_000, 8_000, " second"},
+			{3_000, 4_000, " third"},
+		},
+	},
+	{
+		// Keys this parser has never heard of, at both levels. Rejecting
+		// them would turn an Engine upgrade into a corrupt Transcript, and
+		// `-ojf` already adds a per-token array to every Cue (ADR-0001).
+		name = "unexpected-fields.json",
+		json = `{
+			"systeminfo": "irrelevant",
+			"model": {"type": "large"},
+			"a_key_from_2027": [1, 2, 3],
+			"transcription": [{
+				"timestamps": {"from": "00:00:00,000", "to": "00:00:03,480"},
+				"offsets": {"from": 0, "to": 3480},
+				"text": " Words.",
+				"tokens": [{"text": " Words", "p": 0.98}]
+			}]
+		}`,
+		expected = []Cue{{0, 3_480, " Words."}},
+	},
+	{
+		// `offsets` is the source of truth, not `timestamps` (ADR-0001).
+		// The two disagree here so that a parser quietly re-deriving
+		// milliseconds from the hh:mm:ss,mmm text cannot pass.
+		name = "disagreeing-timestamps.json",
+		json = `{"transcription": [{
+			"timestamps": {"from": "00:00:11,111", "to": "00:00:22,222"},
+			"offsets": {"from": 4380, "to": 8440},
+			"text": " Words."
+		}]}`,
+		expected = []Cue{{4_380, 8_440, " Words."}},
+	},
+	{
+		// The other half of read_millis' trap. The tokenizer classifies on
+		// the decimal point, so these stay json.Float even with
+		// `parse_integers` on, and an Engine release that starts writing
+		// them this way must not silently zero every offset.
+		name = "float-offsets.json",
+		json = `{"transcription": [
+			{"offsets": {"from": 0.0,    "to": 3480.0}, "text": " one"},
+			{"offsets": {"from": 4.38e3, "to": 8440e0}, "text": " two"}
+		]}`,
+		expected = []Cue{{0, 3_480, " one"}, {4_380, 8_440, " two"}},
+	},
+	{
+		// The negative space of the range check (CLAUDE.md A3). 2^53 is the
+		// limit and not one short of it, in both number forms, so a check
+		// written with the wrong comparison rejects a value it should read.
+		name = "offset-at-the-limit.json",
+		json = `{"transcription": [
+			{"offsets": {"from": 0, "to": 9007199254740992},                "text": " one"},
+			{"offsets": {"from": 9007199254740992, "to": 9007199254740992.0}, "text": " two"}
+		]}`,
+		expected = []Cue {
+			{0, 9_007_199_254_740_992, " one"},
+			{9_007_199_254_740_992, 9_007_199_254_740_992, " two"},
+		},
+	},
+	{
+		// Escapes are undone exactly once. Twice mangles a Transcript;
+		// not at all leaves a literal backslash-n mid-sentence.
+		name = "escaped-text.json",
+		json = `{"transcription": [{"offsets": {"from": 0, "to": 1000},
+			"text": " \"quoted\", a \\ backslash, and café."}]}`,
+		expected = []Cue{{0, 1_000, ` "quoted", a \ backslash, and café.`}},
+	},
+	{
+		// A bracket inside a string is text the Engine transcribed, and a
+		// trailing backslash before the closing quote is an escaped
+		// backslash and not an escaped quote. The depth scan runs over the
+		// bytes ahead of the decoder, so a scan that could not tell either
+		// of those would refuse a Recording for what was said in it.
+		name = "bracketed-text.json",
+		json = `{"transcription": [{"offsets": {"from": 0, "to": 1000},
+			"text": " [[[[[ {{{ \" ]] }} \\"}]}`,
+		expected = []Cue{{0, 1_000, ` [[[[[ {{{ " ]] }} \`}},
+	},
+}
 
 @(test)
 parses_the_ugly_cases :: proc(t: ^testing.T) {
-	Case :: struct {
-		name:     string,
-		json:     string,
-		expected: []Cue,
-	}
-
-	cases := []Case {
-		{
-			name = "single-cue.json",
-			json = `{"transcription": [{"offsets": {"from": 0, "to": 3480}, "text": " Alone."}]}`,
-			expected = []Cue{{0, 3_480, " Alone."}},
-		},
-		{
-			// The Engine emits these over silence. Dropping them shortens the
-			// Cue set the repetition filter downstream counts runs in, and a
-			// run it cannot see is a hallucination it cannot strip (ADR-0001).
-			name = "empty-text.json",
-			json = `{"transcription": [
-				{"offsets": {"from": 0,    "to": 1000}, "text": ""},
-				{"offsets": {"from": 1000, "to": 2000}, "text": " "},
-				{"offsets": {"from": 2000, "to": 3000}, "text": " Words."}
-			]}`,
-			expected = []Cue{{0, 1_000, ""}, {1_000, 2_000, " "}, {2_000, 3_000, " Words."}},
-		},
-		{
-			// Overlap is ordinary Engine output, and a check demanding a
-			// strictly increasing, disjoint sequence would look stricter while
-			// rejecting real Recordings.
-			name = "overlapping.json",
-			json = `{"transcription": [
-				{"offsets": {"from": 0,    "to": 5000}, "text": " first"},
-				{"offsets": {"from": 3000, "to": 8000}, "text": " second"},
-				{"offsets": {"from": 3000, "to": 4000}, "text": " third"}
-			]}`,
-			expected = []Cue {
-				{0, 5_000, " first"},
-				{3_000, 8_000, " second"},
-				{3_000, 4_000, " third"},
-			},
-		},
-		{
-			// Keys this parser has never heard of, at both levels. Rejecting
-			// them would turn an Engine upgrade into a corrupt Transcript, and
-			// `-ojf` already adds a per-token array to every Cue (ADR-0001).
-			name = "unexpected-fields.json",
-			json = `{
-				"systeminfo": "irrelevant",
-				"model": {"type": "large"},
-				"a_key_from_2027": [1, 2, 3],
-				"transcription": [{
-					"timestamps": {"from": "00:00:00,000", "to": "00:00:03,480"},
-					"offsets": {"from": 0, "to": 3480},
-					"text": " Words.",
-					"tokens": [{"text": " Words", "p": 0.98}]
-				}]
-			}`,
-			expected = []Cue{{0, 3_480, " Words."}},
-		},
-		{
-			// `offsets` is the source of truth, not `timestamps` (ADR-0001).
-			// The two disagree here so that a parser quietly re-deriving
-			// milliseconds from the hh:mm:ss,mmm text cannot pass.
-			name = "disagreeing-timestamps.json",
-			json = `{"transcription": [{
-				"timestamps": {"from": "00:00:11,111", "to": "00:00:22,222"},
-				"offsets": {"from": 4380, "to": 8440},
-				"text": " Words."
-			}]}`,
-			expected = []Cue{{4_380, 8_440, " Words."}},
-		},
-		{
-			// The other half of read_millis' trap. The tokenizer classifies on
-			// the decimal point, so these stay json.Float even with
-			// `parse_integers` on, and an Engine release that starts writing
-			// them this way must not silently zero every offset.
-			name = "float-offsets.json",
-			json = `{"transcription": [
-				{"offsets": {"from": 0.0,    "to": 3480.0}, "text": " one"},
-				{"offsets": {"from": 4.38e3, "to": 8440e0}, "text": " two"}
-			]}`,
-			expected = []Cue{{0, 3_480, " one"}, {4_380, 8_440, " two"}},
-		},
-		{
-			// The negative space of the range check (CLAUDE.md A3). 2^53 is the
-			// limit and not one short of it, in both number forms, so a check
-			// written with the wrong comparison rejects a value it should read.
-			name = "offset-at-the-limit.json",
-			json = `{"transcription": [
-				{"offsets": {"from": 0, "to": 9007199254740992},                "text": " one"},
-				{"offsets": {"from": 9007199254740992, "to": 9007199254740992.0}, "text": " two"}
-			]}`,
-			expected = []Cue {
-				{0, 9_007_199_254_740_992, " one"},
-				{9_007_199_254_740_992, 9_007_199_254_740_992, " two"},
-			},
-		},
-		{
-			// Escapes are undone exactly once. Twice mangles a Transcript;
-			// not at all leaves a literal backslash-n mid-sentence.
-			name = "escaped-text.json",
-			json = `{"transcription": [{"offsets": {"from": 0, "to": 1000},
-				"text": " \"quoted\", a \\ backslash, and café."}]}`,
-			expected = []Cue{{0, 1_000, ` "quoted", a \ backslash, and café.`}},
-		},
-		{
-			// A bracket inside a string is text the Engine transcribed, and a
-			// trailing backslash before the closing quote is an escaped
-			// backslash and not an escaped quote. The depth scan runs over the
-			// bytes ahead of the decoder, so a scan that could not tell either
-			// of those would refuse a Recording for what was said in it.
-			name = "bracketed-text.json",
-			json = `{"transcription": [{"offsets": {"from": 0, "to": 1000},
-				"text": " [[[[[ {{{ \" ]] }} \\"}]}`,
-			expected = []Cue{{0, 1_000, ` [[[[[ {{{ " ]] }} \`}},
-		},
-	}
-
-	for c in cases {
+	for c in ACCEPTED_CASES {
 		cues, err := parse_cues(c.name, c.json, FIXTURE_DURATION, context.allocator)
 		defer destroy_cues(cues, context.allocator)
 
@@ -485,135 +458,169 @@ parses_the_ugly_cases :: proc(t: ^testing.T) {
 	}
 }
 
+// One shape the parser must refuse, and what it must say about it.
+Rejected_Case :: struct {
+	name:  string,
+	json:  string,
+	fault: Parse_Fault,
+	// The 1-based Cue the report must blame, or 0 where the fault is about the
+	// input as a whole. Stated on every row, including the zero: a row that
+	// left it out would pass whatever the parser blamed.
+	cue:   int,
+}
+
+@(private, rodata)
+REJECTED_CASES := []Rejected_Case {
+	{
+		name = "no-transcription.json",
+		json = `{"systeminfo": "irrelevant", "result": {"language": "en"}}`,
+		fault = .No_Transcription,
+	},
+	{
+		name = "transcription-not-an-array.json",
+		json = `{"transcription": {"offsets": {"from": 0, "to": 1}, "text": " one"}}`,
+		fault = .No_Transcription,
+	},
+	{
+		// "Exit 0 but nothing transcribed" is a per-Recording failure, not
+		// a Transcript with no words in it (ADR-0002).
+		name = "no-cues.json",
+		json = `{"transcription": []}`,
+		fault = .No_Cues,
+	},
+	{
+		name = "not-an-object.json",
+		json = `[{"offsets": {"from": 0, "to": 1}, "text": " one"}]`,
+		fault = .Not_An_Object,
+	},
+	{
+		name = "cue-not-an-object.json",
+		json = `{"transcription": ["00:00:00,000 --> 00:00:03,480  One."]}`,
+		fault = .Cue_Not_An_Object,
+		cue = 1,
+	},
+	{
+		name = "no-offsets.json",
+		json = `{"transcription": [{"timestamps": {"from": "00:00:00,000"}, "text": " one"}]}`,
+		fault = .No_Offsets,
+		cue = 1,
+	},
+	{
+		name = "offsets-not-an-object.json",
+		json = `{"transcription": [{"offsets": [0, 3480], "text": " one"}]}`,
+		fault = .No_Offsets,
+		cue = 1,
+	},
+	{
+		name = "no-end-offset.json",
+		json = `{"transcription": [{"offsets": {"from": 0}, "text": " one"}]}`,
+		fault = .Offset_Missing,
+		cue = 1,
+	},
+	{
+		// The hh:mm:ss,mmm form in the wrong field. Reported rather than
+		// re-parsed: guessing at what the Engine meant is how a schema
+		// change becomes a Transcript full of plausible wrong timings.
+		name = "offset-as-text.json",
+		json = `{"transcription": [{"offsets": {"from": "00:00:00,000", "to": "00:00:03,480"},
+			"text": " one"}]}`,
+		fault = .Offset_Not_A_Number,
+		cue = 1,
+	},
+	{
+		name = "offset-not-whole.json",
+		json = `{"transcription": [{"offsets": {"from": 0, "to": 3480.5}, "text": " one"}]}`,
+		fault = .Offset_Not_Whole,
+		cue = 1,
+	},
+	{
+		// Past 2^53 an f64 no longer holds the value it was written with,
+		// so converting is guessing at a number nobody has.
+		name = "offset-out-of-range.json",
+		json = `{"transcription": [{"offsets": {"from": 0, "to": 1e300}, "text": " one"}]}`,
+		fault = .Offset_Out_Of_Range,
+		cue = 1,
+	},
+	{
+		// The same magnitude written WITHOUT a decimal point, which the
+		// tokenizer classifies as an integer instead. core:encoding/json
+		// reads it with strconv.parse_i64 and DISCARDS the error, so the
+		// overflow arrives as a plausible small number -- 2e17 or so, about
+		// six million years -- rather than as a refusal. A corrupt cache
+		// file is ADR-0002's explicit case, and this one used to parse.
+		name = "integer-offset-overflows.json",
+		json = `{"transcription": [{"offsets": {"from": 0, "to": 99999999999999999999999},
+			"text": " one"}]}`,
+		fault = .Offset_Out_Of_Range,
+		cue = 1,
+	},
+	{
+		// One past the limit, in each form. The two branches took different
+		// answers here: the float was refused and the integer was accepted
+		// exactly, so which one a Recording got depended on whether the
+		// Engine happened to write a decimal point.
+		name = "integer-offset-past-the-limit.json",
+		json = `{"transcription": [{"offsets": {"from": 0, "to": 9007199254740993}, "text": " one"}]}`,
+		fault = .Offset_Out_Of_Range,
+		cue = 1,
+	},
+	{
+		// And below it, which Negative_Offset never sees: read_millis
+		// refuses the magnitude before cue_follows is asked about the sign.
+		name = "integer-offset-below-the-limit.json",
+		json = `{"transcription": [{"offsets": {"from": -9007199254740993, "to": 0}, "text": " one"}]}`,
+		fault = .Offset_Out_Of_Range,
+		cue = 1,
+	},
+	{
+		name = "no-text.json",
+		json = `{"transcription": [{"offsets": {"from": 0, "to": 3480}}]}`,
+		fault = .No_Text,
+		cue = 1,
+	},
+	{
+		name = "text-not-a-string.json",
+		json = `{"transcription": [
+			{"offsets": {"from": 0,    "to": 1000}, "text": " one"},
+			{"offsets": {"from": 1000, "to": 2000}, "text": ["two"]}
+		]}`,
+		fault = .No_Text,
+		cue = 2,
+	},
+
+	// The three ways Engine output can break the ordering this package
+	// promises. Every one of them is REPORTED, naming the Cue that does it,
+	// because the Engine is outside this program (A8); what parse_cues asserts
+	// on the way out is a different claim by a different route (A4), and
+	// real_engine_output_is_ordered_on_the_way_out is where that is observed.
+	{
+		name = "backwards.json",
+		json = `{"transcription": [
+			{"offsets": {"from": 4000, "to": 8000}, "text": " second"},
+			{"offsets": {"from": 1000, "to": 3000}, "text": " first"}
+		]}`,
+		fault = .Cues_Out_Of_Order,
+		cue = 2,
+	},
+	{
+		name = "inverted.json",
+		json = `{"transcription": [{"offsets": {"from": 8000, "to": 4000}, "text": " backwards"}]}`,
+		fault = .Cue_Ends_Before_It_Starts,
+		cue = 1,
+	},
+	{
+		// An offset is a count from the start of the Recording, so there is
+		// nothing before zero for a Cue to start in.
+		name = "negative.json",
+		json = `{"transcription": [{"offsets": {"from": -500, "to": 4000}, "text": " early"}]}`,
+		fault = .Negative_Offset,
+		cue = 1,
+	},
+}
+
 @(test)
 rejects_the_ugly_cases :: proc(t: ^testing.T) {
-	Case :: struct {
-		name:  string,
-		json:  string,
-		fault: Parse_Fault,
-		cue:   int,
-	}
-
-	cases := []Case {
-		{
-			name = "no-transcription.json",
-			json = `{"systeminfo": "irrelevant", "result": {"language": "en"}}`,
-			fault = .No_Transcription,
-		},
-		{
-			name = "transcription-not-an-array.json",
-			json = `{"transcription": {"offsets": {"from": 0, "to": 1}, "text": " one"}}`,
-			fault = .No_Transcription,
-		},
-		{
-			// "Exit 0 but nothing transcribed" is a per-Recording failure, not
-			// a Transcript with no words in it (ADR-0002).
-			name = "no-cues.json",
-			json = `{"transcription": []}`,
-			fault = .No_Cues,
-		},
-		{
-			name = "not-an-object.json",
-			json = `[{"offsets": {"from": 0, "to": 1}, "text": " one"}]`,
-			fault = .Not_An_Object,
-		},
-		{
-			name = "cue-not-an-object.json",
-			json = `{"transcription": ["00:00:00,000 --> 00:00:03,480  One."]}`,
-			fault = .Cue_Not_An_Object,
-			cue = 1,
-		},
-		{
-			name = "no-offsets.json",
-			json = `{"transcription": [{"timestamps": {"from": "00:00:00,000"}, "text": " one"}]}`,
-			fault = .No_Offsets,
-			cue = 1,
-		},
-		{
-			name = "offsets-not-an-object.json",
-			json = `{"transcription": [{"offsets": [0, 3480], "text": " one"}]}`,
-			fault = .No_Offsets,
-			cue = 1,
-		},
-		{
-			name = "no-end-offset.json",
-			json = `{"transcription": [{"offsets": {"from": 0}, "text": " one"}]}`,
-			fault = .Offset_Missing,
-			cue = 1,
-		},
-		{
-			// The hh:mm:ss,mmm form in the wrong field. Reported rather than
-			// re-parsed: guessing at what the Engine meant is how a schema
-			// change becomes a Transcript full of plausible wrong timings.
-			name = "offset-as-text.json",
-			json = `{"transcription": [{"offsets": {"from": "00:00:00,000", "to": "00:00:03,480"},
-				"text": " one"}]}`,
-			fault = .Offset_Not_A_Number,
-			cue = 1,
-		},
-		{
-			name = "offset-not-whole.json",
-			json = `{"transcription": [{"offsets": {"from": 0, "to": 3480.5}, "text": " one"}]}`,
-			fault = .Offset_Not_Whole,
-			cue = 1,
-		},
-		{
-			// Past 2^53 an f64 no longer holds the value it was written with,
-			// so converting is guessing at a number nobody has.
-			name = "offset-out-of-range.json",
-			json = `{"transcription": [{"offsets": {"from": 0, "to": 1e300}, "text": " one"}]}`,
-			fault = .Offset_Out_Of_Range,
-			cue = 1,
-		},
-		{
-			// The same magnitude written WITHOUT a decimal point, which the
-			// tokenizer classifies as an integer instead. core:encoding/json
-			// reads it with strconv.parse_i64 and DISCARDS the error, so the
-			// overflow arrives as a plausible small number -- 2e17 or so, about
-			// six million years -- rather than as a refusal. A corrupt cache
-			// file is ADR-0002's explicit case, and this one used to parse.
-			name = "integer-offset-overflows.json",
-			json = `{"transcription": [{"offsets": {"from": 0, "to": 99999999999999999999999},
-				"text": " one"}]}`,
-			fault = .Offset_Out_Of_Range,
-			cue = 1,
-		},
-		{
-			// One past the limit, in each form. The two branches took different
-			// answers here: the float was refused and the integer was accepted
-			// exactly, so which one a Recording got depended on whether the
-			// Engine happened to write a decimal point.
-			name = "integer-offset-past-the-limit.json",
-			json = `{"transcription": [{"offsets": {"from": 0, "to": 9007199254740993}, "text": " one"}]}`,
-			fault = .Offset_Out_Of_Range,
-			cue = 1,
-		},
-		{
-			// And below it, which Negative_Offset never sees: read_millis
-			// refuses the magnitude before cue_follows is asked about the sign.
-			name = "integer-offset-below-the-limit.json",
-			json = `{"transcription": [{"offsets": {"from": -9007199254740993, "to": 0}, "text": " one"}]}`,
-			fault = .Offset_Out_Of_Range,
-			cue = 1,
-		},
-		{
-			name = "no-text.json",
-			json = `{"transcription": [{"offsets": {"from": 0, "to": 3480}}]}`,
-			fault = .No_Text,
-			cue = 1,
-		},
-		{
-			name = "text-not-a-string.json",
-			json = `{"transcription": [
-				{"offsets": {"from": 0,    "to": 1000}, "text": " one"},
-				{"offsets": {"from": 1000, "to": 2000}, "text": ["two"]}
-			]}`,
-			fault = .No_Text,
-			cue = 2,
-		},
-	}
-
-	for c in cases {
+	for c in REJECTED_CASES {
 		cues, err := parse_cues(c.name, c.json, FIXTURE_DURATION, context.allocator)
 		defer destroy_cues(cues, context.allocator)
 
