@@ -144,9 +144,45 @@ Named_Profile :: struct {
 // Transcript rather than after one ships recording no profile at all.
 @(private, rodata)
 PROFILES := [Merge_Profile]Named_Profile {
-	.Monologue = {name = "monologue", params = MONOLOGUE},
-	.Conversation = {name = "conversation", params = CONVERSATION},
+	.Monologue = {name = MONOLOGUE_NAME, params = MONOLOGUE},
+	.Conversation = {name = CONVERSATION_NAME, params = CONVERSATION},
 }
+
+// Each profile's name as a CONSTANT, so the table above and the choice below are
+// the same spelling rather than two that happen to match.
+@(private)
+MONOLOGUE_NAME :: "monologue"
+@(private)
+CONVERSATION_NAME :: "conversation"
+
+// Every profile a caller may pick, spelled the way a usage line offers a choice:
+// `monologue|conversation`.
+//
+// A CONSTANT, and it used to be a procedure that built this string out of the
+// table at runtime. That made the command line's usage block a FORMAT STRING --
+// and a usage block that is a format string turns the first `%` a future line of
+// prose carries into a silent bad verb printed to a caller who asked for help.
+// As a constant the whole block is a constant, written with no verbs at all, and
+// an allocating API nobody else wanted goes with it.
+//
+// What the procedure bought was staleness: a third profile could not go
+// unmentioned, because the line was built by walking the enumeration. The
+// #assert beneath this buys the same thing at compile time and costs nothing at
+// run time -- a member added to Merge_Profile fails the BUILD here, in front of
+// the line that would have gone stale, rather than being noticed by a reader
+// diffing a usage block.
+//
+// It is a CLI grammar living in the core, and that is the cost of it. What the
+// core owns is the SPELLING -- the front matter records `merge_profile:
+// "monologue"` and profile_named accepts exactly that -- and the `|` between
+// them is the part a command line contributes. The window ADR-0004 promises will
+// want a list rather than a line, and it has one: Merge_Profile is public and
+// profile_name answers for each member.
+PROFILE_CHOICE :: MONOLOGUE_NAME + "|" + CONVERSATION_NAME
+
+// The claim that keeps the line above honest, in checked code rather than in the
+// prose around it (CLAUDE.md A5).
+#assert(len(Merge_Profile) == 2)
 
 // One profile's row, checked.
 //
@@ -184,34 +220,6 @@ profile_params :: proc(profile: Merge_Profile) -> Merge_Params {
 	return profile_row(profile).params
 }
 
-// Every profile a caller may pick, joined the way a usage line offers a choice:
-// `monologue|conversation`.
-//
-// Read out of the table rather than spelled again wherever a usage line is
-// written. That copy lived in another package, where no compiler could compare
-// the two -- so a third profile would go unmentioned and a renamed one would be
-// offered under a spelling profile_named refuses.
-//
-// The allocator is explicit and never defaulted: the line outlives this
-// procedure. Free it with `delete`, passing the same allocator.
-profile_names :: proc(allocator: mem.Allocator) -> (offered: string) {
-	assert(allocator.procedure != nil, "the line outlives this procedure")
-	// What every caller depends on: there is always a choice to offer, because
-	// an enumeration with no members is not something this program has.
-	defer assert(len(offered) > 0, "offered a choice between no profiles at all")
-
-	out := strings.builder_make(allocator)
-	defer strings.builder_destroy(&out)
-
-	for profile in Merge_Profile {
-		if strings.builder_len(out) > 0 {
-			strings.write_byte(&out, '|')
-		}
-		strings.write_string(&out, profile_row(profile).name)
-	}
-	return strings.clone(strings.to_string(out), allocator)
-}
-
 // The profile a name stands for, or nothing where no profile carries it.
 //
 // Compared EXACTLY, case included. A lookup folding case would accept a spelling
@@ -222,10 +230,14 @@ profile_named :: proc(name: string) -> (profile: Merge_Profile, known: bool) {
 	// which is outside this program, and nothing outside it may crash it
 	// (CLAUDE.md A8). It is refused through the return like any other spelling.
 	//
-	// Compared through profile_row rather than against the range value, so every
-	// row is checked as the walk passes it -- including the zeroed one, which
-	// answers to the empty name and would otherwise hand a caller passing "" a
-	// profile whose thresholds merge_paragraphs refuses.
+	// Read through profile_row rather than off the range value, so every row is
+	// checked as the walk passes it. What that catches is a MISSING ROW and not a
+	// caller's empty name: a Merge_Profile added without one still has a row, made
+	// of zeroes, and a walk comparing against that row directly would answer the
+	// empty name with a profile whose thresholds merge_paragraphs refuses.
+	// profile_row asserts on it BEFORE the comparison, which is the right way
+	// round -- a missing row is this program's own defect, and no row a person
+	// filled in ever answers to "".
 	for candidate in Merge_Profile {
 		if profile_row(candidate).name == name {
 			return candidate, true

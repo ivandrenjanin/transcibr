@@ -25,16 +25,25 @@ PROGRAM :: "transcibr-cli"
 
 // What a caller gets told when the command line is not one this binary reads.
 //
-// The `%s` is the Merge Profiles, read out of the table that holds them
-// (transcript.profile_names) rather than spelled here. Spelled here it was a
-// copy of that table living in another package, where no compiler could compare
-// the two: a third profile would go unmentioned, and a renamed one would be
-// offered under a spelling the lookup refuses.
-USAGE :: `usage:
+// The Merge Profiles come from the package that holds them
+// (transcript.PROFILE_CHOICE) and are never spelled here. Spelled here they were
+// a copy of that table living where no compiler could compare the two: a third
+// profile would go unmentioned, and a renamed one would be offered under a
+// spelling the lookup refuses.
+//
+// Concatenated at COMPILE TIME and not printed through a verb. This block was a
+// format string, with the profiles substituted in at every use -- which makes
+// the first `%` a future line of prose carries into a bad verb, printed as
+// `%!c(MISSING)` to a caller who asked for help. A usage block holds prose, and
+// prose eventually holds a per cent sign.
+USAGE ::
+	`usage:
   transcibr-cli
       report the version and exit.
 
-  transcibr-cli --from-json <path> [--profile %s]
+  transcibr-cli --from-json <path> [--profile ` +
+	transcript.PROFILE_CHOICE +
+	`]
                 [--source <name>] [--model <name>] [--engine <version>]
       render the transcript for one piece of retained engine output and
       write it to standard output.
@@ -46,6 +55,10 @@ USAGE :: `usage:
 was made. The engine's own output cannot settle them -- it carries no engine
 version and reports every large model as "large" (ADR-0003) -- so anything
 not given, or given empty, is recorded as "unknown" rather than guessed at.`
+
+// `banner` is not the only thing here with a shape (A5): a usage block that
+// offers no choice of profile is one this binary could not have built.
+#assert(len(transcript.PROFILE_CHOICE) > 0)
 
 // The one thing this binary reads that takes no value.
 //
@@ -343,14 +356,16 @@ refuse :: proc(complaint: string, args: ..any) -> (ok: bool) {
 	return false
 }
 
-// Writes the usage block, with the Merge Profiles read out of the table that
-// holds them.
+// Writes the usage block.
+//
+// fprintln and not fprintfln: the block is a constant with the Merge Profiles
+// already in it, so there is no verb to fill and nothing here allocates. A
+// caller who asked for help is often a caller whose command line this binary
+// could not read, and a refusal that allocated to explain itself is one more
+// thing that can fail at the moment least worth failing at.
 @(private)
 write_usage :: proc(to: ^os.File) {
 	assert(to != nil, "there is nowhere to write the usage block")
 
-	offered := transcript.profile_names(context.allocator)
-	defer delete(offered, context.allocator)
-
-	fmt.fprintfln(to, USAGE, offered)
+	fmt.fprintln(to, USAGE)
 }

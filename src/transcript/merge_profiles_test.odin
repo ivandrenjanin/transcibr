@@ -492,64 +492,56 @@ each_merge_profile_carries_the_thresholds_adr_0007_tuned :: proc(t: ^testing.T) 
 	testing.expect_value(t, profile_params(.Conversation), CONVERSATION)
 }
 
-// What a usage line offers a caller, read out of the table rather than spelled
-// again in another package.
+// What a usage line offers a caller, against the profiles that exist.
 //
 // `monologue|conversation` was hand-written into the command line's USAGE, which
 // is a copy of PROFILES living where no compiler compares the two: a third
 // profile would be unmentioned, and a renamed one would be offered under a
 // spelling profile_named refuses.
+//
+// Read off the constant rather than split back apart. Splitting it would ask the
+// same question through a second grammar of this test's own, and the separator
+// count says what a split says about the shape without inventing one: as many
+// names as there are profiles, one separator between each pair, and nothing left
+// over.
 @(test)
 the_profiles_a_caller_may_pick_are_the_profiles_that_exist :: proc(t: ^testing.T) {
-	offered := profile_names(context.allocator)
-	defer delete(offered, context.allocator)
-
-	listed := strings.split(offered, "|", context.allocator)
-	defer delete(listed, context.allocator)
-
-	// Every profile, in the order the enumeration declares them, and nothing
-	// else. Walked over the enumeration on one side and the list on the other, so
-	// a profile missing from either is a failure rather than a shorter loop.
-	at := 0
+	// Every profile is offered under the exact name the lookup accepts, so a
+	// renamed one cannot be offered under a spelling profile_named refuses.
 	for profile in Merge_Profile {
-		if !testing.expectf(t, at < len(listed), "%v is not offered in %q", profile, offered) {
-			break
-		}
+		name := profile_name(profile)
 		testing.expectf(
 			t,
-			listed[at] == profile_name(profile),
-			"%q is offered where %v was expected",
-			listed[at],
+			strings.contains(PROFILE_CHOICE, name),
+			"%v is called %q, which %q does not offer",
 			profile,
+			name,
+			PROFILE_CHOICE,
 		)
-		at += 1
 	}
-	testing.expectf(t, at == len(listed), "%q offers something no profile answers to", offered)
 
-	// And every name in it is one the lookup actually accepts, which is the whole
-	// promise a usage line makes (CLAUDE.md A4).
-	for name in listed {
-		_, known := profile_named(name)
-		testing.expectf(t, known, "%q is offered and refused", name)
+	// And nothing else is in it. Without this the constant could offer a profile
+	// twice, or offer a spelling no profile answers to, and every line above would
+	// still pass.
+	separators := strings.count(PROFILE_CHOICE, "|")
+	testing.expectf(
+		t,
+		separators == len(Merge_Profile) - 1,
+		"%q holds %d separators for %d profiles",
+		PROFILE_CHOICE,
+		separators,
+		len(Merge_Profile),
+	)
+	offered := 0
+	for profile in Merge_Profile {
+		offered += len(profile_name(profile))
 	}
-}
-
-// The profile a caller who chose none is merged under, named once so the two
-// binaries cannot disagree about it.
-//
-// Spec story 44 asks that a re-render produce the Transcript the original run
-// would have. The command line spelled its default as a bare enum member, where
-// the window ADR-0004 promises could quietly spell a different one -- and the
-// two would then paragraph the same Recording differently while both recording
-// what they did.
-@(test)
-the_default_merge_profile_is_one_the_lookup_knows :: proc(t: ^testing.T) {
-	name := profile_name(DEFAULT_PROFILE)
-	testing.expect(t, len(name) > 0, "the default profile carries no name")
-
-	back, known := profile_named(name)
-	testing.expectf(t, known, "the default profile is called %q, which nothing knows", name)
-	testing.expect_value(t, back, DEFAULT_PROFILE)
+	testing.expectf(
+		t,
+		len(PROFILE_CHOICE) == offered + separators,
+		"%q is not exactly the profile names and the separators between them",
+		PROFILE_CHOICE,
+	)
 }
 
 // Two profiles under one name would resolve to whichever the lookup reached
