@@ -275,9 +275,13 @@ render_markdown :: proc(
 //   `&lt;b&gt;`       reaches the reader as `<b>`
 //   `&amp;`           reaches the reader as `&`
 //
-// -- and one spelling even divides the two: `&notit;` is not a valid entity, so
-// commonmark.js leaves it alone and marked resolves the `&not` prefix in it and
-// writes `¬it;`.
+// -- and one spelling divides the two, though not the way this comment once
+// claimed. `&notit;` is not a valid entity name and NEITHER renderer resolves
+// it: measured, commonmark.js writes `&amp;notit;` and marked writes `&notit;`.
+// What divides them is the ROUTE and not the outcome -- commonmark.js resolves a
+// valid entity itself and writes the character, marked hands the entity on for
+// the browser to resolve -- and `&not;` is the row that shows it: `<p>¬</p>` from
+// one and `<p>&not;</p>` from the other, the same `¬` on the page either way.
 //
 // What escaping it would cost instead: a backslash in front of the ampersand in
 // every "R&D", "AT&T", "Q&A", "H&M" and "Fish & chips" a Transcript holds --
@@ -309,6 +313,54 @@ INLINE_SPECIALS :: `\` + "`" + `*_[]<|`
 // block.
 @(private)
 BLOCK_STARTERS :: "#>-+=~"
+
+// WHAT ELSE IS DELIBERATELY NOT ESCAPED, and what each of those costs.
+//
+// Both were measured through the built binary, against commonmark.js 0.31.2 and
+// marked 18.0.7 -- which is GFM, with its extensions on by default. NEITHER
+// corrupts structure: the document's shape survives both, and what they cost is
+// fidelity on one line of one Transcript. That is why they are recorded here
+// rather than fixed, and this is the evidence a decision to fix either would
+// start from.
+//
+// `~~` IS NOT IN INLINE_SPECIALS. GFM reads a pair of them as strikethrough, so
+// "He said ~~never mind~~ and moved on." reaches a GFM reader with the four
+// tildes gone and the words between them struck through; CommonMark writes every
+// byte of it verbatim. No WORD is lost -- only the tildes -- and a tilde is not a
+// sound. A speech model writes `~~` about as readily as it writes `&copy;`, and
+// escaping it would put a backslash in front of the `~` in every "~20 minutes"
+// an Engine ever wrote. The same trade as `&` above, on the same reasoning.
+//
+// A BARE URL under GFM is the harder one, and the only trade here where the
+// escaper's OWN backslashes reach the reader. GFM autolinks a bare `http://`,
+// `https://` or `www.` run, and it consumes that run's raw text BEFORE backslash
+// escapes resolve inside it -- so a backslash written here to protect an
+// underscore becomes a character of the link:
+//
+//   speech                                  what a GFM reader sees
+//   https://en.wikipedia.org/wiki/Foo_bar   https://en.wikipedia.org/wiki/Foo\_bar
+//   https://github.com/some_org/some_repo   .../some\_org/some\_repo
+//   www.example.com/a_b_c                   www.example.com/a\_b\_c
+//   http://x.example/a[1]                   http://x.example/a\[1\]
+//
+// -- and the `href` is corrupted with it, carrying `%5C` where each backslash
+// landed, so the link goes somewhere that is not the place that was said.
+// CommonMark renders every one of those correctly, which is why it took a second
+// look to find. The trigger is narrow and worth stating exactly: an AUTOLINKED
+// bare URL carrying `_`, `*`, `[` or `]`. Ordinary speech holding the same
+// characters is verbatim under both renderers -- `with_underscores`,
+// `first_last@example.com`, `my_report_final.docx` and
+// `C:\Users\bob_smith\notes.txt` were each measured and each arrives exactly as
+// it was said.
+//
+// Not fixed, because no fix here is cheap. Leaving a URL run unescaped trades
+// this corruption for a worse one: `http://x.example/a*b*c` italicises under
+// CommonMark the moment the backslashes come off. Doing it properly means
+// implementing GFM's autolink boundary rules -- trailing punctuation, balanced
+// parentheses, where the run ends -- inside an escaper whose whole virtue is
+// being short enough to check by eye. The Engine does emit URL-shaped tokens off
+// technical talks, so this is the line to revisit if a Transcript ever has to be
+// right under GFM as well as under CommonMark.
 
 // Writes one Paragraph's speech so that nothing in it can become structure.
 //
