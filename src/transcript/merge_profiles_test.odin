@@ -499,49 +499,77 @@ each_merge_profile_carries_the_thresholds_adr_0007_tuned :: proc(t: ^testing.T) 
 // profile would be unmentioned, and a renamed one would be offered under a
 // spelling profile_named refuses.
 //
-// Read off the constant rather than split back apart. Splitting it would ask the
-// same question through a second grammar of this test's own, and the separator
-// count says what a split says about the shape without inventing one: as many
-// names as there are profiles, one separator between each pair, and nothing left
-// over.
+// BUILT AND COMPARED ONCE, rather than approached from three sides. This case
+// used to ask three indirect questions -- every name appears somewhere in the
+// constant, the separator count matches the profile count, and the total length
+// is the names plus the separators -- and `conversation|monologue` answers all
+// three correctly while offering the profiles in the wrong ORDER. A usage block
+// that lists them backwards is what a caller reads, so the order is part of the
+// claim and none of the three indirect questions could see it.
+//
+// The join is the same one grammar the constant is built with, applied once. It
+// is not the constant's own arithmetic repeated: PROFILE_CHOICE is concatenated
+// at compile time out of the two name CONSTANTS, and this walks the ENUMERATION
+// and reads each name back out of the PROFILES table -- so a row pointing at the
+// wrong constant, a renamed profile, a reordered enumeration and a third profile
+// nobody added to the offer are each a disagreement between the two.
 @(test)
 the_profiles_a_caller_may_pick_are_the_profiles_that_exist :: proc(t: ^testing.T) {
-	// Every profile is offered under the exact name the lookup accepts, so a
-	// renamed one cannot be offered under a spelling profile_named refuses.
+	names: [len(Merge_Profile)]string
+	at := 0
 	for profile in Merge_Profile {
-		name := profile_name(profile)
-		testing.expectf(
-			t,
-			strings.contains(PROFILE_CHOICE, name),
-			"%v is called %q, which %q does not offer",
-			profile,
-			name,
-			PROFILE_CHOICE,
-		)
+		names[at] = profile_name(profile)
+		at += 1
 	}
 
-	// And nothing else is in it. Without this the constant could offer a profile
-	// twice, or offer a spelling no profile answers to, and every line above would
-	// still pass.
-	separators := strings.count(PROFILE_CHOICE, "|")
-	testing.expectf(
-		t,
-		separators == len(Merge_Profile) - 1,
-		"%q holds %d separators for %d profiles",
-		PROFILE_CHOICE,
-		separators,
-		len(Merge_Profile),
-	)
-	offered := 0
+	offered := strings.join(names[:], "|", context.allocator)
+	defer delete(offered, context.allocator)
+
+	testing.expect_value(t, PROFILE_CHOICE, offered)
+}
+
+// The profile a caller who chose none is merged under, and the reason it is that
+// one rather than the other.
+//
+// Spec story 44 asks that a re-render produce the Transcript the original run
+// would have, so the window ADR-0004 promises and the command line must default
+// to the SAME profile. That is bought by naming it once -- DEFAULT_PROFILE, in
+// the package that holds the profiles -- and both shells read it rather than
+// spelling a bare enum member. No test here can reach the command line to check
+// that it does: `cli` collects no tests by design (ADR-0009), so what guards the
+// second half of the claim is review and the fact that there is one constant to
+// read.
+//
+// What IS checkable is the half that has a wrong answer available. The default
+// is the GENEROUS profile because merging too little leaves the
+// subtitle-fragment wall this program exists to avoid, and a reader who wanted
+// the aggressive one can re-render in seconds (spec story 43) -- so a default
+// pointing at a profile that breaks sooner than another has the trade backwards.
+// Read off the ENUMERATION rather than compared against MONOLOGUE by name: this
+// is a claim about the default's PLACE among the profiles, and it must go on
+// meaning that when there is a third.
+@(test)
+the_default_merge_profile_merges_as_generously_as_any :: proc(t: ^testing.T) {
+	fallback := profile_params(DEFAULT_PROFILE)
 	for profile in Merge_Profile {
-		offered += len(profile_name(profile))
+		p := profile_params(profile)
+		testing.expectf(
+			t,
+			fallback.max_gap_ms >= p.max_gap_ms,
+			"the default breaks on %v ms of silence where %v waits for %v ms",
+			fallback.max_gap_ms,
+			profile,
+			p.max_gap_ms,
+		)
+		testing.expectf(
+			t,
+			fallback.hard_gap_ms >= p.hard_gap_ms,
+			"the default breaks whatever was said at %v ms where %v waits for %v ms",
+			fallback.hard_gap_ms,
+			profile,
+			p.hard_gap_ms,
+		)
 	}
-	testing.expectf(
-		t,
-		len(PROFILE_CHOICE) == offered + separators,
-		"%q is not exactly the profile names and the separators between them",
-		PROFILE_CHOICE,
-	)
 }
 
 // Two profiles under one name would resolve to whichever the lookup reached
