@@ -619,6 +619,13 @@ function Test-OdinFormatConfigValue {
 #   { }                          an absent key takes odinfmt's own default, and
 #                                that default is platform-dependent: newline_style
 #                                is CRLF on Windows and LF everywhere else
+#   { "tabs": true, }            ACCEPTED, and applied in full. odinfmt reads
+#   { /* or */ // a comment }    this file with core:encoding/json, whose
+#                                DEFAULT_SPECIFICATION is JSON5 -- so the two
+#                                likeliest syntax errors are not errors to it at
+#                                all. Measured: a config carrying either formats
+#                                byte-identically to the same config without it,
+#                                and differently from no config at all.
 #
 # This was first written as a PROBE: format a small file, read the indentation
 # and line endings back out of the answer, the way Assert-PeSubsystem reads the
@@ -643,7 +650,11 @@ function Confirm-OdinFormatConfig {
 		$declared = Get-Content -LiteralPath $OdinFormatConfig -Raw | ConvertFrom-Json
 	}
 	catch {
-		throw "$OdinFormatConfig is not valid JSON: $($_.Exception.Message). odinfmt would ignore it silently and format to its own default instead."
+		# Refused, not diagnosed. This parser is the STRICTER of the two -- odinfmt
+		# reads the file as JSON5 and would have taken a trailing comma or a
+		# comment in its stride -- so the honest claim is that the file no longer
+		# says which way odinfmt went, not that odinfmt ignored it.
+		throw "$OdinFormatConfig is not valid JSON: $($_.Exception.Message). Refused rather than guessed at: odinfmt reads this file as JSON5, which accepts a trailing comma and a comment that this parser will not, so the file alone cannot say whether odinfmt read it or fell back to its own default -- and that default is platform-dependent."
 	}
 	if ($declared -isnot [System.Management.Automation.PSCustomObject]) {
 		throw "$OdinFormatConfig is not a JSON object, so there is nothing for odinfmt to read printer.Config out of."

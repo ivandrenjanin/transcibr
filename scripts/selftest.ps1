@@ -999,10 +999,10 @@ Test-Case 'a source with LF line endings fails the format check' {
 
 Test-Case 'a config odinfmt would silently ignore fails the format command' {
 	# odinfmt's find_config_file_or_default returns its own built-in default
-	# whenever the file is missing or json.unmarshal fails, and says NOTHING. A
-	# trailing comma in odinfmt.json would otherwise leave every command here
-	# passing against a style nobody chose -- and that default is
-	# platform-dependent, so it would not even be the same style twice.
+	# whenever the file is missing or json.unmarshal fails, and says NOTHING --
+	# which would leave every command here passing against a style nobody chose,
+	# and that default is platform-dependent, so it would not even be the same
+	# style twice.
 	$missing = New-FixtureRepo 'format-config-missing'
 	Add-FixtureBinary -RepoRoot $missing -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
 	Remove-Item -LiteralPath (Join-Path $missing 'odinfmt.json') -Force
@@ -1012,6 +1012,40 @@ Test-Case 'a config odinfmt would silently ignore fails the format command' {
 	Add-FixtureBinary -RepoRoot $broken -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
 	[System.IO.File]::WriteAllText((Join-Path $broken 'odinfmt.json'), '{ "character_width": 100, oops }', $Utf8NoBom)
 	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $broken -Script 'format.ps1') -Fails -Matching 'not valid JSON'
+
+	# And the same refusal for a config odinfmt would have read perfectly well.
+	# A trailing comma is the likeliest syntax error there is, and it is NOT one
+	# of the silent-default cases above: odinfmt reads this file with
+	# core:encoding/json, whose DEFAULT_SPECIFICATION is JSON5, and measured
+	# against the pinned build a trailing comma and a // comment both parse and
+	# apply IN FULL -- byte-identical output to the same config without them, and
+	# different from the output with no config at all.
+	#
+	# So this refusal is the check being deliberately stricter than odinfmt, which
+	# is the fail-closed answer: `{ "character_width": 100, oops }` above and this
+	# file are the same file to anything reading it here, and nothing on disk says
+	# which way odinfmt went. The refusal has to say THAT, and not the opposite.
+	$tolerated = New-FixtureRepo 'format-config-trailing-comma'
+	Add-FixtureBinary -RepoRoot $tolerated -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	$path = Join-Path $tolerated 'odinfmt.json'
+	# Built by hand rather than by regex: a `$`-anchored pattern does not match
+	# what it looks like it matches once the file arrives with CRLF endings.
+	$text = [System.IO.File]::ReadAllText($path)
+	$brace = $text.LastIndexOf('}')
+	if ($brace -lt 0) {
+		throw "the fixture's odinfmt.json has no closing brace to put a comma in front of."
+	}
+	[System.IO.File]::WriteAllText($path, ($text.Substring(0, $brace).TrimEnd() + ",`n}`n"), $Utf8NoBom)
+
+	$result = Invoke-FixtureScript -RepoRoot $tolerated -Script 'format.ps1'
+	Assert-Result -Result $result -Fails -Matching 'not valid JSON'
+	Assert-Result -Result $result -Fails -Matching 'JSON5'
+	# The claim the refusal must not make, kept as its own assertion because it is
+	# the whole finding: the message said odinfmt "would ignore it silently and
+	# format to its own default instead", and for this file odinfmt does neither.
+	if ($result.Output -match 'ignore it silently') {
+		throw "the refusal still claims odinfmt ignores this config, which it measurably does not.`n$($result.Output)"
+	}
 }
 
 # CLAUDE.md rule F1, in its own words: a hard limit, "checkable by machine and
