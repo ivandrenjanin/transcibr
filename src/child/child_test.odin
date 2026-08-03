@@ -46,6 +46,12 @@ foreign kernel32_probe {
 // it exists to catch is a comment with a runtime cost, and this repository has
 // already learned that once, in utf16_units next door.
 //
+// What replaced it is a windowed harness run by hand against a control, and it is
+// the criterion rather than a proxy for it: a GUI-subsystem binary started with
+// no console of its own starts two children, once through this package and once
+// through core:os.process_start. Through core:os a visible window appears; through
+// this package none does. The pull request records the runs.
+//
 // Every child this suite starts is BOUNDED, and that is a rule rather than a
 // habit: `odin test` runs what it builds, and a test that starts a child which
 // never exits wedges the sweep behind scripts\common.ps1's ten-minute ceiling
