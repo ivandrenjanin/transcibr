@@ -54,7 +54,7 @@ $script:Passes = 0
 # Keep $ExpectedCaseCount in step with the cases below; a mismatch either way
 # fails the run. Skipping is deny-by-default, same as $OdinPackagesWithoutTests
 # in common.ps1: a case may end in a skip only if it is named here.
-$ExpectedCaseCount = 21
+$ExpectedCaseCount = 22
 #
 # One entry, and it earns it: a token holding SeBackupPrivilege walks straight
 # past the deny that case plants, so that machine cannot set the case up. An
@@ -294,6 +294,18 @@ function Assert-Result {
 	}
 }
 
+# The <package>.<test> names a document hands a reader to run, in every spelling
+# PowerShell itself binds: a space or a colon before the value, the value quoted
+# either way, and any casing -- [regex]::Matches is case-SENSITIVE, so `-testname`
+# read as no command at all. The dot is what keeps prose about the flag
+# ("-TestName takes <package>.<test>") from reading as a name.
+function Get-DocumentedTestName {
+	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
+
+	$matched = [regex]::Matches($Text, '(?i)-TestName[:\s]+["'']?([A-Za-z0-9_]+\.[A-Za-z0-9_]+)')
+	return @($matched | ForEach-Object { $_.Groups[1].Value })
+}
+
 # For the checks that are called in-process rather than through a child script.
 function Assert-Throws {
 	param(
@@ -455,21 +467,23 @@ Test-Case 'every single-test command in the documentation runs the test it names
 	# it went stale the first time a test was renamed. The names are DISCOVERED
 	# from the documents rather than listed here: a guard holding its own copy
 	# of what it guards is the same hand-maintained duplicate it exists to catch.
+	#
+	# Per document, never pooled across the three. A pooled count is satisfied by
+	# whichever document still matches, so rewording ONE of them into a form the
+	# pattern misses leaves it free to print a stale name indefinitely.
 	$documented = @()
 	foreach ($document in @((Join-Path $RepoRoot 'CLAUDE.md'), (Join-Path $RepoRoot 'README.md'), (Join-Path $ScriptRoot 'test.ps1'))) {
 		if (-not (Test-Path -LiteralPath $document)) {
 			throw "no $document to read the documented commands out of."
 		}
-		# <package>.<test>, the shape -TestName takes. The dot is required, so
-		# prose about the flag ("-TestName takes <package>.<test>") is not a name.
-		$found = [regex]::Matches((Get-Content -LiteralPath $document -Raw), '-TestName\s+([A-Za-z0-9_]+\.[A-Za-z0-9_]+)')
-		$documented += @($found | ForEach-Object { $_.Groups[1].Value })
+		$found = @(Get-DocumentedTestName -Text (Get-Content -LiteralPath $document -Raw))
+		if ($found.Count -eq 0) {
+			throw "no -TestName example found in $document, so nothing checks the name it prints."
+		}
+		$documented += $found
 	}
 
 	$documented = @($documented | Sort-Object -Unique)
-	if ($documented.Count -eq 0) {
-		throw 'no -TestName example found in any document, so this case checked nothing.'
-	}
 
 	# Run against the REAL repository, which is the whole claim a document that
 	# prints a command makes: that running it here does what it says.
@@ -483,6 +497,32 @@ Test-Case 'every single-test command in the documentation runs the test it names
 	$absent = Invoke-FixtureScript -RepoRoot $RepoRoot -Script 'test.ps1' `
 		-ScriptArguments @('-TestName', "$($documented[0])_no_such_test")
 	Assert-Result -Result $absent -Fails -Matching 'no test named'
+}
+
+Test-Case 'the documented-command reader accepts every spelling of the flag' {
+	# The guard above is worth exactly what this pattern reads. A spelling it
+	# misses is a document that quietly stops being checked -- and the check
+	# above cannot notice, because a document with no commands in it looks the
+	# same as a document whose commands were not recognised.
+	$spellings = @(
+		'.\scripts\test.ps1 -TestName version.some_test'
+		'.\scripts\test.ps1 -TestName:version.some_test'
+		".\scripts\test.ps1 -TestName 'version.some_test'"
+		'.\scripts\test.ps1 -TestName "version.some_test"'
+		'.\scripts\test.ps1 -testname version.some_test'
+	)
+	foreach ($spelling in $spellings) {
+		if (@(Get-DocumentedTestName -Text $spelling) -notcontains 'version.some_test') {
+			throw "read no test name out of: $spelling"
+		}
+	}
+
+	# The negative space (rule A3): prose ABOUT the flag names no test, and a
+	# pattern loose enough to read it as one sends the guard chasing <package>.
+	$prose = @(Get-DocumentedTestName -Text '-TestName takes <package>.<test>.')
+	if ($prose.Count -ne 0) {
+		throw "read '$($prose -join "', '")' out of prose about the flag."
+	}
 }
 
 Test-Case 'a package that does not compile fails the sweep' {
