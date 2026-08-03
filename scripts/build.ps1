@@ -32,6 +32,10 @@ Write-Host "Build:  $Configuration"
 
 New-Item -ItemType Directory -Path $BuildRoot -Force | Out-Null
 
+# Counted as each target is finished, not taken from $OdinTargets afterwards:
+# a total read off the list reports what was DECLARED however little ran.
+$built = 0
+
 foreach ($target in $OdinTargets) {
 	$out = Join-Path $BuildRoot "$($target.Name).exe"
 
@@ -73,10 +77,15 @@ foreach ($target in $OdinTargets) {
 		}
 		Write-Host "-> $($target.Name) printed: $($smoke.Output)" -ForegroundColor Green
 	}
+
+	$built += 1
 }
 
 Write-Host ''
-Write-Host "Built $($OdinTargets.Count) target(s) into $BuildRoot" -ForegroundColor Green
+if ($built -eq 0) {
+	throw "no targets built: `$OdinTargets in scripts\common.ps1 is empty."
+}
+Write-Host "Built $built target(s) into $BuildRoot" -ForegroundColor Green
 
 # Stated, not inherited from whichever native command happened to run last.
 exit 0

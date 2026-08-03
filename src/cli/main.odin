@@ -6,7 +6,6 @@
 package main
 
 import "core:fmt"
-import "core:strings"
 import "transcibr:version"
 
 PROGRAM :: "transcibr-cli"
@@ -18,13 +17,14 @@ main :: proc() {
 	line := version.banner(PROGRAM, version.CURRENT, context.allocator)
 	defer delete(line, context.allocator)
 
-	// The read side of the four facts `banner` asserts on the way out (A4). A
-	// script reading this binary's output splits the first line on its first
-	// space, so the shape is the contract and not merely the length.
-	assert(strings.has_prefix(line, PROGRAM), "banner does not name this program")
-	assert(len(line) > len(PROGRAM), "banner carries no version after the program name")
-	assert(line[len(PROGRAM)] == ' ', "banner does not separate the program name from the version")
-	assert(strings.index_byte(line, '\n') == -1, "banner rendered more than one line")
-
+	// The line's shape is deliberately NOT re-asserted here. `banner` asserts
+	// all four facts on the way out, and nothing between its return and this
+	// call can change the string -- so a copy here fires only where the copy
+	// there already did, and assertions are enabled in every configuration
+	// this repository builds (CLAUDE.md rule A1).
+	//
+	// A4's read side is a process away, where a real reader is: scripts\
+	// build.ps1 runs this binary and matches what it actually printed, and
+	// src\version\version_test.odin pins the rendered line by exact equality.
 	fmt.println(line)
 }
