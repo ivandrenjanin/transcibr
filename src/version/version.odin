@@ -9,8 +9,15 @@ package version
 import "core:fmt"
 import "core:mem"
 
-// A semantic version. Explicit widths because this is written into a sidecar
-// and read back to decide whether a recording needs re-doing (T1, ADR-0003).
+// A semantic version.
+//
+// The widths are explicit but T1 does not compel them here: nothing serializes
+// a Version yet, and the sidecar ADR-0003 specifies records the ENGINE's
+// version, not transcibr's. They stay because a version component is a small
+// non-negative number that means the same thing on every target -- which `int`,
+// signed and target-width, does not say -- and because a build identifier is
+// the kind of value that ends up written down. Should it ever be, T1 will
+// require exactly this and the byte image will already be pinned.
 Version :: struct {
 	major: u32,
 	minor: u32,
