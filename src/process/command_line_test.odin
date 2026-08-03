@@ -20,6 +20,16 @@ import "core:testing"
 // and is the only reason the criterion can be met at all: purity is a property of
 // `build_command_line`, not of the harness that checks it.
 //
+// AND IT COSTS THE SHIPPED BINARY NOTHING, which is worth writing down because
+// the opposite is a reasonable thing to fear and acting on the fear would mean
+// giving up the real parser. Odin DOES type-check `_test.odin` files in an
+// ordinary build, including for an imported package -- plant a broken one and
+// `odin build` of a main package that imports this fails. The link-time
+// conclusion does not follow from that. Measured, A/B: a main package importing
+// this one carries no SHELL32 import and no `CommandLineToArgvW` anywhere in the
+// image, while a binary that really calls the API carries both. Nothing here
+// reaches ADR-0004's GUI binary.
+//
 // The caller owns the slice and every string in it; `free_argv` returns both.
 @(private)
 argv_of :: proc(t: ^testing.T, command_line: string, allocator: mem.Allocator) -> []string {
