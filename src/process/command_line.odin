@@ -416,11 +416,8 @@ build_command_line :: proc(
 	// result would refuse lines that fit.
 	if utf16_units(out) + 1 > MAX_COMMAND_LINE_UNITS {
 		strings.builder_destroy(&b)
-		// Nothing named, because there is nothing here to name. The executable path
-		// this line was built from may be entirely reasonable; what is too long is
-		// the LINE, and no part of it is more at fault than any other. Naming the
-		// path anyway reads as `C:\ffmpeg.exe: ...` -- an accusation against a file
-		// the caller would then go and look at for no reason.
+		// Nothing named: what is too long is the LINE, and no part of it is more at
+		// fault than any other. See Fault_Blames.Nothing.
 		return "", fault_at(.Too_Long, "", 0)
 	}
 	return out, Build_Error{}
