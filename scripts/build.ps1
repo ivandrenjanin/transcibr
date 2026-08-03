@@ -57,7 +57,7 @@ foreach ($target in $OdinTargets) {
 	Write-Host ''
 	Write-Host "=== $($target.Name) ($($target.Subsystem)) ===" -ForegroundColor Cyan
 
-	Invoke-Odin -Odin $odin -Arguments $arguments
+	Invoke-NativeCommand -Command $odin -Arguments $arguments
 	$odinExit = $LASTEXITCODE
 	if ($odinExit -ne 0) {
 		throw "odin exited $odinExit building $($target.Name)."

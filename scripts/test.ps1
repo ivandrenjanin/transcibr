@@ -102,7 +102,7 @@ foreach ($package in $packages) {
 	# the first checkout path containing a space, and PowerShell's own argument
 	# passing does not. Nothing is redirected either, so the runner's output
 	# reaches the console as it happens and $LASTEXITCODE stays trustworthy.
-	Invoke-Odin -Odin $odin -Arguments $arguments
+	Invoke-NativeCommand -Command $odin -Arguments $arguments
 	$odinExit = $LASTEXITCODE
 
 	# The runner's machine-readable report, not its console prose. It writes no

@@ -84,8 +84,7 @@ function Add-FixturePackage {
 		# The directory to plant the package in, where that has to differ from
 		# the package name: an Odin identifier cannot contain a space and a
 		# directory can, which is the whole point of the case that uses this.
-		[string] $Directory = '',
-		[switch] $Hidden
+		[string] $Directory = ''
 	)
 
 	if ($Directory -eq '') {
@@ -102,11 +101,6 @@ function Add-FixturePackage {
 	}
 	$source = "package $Name`n`n$body"
 	[System.IO.File]::WriteAllText((Join-Path $dir "$Name.odin"), $source, $Utf8NoBom)
-
-	if ($Hidden) {
-		$item = Get-Item -LiteralPath $dir -Force
-		$item.Attributes = $item.Attributes -bor [System.IO.FileAttributes]::Hidden
-	}
 	return $dir
 }
 
@@ -132,16 +126,27 @@ function New-FixtureMain {
 		[int] $Exit = 0
 	)
 
-	# core:fmt is imported only where something is printed. -vet rejects an
-	# unused import, which is what the silent binary would otherwise carry --
-	# and printing an empty string to satisfy it reads as a bug in the fixture.
-	$imports = 'import "core:os"'
-	$print = ''
+	# The import list is emitted from what the body uses, because -vet rejects an
+	# unused import: the silent binary carries no core:fmt, and one exiting zero
+	# -- which main does by returning -- carries no core:os. Keeping a call in
+	# the body to keep an import used reads as a bug in the fixture rather than
+	# as the case it stands for.
+	$imports = @()
+	$body = ''
 	if ($Line -ne '') {
-		$imports = "import `"core:fmt`"`n$imports"
-		$print = "`tfmt.println(`"$Line`")`n"
+		$imports += 'import "core:fmt"'
+		$body += "`tfmt.println(`"$Line`")`n"
 	}
-	return "$imports`n`nmain :: proc() {`n$print`tos.exit($Exit)`n}`n"
+	if ($Exit -ne 0) {
+		$imports += 'import "core:os"'
+		$body += "`tos.exit($Exit)`n"
+	}
+
+	$head = ''
+	if ($imports.Count -gt 0) {
+		$head = ($imports -join "`n") + "`n`n"
+	}
+	return $head + "main :: proc() {`n$body}`n"
 }
 
 # A separate process, so the child's Set-StrictMode, exit code and $LASTEXITCODE
@@ -302,25 +307,6 @@ function Get-DocumentedTestName {
 	return @($matched | ForEach-Object { $_.Groups[1].Value })
 }
 
-# For the checks that are called in-process rather than through a child script.
-function Assert-Throws {
-	param(
-		[Parameter(Mandatory)] [scriptblock] $Body,
-		[Parameter(Mandatory)] [string] $Matching
-	)
-
-	try {
-		& $Body
-	}
-	catch {
-		if ($_.Exception.Message -notmatch $Matching) {
-			throw "threw, but not matching /$Matching/: $($_.Exception.Message)"
-		}
-		return
-	}
-	throw "expected a throw matching /$Matching/, and nothing was thrown."
-}
-
 # ------------------------------------------------------------------- cases --
 
 New-Item -ItemType Directory -Path $FixtureRoot -Force | Out-Null
@@ -386,7 +372,10 @@ Test-Case 'a passing sweep survives a caller that merges the output streams' {
 Test-Case 'a hidden package is discovered, not skipped' {
 	$repo = New-FixtureRepo 'hidden-package'
 	Add-FixturePackage -RepoRoot $repo -Name 'visible' -Test 'passing' | Out-Null
-	Add-FixturePackage -RepoRoot $repo -Name 'concealed' -Test 'failing' -Hidden | Out-Null
+	$concealed = Add-FixturePackage -RepoRoot $repo -Name 'concealed' -Test 'failing'
+	$item = Get-Item -LiteralPath $concealed -Force
+	$item.Attributes = $item.Attributes -bor [System.IO.FileAttributes]::Hidden
+
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
 	Assert-Result -Result $result -Fails -Matching 'concealed'
 }
@@ -621,11 +610,19 @@ Test-Case 'the subsystem is read out of the PE header, not taken from the flag' 
 
 	Assert-PeSubsystem -Path $console -Subsystem 'console'
 	Assert-PeSubsystem -Path $gui -Subsystem 'windows'
-	Assert-Throws -Matching 'is subsystem 2, expected 3' -Body {
-		Assert-PeSubsystem -Path $gui -Subsystem 'console'
+
+	# And the negative space (rule A3): a reader that never rejects anything
+	# agrees with both lines above. An empty message is the "nothing was thrown"
+	# case, which -notmatch catches along with the wrong message.
+	$mismatched = ''
+	try { Assert-PeSubsystem -Path $gui -Subsystem 'console' } catch { $mismatched = $_.Exception.Message }
+	if ($mismatched -notmatch 'is subsystem 2, expected 3') {
+		throw "reading a GUI image as console gave: '$mismatched'"
 	}
-	Assert-Throws -Matching 'does not start with the MZ signature' -Body {
-		Assert-PeSubsystem -Path (Join-Path $ScriptRoot 'common.ps1') -Subsystem 'console'
+	$notAnImage = ''
+	try { Assert-PeSubsystem -Path (Join-Path $ScriptRoot 'common.ps1') -Subsystem 'console' } catch { $notAnImage = $_.Exception.Message }
+	if ($notAnImage -notmatch 'does not start with the MZ signature') {
+		throw "reading a script as a PE image gave: '$notAnImage'"
 	}
 }
 

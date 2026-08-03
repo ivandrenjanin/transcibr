@@ -101,10 +101,10 @@ function Resolve-OdinCompiler {
 	return $odin
 }
 
-# Run the compiler, letting its output through to the console untouched. Read
-# $LASTEXITCODE immediately after; this deliberately returns nothing, because
-# anything it returned would be indistinguishable from the compiler's own
-# output on the same stream.
+# Run a native command, letting its output through to the console untouched.
+# Read $LASTEXITCODE immediately after; this deliberately returns nothing,
+# because anything it returned would be indistinguishable from the command's
+# own output on the same stream.
 #
 # $ErrorActionPreference drops to Continue for the call, and the assignment is
 # function-scoped so it lasts exactly that long. The test runner writes its
@@ -112,21 +112,19 @@ function Resolve-OdinCompiler {
 # 2>&1`, or `*>` to a file -- PowerShell wraps every one of those lines in an
 # ErrorRecord, and under 'Stop' the first INFO line of a perfectly good run
 # becomes a terminating error.
-function Invoke-Odin {
+function Invoke-NativeCommand {
 	param(
-		[Parameter(Mandatory)] [string] $Odin,
+		[Parameter(Mandatory)] [string] $Command,
 		[Parameter(Mandatory)] [AllowEmptyCollection()] [string[]] $Arguments
 	)
 
 	$ErrorActionPreference = 'Continue'
-	& $Odin @Arguments
+	& $Command @Arguments
 }
 
 # The same call with the output CAPTURED instead of passed through, for the two
 # places that need to read what a program printed: the version check and the
-# build's smoke test. Deliberately not a switch on Invoke-Odin -- a procedure
-# that both passes output through and returns a value puts the two on one
-# stream, which is exactly what Invoke-Odin's contract exists to avoid.
+# build's smoke test.
 function Read-NativeOutput {
 	param(
 		[Parameter(Mandatory)] [string] $Command,
@@ -147,9 +145,9 @@ function Read-NativeOutput {
 #
 # A hard local refusal buys nothing on top of that and costs a great deal. The
 # first upstream retag, or the first contributor whose nightly is a week off,
-# makes the repository unbuildable and untestable for them until two constants
-# are edited -- and the warning already tells them, while CI still catches a
-# change that only compiles on their compiler.
+# makes the repository unbuildable and untestable for them until the pin moves
+# -- and the warning already tells them how, while CI still catches a change
+# that only compiles on their compiler.
 function Confirm-OdinVersion {
 	param([Parameter(Mandatory)] [string] $Odin)
 
@@ -173,20 +171,15 @@ Odin version mismatch.
   expected: $OdinVersionPin (the pin in scripts\common.ps1)
   found:    $found ($Odin)
 "@
+	# The way out, said once for both branches. The two spellings of the pin move
+	# together or CI downloads one compiler and then refuses it.
+	$remedy = 'Point $env:ODIN at the pinned compiler, or move $OdinVersionPin and $OdinReleaseTag together in scripts\common.ps1 if you mean to move the pin.'
+
 	if ($env:CI) {
-		throw @"
-$mismatch
-CI runs the pinned compiler and nothing else. Point ODIN at it, or move the pin
-in scripts\common.ps1 (`$OdinVersionPin and `$OdinReleaseTag together).
-"@
+		throw "$mismatch`nCI runs the pinned compiler and nothing else. $remedy"
 	}
 
-	Write-Warning @"
-$mismatch
-Continuing on this one. CI will not: anything that builds here and not on the
-pinned compiler fails there instead. Set `$env:ODIN to the pinned compiler, or
-move `$OdinVersionPin and `$OdinReleaseTag together if you mean to move the pin.
-"@
+	Write-Warning "$mismatch`nContinuing on this one. CI will not: anything that builds here and not on the pinned compiler fails there instead. $remedy"
 }
 
 # The src-relative name of a package directory, forward-slashed: `version`,
