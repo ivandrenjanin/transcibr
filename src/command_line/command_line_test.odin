@@ -70,7 +70,7 @@ expect_round_trip :: proc(
 ) {
 	line, err := build(program, arguments, context.allocator)
 	defer delete(line, context.allocator)
-	testing.expectf(t, err == .None, "%s: build refused with %v", name, err, loc = loc)
+	testing.expectf(t, err.fault == .None, "%s: build refused with %v", name, err.fault, loc = loc)
 
 	argv := argv_of(t, line, context.allocator)
 	defer free_argv(argv, context.allocator)
@@ -198,7 +198,7 @@ whitespace_arguments_round_trip :: proc(t: ^testing.T) {
 an_empty_argument_is_emitted_rather_than_dropped :: proc(t: ^testing.T) {
 	line, err := build(EXE, {"--language", "", "--model", "big.bin"}, context.allocator)
 	defer delete(line, context.allocator)
-	testing.expect_value(t, err, Build_Error.None)
+	testing.expect_value(t, err.fault, Build_Fault.None)
 
 	argv := argv_of(t, line, context.allocator)
 	defer free_argv(argv, context.allocator)
@@ -370,7 +370,7 @@ an_unspellable_program_path_is_refused :: proc(t: ^testing.T) {
 	// running executable's own path as argv[0] -- so a child handed one would
 	// silently run against itself rather than fail.
 	line, err := build("", {"-i", "a.mkv"}, context.allocator)
-	testing.expect_value(t, err, Build_Error.Empty_Program)
+	testing.expect_value(t, err.fault, Build_Fault.Empty_Program)
 	testing.expect_value(t, len(line), 0)
 
 	// A quote. argv[0] has no escape mechanism at all: measured, `"a""b" one`
@@ -378,22 +378,94 @@ an_unspellable_program_path_is_refused :: proc(t: ^testing.T) {
 	// be expressed. Windows forbids `"` in a filename anyway -- a caller holding
 	// one has a bug, not an exotic path.
 	quoted, quote_err := build(`C:\a"b\ffmpeg.exe`, {}, context.allocator)
-	testing.expect_value(t, quote_err, Build_Error.Quote_In_Program)
+	testing.expect_value(t, quote_err.fault, Build_Fault.Quote_In_Program)
 	testing.expect_value(t, len(quoted), 0)
 }
 
 // A NUL byte ends the command line where Windows reads it, so everything after
 // it -- every remaining argument -- disappears without a diagnostic. Refused on
 // both sides, because either side can carry one.
+//
+// The two sides are DIFFERENT faults rather than one. A8's promise is that the
+// caller can report a refusal against the input that caused it, and one fault
+// returned from two scans cannot keep it: `a NUL somewhere` names no file.
 @(test)
 an_embedded_nul_is_refused :: proc(t: ^testing.T) {
 	line, err := build("C:\\a\x00b\\ffmpeg.exe", {"-i"}, context.allocator)
-	testing.expect_value(t, err, Build_Error.Embedded_Nul)
+	testing.expect_value(t, err.fault, Build_Fault.Nul_In_Program)
 	testing.expect_value(t, len(line), 0)
 
 	in_argument, argument_err := build(EXE, {"-i", "a\x00b.mkv", "-y"}, context.allocator)
-	testing.expect_value(t, argument_err, Build_Error.Embedded_Nul)
+	testing.expect_value(t, argument_err.fault, Build_Fault.Nul_In_Argument)
 	testing.expect_value(t, len(in_argument), 0)
+}
+
+// Which argument, and not merely that one of them was bad. The scan already has
+// the index in hand, and a caller that has to find the NUL again to say which
+// file to fix is a caller re-deriving what this procedure already knew.
+@(test)
+a_refused_argument_is_reported_by_position :: proc(t: ^testing.T) {
+	// 1-based, and the SECOND argument carries it -- so a report that is off by
+	// one names `-i` and sends a reader to the wrong place entirely.
+	_, err := build(EXE, {"-i", "a\x00b.mkv", "-y"}, context.allocator)
+	testing.expect_value(t, err.fault, Build_Fault.Nul_In_Argument)
+	testing.expect_value(t, err.argument, 2)
+	testing.expect_value(t, err.culprit, "a\x00b.mkv")
+
+	// A fault about the program blames no argument, which is the negative space
+	// of the same rule (A3): an ordinal left set would print `argument 2` over a
+	// fault that has nothing to do with the argument list.
+	_, program_err := build(`C:\a"b\ffmpeg.exe`, {"-i", "in.mkv"}, context.allocator)
+	testing.expect_value(t, program_err.fault, Build_Fault.Quote_In_Program)
+	testing.expect_value(t, program_err.argument, 0)
+	testing.expect_value(t, program_err.culprit, `C:\a"b\ffmpeg.exe`)
+}
+
+// Every refusal renders as one line the caller can print, which is the whole
+// reason the fault carries what it does. The alternative is every consumer
+// hand-rolling a switch over the enumeration, which is what engine_json.odin
+// argues against at length -- and this package would be the second copy of it.
+@(test)
+a_refusal_renders_as_one_line_naming_its_input :: proc(t: ^testing.T) {
+	_, quote_err := build(`C:\a"b\ffmpeg.exe`, {}, context.allocator)
+	quoted := error_message(quote_err, context.allocator)
+	defer delete(quoted, context.allocator)
+	testing.expect(
+		t,
+		strings.contains(quoted, `C:\a"b\ffmpeg.exe`),
+		"a refusal that does not say which path to go and fix",
+	)
+
+	_, argument_err := build(EXE, {"-i", "a\x00b.mkv"}, context.allocator)
+	named := error_message(argument_err, context.allocator)
+	defer delete(named, context.allocator)
+	testing.expect(t, strings.contains(named, "argument 2"), "the report does not say which")
+}
+
+// Every fault has a row, and the two kinds of refusal are told apart.
+//
+// `.Too_Long` is the one that a different plan fixes: ADR-0002 puts the Engine's
+// output under a cache path transcibr chooses, so a shorter one makes the same
+// job fit. The other four are inputs that cannot be spelled on a Windows command
+// line at all, and re-running with them changes nothing. A caller that treated
+// all five alike would either retry the unfixable forever or fail a job that one
+// shorter path would have run.
+//
+// Walked over the whole enumeration rather than case by case, so a fault added
+// without a row in FAULT is caught by the assertions inside fault_facts.
+@(test)
+every_fault_says_whether_a_different_plan_would_help :: proc(t: ^testing.T) {
+	for fault in Build_Fault {
+		if fault == .None {
+			continue
+		}
+		want := Disposition.Fail_The_Job
+		if fault == .Too_Long {
+			want = .Shorten_And_Replan
+		}
+		got := disposition_of(fault)
+		testing.expectf(t, got == want, "%v is %v, want %v", fault, got, want)
+	}
 }
 
 // The documented `CreateProcessW` ceiling: 32,767 characters INCLUDING the
@@ -410,7 +482,7 @@ a_command_line_past_the_windows_ceiling_is_refused :: proc(t: ^testing.T) {
 	defer delete(long, context.allocator)
 
 	line, err := build(EXE, {long}, context.allocator)
-	testing.expect_value(t, err, Build_Error.Too_Long)
+	testing.expect_value(t, err.fault, Build_Fault.Too_Long)
 	testing.expect_value(t, len(line), 0)
 }
 
@@ -425,7 +497,7 @@ the_ceiling_is_counted_in_utf16_code_units :: proc(t: ^testing.T) {
 
 	line, err := build(EXE, {body}, context.allocator)
 	defer delete(line, context.allocator)
-	testing.expect_value(t, err, Build_Error.None)
+	testing.expect_value(t, err.fault, Build_Fault.None)
 	testing.expect(
 		t,
 		len(line) > MAX_COMMAND_LINE_UNITS,
@@ -452,13 +524,13 @@ the_ceiling_admits_the_longest_line_that_fits :: proc(t: ^testing.T) {
 
 	line, err := build("x", {fits}, context.allocator)
 	defer delete(line, context.allocator)
-	testing.expect_value(t, err, Build_Error.None)
+	testing.expect_value(t, err.fault, Build_Fault.None)
 	testing.expect_value(t, len(line), MAX_COMMAND_LINE_UNITS - 1)
 
 	one_too_many := strings.concatenate({fits, "a"}, context.allocator)
 	defer delete(one_too_many, context.allocator)
 	over, over_err := build("x", {one_too_many}, context.allocator)
-	testing.expect_value(t, over_err, Build_Error.Too_Long)
+	testing.expect_value(t, over_err.fault, Build_Fault.Too_Long)
 	testing.expect_value(t, len(over), 0)
 }
 
@@ -493,7 +565,7 @@ the_ceiling_admits_the_longest_line_that_fits :: proc(t: ^testing.T) {
 a_trailing_backslash_in_the_program_path_is_not_an_escape :: proc(t: ^testing.T) {
 	line, err := build(`C:\dir with space\`, {"-after"}, context.allocator)
 	defer delete(line, context.allocator)
-	testing.expect_value(t, err, Build_Error.None)
+	testing.expect_value(t, err.fault, Build_Fault.None)
 	testing.expect_value(t, line, `"C:\dir with space\" -after`)
 
 	argv := argv_of(t, line, context.allocator)
@@ -506,7 +578,7 @@ a_trailing_backslash_in_the_program_path_is_not_an_escape :: proc(t: ^testing.T)
 
 	doubled, doubled_err := build(`C:\dir\\`, {"one"}, context.allocator)
 	defer delete(doubled, context.allocator)
-	testing.expect_value(t, doubled_err, Build_Error.None)
+	testing.expect_value(t, doubled_err.fault, Build_Fault.None)
 	testing.expect_value(t, doubled, `"C:\dir\\" one`)
 
 	doubled_argv := argv_of(t, doubled, context.allocator)

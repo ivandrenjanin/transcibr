@@ -18,6 +18,7 @@
 // command_line_test.odin re-measures them on every run.
 package command_line
 
+import "core:fmt"
 import "core:mem"
 import "core:strings"
 
@@ -26,8 +27,8 @@ import "core:strings"
 // A8: a program path and an argument list arrive from outside -- a CLI flag, a
 // discovered recording, a configured model path -- so a bad one is an operating
 // error reported through this return, never an assertion.
-Build_Error :: enum u8 {
-	None,
+Build_Fault :: enum u8 {
+	None = 0,
 	// Nothing to run. Refused rather than passed on, because an EMPTY command
 	// line is not an error to Windows: measured, `CommandLineToArgvW` answers one
 	// with the RUNNING executable's own path as argv[0], so a child handed one
@@ -39,9 +40,201 @@ Build_Error :: enum u8 {
 	Quote_In_Program,
 	// A NUL ends the command line where Windows reads it, silently discarding
 	// every argument after it.
-	Embedded_Nul,
+	//
+	// TWO faults and not one, though the byte and the damage are identical. They
+	// are produced by two different scans, and a caller holding a single
+	// `Embedded_Nul` cannot tell which -- so it cannot keep the promise this
+	// package makes below, that a refusal is reported against the input that
+	// caused it. `a NUL somewhere` names no file to go and fix.
+	Nul_In_Program,
+	Nul_In_Argument,
 	// Past `CreateProcessW`'s documented ceiling; see MAX_COMMAND_LINE_UNITS.
 	Too_Long,
+}
+
+// One refused command line, named against the part that carried it.
+//
+// The culprit is BORROWED, never owned: it is the caller's own program path or
+// argument, and it lives at least as long as the report. Parse_Error next door
+// holds `json_name` on exactly these terms.
+Build_Error :: struct {
+	fault:    Build_Fault,
+	// The program path or the argument the fault is about, or empty where there
+	// is nothing to name -- which is `.Empty_Program` and only that. Which of the
+	// three it is follows from the fault and is checked in fault_at, never guessed
+	// at from whether the string happens to be empty.
+	culprit:  string,
+	// The 1-based position of the offending argument, or 0 when the fault is not
+	// about one. 1-based because it is printed: `argument 2` is what a reader
+	// counts to, and the ordinal is the only handle they have on an argument list
+	// this package never sees again.
+	argument: int,
+}
+
+// What a caller should DO with a refusal, which is not something it can work out
+// from the fault's name.
+//
+// Four of the five are inputs that cannot be spelled on a Windows command line
+// at all: no retry changes that. `.Too_Long` is a different kind of refusal
+// entirely -- the same job fits if it is built from shorter paths, and ADR-0002
+// puts the Engine's output under `<cache>\<job_id>` with the cache path
+// transcibr's own to choose. A caller that treated all five alike would either
+// retry the unfixable forever or fail a job one shorter path would have run.
+//
+// Public and answered from the table below, for the reason engine_json.odin
+// gives: the alternative is every consumer reconstructing this from a switch
+// over the enumeration that nothing keeps in step with it.
+Disposition :: enum u8 {
+	// Nothing about running this again changes the answer.
+	Fail_The_Job = 0,
+	// Re-plannable: choose shorter paths and build the line again.
+	Shorten_And_Replan,
+}
+
+// What the culprit of a given fault IS, so that no call site has to remember.
+//
+// Unset is the zero value and no row may carry it: FAULT is an enumerated array,
+// so a Build_Fault added without a row still HAS a row, made of zeroes -- and a
+// real blame sitting on zero would make that row a plausible answer rather than
+// a detectable one. The same argument Fault_Scope makes next door.
+@(private)
+Fault_Blames :: enum u8 {
+	Unset = 0,
+	// There is no input to name: there was no program to begin with.
+	Nothing,
+	The_Program,
+	An_Argument,
+}
+
+// Everything this package knows about a fault beyond its name. One record rather
+// than parallel tables: they are answers to the same question, and a fault added
+// to one but not the others is the drift they exist to prevent.
+@(private)
+Fault_Facts :: struct {
+	// What the fault reads as, WITHOUT the culprit or the ordinal -- error_message
+	// supplies those, so no entry here can forget to.
+	says:        string,
+	blames:      Fault_Blames,
+	disposition: Disposition,
+}
+
+// An enumerated array rather than a switch, and it is guarded twice over.
+//
+// MEASURED, both layers. Add a Build_Fault and leave this table alone and the
+// COMPILER refuses the build outright -- `Unhandled enumerated array case` --
+// so the row cannot go missing in anything that ships. Write the row but leave
+// it empty, which is what a hurried edit produces, and the compiler is satisfied
+// while the fault carries no sentence, no blame and a disposition nobody chose;
+// that one the assertion in fault_facts catches on the first report. One record
+// per fault rather than parallel tables, so a single missing row is caught by a
+// single check rather than three that can disagree.
+@(private, rodata)
+FAULT := [Build_Fault]Fault_Facts {
+	.None = {},
+	.Empty_Program = {
+		says = "there is no program to run",
+		blames = .Nothing,
+		disposition = .Fail_The_Job,
+	},
+	.Quote_In_Program = {
+		says = "contains a quote, and argv[0] has no escape for one",
+		blames = .The_Program,
+		disposition = .Fail_The_Job,
+	},
+	.Nul_In_Program = {
+		says = "contains a NUL, which ends the command line where Windows reads it",
+		blames = .The_Program,
+		disposition = .Fail_The_Job,
+	},
+	.Nul_In_Argument = {
+		says = "contains a NUL, which ends the command line where Windows reads it",
+		blames = .An_Argument,
+		disposition = .Fail_The_Job,
+	},
+	.Too_Long = {
+		says = "needs a command line past the 32,767 code units CreateProcessW accepts",
+		blames = .The_Program,
+		disposition = .Shorten_And_Replan,
+	},
+}
+
+// One fault's row, checked. THE ONE PLACE THE TABLE IS READ, and the one place a
+// missing row is caught.
+@(private)
+fault_facts :: proc(fault: Build_Fault) -> (facts: Fault_Facts) {
+	assert(fault != .None, "the success value is not a fault and carries no facts")
+
+	facts = FAULT[fault]
+	assert(len(facts.says) > 0, "a fault was added to Build_Fault without a row in FAULT")
+	// The negative space of the same missing row (A3): a row could carry a
+	// sentence and no blame, and error_message would then print an argument's
+	// half-sentence as though it were about the program.
+	assert(facts.blames != .Unset, "a fault's row in FAULT names nothing to blame")
+	return
+}
+
+// Whether a different plan would make this same job run.
+disposition_of :: proc(fault: Build_Fault) -> Disposition {
+	assert(fault != .None, "a build that did not fail has nothing to dispose of")
+	return fault_facts(fault).disposition
+}
+
+// Renders one refusal as a line naming the input it came from.
+//
+// The allocator is explicit and never defaulted: the line outlives this procedure
+// and may be written by a worker other than the one that reads it (ADR-0010).
+// Free it with `delete` and the same allocator.
+error_message :: proc(err: Build_Error, allocator: mem.Allocator) -> string {
+	assert(err.fault != .None, "there is no message for a build that did not fail")
+	assert(
+		allocator.procedure != nil,
+		"the message outlives this procedure and needs a chosen allocator",
+	)
+
+	facts := fault_facts(err.fault)
+	switch facts.blames {
+	case .An_Argument:
+		return fmt.aprintf(
+			"argument %d (%q): %s",
+			err.argument,
+			err.culprit,
+			facts.says,
+			allocator = allocator,
+		)
+	case .The_Program:
+		return fmt.aprintf("%s: %s", err.culprit, facts.says, allocator = allocator)
+	case .Nothing:
+		return strings.clone(facts.says, allocator)
+	case .Unset:
+	}
+	// Unreachable: fault_facts refuses a row that blames nothing, and the switch
+	// above covers every other value. Stated rather than left as a bare fallthrough
+	// returning an empty string nobody could diagnose.
+	panic("a fault's row in FAULT names nothing to blame")
+}
+
+// Builds a report, checking at the one place they are made that every report can
+// actually be delivered.
+@(private)
+fault_at :: proc(fault: Build_Fault, culprit: string, argument: int) -> Build_Error {
+	assert(fault != .None, "a fault of .None is the success value and reports nothing")
+
+	blames := fault_facts(fault).blames
+	// The ordinal and the culprit against the blame the fault declares, at the one
+	// place a Build_Error is written -- so no call site has to remember the
+	// convention and error_message can print by blame without checking either.
+	// Both sides of it (A3).
+	if blames == .An_Argument {
+		assert(argument > 0, "a fault about one argument did not say which")
+	} else {
+		assert(argument == 0, "a fault that is not about an argument blamed one")
+	}
+	if blames == .Nothing {
+		assert(len(culprit) == 0, "a fault with nothing to name was handed something")
+	} else {
+		assert(len(culprit) > 0, "a fault that names its input was handed nothing")
+	}
+	return Build_Error{fault = fault, culprit = culprit, argument = argument}
 }
 
 // `CreateProcessW`'s documented limit on `lpCommandLine`: 32,767 characters
@@ -65,8 +258,21 @@ MAX_COMMAND_LINE_UNITS :: 32767
 @(private)
 MAX_ESCAPED_OVERHEAD :: 3
 
-// Builds the command line for one child. The caller owns the returned string and
-// frees it with `delete`; nothing is allocated on any error path.
+// Builds the command line for one child.
+//
+// The caller owns the returned string and frees it with `delete` AND THE SAME
+// ALLOCATOR. That is not pedantry: this result crosses a worker boundary, and a
+// mismatched allocator across one is the defect class ADR-0010 exists for.
+//
+// Every error path returns an empty string, so there is never anything to free
+// after a refusal. Note what that does NOT say. `.Too_Long` is decided on the
+// FINISHED line, so on that path the builder is fully allocated and filled and
+// then destroyed before the return -- nothing leaks, but the memory is taken and
+// given back, and a caller passing a nearly-exhausted arena (ADR-0010) will feel
+// it. The amount is proportional to the INPUTS and is not bounded by
+// MAX_COMMAND_LINE_UNITS: the ceiling is what the finished line is measured
+// against, not a limit on what may be handed in, so a one-megabyte argument
+// reserves about two megabytes and is only then refused.
 //
 // A8: the program path and every argument arrive from outside this program -- a
 // CLI flag, a discovered recording, a configured model path -- so each is checked
@@ -79,23 +285,9 @@ build :: proc(
 	command_line: string,
 	err: Build_Error,
 ) {
-	if len(program) == 0 {
-		return "", .Empty_Program
-	}
-	if strings.index_byte(program, '"') >= 0 {
-		return "", .Quote_In_Program
-	}
-	if strings.index_byte(program, 0) >= 0 {
-		return "", .Embedded_Nul
-	}
-	// The reservation is accumulated by the scan that has to walk these anyway, so
-	// it costs nothing beyond the addition. See MAX_ESCAPED_OVERHEAD.
-	reserve := len(program) + 2
-	for argument in arguments {
-		if strings.index_byte(argument, 0) >= 0 {
-			return "", .Embedded_Nul
-		}
-		reserve += 2 * len(argument) + MAX_ESCAPED_OVERHEAD
+	reserve, refusal := check_inputs(program, arguments)
+	if refusal.fault != .None {
+		return "", refusal
 	}
 
 	b := strings.builder_make(0, reserve, allocator)
@@ -131,9 +323,40 @@ build :: proc(
 	// result would refuse lines that fit.
 	if utf16_units(out) + 1 > MAX_COMMAND_LINE_UNITS {
 		strings.builder_destroy(&b)
-		return "", .Too_Long
+		return "", fault_at(.Too_Long, program, 0)
 	}
-	return out, .None
+	return out, Build_Error{}
+}
+
+// Everything refused at the boundary, and the reservation the accepted case
+// needs -- one walk, because the checks and the sum read the same bytes.
+//
+// A8 lives here: this is the procedure that decides what is an operating error,
+// and every check below is on data from outside. The writers downstream assert
+// the same properties on the write side (A4), where a value of this shape
+// becomes a command line nobody can read back.
+@(private)
+check_inputs :: proc(program: string, arguments: []string) -> (reserve: int, err: Build_Error) {
+	if len(program) == 0 {
+		return 0, fault_at(.Empty_Program, "", 0)
+	}
+	if strings.index_byte(program, '"') >= 0 {
+		return 0, fault_at(.Quote_In_Program, program, 0)
+	}
+	if strings.index_byte(program, 0) >= 0 {
+		return 0, fault_at(.Nul_In_Program, program, 0)
+	}
+
+	// See MAX_ESCAPED_OVERHEAD; the sum costs an addition per argument.
+	reserve = len(program) + 2
+	for argument, i in arguments {
+		if strings.index_byte(argument, 0) >= 0 {
+			// 1-based, so the report counts the way a reader does.
+			return 0, fault_at(.Nul_In_Argument, argument, i + 1)
+		}
+		reserve += 2 * len(argument) + MAX_ESCAPED_OVERHEAD
+	}
+	return reserve, Build_Error{}
 }
 
 // How many UTF-16 code units this UTF-8 string becomes -- the unit Windows counts
