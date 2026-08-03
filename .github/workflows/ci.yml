@@ -101,7 +101,7 @@ jobs:
           # SHA-256 pin is then checked by those scripts, and because $env:CI is
           # set here they refuse a mismatch outright instead of warning.
           "ODINFMT=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "$($exe.FullName) is $((Get-FileHash -LiteralPath $exe.FullName -Algorithm SHA256).Hash)"
+          Write-Host "$($exe.FullName) is $(Get-FileSha256 -Path $exe.FullName)"
 
       # Every .odin file in the repository against odinfmt.json. Its own step as
       # well as part of the build below, because "which file" is the answer a

@@ -407,6 +407,38 @@ Odin version mismatch.
 	Write-Warning "$mismatch`nContinuing on this one. CI will not: anything that builds here and not on the pinned compiler fails there instead. $remedy"
 }
 
+# A file's SHA-256, uppercase hex.
+#
+# Through .NET rather than Get-FileHash, which is NOT always there. CI runs
+# these scripts under pwsh 7, and scripts\selftest.ps1 starts its fixtures with
+# powershell.exe -- a 5.1 child that inherits pwsh's PSModulePath, where
+# Get-FileHash does not resolve. Locally it is present and everything passed;
+# in CI every fixture that reached the formatter pin died on
+# "The term 'Get-FileHash' is not recognized", and the failure was in the
+# fixture rather than in the thing under test.
+#
+# The BCL is on both hosts by construction. Streamed rather than read whole:
+# the file is a megabyte today and this says nothing about how large a pinned
+# binary is allowed to get.
+function Get-FileSha256 {
+	param([Parameter(Mandatory)] [string] $Path)
+
+	$sha = [System.Security.Cryptography.SHA256]::Create()
+	try {
+		$stream = [System.IO.File]::OpenRead($Path)
+		try {
+			$hash = $sha.ComputeHash($stream)
+		}
+		finally {
+			$stream.Dispose()
+		}
+	}
+	finally {
+		$sha.Dispose()
+	}
+	return [System.BitConverter]::ToString($hash).Replace('-', '')
+}
+
 # odinfmt, resolved the way the compiler is: $env:ODINFMT, then PATH, then the
 # default install location beside odin.exe. Neither is on PATH on the
 # development machine, and neither should need a contributor to edit it.
@@ -446,7 +478,7 @@ function Resolve-OdinFormatter {
 function Confirm-OdinfmtVersion {
 	param([Parameter(Mandatory)] [string] $Odinfmt)
 
-	$found = (Get-FileHash -LiteralPath $Odinfmt -Algorithm SHA256).Hash
+	$found = Get-FileSha256 -Path $Odinfmt
 	if ($found -eq $OdinfmtSha256) {
 		return
 	}
