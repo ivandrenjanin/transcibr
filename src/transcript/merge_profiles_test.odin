@@ -30,37 +30,37 @@ import "core:testing"
 // checked code rather than in a comment (CLAUDE.md A6).
 @(private)
 Gap_Distribution :: struct {
-	touching:   f64,
-	over_800:   f64,
-	over_2500:  f64,
-	p50:        Millis,
-	p75:        Millis,
-	p90:        Millis,
+	touching:  f64,
+	over_800:  f64,
+	over_2500: f64,
+	p50:       Millis,
+	p75:       Millis,
+	p90:       Millis,
 }
 
 // One kind of material: its measured gaps, how long its Cues run, and how often
 // they end a sentence.
 @(private)
 Material :: struct {
-	name:                   string,
-	gaps:                   []Millis,
+	name:                    string,
+	gaps:                    []Millis,
 	// ADR-0007's Cue duration p50 for this material, used for every Cue. The
 	// merger reads durations only through the gap between neighbours, so
 	// spreading them would vary nothing this measures.
-	duration_ms:            Millis,
+	duration_ms:             Millis,
 	// One Cue in every `unfinished_every` ends without a sentence-ending mark,
 	// which is how the measured sentence-final share is reproduced: one in five
 	// for continuous speech (80.5% measured), one in forty for interactive
 	// (99.8% measured).
-	unfinished_every:       int,
-	finished:               []string,
-	unfinished:             []string,
-	measured:               Gap_Distribution,
+	unfinished_every:        int,
+	finished:                []string,
+	unfinished:              []string,
+	measured:                Gap_Distribution,
 	// What each profile makes of it. Observed and then pinned, so paragraphing
 	// cannot drift without a test saying so -- the relation between them is
 	// asserted separately, and that one comes from the ADR rather than from a
 	// run of this code.
-	monologue_paragraphs:   int,
+	monologue_paragraphs:    int,
 	conversation_paragraphs: int,
 }
 

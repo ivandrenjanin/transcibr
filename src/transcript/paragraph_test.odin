@@ -325,3 +325,55 @@ merging_cues_that_say_nothing_yields_no_paragraphs :: proc(t: ^testing.T) {
 
 	testing.expect_value(t, len(paragraphs), 0)
 }
+
+// ---------------------------------------------------------------------------
+// Both stages over the one real Engine output in this repository.
+//
+// The fixtures above are shapes chosen to isolate one threshold at a time, which
+// is what makes them readable and what makes them not proof. This is the whole
+// of the ticket's work -- parse, collapse, merge -- run over 30 seconds of
+// speech a real Engine really transcribed, hallucination and mishearing intact.
+// ---------------------------------------------------------------------------
+
+// The fixture's gaps are 900, 920, 980, 1040, 660 and 520 ms, every Cue ends a
+// sentence, and the whole thing is 397 characters. So the generous profile
+// merges all of it and the aggressive one breaks at every seam -- the two
+// profiles at their furthest apart, on material neither was tuned against.
+@(test)
+real_engine_output_becomes_paragraphs :: proc(t: ^testing.T) {
+	cues, err := parse_cues("engine-output.json", ENGINE_JSON, FIXTURE_DURATION, context.allocator)
+	defer destroy_cues(cues, context.allocator)
+	if !testing.expect_value(t, err.fault, Parse_Fault.None) {
+		return
+	}
+
+	// Nothing here repeats, so nothing collapses. The Engine's invention over the
+	// trailing silence -- " Thank you.", dated past the end of a Recording that
+	// runs 30356 ms -- is a SINGLE Cue and not a run, and repetition detection is
+	// the only handle there is (ADR-0001). It survives, un-clamped, because a
+	// stage that clamped it would be hiding the evidence rather than reading it.
+	kept := collapse_repetition(cues, COLLAPSE_DEFAULT, context.allocator)
+	defer destroy_cues(kept, context.allocator)
+	if !testing.expect_value(t, len(kept), 7) {
+		return
+	}
+	testing.expect_value(t, kept[6], Cue{30_000, 59_980, " Thank you."})
+
+	merged := merge_paragraphs(kept, MONOLOGUE, context.allocator)
+	defer destroy_paragraphs(merged, context.allocator)
+	if !testing.expect_value(t, len(merged), 1) {
+		return
+	}
+	testing.expect_value(t, merged[0].start, Millis(0))
+	testing.expect_value(t, merged[0].end, Millis(59_980))
+	testing.expect_value(
+		t,
+		merged[0].text,
+		"This is a recording made to exercise the Q-Parser. The engine emits one time-stamped fragment of speech at a time. Each fragment carries a start offset, an end offset, and its text. The offsets arrive in miliscans, counted from the beginning of the recording. A parser that reads them as integers will find none, because the numbers are floating point. That is the whole point of this fixture. Thank you.",
+	)
+
+	broken := merge_paragraphs(kept, CONVERSATION, context.allocator)
+	defer destroy_paragraphs(broken, context.allocator)
+	testing.expect_value(t, len(broken), 7)
+	testing.expect_value(t, broken[6], Paragraph{30_000, 59_980, "Thank you."})
+}

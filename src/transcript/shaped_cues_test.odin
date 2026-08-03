@@ -62,16 +62,3 @@ say_repeatedly :: proc(shape: ^[dynamic]Shaped_Cue, text: string, count: int, du
 		append(shape, Shaped_Cue{gap_ms = gap, duration_ms = duration, text = text})
 	}
 }
-
-// The silence between one Cue and the one in front of it, which is the quantity
-// every threshold in this package is stated against.
-//
-// Negative where the Cues overlap, which is ordinary Engine output -- so the
-// tests that measure a fixture's gap distribution count what the merger counts
-// rather than a clamped version of it.
-@(private)
-gap_before :: proc(cues: []Cue, i: int) -> Millis {
-	assert(i > 0, "the first cue has nothing in front of it to be silent between")
-	assert(i < len(cues), "no cue sits at that position")
-	return cues[i].start - cues[i - 1].end
-}
