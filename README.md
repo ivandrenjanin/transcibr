@@ -124,6 +124,12 @@ what the pin is for; but a pin that makes the repository unbuildable for everyon
 retags is a pin nobody keeps. Locally you get a warning, and CI still catches anything that only
 compiles on your compiler.
 
+"In CI" means `$env:CI` is set, which is how GitHub Actions marks its runners. Some devcontainers
+and toolchains set it locally too, and some CI systems do not set it at all — so if the scripts
+refuse your compiler on your own machine, clear `$env:CI` for the shell and you get the warning
+instead. The reverse also holds: on a CI system that leaves `$env:CI` unset, set it in the job to
+get the refusal.
+
 Both commands pass the full vet set with warnings as errors, and the test command additionally sets
 `ODIN_TEST_FAIL_ON_BAD_MEMORY=true` — it defaults to false, which would let a procedure that leaks
 its returned slice pass with a warning (ADR-0010). The build reads the subsystem back out of each

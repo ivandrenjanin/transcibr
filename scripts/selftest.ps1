@@ -55,9 +55,12 @@ $script:Passes = 0
 # fails the run. Skipping is deny-by-default, same as $OdinPackagesWithoutTests
 # in common.ps1: a case may end in a skip only if it is named here.
 $ExpectedCaseCount = 21
+#
+# One entry, and it earns it: a token holding SeBackupPrivilege walks straight
+# past the deny that case plants, so that machine cannot set the case up. An
+# allowance for a case that cannot skip is an allowance nobody ever checks.
 $CasesAllowedToSkip = @(
 	'an unreadable directory fails discovery rather than shortening it'
-	'the subsystem is read out of the PE header, not taken from the flag'
 )
 
 # A skip is signalled by throwing THIS OBJECT and nothing else, matched on
@@ -588,7 +591,10 @@ Test-Case 'the subsystem is read out of the PE header, not taken from the flag' 
 	$gui = Join-Path $env:SystemRoot 'explorer.exe'
 	foreach ($path in @($console, $gui)) {
 		if (-not (Test-Path -LiteralPath $path)) {
-			Skip-Case -Reason "this Windows install has no $path to check the PE reader against"
+			# A failure rather than a skip. Both images ship with every Windows
+			# install this repository targets, so their absence is a broken
+			# machine and not a case this run may quietly decline to make.
+			throw "no $path on this machine to check the PE reader against."
 		}
 	}
 
