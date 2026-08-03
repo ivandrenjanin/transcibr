@@ -154,3 +154,61 @@ error_message_names_the_offending_cue :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(message, "third.json"), "the report does not name the input")
 	testing.expect(t, strings.contains(message, "cue 3"), "the report does not name the cue")
 }
+
+// ---------------------------------------------------------------------------
+// The Cue set that looks healthy and is not.
+//
+// Well-formed Cues, every offset zero, and perfectly monotonic -- which is what
+// an offset reader that matched nothing leaves behind (see read_millis). It is
+// REPORTED and not asserted: a genuine Engine failure produces the same shape,
+// and nothing outside this program may crash it (CLAUDE.md A8).
+// ---------------------------------------------------------------------------
+
+@(test)
+rejects_a_cue_set_whose_final_offset_is_zero :: proc(t: ^testing.T) {
+	text := `{"transcription": [
+		{"offsets": {"from": 0, "to": 0}, "text": " This is a recording"},
+		{"offsets": {"from": 0, "to": 0}, "text": " made to exercise the cue parser."}
+	]}`
+	cues, err := parse_cues("all-zero.json", text, FIXTURE_DURATION, context.allocator)
+	defer destroy_cues(cues, context.allocator)
+
+	testing.expect(t, len(cues) == 0, "handed back a cue set that covers none of the recording")
+	testing.expect_value(t, err.fault, Parse_Fault.Final_Offset_Is_Zero)
+	testing.expect_value(t, err.json_name, "all-zero.json")
+
+	message := error_message(err, context.allocator)
+	defer delete(message, context.allocator)
+	testing.expect(t, strings.contains(message, "all-zero.json"), "the report does not name the input")
+}
+
+// The negative space of the check above (CLAUDE.md A3). A Recording whose
+// length the shell could not settle arrives as zero, and a comparison against
+// an unknown has nothing to say -- inventing a failure out of missing
+// information is how a working Recording gets quarantined forever.
+@(test)
+accepts_zero_offsets_when_the_recording_length_is_unknown :: proc(t: ^testing.T) {
+	text := `{"transcription": [{"offsets": {"from": 0, "to": 0}, "text": ""}]}`
+	cues, err := parse_cues("all-zero.json", text, 0, context.allocator)
+	defer destroy_cues(cues, context.allocator)
+
+	testing.expect_value(t, err.fault, Parse_Fault.None)
+	testing.expect_value(t, len(cues), 1)
+}
+
+// It is the FINAL offset that decides, not the first. Every Recording's first
+// Cue starts at zero, and a check that read that as the signature would reject
+// every Recording there is.
+@(test)
+accepts_a_cue_set_that_starts_at_offset_zero :: proc(t: ^testing.T) {
+	text := `{"transcription": [{"offsets": {"from": 0, "to": 3480}, "text": " one"}]}`
+	cues, err := parse_cues("from-zero.json", text, FIXTURE_DURATION, context.allocator)
+	defer destroy_cues(cues, context.allocator)
+
+	if !testing.expect_value(t, err.fault, Parse_Fault.None) {
+		return
+	}
+	testing.expect_value(t, len(cues), 1)
+	testing.expect_value(t, cues[0].start, Millis(0))
+	testing.expect_value(t, cues[0].end, Millis(3_480))
+}

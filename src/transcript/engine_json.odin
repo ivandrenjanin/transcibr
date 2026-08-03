@@ -29,6 +29,7 @@ Parse_Fault :: enum u8 {
 	Negative_Offset,
 	Cue_Ends_Before_It_Starts,
 	Cues_Out_Of_Order,
+	Final_Offset_Is_Zero,
 }
 
 // One rejected piece of Engine output, named against the input that carried it.
@@ -71,15 +72,6 @@ parse_cues :: proc(
 		return nil, fault_at(.Empty_Input, json_name, 0)
 	}
 
-	// The decoded tree is scratch: it dies in this procedure and the Cue text
-	// below is cloned out of it. It gets an arena of its own because
-	// core:encoding/json LEAKS on several of its error paths -- an object key
-	// parsed just before the value after it fails is never inserted into the
-	// object, so the parser's own cleanup, which walks that object, never sees
-	// it. Truncated Engine output takes exactly that path, and truncated output
-	// is the case ADR-0002 exists for, not a rarity. An arena settles it: no
-	// individual free happens here and everything goes back at once.
-	//
 	// Blocks come from the caller's allocator and never from
 	// `context.temp_allocator`, which is thread-local and belongs to whichever
 	// worker happens to be running this (ADR-0010).
@@ -87,14 +79,9 @@ parse_cues :: proc(
 	mem.dynamic_arena_init(&scratch, block_allocator = allocator, array_allocator = allocator)
 	defer mem.dynamic_arena_destroy(&scratch)
 
-	// `.JSON` rather than the package default of JSON5, and `parse_integers`
-	// stated rather than left at its default of false -- see read_millis for
-	// what that default costs. The Engine writes strict JSON, so a trailing
-	// comma or a comment means this is not what the Engine wrote, and ADR-0002
-	// wants that quarantined rather than guessed at.
-	root, decode_err := json.parse(json_text, .JSON, true, mem.dynamic_arena_allocator(&scratch))
-	if decode_err != nil {
-		return nil, fault_at(.Malformed_Json, json_name, 0)
+	root, decode_fault := decode_engine_json(json_text, &scratch)
+	if decode_fault != .None {
+		return nil, fault_at(decode_fault, json_name, 0)
 	}
 
 	entries, locate_fault := read_transcription(root)
@@ -108,6 +95,12 @@ parse_cues :: proc(
 		return nil, fault_at(read_fault, json_name, at)
 	}
 
+	set_fault, set_at := check_cue_set(built, recording_duration)
+	if set_fault != .None {
+		destroy_cues(built, allocator)
+		return nil, fault_at(set_fault, json_name, set_at)
+	}
+
 	// The parser's own promise, asserted where it is made; every consumer
 	// asserts the same on the way in (CLAUDE.md A4). Nothing external reaches
 	// these -- read_cues has already rejected, as an operating error, everything
@@ -115,6 +108,77 @@ parse_cues :: proc(
 	assert(len(built) > 0, "returned an empty cue set without reporting No_Cues")
 	assert(cues_are_ordered(built), "returned a cue set that is not ordered")
 	return built, Parse_Error{}
+}
+
+// Decodes the Engine's JSON into a tree that lives on `scratch` and dies with
+// it, which is what makes an arena the right home for it in the first place.
+//
+// core:encoding/json LEAKS on several of its error paths -- an object key parsed
+// just before the value after it fails is never inserted into the object, so the
+// parser's own cleanup, which walks that object, never sees it. Truncated Engine
+// output takes exactly that path, and truncated output is the case ADR-0002
+// exists for, not a rarity. An arena settles the question: nothing here is freed
+// individually and everything goes back at once.
+//
+// `.JSON` rather than the package default of JSON5, and `parse_integers` stated
+// rather than left at its default of false -- see read_millis for what that
+// default costs. The Engine writes strict JSON, so a trailing comma or a comment
+// means this is not what the Engine wrote, and ADR-0002 wants that quarantined
+// rather than guessed at.
+@(private)
+decode_engine_json :: proc(
+	json_text: string,
+	scratch: ^mem.Dynamic_Arena,
+) -> (
+	json.Value,
+	Parse_Fault,
+) {
+	assert(len(json_text) > 0, "an empty input is Empty_Input, settled before this point")
+	assert(scratch.block_allocator.procedure != nil, "the scratch arena was never initialised")
+
+	root, decode_err := json.parse(json_text, .JSON, true, mem.dynamic_arena_allocator(scratch))
+	if decode_err != nil {
+		return nil, .Malformed_Json
+	}
+	return root, .None
+}
+
+// The one check that is about the Cue set rather than any Cue in it, and the
+// only guard against a silent success.
+//
+// A Cue set whose LAST offset is zero over a Recording that is not empty is the
+// exact signature of an offset reader that matched nothing -- see read_millis.
+// Every Cue is well-formed, the set is perfectly monotonic, and the Transcript
+// that comes out has every Cue at 00:00. Nothing else in this parser can tell.
+//
+// Reported and never asserted: a genuine Engine failure produces the same shape,
+// and nothing outside this program may crash it (CLAUDE.md A8).
+@(private)
+check_cue_set :: proc(cues: []Cue, recording_duration: Millis) -> (Parse_Fault, int) {
+	assert(len(cues) > 0, "an empty cue set is No_Cues, settled before this point")
+	// The read side of the ordering read_cues enforced per Cue as it built
+	// (CLAUDE.md A4). The implication below is sound only on an ordered set.
+	assert(cues_are_ordered(cues), "a disordered cue set reached the set-wide checks")
+	assert(recording_duration >= 0, "a negative recording duration is a probe defect")
+
+	// A Recording the shell could not measure arrives as zero, and a comparison
+	// against an unknown has nothing to say. Inventing a failure out of missing
+	// information is how a working Recording gets quarantined forever.
+	if recording_duration == 0 {
+		return .None, 0
+	}
+	if cues[len(cues) - 1].end != 0 {
+		return .None, 0
+	}
+
+	// Ordered means starts never go backwards and no Cue ends before it starts,
+	// so a final end of zero forces every START to zero as well. Asserted rather
+	// than left to a comment, because it is the step that makes one comparison
+	// stand for the whole set (CLAUDE.md A6).
+	for cue in cues {
+		assert(cue.start == 0, "an ordered set ending at zero has a cue starting after it")
+	}
+	return .Final_Offset_Is_Zero, len(cues)
 }
 
 // Locates the array of Cues inside the Engine's top-level object.
@@ -328,6 +392,7 @@ FAULT_TEXT := [Parse_Fault]string {
 	.Negative_Offset           = "starts before the recording does",
 	.Cue_Ends_Before_It_Starts = "ends before it starts",
 	.Cues_Out_Of_Order         = "starts before the cue in front of it",
+	.Final_Offset_Is_Zero      = "the last cue ends at offset zero over a recording that is not empty; the engine's offsets did not survive being read",
 }
 
 // Renders one operating error as a line naming the input it came from.
