@@ -292,3 +292,36 @@ the_character_cap_counts_characters_and_not_bytes :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, paragraphs[0].text, said)
 }
+
+// ---------------------------------------------------------------------------
+// Nothing in, nothing out.
+// ---------------------------------------------------------------------------
+
+@(test)
+merging_no_cues_yields_no_paragraphs :: proc(t: ^testing.T) {
+	paragraphs := merge_paragraphs(nil, PINNED_MERGE, context.allocator)
+	defer destroy_paragraphs(paragraphs, context.allocator)
+
+	testing.expect_value(t, len(paragraphs), 0)
+	testing.expect(t, paragraphs == nil, "an empty paragraph set came back with memory behind it to free")
+}
+
+// The other way a Cue set can hold no prose. The Engine writes these over
+// silence and the parser keeps them, so a Recording of nothing but silence
+// arrives here as a set full of Cues that say nothing -- and a Paragraph with no
+// prose in it is a blank line in the deliverable, not a paragraph.
+@(test)
+merging_cues_that_say_nothing_yields_no_paragraphs :: proc(t: ^testing.T) {
+	shape := []Shaped_Cue {
+		{duration_ms = 10_000, text = ""},
+		{duration_ms = 10_000, text = " "},
+		{duration_ms = 10_000, text = "\t\r\n"},
+	}
+	cues := shaped_cues(shape, context.allocator)
+	defer delete(cues, context.allocator)
+
+	paragraphs := merge_paragraphs(cues, PINNED_MERGE, context.allocator)
+	defer destroy_paragraphs(paragraphs, context.allocator)
+
+	testing.expect_value(t, len(paragraphs), 0)
+}
