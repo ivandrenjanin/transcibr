@@ -23,6 +23,9 @@ foreign kernel32 {
 	CreateJobObjectW :: proc(lpJobAttributes: win32.LPSECURITY_ATTRIBUTES, lpName: win32.LPCWSTR) -> win32.HANDLE ---
 	AssignProcessToJobObject :: proc(hJob: win32.HANDLE, hProcess: win32.HANDLE) -> win32.BOOL ---
 	SetInformationJobObject :: proc(hJob: win32.HANDLE, JobObjectInformationClass: i32, lpJobObjectInformation: win32.LPVOID, cbJobObjectInformationLength: win32.DWORD) -> win32.BOOL ---
+	QueryInformationJobObject :: proc(hJob: win32.HANDLE, JobObjectInformationClass: i32, lpJobObjectInformation: win32.LPVOID, cbJobObjectInformationLength: win32.DWORD, lpReturnLength: ^win32.DWORD) -> win32.BOOL ---
+	TerminateJobObject :: proc(hJob: win32.HANDLE, uExitCode: win32.UINT) -> win32.BOOL ---
+	GetTickCount64 :: proc() -> win32.ULONGLONG ---
 	InitializeProcThreadAttributeList :: proc(lpAttributeList: LPPROC_THREAD_ATTRIBUTE_LIST, dwAttributeCount: win32.DWORD, dwFlags: win32.DWORD, lpSize: ^win32.SIZE_T) -> win32.BOOL ---
 	UpdateProcThreadAttribute :: proc(lpAttributeList: LPPROC_THREAD_ATTRIBUTE_LIST, dwFlags: win32.DWORD, Attribute: win32.DWORD_PTR, lpValue: win32.PVOID, cbSize: win32.SIZE_T, lpPreviousValue: win32.PVOID, lpReturnSize: ^win32.SIZE_T) -> win32.BOOL ---
 	DeleteProcThreadAttributeList :: proc(lpAttributeList: LPPROC_THREAD_ATTRIBUTE_LIST) ---
@@ -55,8 +58,9 @@ STARTUPINFOEXW :: struct {
 // pointer to the whole record as far as Windows is concerned.
 #assert(size_of(STARTUPINFOEXW) == size_of(win32.STARTUPINFOW) + size_of(rawptr))
 
-// `JobObjectExtendedLimitInformation`, the one member of the
-// JOBOBJECTINFOCLASS enumeration this package sets and reads.
+// The two members of the JOBOBJECTINFOCLASS enumeration this package names:
+// `JobObjectBasicAccountingInformation` and `JobObjectExtendedLimitInformation`.
+JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION :: 1
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION :: 9
 
 // The limit that makes a job object a kill switch: when the LAST handle to the
@@ -83,6 +87,23 @@ JOBOBJECT_BASIC_LIMIT_INFORMATION :: struct {
 }
 
 #assert(size_of(JOBOBJECT_BASIC_LIMIT_INFORMATION) == 64)
+
+// Read for ONE field: `ActiveProcesses`, which is how "everything in this job
+// object is gone" is asked. There is no wait primitive for it -- a job object
+// signals when its end-of-job time limit is exceeded and never when it empties --
+// so the whole record is declared to ask a counter.
+JOBOBJECT_BASIC_ACCOUNTING_INFORMATION :: struct {
+	TotalUserTime:             win32.LARGE_INTEGER,
+	TotalKernelTime:           win32.LARGE_INTEGER,
+	ThisPeriodTotalUserTime:   win32.LARGE_INTEGER,
+	ThisPeriodTotalKernelTime: win32.LARGE_INTEGER,
+	TotalPageFaultCount:       win32.DWORD,
+	TotalProcesses:            win32.DWORD,
+	ActiveProcesses:           win32.DWORD,
+	TotalTerminatedProcesses:  win32.DWORD,
+}
+
+#assert(size_of(JOBOBJECT_BASIC_ACCOUNTING_INFORMATION) == 48)
 
 IO_COUNTERS :: struct {
 	ReadOperationCount:  win32.ULONGLONG,

@@ -243,6 +243,16 @@ Child_ID :: distinct u32
 Child :: struct {
 	handle:      win32.HANDLE,
 	thread:      win32.HANDLE,
+	// A job object holding this child alone, nested inside the caller's. WIN32
+	// HAS NO PROCESS TREE, which is ADR-0004's own sentence about the group -- and
+	// it is just as true of one child: a child that starts something of its own
+	// leaves a process TerminateProcess cannot reach and a handle table nothing
+	// can enumerate. This is what gives stop a tree to stop.
+	//
+	// Deliberately WITHOUT the kill-on-close limit the group carries, so that
+	// close stays what it says it is: giving handles back, not ending anything.
+	// The group behind it is where that guarantee lives.
+	tree:        win32.HANDLE,
 	// The READ end of the child's diagnostic pipe, and the only end this process
 	// keeps: the write end is the child's and is closed here the moment the child
 	// has its copy, which is what lets this one report end of stream.
@@ -347,15 +357,38 @@ start_into :: proc(
 	if denial.fault != .None {
 		return {}, denial
 	}
+
+	// The group FIRST and the child's own job second, which is the order nested
+	// jobs require: a process may only join a job that is a child of the ones it
+	// is already in, so the outer one has to be the outer one.
 	if !AssignProcessToJobObject(group.handle, pi.hProcess) {
 		return {}, abandon(&pi, .Not_Assigned)
 	}
+	tree := CreateJobObjectW(nil, nil)
+	if tree == nil {
+		return {}, abandon(&pi, .No_Job_Object)
+	}
+	if !AssignProcessToJobObject(tree, pi.hProcess) {
+		// abandon reads the last error first, so the close below cannot overwrite
+		// the code being reported.
+		refused := abandon(&pi, .Not_Assigned)
+		win32.CloseHandle(tree)
+		return {}, refused
+	}
+
 	// (DWORD)-1, which is what ResumeThread answers with rather than zero: zero is
 	// the legitimate previous suspend count of a thread that was already running.
 	if win32.ResumeThread(pi.hThread) == ~win32.DWORD(0) {
-		return {}, abandon(&pi, .Not_Resumed)
+		refused := abandon(&pi, .Not_Resumed)
+		win32.CloseHandle(tree)
+		return {}, refused
 	}
-	return Child{handle = pi.hProcess, thread = pi.hThread, id = Child_ID(pi.dwProcessId)}, Error{}
+	return Child {
+		handle = pi.hProcess,
+		thread = pi.hThread,
+		tree = tree,
+		id = Child_ID(pi.dwProcessId),
+	}, Error{}
 }
 
 // The `CreateProcessW` call itself, suspended and with no window of any kind.
@@ -440,32 +473,103 @@ abandon :: proc(pi: ^win32.PROCESS_INFORMATION, fault: Fault) -> Error {
 	assert(pi.hProcess != nil, "a child abandoned before it was created")
 
 	code := u32(win32.GetLastError())
-	stop_and_wait(pi.hProcess)
+	// The answer is not read, and that is the honest reading rather than a
+	// shrug: the fault being reported is the one the caller needs, and a
+	// suspended child that would not die does not change what went wrong. It
+	// held no file -- it never ran -- so the reason a caller waits does not
+	// apply here.
+	win32.TerminateProcess(pi.hProcess, TERMINATED_EXIT_CODE)
+	_ = win32.WaitForSingleObject(pi.hProcess, win32.DWORD(STOP_BOUND_MS))
 	win32.CloseHandle(pi.hThread)
 	win32.CloseHandle(pi.hProcess)
 	return Error{fault = fault, last_error = code}
 }
 
-// Stop is TERMINATE, then WAIT -- never `process_terminate`, which is a
-// cooperative request the child may ignore and which reports success without
-// stopping anything in a console binary (CLAUDE.md's Odin notes, ADR-0004).
+// How long a stopped child is given to actually be gone, in milliseconds.
 //
-// The wait is what the caller is really buying: until the process object
-// signals, the child may still hold a file open, and touching that file before
-// then is a sharing violation or, worse, a read of a half-written artifact.
-@(private)
-stop_and_wait :: proc(handle: win32.HANDLE) {
-	assert(handle != nil, "there is no child here to stop")
+// BOUNDED and not INFINITE, which is issue #27's rule and is not pedantry here:
+// TerminateProcess is a request the kernel grants, but a process wedged in a
+// driver call can outlive it, and a Stop press that never comes back is the
+// window frozen with no way out. Thirty seconds is what scripts\common.ps1 gives
+// a killed process tree for the same reason, and the two agree on purpose.
+STOP_BOUND_MS :: u32(30_000)
 
-	// A child that has already exited is not an error to report: TerminateProcess
-	// fails on it, the wait below returns immediately, and the outcome asked for
-	// is the outcome. So the answer is not read -- the WAIT is the check.
-	win32.TerminateProcess(handle, TERMINATED_EXIT_CODE)
-	signalled := win32.WaitForSingleObject(handle, win32.INFINITE)
-	assert(
-		signalled == win32.WAIT_OBJECT_0,
-		"a terminated child never signalled, so nothing it held is safe to touch",
-	)
+// Stops a child and does not come back until it is gone, or until the bound runs
+// out.
+//
+// FALSE MEANS SOMETHING MAY STILL BE HOLDING FILES OPEN, and a caller that treats
+// it as success is the defect this return value exists to prevent: the next thing
+// transcibr does to a stopped Recording is move, delete or re-run against the
+// artifacts it was writing (ADR-0002). The group is still behind it either way --
+// whatever survives this dies when transcibr does.
+//
+// The JOB OBJECT is terminated and not merely the process, and that was measured
+// rather than reasoned about. `TerminateProcess` on the child alone left the file
+// the child had opened still held: the thing holding it was a process the child
+// had started, which TerminateProcess cannot reach and no handle enumerates.
+// Microsoft describes TerminateJobObject as TerminateProcess applied to every
+// member, so ADR-0004's rule is not weakened here -- it is extended to the
+// descendants Win32 otherwise gives no handle on. What is never used is the
+// cooperative request, which reports success without stopping anything.
+//
+// Then the wait, which is the whole value: until everything has actually gone,
+// a file may still be open, and touching it is a sharing violation or a read of
+// something half written.
+stop :: proc(c: ^Child, milliseconds: u32 = STOP_BOUND_MS) -> (stopped: bool) {
+	assert(c != nil, "there is no child here to stop")
+	assert(c.handle != nil, "a child that was never started cannot be stopped")
+	assert(c.tree != nil, "a started child always has a job object of its own")
+
+	// The answer is not read: a job object whose members have all already exited
+	// is the outcome being asked for, not an error. The WAIT below is the check.
+	TerminateJobObject(c.tree, TERMINATED_EXIT_CODE)
+
+	// NOT an assertion, though a child that ignores termination feels like an
+	// impossibility worth asserting. It is not this program's own state: a process
+	// wedged in a driver call is outside transcibr, and nothing outside it may
+	// crash it (A8). The caller is told instead, and told plainly what it means.
+	//
+	// Both halves are waited for (A3): the child itself, whose process object is
+	// the one definite signal there is, and then everything it started, which only
+	// the job object can account for.
+	if win32.WaitForSingleObject(c.handle, win32.DWORD(milliseconds)) != win32.WAIT_OBJECT_0 {
+		return false
+	}
+	return job_emptied(c.tree, milliseconds)
+}
+
+// Whether a job object has emptied, under a bound.
+//
+// Polled, because there is nothing to wait on: a job object signals when its
+// end-of-job TIME LIMIT is exceeded and never when its last process leaves, so
+// `ActiveProcesses` read in a loop is the only answer Windows offers. A
+// millisecond between reads, on a path taken once per stopped Recording.
+@(private)
+job_emptied :: proc(job: win32.HANDLE, milliseconds: u32) -> bool {
+	assert(job != nil, "there is no job object here to wait on")
+
+	deadline := GetTickCount64() + win32.ULONGLONG(milliseconds)
+	for {
+		accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+		returned: win32.DWORD
+		read := QueryInformationJobObject(
+			job,
+			JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
+			rawptr(&accounting),
+			size_of(accounting),
+			&returned,
+		)
+		if !read {
+			return false
+		}
+		if accounting.ActiveProcesses == 0 {
+			return true
+		}
+		if GetTickCount64() >= deadline {
+			return false
+		}
+		win32.Sleep(1)
+	}
 }
 
 // What a child transcibr stopped exits with. Distinct from anything ffmpeg or the
@@ -522,6 +626,13 @@ close :: proc(c: ^Child) {
 	if c.diagnostics != nil {
 		win32.CloseHandle(c.diagnostics)
 		c.diagnostics = nil
+	}
+	// Harmless on a child still running, and deliberately so: this job object
+	// carries no kill-on-close limit, so giving it back ends nothing. What ends a
+	// child nobody stopped is the GROUP, which outlives every Child in it.
+	if c.tree != nil {
+		win32.CloseHandle(c.tree)
+		c.tree = nil
 	}
 	c.id = 0
 	c.at_end = false

@@ -7,7 +7,7 @@ import win32 "core:sys/windows"
 import "core:testing"
 import "core:time"
 
-// The two Win32 entry points this suite asks its questions through, declared
+// The one Win32 entry point this suite asks its questions through, declared
 // HERE and not beside the ones the package itself calls.
 //
 // The argument is command_line_test.odin's, measured on that side and carried
@@ -23,7 +23,6 @@ foreign import kernel32_probe "system:Kernel32.lib"
 @(default_calling_convention = "system")
 foreign kernel32_probe {
 	IsProcessInJob :: proc(ProcessHandle: win32.HANDLE, JobHandle: win32.HANDLE, Result: ^win32.BOOL) -> win32.BOOL ---
-	QueryInformationJobObject :: proc(hJob: win32.HANDLE, JobObjectInformationClass: i32, lpJobObjectInformation: win32.LPVOID, cbJobObjectInformationLength: win32.DWORD, lpReturnLength: ^win32.DWORD) -> win32.BOOL ---
 }
 
 // NO CASE HERE COVERS THE CONSOLE-WINDOW CRITERION, and that is a finding rather
@@ -548,4 +547,103 @@ closing_the_job_object_ends_a_child_that_is_still_running :: proc(t: ^testing.T)
 	testing.expect(t, wait(&c, KILL_BOUND_MS), "the child outlived the job object that held it")
 	_, gone := exit_code(&c)
 	testing.expect(t, gone, "the child never exited after its job object closed")
+}
+
+// Whether this process can take the file for itself, which is how "the child has
+// let go of it" is asked without guessing at what the child opened it with.
+//
+// A share mode of zero conflicts with EVERY other open handle whatever sharing
+// that handle allowed, so this answers false while anyone at all holds the file
+// and true the moment nobody does. False also means the file is not there, which
+// is why the case below waits for it to appear first.
+@(private)
+taken_exclusively :: proc(path: string) -> bool {
+	wide := win32.utf8_to_utf16(path, context.allocator)
+	defer delete(wide, context.allocator)
+
+	handle := win32.CreateFileW(
+		win32.wstring(raw_data(wide)),
+		win32.GENERIC_WRITE,
+		0,
+		nil,
+		win32.OPEN_EXISTING,
+		win32.FILE_ATTRIBUTE_NORMAL,
+		nil,
+	)
+	if handle == win32.INVALID_HANDLE_VALUE {
+		return false
+	}
+	win32.CloseHandle(handle)
+	return true
+}
+
+// Waits until the child has the file open, under a bound. A child that never got
+// that far would make the case below pass on a file nobody was holding.
+@(private)
+held_by_the_child :: proc(path: string) -> bool {
+	started := time.tick_now()
+	for time.tick_since(started) < SAY_BOUND {
+		if os.exists(path) && !taken_exclusively(path) {
+			return true
+		}
+		time.sleep(5 * time.Millisecond)
+	}
+	return false
+}
+
+// Stopping a child is TERMINATE then WAIT, and the wait is the whole value: until
+// the process object signals, the child may still hold a file open, and the next
+// thing transcibr does to a stopped child is move, delete or re-run against the
+// artifacts it was writing (ADR-0002).
+//
+// So the file is the measurement. The child holds one open for as long as it
+// runs; this case takes it the instant stop returns, with no retry and no sleep
+// anywhere. An exclusive open conflicts with any handle at all, so it can only
+// succeed if the child is really gone -- and a stop that returned while the child
+// was still dying fails here rather than somewhere downstream a week later.
+@(test)
+a_stopped_child_has_let_go_of_the_file_it_held :: proc(t: ^testing.T) {
+	path := scratch_path(t, "held-open")
+	defer delete(path, context.allocator)
+	defer os.remove(path)
+
+	group, group_err := job_object_open()
+	defer job_object_close(&group)
+	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+		return
+	}
+
+	// The path goes in as its OWN argument rather than inside a command string,
+	// and that is not a style choice. build_command_line quotes an argument that
+	// holds a space and escapes a quote inside one as `\"` -- which is the rule
+	// CommandLineToArgvW reads and NOT the rule cmd.exe reads, so a quoted path
+	// buried in a single command string reaches cmd with the backslashes still on
+	// it. As its own argument it is quoted once, by us, and cmd sees a path.
+	c, err := start(
+		&group,
+		CMD,
+		{"/c", "(waitfor", "/t", "25", "transcibrNobodySignalsThis)", ">", path},
+		context.allocator,
+	)
+	defer close(&c)
+	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
+		return
+	}
+
+	if !testing.expect(
+		t,
+		held_by_the_child(path),
+		"the child never opened the file it was told to",
+	) {
+		return
+	}
+
+	testing.expect(t, stop(&c), "the child did not stop within the bound")
+	testing.expect(
+		t,
+		taken_exclusively(path),
+		"the file the child held was still open when stop came back",
+	)
+	_, gone := exit_code(&c)
+	testing.expect(t, gone, "stop came back with the child still running")
 }
