@@ -218,13 +218,15 @@ write_transcript :: proc(
 //
 // Stepping by two from zero, which is how read_options walks the same argument
 // list below: the two are one shape and a change to either is a change to both.
+//
+// Nothing asserted on the way in. The only precondition worth stating is that
+// there are arguments at all, and re_render -- the one caller, three lines above
+// the call -- states it on the same slice before doing anything else. A second
+// copy on the same value in the same call chain is not A4's pairing, which wants
+// one property enforced by two ROUTES; it is one route asserted twice, and the
+// loop below is correct on an empty slice regardless.
 @(private)
 asks_for_help :: proc(arguments: []string) -> bool {
-	assert(
-		len(arguments) > 0,
-		"no arguments at all is the version banner, settled before this point",
-	)
-
 	for at := 0; at < len(arguments); at += 2 {
 		if arguments[at] == HELP {
 			return true
@@ -346,6 +348,12 @@ read_option :: proc(o: ^Options, name, value: string) -> (ok: bool) {
 // so a caller can refuse in the one line it took to notice.
 @(private)
 refuse :: proc(complaint: string, args: ..any) -> (ok: bool) {
+	// The complaint is this program's own words and never the caller's, so an
+	// empty one is a refusal site that forgot to say anything -- a blank line, the
+	// usage block, and exit two, which tells a caller their command line is wrong
+	// and nothing whatever about which part of it.
+	assert(len(complaint) > 0, "refused a command line without saying what was wrong with it")
+
 	fmt.eprintf(complaint, ..args)
 	fmt.eprint("\n\n")
 	write_usage(os.stderr)
