@@ -286,6 +286,97 @@ an_engine_schema_change_is_refused_rather_than_rendered_empty :: proc(t: ^testin
 }
 
 // ---------------------------------------------------------------------------
+// THE OTHER SILENT SUCCESS, and the one no schema change can reach: Engine
+// output that is perfectly well-formed and says nothing at all.
+//
+// `.No_Cues` fires on an empty `transcription` ARRAY and never on a set that is
+// full of Cues none of which said anything -- and the Engine writes empty and
+// space-only Cues over silence, so a Recording of silence, of music, or of a
+// dead audio track produces exactly that shape. What came out was 234 bytes of
+// front matter at exit 0: a header with no Transcript under it, which is the
+// "silently empty Transcript" this ticket's own criterion names as the enemy.
+//
+// NOT spec story 41, which is a different question deliberately left alone here.
+// That one is about a Recording that produced ALMOST no text -- a threshold, a
+// comparison against the Recording's length, and a judgement about how little is
+// too little. This is about NONE, which needs no threshold to see: there is no
+// prose to write, so there is no Transcript, and ADR-0002 already calls "exit 0
+// but no or empty output" a hard per-Recording failure.
+// ---------------------------------------------------------------------------
+
+// Well-formed Engine output holding not one Saying, in the shapes the Engine
+// really writes over silence.
+@(private, rodata)
+SILENT_OUTPUTS := []string {
+	`{"transcription": [
+		{"offsets": {"from": 0,     "to": 5000},  "text": " "},
+		{"offsets": {"from": 5000,  "to": 10000}, "text": ""},
+		{"offsets": {"from": 10000, "to": 30000}, "text": "   "}
+	]}`,
+	// One Cue and nothing in it, which is what a dead audio track produces.
+	`{"transcription": [{"offsets": {"from": 0, "to": 30000}, "text": ""}]}`,
+	// Bytes a text editor renders as nothing at all. Well-formed JSON, a Cue
+	// that is not empty, and still nobody said anything.
+	`{"transcription": [{"offsets": {"from": 0, "to": 30000}, "text": "  "}]}`,
+}
+
+@(test)
+a_recording_nobody_said_anything_in_is_refused_rather_than_rendered_empty :: proc(t: ^testing.T) {
+	rc := golden_context(.Monologue, UNKNOWN)
+	for text, i in SILENT_OUTPUTS {
+		markdown, err := render_transcript(
+			"silence.json",
+			text,
+			FIXTURE_DURATION,
+			rc,
+			context.allocator,
+		)
+		defer delete(markdown, context.allocator)
+
+		testing.expectf(t, err.fault == .Nothing_Said, "case %d: accepted with %v", i, err.fault)
+		// The whole of the criterion: caught, rather than handed to a reader as a
+		// document that is nothing but its own header.
+		testing.expectf(t, len(markdown) == 0, "case %d: rendered %d bytes", i, len(markdown))
+		// And re-running the Engine on it transcribes silence again, so this is a
+		// Recording to fail rather than a file to quarantine (ADR-0002).
+		testing.expectf(
+			t,
+			disposition_of(err.fault) == .Fail_The_Recording,
+			"case %d would be re-run forever",
+			i,
+		)
+	}
+}
+
+// The negative space of that (CLAUDE.md A3), and it is not a formality: a check
+// that refused every Cue set holding ANY silence would refuse the golden
+// fixture, whose seventh Cue is the Engine talking over the trailing silence.
+// One Saying among the silence is a Transcript.
+@(test)
+one_saying_among_the_silence_is_still_a_transcript :: proc(t: ^testing.T) {
+	text := `{"transcription": [
+		{"offsets": {"from": 0,     "to": 5000},  "text": " "},
+		{"offsets": {"from": 5000,  "to": 10000}, "text": " Something was said."},
+		{"offsets": {"from": 10000, "to": 30000}, "text": ""}
+	]}`
+	markdown, err := render_transcript(
+		"nearly-silent.json",
+		text,
+		FIXTURE_DURATION,
+		golden_context(.Monologue, UNKNOWN),
+		context.allocator,
+	)
+	defer delete(markdown, context.allocator)
+
+	testing.expect_value(t, err.fault, Parse_Fault.None)
+	testing.expect(
+		t,
+		strings.contains(markdown, "Something was said."),
+		"the one saying did not reach the document",
+	)
+}
+
+// ---------------------------------------------------------------------------
 // Determinism, which is what makes every comparison above mean anything.
 // ---------------------------------------------------------------------------
 

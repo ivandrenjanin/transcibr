@@ -398,11 +398,11 @@ accepts_zero_offsets_when_the_recording_is_not_known_to_be_longer :: proc(t: ^te
 
 @(test)
 every_fault_says_what_adr_0002_does_with_it :: proc(t: ^testing.T) {
-	// The two the ADR calls a hard per-Recording failure: the Engine exited
+	// The three the ADR calls a hard per-Recording failure: the Engine exited
 	// having transcribed nothing, and re-running it transcribes nothing again.
 	// Everything else is a file that is not what the Engine writes, which says
 	// nothing about whether the Engine can write it.
-	hard := []Parse_Fault{.Empty_Input, .No_Cues}
+	hard := []Parse_Fault{.Empty_Input, .No_Cues, .Nothing_Said}
 
 	for fault in Parse_Fault {
 		if fault == .None {

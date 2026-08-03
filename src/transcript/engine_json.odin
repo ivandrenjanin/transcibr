@@ -22,6 +22,7 @@ Parse_Fault :: enum u8 {
 	No_Transcription,
 	Too_Deeply_Nested,
 	No_Cues,
+	Nothing_Said,
 	Cue_Not_An_Object,
 	No_Offsets,
 	Offset_Missing,
@@ -138,6 +139,11 @@ FAULT := [Parse_Fault]Fault_Facts {
 	},
 	.No_Cues = {
 		says = "the `transcription` array is empty; the engine transcribed nothing",
+		scope = .Input,
+		disposition = .Fail_The_Recording,
+	},
+	.Nothing_Said = {
+		says = "every cue is empty or silence; the engine transcribed no speech at all",
 		scope = .Input,
 		disposition = .Fail_The_Recording,
 	},

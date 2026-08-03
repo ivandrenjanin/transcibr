@@ -148,6 +148,26 @@ render_transcript :: proc(
 	paragraphs := merge_paragraphs(kept, profile_params(rc.profile), allocator)
 	defer destroy_paragraphs(paragraphs, allocator)
 
+	// The other silent success, and the one no check on the JSON's SHAPE can
+	// reach: output that parses perfectly and says nothing. `.No_Cues` fires on
+	// an empty `transcription` array and never on a set full of the empty and
+	// space-only Cues the Engine writes over silence -- so a Recording of
+	// silence, of music, or of a dead audio track rendered a header with no
+	// Transcript under it, at exit 0.
+	//
+	// Reported here rather than in parse_cues, which is lossless on purpose and
+	// right to hand those Cues on: they hold the Recording's timeline and the
+	// runs repetition collapse counts. It is the DOCUMENT that cannot exist.
+	//
+	// Spec story 41 -- a Recording that produced ALMOST no text -- is a different
+	// question and is deliberately not answered here. That one needs a threshold
+	// and a comparison against the Recording's length; this one needs neither,
+	// because there is no prose at all to write and ADR-0002 already calls "exit
+	// 0 but no or empty output" a hard per-Recording failure.
+	if len(paragraphs) == 0 {
+		return "", fault_at(.Nothing_Said, json_name, 0)
+	}
+
 	return render_markdown(paragraphs, rc, ANCHOR_INTERVAL_MS, allocator), Parse_Error{}
 }
 
