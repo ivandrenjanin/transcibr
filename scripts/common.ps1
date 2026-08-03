@@ -162,6 +162,11 @@ function ConvertTo-NativeArgument {
 		return $Value
 	}
 
+	# Built with string repetition rather than StringBuilder.Append(char, int):
+	# PowerShell picks that overload by converting a one-character string to a
+	# char, and the scripts run under 5.1 locally and pwsh in CI. A quoter that
+	# resolves differently on the two would break the checkout-path-with-a-space
+	# case on exactly one of them.
 	$quoted = New-Object System.Text.StringBuilder
 	[void] $quoted.Append('"')
 	$slashes = 0
@@ -171,15 +176,15 @@ function ConvertTo-NativeArgument {
 			continue
 		}
 		if ($char -eq '"') {
-			[void] $quoted.Append('\', $slashes * 2 + 1)
+			[void] $quoted.Append('\' * ($slashes * 2 + 1))
 		}
 		else {
-			[void] $quoted.Append('\', $slashes)
+			[void] $quoted.Append('\' * $slashes)
 		}
 		$slashes = 0
-		[void] $quoted.Append($char)
+		[void] $quoted.Append([string] $char)
 	}
-	[void] $quoted.Append('\', $slashes * 2)
+	[void] $quoted.Append('\' * ($slashes * 2))
 	[void] $quoted.Append('"')
 	return $quoted.ToString()
 }
