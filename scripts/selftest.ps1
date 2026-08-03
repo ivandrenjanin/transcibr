@@ -1429,8 +1429,33 @@ Test-Case 'the format sweep gives up on its own budget rather than running forev
 
 Test-Case 'the format command rewrites exactly what it named' {
 	$repo = New-FixtureRepo 'format-fix'
-	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMainUnsorted -Line $SmokeBanner) | Out-Null
+	$dir = Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMainUnsorted -Line $SmokeBanner)
+
+	# What a hard-killed -Fix strands beside a source, planted before the sweep
+	# runs. Write-FileAtomically deletes its staged file however the replace
+	# ended, so the only way one survives is a run killed between the write and
+	# the rename -- after which nothing names that file again. Get-OdinSource does
+	# not discover it and .gitignore does not cover it, so `git status` shows it:
+	# that is what makes it harmless, not what makes it somebody else's problem.
+	$stranded = Join-Path $dir "main.odin.4242-$([System.Guid]::NewGuid().ToString('N'))$OdinFormatStagedSuffix"
+	[System.IO.File]::WriteAllText($stranded, 'staged bytes from a run nobody waited for')
+	(Get-Item -LiteralPath $stranded).LastWriteTime = (Get-Date).AddDays(-3)
+
+	# And one belonging to a run that is still going. Reclaimed on AGE for exactly
+	# this reason (rule A3, and the reason Remove-StaleTestArtefact was written
+	# that way): a concurrent -Fix has a staged file seconds old, and a sweep that
+	# took that one would corrupt the rewrite it belongs to.
+	$live = Join-Path $dir "main.odin.4243-$([System.Guid]::NewGuid().ToString('N'))$OdinFormatStagedSuffix"
+	[System.IO.File]::WriteAllText($live, 'staged bytes from a run still going')
+
 	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1') -Fails
+
+	if (Test-Path -LiteralPath $stranded) {
+		throw "the sweep left a three-day-old staged file beside the source: $stranded"
+	}
+	if (-not (Test-Path -LiteralPath $live)) {
+		throw "the sweep took a staged file a concurrent rewrite is still using: $live"
+	}
 
 	# Everything under src\ before the rewrite, so "exactly what it named" can be
 	# checked against the tree and not only against the file. -Fix stages the new

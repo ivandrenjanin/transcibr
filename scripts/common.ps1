@@ -168,6 +168,17 @@ $OdinFormatExcludedDirectories = @(
 	(Join-Path $RepoRoot '.scratch')
 ) | ForEach-Object { [System.IO.Path]::GetFullPath($_) + [System.IO.Path]::DirectorySeparatorChar }
 
+# What -Fix names the bytes it is about to swap in, while it still has both files
+# (see Write-FileAtomically). Deliberately an extension Get-OdinSource does not
+# discover, so a leaked one is never mistaken for source and never formatted.
+#
+# ONE spelling, because two things depend on it and they must not drift: the
+# procedure that names the file, and the sweep in Get-OdinFormatReport that
+# reclaims the ones a killed run stranded. Spelled twice, the sweep goes on
+# looking for a name nothing writes any more and says nothing about it -- which
+# is the failure $OdinFormatExcludedDirectories records the same lesson for.
+$OdinFormatStagedSuffix = '.odinfmt-tmp'
+
 # The binaries this repository produces. Data rather than prose, so the GUI
 # binary ADR-0004 promises is one more entry here and not a rewrite:
 #
@@ -928,6 +939,21 @@ function Get-OdinFormatReport {
 		throw "no .odin files found under $RepoRoot, so this check would pass having compared nothing."
 	}
 
+	# What a killed -Fix stranded beside a source, reclaimed the way every other
+	# artefact this repository leaks is. Write-FileAtomically removes its staged
+	# file however the replace ended, so a survivor is a run hard-killed between
+	# the write and the rename -- and no later run will ever name that file again.
+	# `git status` does show it, which is what keeps it harmless; being visible is
+	# not the same as being cleaned up.
+	#
+	# The directories holding sources, and only those: a repository-wide walk for
+	# this would be a second discovery pass disagreeing with the one that matters.
+	# Age is what protects a CONCURRENT rewrite, whose staged file is seconds old
+	# -- deleting that one would corrupt the run it belongs to.
+	foreach ($directory in @($sources | ForEach-Object { [System.IO.Path]::GetDirectoryName($_.Path) } | Sort-Object -Unique)) {
+		Remove-StaleTestArtefact -Root $directory -Pattern "*$OdinFormatStagedSuffix"
+	}
+
 	$misformatted = @()
 	$checked = 0
 	foreach ($source in $sources) {
@@ -974,15 +1000,18 @@ function Get-OdinFormatReport {
 # neighbouring name first, and the destination then goes from all of the old
 # bytes to all of the new ones in one rename; no backup is kept, because there
 # is no moment at which one would be read. Beside the destination rather than in
-# TEMP because Replace needs both on one volume, and named with an extension the
-# sweep does not discover so a leaked one is never mistaken for source.
+# TEMP because Replace needs both on one volume, and named with the extension
+# $OdinFormatStagedSuffix spells -- one the sweep does not discover, so a leaked
+# one is never mistaken for source, and one Get-OdinFormatReport reclaims, so a
+# run killed between the write and the rename does not strand it beside the
+# source forever.
 function Write-FileAtomically {
 	param(
 		[Parameter(Mandatory)] [string] $Path,
 		[Parameter(Mandatory)] [byte[]] $Bytes
 	)
 
-	$staged = "$Path.$PID-$([System.Guid]::NewGuid().ToString('N')).odinfmt-tmp"
+	$staged = "$Path.$PID-$([System.Guid]::NewGuid().ToString('N'))$OdinFormatStagedSuffix"
 	try {
 		[System.IO.File]::WriteAllBytes($staged, $Bytes)
 		# [NullString]::Value and not $null: PowerShell converts $null to the EMPTY
