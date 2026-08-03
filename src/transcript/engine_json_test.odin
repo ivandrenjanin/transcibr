@@ -152,7 +152,10 @@ nested_engine_json :: proc(inner_depth: int, allocator: mem.Allocator) -> string
 	for _ in 0 ..< inner_depth {
 		strings.write_byte(&out, ']')
 	}
-	strings.write_string(&out, `, "transcription": [{"offsets": {"from": 0, "to": 3480}, "text": " one"}]}`)
+	strings.write_string(
+		&out,
+		`, "transcription": [{"offsets": {"from": 0, "to": 3480}, "text": " one"}]}`,
+	)
 
 	text := strings.to_string(out)
 	assert(len(text) > inner_depth * 2, "the nesting never reached the document")
@@ -195,7 +198,14 @@ accepts_nesting_up_to_the_limit :: proc(t: ^testing.T) {
 		defer destroy_cues(cues, context.allocator)
 
 		want := Parse_Fault.None if i == 0 else Parse_Fault.Too_Deeply_Nested
-		testing.expectf(t, err.fault == want, "%d levels gave %v, want %v", inner_depth + 1, err.fault, want)
+		testing.expectf(
+			t,
+			err.fault == want,
+			"%d levels gave %v, want %v",
+			inner_depth + 1,
+			err.fault,
+			want,
+		)
 	}
 }
 
@@ -228,7 +238,11 @@ error_message_names_the_offending_cue :: proc(t: ^testing.T) {
 
 	message := error_message(err, context.allocator)
 	defer delete(message, context.allocator)
-	testing.expect(t, strings.contains(message, "third.json"), "the report does not name the input")
+	testing.expect(
+		t,
+		strings.contains(message, "third.json"),
+		"the report does not name the input",
+	)
 	testing.expect(t, strings.contains(message, "cue 3"), "the report does not name the cue")
 }
 
@@ -259,7 +273,11 @@ rejects_a_cue_set_whose_final_offset_is_zero :: proc(t: ^testing.T) {
 
 	message := error_message(err, context.allocator)
 	defer delete(message, context.allocator)
-	testing.expect(t, strings.contains(message, "all-zero.json"), "the report does not name the input")
+	testing.expect(
+		t,
+		strings.contains(message, "all-zero.json"),
+		"the report does not name the input",
+	)
 	testing.expect(t, strings.contains(message, "cue 2"), "the report does not name the cue")
 }
 
@@ -371,7 +389,11 @@ real_engine_output_is_ordered_on_the_way_out :: proc(t: ^testing.T) {
 	defer destroy_cues(cues, context.allocator)
 
 	testing.expect_value(t, err.fault, Parse_Fault.None)
-	testing.expect(t, cues_are_ordered(cues), "the parser promises an ordered set and did not deliver one")
+	testing.expect(
+		t,
+		cues_are_ordered(cues),
+		"the parser promises an ordered set and did not deliver one",
+	)
 	testing.expect_value(t, first_disordered_cue(cues), 0)
 }
 
@@ -406,8 +428,8 @@ ACCEPTED_CASES := []Accepted_Case {
 		// The Engine emits these over silence. Dropping them shortens the
 		// Cue set the repetition filter downstream counts runs in, and a
 		// run it cannot see is a hallucination it cannot strip (ADR-0001).
-		name = "empty-text.json",
-		json = `{"transcription": [
+		name     = "empty-text.json",
+		json     = `{"transcription": [
 			{"offsets": {"from": 0,    "to": 1000}, "text": ""},
 			{"offsets": {"from": 1000, "to": 2000}, "text": " "},
 			{"offsets": {"from": 2000, "to": 3000}, "text": " Words."}
@@ -418,8 +440,8 @@ ACCEPTED_CASES := []Accepted_Case {
 		// Overlap is ordinary Engine output, and a check demanding a
 		// strictly increasing, disjoint sequence would look stricter while
 		// rejecting real Recordings.
-		name = "overlapping.json",
-		json = `{"transcription": [
+		name     = "overlapping.json",
+		json     = `{"transcription": [
 			{"offsets": {"from": 0,    "to": 5000}, "text": " first"},
 			{"offsets": {"from": 3000, "to": 8000}, "text": " second"},
 			{"offsets": {"from": 3000, "to": 4000}, "text": " third"}
@@ -434,8 +456,8 @@ ACCEPTED_CASES := []Accepted_Case {
 		// Keys this parser has never heard of, at both levels. Rejecting
 		// them would turn an Engine upgrade into a corrupt Transcript, and
 		// `-ojf` already adds a per-token array to every Cue (ADR-0001).
-		name = "unexpected-fields.json",
-		json = `{
+		name     = "unexpected-fields.json",
+		json     = `{
 			"systeminfo": "irrelevant",
 			"model": {"type": "large"},
 			"a_key_from_2027": [1, 2, 3],
@@ -452,8 +474,8 @@ ACCEPTED_CASES := []Accepted_Case {
 		// `offsets` is the source of truth, not `timestamps` (ADR-0001).
 		// The two disagree here so that a parser quietly re-deriving
 		// milliseconds from the hh:mm:ss,mmm text cannot pass.
-		name = "disagreeing-timestamps.json",
-		json = `{"transcription": [{
+		name     = "disagreeing-timestamps.json",
+		json     = `{"transcription": [{
 			"timestamps": {"from": "00:00:11,111", "to": "00:00:22,222"},
 			"offsets": {"from": 4380, "to": 8440},
 			"text": " Words."
@@ -467,8 +489,8 @@ ACCEPTED_CASES := []Accepted_Case {
 		// that would ALSO have been Floats under `parse_integers`, and an
 		// Engine release that starts writing them this way must read the
 		// same as the plain ones do.
-		name = "float-offsets.json",
-		json = `{"transcription": [
+		name     = "float-offsets.json",
+		json     = `{"transcription": [
 			{"offsets": {"from": 0.0,    "to": 3480.0}, "text": " one"},
 			{"offsets": {"from": 4.38e3, "to": 8440e0}, "text": " two"}
 		]}`,
@@ -480,8 +502,8 @@ ACCEPTED_CASES := []Accepted_Case {
 		// a decimal point and without reads the same, because both spellings
 		// arrive as the one f64 -- so a check written with the wrong
 		// comparison rejects a value it should read, in either.
-		name = "offset-at-the-limit.json",
-		json = `{"transcription": [
+		name     = "offset-at-the-limit.json",
+		json     = `{"transcription": [
 			{"offsets": {"from": 0, "to": 9007199254740991},                "text": " one"},
 			{"offsets": {"from": 9007199254740991, "to": 9007199254740991.0}, "text": " two"}
 		]}`,
@@ -493,8 +515,8 @@ ACCEPTED_CASES := []Accepted_Case {
 	{
 		// Escapes are undone exactly once. Twice mangles a Transcript;
 		// not at all leaves a literal backslash-n mid-sentence.
-		name = "escaped-text.json",
-		json = `{"transcription": [{"offsets": {"from": 0, "to": 1000},
+		name     = "escaped-text.json",
+		json     = `{"transcription": [{"offsets": {"from": 0, "to": 1000},
 			"text": " \"quoted\", a \\ backslash, and café."}]}`,
 		expected = []Cue{{0, 1_000, ` "quoted", a \ backslash, and café.`}},
 	},
@@ -504,8 +526,8 @@ ACCEPTED_CASES := []Accepted_Case {
 		// backslash and not an escaped quote. The depth scan runs over the
 		// bytes ahead of the decoder, so a scan that could not tell either
 		// of those would refuse a Recording for what was said in it.
-		name = "bracketed-text.json",
-		json = `{"transcription": [{"offsets": {"from": 0, "to": 1000},
+		name     = "bracketed-text.json",
+		json     = `{"transcription": [{"offsets": {"from": 0, "to": 1000},
 			"text": " [[[[[ {{{ \" ]] }} \\"}]}`,
 		expected = []Cue{{0, 1_000, ` [[[[[ {{{ " ]] }} \`}},
 	},
@@ -531,7 +553,15 @@ parses_the_ugly_cases :: proc(t: ^testing.T) {
 			continue
 		}
 		for want, i in c.expected {
-			testing.expectf(t, cues[i] == want, "%s: cue %d is %v, want %v", c.name, i + 1, cues[i], want)
+			testing.expectf(
+				t,
+				cues[i] == want,
+				"%s: cue %d is %v, want %v",
+				c.name,
+				i + 1,
+				cues[i],
+				want,
+			)
 		}
 	}
 }
@@ -563,8 +593,8 @@ REJECTED_CASES := []Rejected_Case {
 	{
 		// "Exit 0 but nothing transcribed" is a per-Recording failure, not
 		// a Transcript with no words in it (ADR-0002).
-		name = "no-cues.json",
-		json = `{"transcription": []}`,
+		name  = "no-cues.json",
+		json  = `{"transcription": []}`,
 		fault = .No_Cues,
 	},
 	{
@@ -600,11 +630,11 @@ REJECTED_CASES := []Rejected_Case {
 		// The hh:mm:ss,mmm form in the wrong field. Reported rather than
 		// re-parsed: guessing at what the Engine meant is how a schema
 		// change becomes a Transcript full of plausible wrong timings.
-		name = "offset-as-text.json",
-		json = `{"transcription": [{"offsets": {"from": "00:00:00,000", "to": "00:00:03,480"},
+		name  = "offset-as-text.json",
+		json  = `{"transcription": [{"offsets": {"from": "00:00:00,000", "to": "00:00:03,480"},
 			"text": " one"}]}`,
 		fault = .Offset_Not_A_Number,
-		cue = 1,
+		cue   = 1,
 	},
 	{
 		name = "offset-not-whole.json",
@@ -615,10 +645,10 @@ REJECTED_CASES := []Rejected_Case {
 	{
 		// Past 2^53 an f64 no longer holds the value it was written with,
 		// so converting is guessing at a number nobody has.
-		name = "offset-out-of-range.json",
-		json = `{"transcription": [{"offsets": {"from": 0, "to": 1e300}, "text": " one"}]}`,
+		name  = "offset-out-of-range.json",
+		json  = `{"transcription": [{"offsets": {"from": 0, "to": 1e300}, "text": " one"}]}`,
 		fault = .Offset_Out_Of_Range,
-		cue = 1,
+		cue   = 1,
 	},
 	{
 		// The same magnitude written WITHOUT a decimal point. Under
@@ -628,11 +658,11 @@ REJECTED_CASES := []Rejected_Case {
 		// 2e17 or so, about six million years -- rather than as a refusal. A
 		// corrupt cache file is ADR-0002's explicit case, and this one used
 		// to parse.
-		name = "integer-offset-overflows.json",
-		json = `{"transcription": [{"offsets": {"from": 0, "to": 99999999999999999999999},
+		name  = "integer-offset-overflows.json",
+		json  = `{"transcription": [{"offsets": {"from": 0, "to": 99999999999999999999999},
 			"text": " one"}]}`,
 		fault = .Offset_Out_Of_Range,
-		cue = 1,
+		cue   = 1,
 	},
 	{
 		// The same overflow written so that it wraps back INSIDE the limit:
@@ -642,21 +672,21 @@ REJECTED_CASES := []Rejected_Case {
 		// otherwise. It is refused here because nobody asks
 		// core:encoding/json for an integer, so the magnitude arrives as the
 		// float 1.8446744073709556e19 with nothing wrapped away.
-		name = "integer-offset-wraps-into-range.json",
-		json = `{"transcription": [{"offsets": {"from": 0, "to": 18446744073709556616},
+		name  = "integer-offset-wraps-into-range.json",
+		json  = `{"transcription": [{"offsets": {"from": 0, "to": 18446744073709556616},
 			"text": " one"}]}`,
 		fault = .Offset_Out_Of_Range,
-		cue = 1,
+		cue   = 1,
 	},
 	{
 		// One past the limit, which is 2^53 exactly: the first value where
 		// the spacing between representable f64s becomes two, so it is also
 		// what 9007199254740993 arrives as. Reading either one back would be
 		// reading a number nobody wrote, and both are refused.
-		name = "offset-past-the-limit.json",
-		json = `{"transcription": [{"offsets": {"from": 0, "to": 9007199254740992}, "text": " one"}]}`,
+		name  = "offset-past-the-limit.json",
+		json  = `{"transcription": [{"offsets": {"from": 0, "to": 9007199254740992}, "text": " one"}]}`,
 		fault = .Offset_Out_Of_Range,
-		cue = 1,
+		cue   = 1,
 	},
 	{
 		name = "offset-rounding-onto-the-limit.json",
@@ -667,10 +697,10 @@ REJECTED_CASES := []Rejected_Case {
 	{
 		// And below it, which Negative_Offset never sees: read_millis
 		// refuses the magnitude before cue_follows is asked about the sign.
-		name = "offset-below-the-limit.json",
-		json = `{"transcription": [{"offsets": {"from": -9007199254740992, "to": 0}, "text": " one"}]}`,
+		name  = "offset-below-the-limit.json",
+		json  = `{"transcription": [{"offsets": {"from": -9007199254740992, "to": 0}, "text": " one"}]}`,
 		fault = .Offset_Out_Of_Range,
-		cue = 1,
+		cue   = 1,
 	},
 	{
 		name = "no-text.json",
@@ -711,10 +741,10 @@ REJECTED_CASES := []Rejected_Case {
 	{
 		// An offset is a count from the start of the Recording, so there is
 		// nothing before zero for a Cue to start in.
-		name = "negative.json",
-		json = `{"transcription": [{"offsets": {"from": -500, "to": 4000}, "text": " early"}]}`,
+		name  = "negative.json",
+		json  = `{"transcription": [{"offsets": {"from": -500, "to": 4000}, "text": " early"}]}`,
 		fault = .Negative_Offset,
-		cue = 1,
+		cue   = 1,
 	},
 }
 
@@ -727,12 +757,23 @@ rejects_the_ugly_cases :: proc(t: ^testing.T) {
 		testing.expectf(t, len(cues) == 0, "%s: handed back %d cues", c.name, len(cues))
 		testing.expectf(t, err.fault == c.fault, "%s: got %v, want %v", c.name, err.fault, c.fault)
 		testing.expectf(t, err.cue == c.cue, "%s: blamed cue %d, want %d", c.name, err.cue, c.cue)
-		testing.expectf(t, err.json_name == c.name, "%s: reported against %q", c.name, err.json_name)
+		testing.expectf(
+			t,
+			err.json_name == c.name,
+			"%s: reported against %q",
+			c.name,
+			err.json_name,
+		)
 
 		// Every rejection renders, and every rendering names the input: a fault
 		// added without a row in FAULT trips the assertion inside.
 		message := error_message(err, context.allocator)
 		defer delete(message, context.allocator)
-		testing.expectf(t, strings.contains(message, c.name), "%s: report does not name it", c.name)
+		testing.expectf(
+			t,
+			strings.contains(message, c.name),
+			"%s: report does not name it",
+			c.name,
+		)
 	}
 }

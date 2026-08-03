@@ -20,7 +20,11 @@ Version :: struct {
 }
 
 // The version this build reports. Bumped by hand.
-CURRENT :: Version{major = 0, minor = 1, patch = 0}
+CURRENT :: Version {
+	major = 0,
+	minor = 1,
+	patch = 0,
+}
 
 // Renders the line a binary prints to identify itself, e.g. `transcibr-cli 0.1.0`.
 //

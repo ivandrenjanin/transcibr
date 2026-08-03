@@ -33,41 +33,38 @@ jobs:
 
       # Pinned to a tagged release, never `latest`: an unpinned toolchain turns
       # an upstream change into a build failure on an unrelated commit, and
-      # makes "it passed yesterday" unanswerable. The tag is read out of
+      # makes "it passed yesterday" unanswerable. Every pin is read out of
       # scripts/common.ps1 rather than copied here, so the release CI installs
       # and the version string the scripts check cannot drift apart -- and
-      # because $env:CI is set here, those scripts refuse an unpinned compiler
+      # because $env:CI is set here, those scripts refuse an unpinned tool
       # outright instead of warning as they do locally.
+      #
+      # Both installs are one script, because they were the same twenty lines
+      # twice: download a tagged zip, find the executable inside it by pattern,
+      # and name it in the variable scripts/common.ps1 already resolves from.
+      # odinfmt is the odd one only in where it comes from -- it ships in the ols
+      # release zip rather than with the Odin distribution -- and in how it is
+      # pinned, by SHA-256, because it has no version flag to ask.
       - name: Install the pinned Odin release
         shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          . .\scripts\common.ps1
-          Write-Host "Pinned to $OdinReleaseTag, which reports $OdinVersionPin"
+        run: .\scripts\install-pinned-tool.ps1 -Tool odin
 
-          $asset = "odin-windows-amd64-$OdinReleaseTag.zip"
-          $url = "https://github.com/odin-lang/Odin/releases/download/$OdinReleaseTag/$asset"
-          $zip = Join-Path $env:RUNNER_TEMP $asset
-          $dest = Join-Path $env:RUNNER_TEMP 'odin'
+      - name: Install the pinned odinfmt
+        shell: pwsh
+        run: .\scripts\install-pinned-tool.ps1 -Tool odinfmt
 
-          Write-Host "Downloading $url"
-          Invoke-WebRequest -Uri $url -OutFile $zip
-          Expand-Archive -Path $zip -DestinationPath $dest -Force
-
-          # Resolve odin.exe rather than assuming the layout inside the zip.
-          $exe = Get-ChildItem -Path $dest -Recurse -Filter 'odin.exe' -File |
-            Select-Object -First 1
-          if (-not $exe) {
-            throw "odin.exe not found under $dest after extracting $asset."
-          }
-
-          # scripts/common.ps1 resolves the compiler from ODIN first, so this
-          # is the whole integration: CI runs the developer's commands as-is.
-          "ODIN=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          & $exe.FullName version
+      # Every .odin file in the repository against odinfmt.json. Its own step as
+      # well as part of the build below, because "which file" is the answer a
+      # developer wants and a build that stopped before compiling does not say
+      # it as plainly as the command whose whole job is to.
+      - name: Check formatting
+        shell: pwsh
+        run: .\scripts\format.ps1
 
       # Builds every target in $OdinTargets, then reads the subsystem back out
-      # of each PE header and runs the ones that can report their version.
+      # of each PE header and runs the ones that can report their version. The
+      # formatting check runs here too -- rule S1 fails the BUILD, not merely a
+      # step somebody could reorder away.
       - name: Build (debug)
         shell: pwsh
         run: .\scripts\build.ps1

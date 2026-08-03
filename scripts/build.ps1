@@ -28,7 +28,30 @@ trap {
 
 $odin = Resolve-OdinCompiler
 Write-Host "Odin:   $odin ($OdinVersionPin)"
+
+# -Optional, so a contributor who has the pinned compiler but not the ols zip
+# can still build. A formatter whose build did not match the pin already warned
+# and carried on; one that was not installed at all failed the build outright,
+# and there is no reading of the pin argument under which those differ. CI
+# installs the formatter and refuses to skip anything, so rule S1 is still
+# enforced against the branch either way.
+$odinfmt = Resolve-OdinFormatter -Optional
 Write-Host "Build:  $Configuration"
+
+if ($odinfmt -eq '') {
+	Write-Host 'Format: NOT CHECKED -- no odinfmt (see the warning above)' -ForegroundColor Yellow
+}
+else {
+	Write-Host "Format: $odinfmt (ols $OdinfmtReleaseTag)"
+
+	# CLAUDE.md rule S1's other half, and it fails the build for the same reason
+	# the vet flags below do: a rule enforced only at review is a rule that
+	# reaches main. Before the compiler runs, so the answer arrives in a second
+	# rather than after every target has been linked. scripts\format.ps1 -Fix is
+	# the way out.
+	Assert-OdinFormatting -Odinfmt $odinfmt
+	Write-Host '-> every .odin file is formatted as odinfmt.json says' -ForegroundColor Green
+}
 
 New-Item -ItemType Directory -Path $BuildRoot -Force | Out-Null
 

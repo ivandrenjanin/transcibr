@@ -71,20 +71,92 @@ Material :: struct {
 // sorted copy in the test, so the order here changes nothing it checks.
 @(private, rodata)
 CONTINUOUS_GAPS := []Millis {
-	0, 0, 80, 0, 0, 160, 0, 800, 0, 0,
-	40, 0, 2_500, 0, 120, 0, 240, 0, 8_240, 0,
-	0, 300, 1_020, 0, 80, 0, 3_100, 200, 0, 440,
-	21_000, 360, 0, 520, 4_600, 640, 6_200, 10_500, 13_000, 0,
+	0,
+	0,
+	80,
+	0,
+	0,
+	160,
+	0,
+	800,
+	0,
+	0,
+	40,
+	0,
+	2_500,
+	0,
+	120,
+	0,
+	240,
+	0,
+	8_240,
+	0,
+	0,
+	300,
+	1_020,
+	0,
+	80,
+	0,
+	3_100,
+	200,
+	0,
+	440,
+	21_000,
+	360,
+	0,
+	520,
+	4_600,
+	640,
+	6_200,
+	10_500,
+	13_000,
+	0,
 }
 
 // The other population: short turns, almost nothing touching, and the mass
 // sitting in a dense band either side of half a second.
 @(private, rodata)
 INTERACTIVE_GAPS := []Millis {
-	520, 380, 900, 460, 1_020, 420, 320, 640, 480, 2_600,
-	500, 560, 350, 820, 440, 240, 1_300, 490, 700, 0,
-	600, 470, 1_800, 400, 280, 860, 520, 3_400, 450, 200,
-	960, 540, 140, 5_200, 2_100, 510, 1_140, 2_340, 0, 1_500,
+	520,
+	380,
+	900,
+	460,
+	1_020,
+	420,
+	320,
+	640,
+	480,
+	2_600,
+	500,
+	560,
+	350,
+	820,
+	440,
+	240,
+	1_300,
+	490,
+	700,
+	0,
+	600,
+	470,
+	1_800,
+	400,
+	280,
+	860,
+	520,
+	3_400,
+	450,
+	200,
+	960,
+	540,
+	140,
+	5_200,
+	2_100,
+	510,
+	1_140,
+	2_340,
+	0,
+	1_500,
 }
 
 @(private, rodata)
@@ -164,7 +236,10 @@ MATERIALS := []Material {
 @(private)
 material_cues :: proc(m: Material, allocator: mem.Allocator) -> []Cue {
 	assert(len(m.gaps) > 0, "material with no gaps in it describes no cue set")
-	assert(m.unfinished_every > 0, "material where every cue is unfinished carries no sentence signal")
+	assert(
+		m.unfinished_every > 0,
+		"material where every cue is unfinished carries no sentence signal",
+	)
 	assert(len(m.finished) > 0, "material with nothing said in it")
 	assert(len(m.unfinished) > 0, "material with nothing left unfinished in it")
 
@@ -176,7 +251,11 @@ material_cues :: proc(m: Material, allocator: mem.Allocator) -> []Cue {
 		if (i + 1) % m.unfinished_every == 0 {
 			said = m.unfinished[i % len(m.unfinished)]
 		}
-		shape[i] = Shaped_Cue{gap_ms = gap, duration_ms = m.duration_ms, text = said}
+		shape[i] = Shaped_Cue {
+			gap_ms      = gap,
+			duration_ms = m.duration_ms,
+			text        = said,
+		}
 	}
 	return shaped_cues(shape, allocator)
 }
@@ -341,7 +420,12 @@ the_profiles_diverge_further_on_interactive_material :: proc(t: ^testing.T) {
 		aggressive := merge_paragraphs(cues, CONVERSATION, context.allocator)
 		defer destroy_paragraphs(aggressive, context.allocator)
 
-		testing.expectf(t, len(generous) > 0, "%s: the generous profile made no paragraphs at all", m.name)
+		testing.expectf(
+			t,
+			len(generous) > 0,
+			"%s: the generous profile made no paragraphs at all",
+			m.name,
+		)
 		spread[i] = f64(len(aggressive)) / f64(len(generous))
 	}
 

@@ -171,11 +171,7 @@ FAULT := [Parse_Fault]Fault_Facts {
 		scope = .Cue,
 		disposition = .Quarantine_And_Rerun,
 	},
-	.No_Text = {
-		says = "has no `text` string",
-		scope = .Cue,
-		disposition = .Quarantine_And_Rerun,
-	},
+	.No_Text = {says = "has no `text` string", scope = .Cue, disposition = .Quarantine_And_Rerun},
 	.Negative_Offset = {
 		says = "starts before the recording does",
 		scope = .Cue,
@@ -229,8 +225,14 @@ parse_cues :: proc(
 	cues: []Cue,
 	err: Parse_Error,
 ) {
-	assert(len(json_name) > 0, "the input must be named; a report nobody can locate is not a report")
-	assert(allocator.procedure != nil, "the cue set outlives this procedure and needs a chosen allocator")
+	assert(
+		len(json_name) > 0,
+		"the input must be named; a report nobody can locate is not a report",
+	)
+	assert(
+		allocator.procedure != nil,
+		"the cue set outlives this procedure and needs a chosen allocator",
+	)
 	if duration, measured := recording_duration.?; measured {
 		assert(duration >= 0, "a negative recording duration is a probe defect, not engine output")
 	}
@@ -300,7 +302,13 @@ parse_cues :: proc(
 // f64 whose magnitude read_millis can check. That procedure is where the whole
 // argument is written down.
 @(private)
-decode_engine_json :: proc(json_text: string, scratch: mem.Allocator) -> (json.Value, Parse_Fault) {
+decode_engine_json :: proc(
+	json_text: string,
+	scratch: mem.Allocator,
+) -> (
+	json.Value,
+	Parse_Fault,
+) {
 	assert(len(json_text) > 0, "an empty input is Empty_Input, settled before this point")
 	assert(scratch.procedure != nil, "the decoded tree has to live somewhere")
 
@@ -417,7 +425,11 @@ check_cue_set :: proc(cues: []Cue, recording_duration: Maybe(Millis)) -> (Parse_
 	// The read side of the ordering read_cues enforced per Cue as it built
 	// (CLAUDE.md A4). The implication below is sound only on an ordered set.
 	disordered := first_disordered_cue(cues)
-	fmt.assertf(disordered == 0, "cue %d broke the ordering before the set-wide checks", disordered)
+	fmt.assertf(
+		disordered == 0,
+		"cue %d broke the ordering before the set-wide checks",
+		disordered,
+	)
 
 	// A comparison against an unknown has nothing to say, and inventing a
 	// failure out of missing information is how a working Recording gets
@@ -553,7 +565,11 @@ read_cues :: proc(
 	// unrelated allocation came back corrupted.
 	assert(cap(built) == len(built), "the returned slice does not own exactly the block it names")
 	disordered := first_disordered_cue(built[:])
-	fmt.assertf(disordered == 0, "built cue %d, which the per-cue checks should have rejected", disordered)
+	fmt.assertf(
+		disordered == 0,
+		"built cue %d, which the per-cue checks should have rejected",
+		disordered,
+	)
 	return built[:], .None, 0
 }
 
@@ -607,7 +623,11 @@ read_cue :: proc(entry: json.Value, allocator: mem.Allocator) -> (cue: Cue, faul
 
 	// The Engine's escaping is already undone by the decode; this is the copy
 	// that outlives the json tree parse_cues destroys on the way out.
-	cue = Cue{start = start, end = end, text = strings.clone(text, allocator)}
+	cue = Cue {
+		start = start,
+		end   = end,
+		text  = strings.clone(text, allocator),
+	}
 	assert(len(cue.text) == len(text), "the clone lost bytes the engine wrote")
 	return cue, .None
 }
@@ -691,7 +711,10 @@ read_millis :: proc(offsets: json.Object, key: string) -> (Millis, Parse_Fault) 
 error_message :: proc(err: Parse_Error, allocator: mem.Allocator) -> string {
 	assert(err.fault != .None, "there is no message for a parse that did not fail")
 	assert(len(err.json_name) > 0, "an operating error must name the input it is reported against")
-	assert(allocator.procedure != nil, "the message outlives this procedure and needs a chosen allocator")
+	assert(
+		allocator.procedure != nil,
+		"the message outlives this procedure and needs a chosen allocator",
+	)
 
 	facts := FAULT[err.fault]
 	assert(len(facts.says) > 0, "a fault was added to Parse_Fault without a row in FAULT")
@@ -704,7 +727,13 @@ error_message :: proc(err: Parse_Error, allocator: mem.Allocator) -> string {
 	if facts.scope == .Input {
 		out = fmt.aprintf("%s: %s", err.json_name, facts.says, allocator = allocator)
 	} else {
-		out = fmt.aprintf("%s: cue %d: %s", err.json_name, err.cue, facts.says, allocator = allocator)
+		out = fmt.aprintf(
+			"%s: cue %d: %s",
+			err.json_name,
+			err.cue,
+			facts.says,
+			allocator = allocator,
+		)
 	}
 
 	// The one property every caller depends on and no format string guarantees:

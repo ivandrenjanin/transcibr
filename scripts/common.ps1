@@ -82,6 +82,103 @@ $ProcessKillGraceSeconds = 30
 $OdinReleaseTag = 'dev-2026-07a'
 $OdinVersionPin = 'dev-2026-07-nightly:819fdc7'
 
+# The formatter CLAUDE.md rule S1 names, pinned the way the compiler above is --
+# and pinned by CONTENT, because it is the only thing this binary can be asked.
+#
+# odinfmt ships in the ols release zip rather than with the Odin distribution,
+# so the tag is ols's and not the compiler's. `-h` prints a usage block and
+# nothing else: there is no -version flag, no banner, and no build stamp to
+# read, so Confirm-OdinVersion's trick of running it and reading what it says
+# has no equivalent here. What is left is the file's SHA-256, which is a
+# stronger claim than a version string anyway -- it pins the exact build rather
+# than a name several builds can share.
+#
+# The asset is resolved by pattern rather than by name inside the zip: the
+# member is `odinfmt-x86_64-pc-windows-msvc.exe`, and .github/workflows/ci.yml
+# globs for it exactly as it globs for odin.exe, so the layout inside the
+# archive is not a second thing to keep in step.
+$OdinfmtReleaseTag = 'dev-2026-06'
+$OdinfmtAsset = 'ols-x86_64-pc-windows-msvc.zip'
+$OdinfmtSha256 = '130742513F9F6029E7D3CF8705A1303CEF5B9B5126FA5FA030587662B83E3B9F'
+
+# The style itself lives in odinfmt.json at the repository root, because that is
+# the name odinfmt looks for and an editor's format-on-save has to find the same
+# answer this build does. It is read from $RepoRoot rather than from the working
+# directory so a developer running the scripts from anywhere gets the repository's
+# config and not whatever sits above their shell.
+$OdinFormatConfig = Join-Path $RepoRoot 'odinfmt.json'
+
+# odinfmt's printer.Config: every key it reads, and the type it reads it as.
+# `int` and `bool` mean themselves; anything else is the pipe-joined list of
+# names an enum field accepts.
+#
+# Read out of the pinned binary rather than off a web page or a memory. Odin's
+# runtime type information carries the field names of every type a program
+# reflects over, and printer.Config's fifteen sit contiguously inside
+# odinfmt.exe, in this order, alongside Brace_Style's four members and
+# Newline_Style's two.
+#
+# CHECKED against it, on every run, and not merely read out of it once: the case
+# "the config schema is the key set inside the pinned odinfmt" in
+# scripts\selftest.ps1 searches $OdinfmtSha256's binary for these names as one
+# NUL-separated run, and fails on a rename, a reorder, a removal, a key inserted
+# mid-struct, or a sixteenth key appended after the last. That is what couples
+# this list to the pin above: the two are separate declarations that a single
+# case refuses to let disagree, so moving the pin without revisiting this list
+# fails CI rather than passing quietly.
+#
+# The coupling is what makes the check worth anything. An unlisted key is the
+# harmful direction -- odinfmt fills it from its own default in silence while
+# Confirm-OdinFormatConfig below passes, because that procedure compares
+# odinfmt.json against THIS LIST and both are files in this repository. Drop a
+# key from both and format.ps1 exits 0 having noticed nothing; the binary is the
+# only party to the question with a vote.
+$OdinFormatConfigSchema = [ordered]@{
+	character_width          = 'int'
+	spaces                   = 'int'
+	newline_limit            = 'int'
+	tabs                     = 'bool'
+	tabs_width               = 'int'
+	convert_do               = 'bool'
+	brace_style              = '_1TBS|Allman|Stroustrup|K_And_R'
+	indent_cases             = 'bool'
+	newline_style            = 'CRLF|LF'
+	sort_imports             = 'bool'
+	inline_single_stmt_case  = 'bool'
+	spaces_around_colons     = 'bool'
+	space_single_line_blocks = 'bool'
+	align_struct_fields      = 'bool'
+	align_struct_values      = 'bool'
+}
+
+# Directories the formatting sweep does not walk, as absolute paths ending in a
+# separator, which is the form Get-OdinSource compares against. A deny list of
+# DIRECTORIES, never a list of files: the files are discovered (Get-OdinSource),
+# which is the whole point -- a hand-maintained file list stops covering the file
+# somebody adds tomorrow, and nothing says so.
+#
+# Each entry holds no authored Odin by construction: git's object store, the
+# compiler's own output, and the throwaway prototypes .gitignore already keeps
+# out of the repository. The compiler's output is $BuildRoot itself and not the
+# string 'build' beside it -- spelled twice, the two move apart and the sweep
+# starts walking the directory it was told to skip.
+$OdinFormatExcludedDirectories = @(
+	(Join-Path $RepoRoot '.git')
+	$BuildRoot
+	(Join-Path $RepoRoot '.scratch')
+) | ForEach-Object { [System.IO.Path]::GetFullPath($_) + [System.IO.Path]::DirectorySeparatorChar }
+
+# What -Fix names the bytes it is about to swap in, while it still has both files
+# (see Write-FileAtomically). Deliberately an extension Get-OdinSource does not
+# discover, so a leaked one is never mistaken for source and never formatted.
+#
+# ONE spelling, because two things depend on it and they must not drift: the
+# procedure that names the file, and the sweep in Get-OdinFormatReport that
+# reclaims the ones a killed run stranded. Spelled twice, the sweep goes on
+# looking for a name nothing writes any more and says nothing about it -- which
+# is the failure $OdinFormatExcludedDirectories records the same lesson for.
+$OdinFormatStagedSuffix = '.odinfmt-tmp'
+
 # The binaries this repository produces. Data rather than prose, so the GUI
 # binary ADR-0004 promises is one more entry here and not a rewrite:
 #
@@ -116,29 +213,75 @@ $OdinPackagesWithoutTests = @(
 	'cli'
 )
 
-# Odin is not on PATH on the development machine, so fall back to the default
-# install location rather than making every contributor edit their PATH. Set
-# $env:ODIN to override. This is the only copy of the fallback path.
+# One tool of this toolchain, found the one way all of them are found: the
+# environment variable that names it outright, then PATH, then the default
+# install location. Nothing here is on PATH on the development machine, and none
+# of it should need a contributor to edit theirs.
+#
+# The EMPTY STRING means not found, rather than a throw, because what that costs
+# is the caller's to decide and the two callers do not agree: a missing compiler
+# is the end of the matter, and a missing formatter is not (see
+# Resolve-OdinFormatter).
+function Resolve-ToolPath {
+	param(
+		[Parameter(Mandatory)] [string] $Name,
+		[Parameter(Mandatory)] [AllowEmptyString()] [AllowNull()] [string] $Declared,
+		[Parameter(Mandatory)] [string] $Fallback
+	)
+
+	if ($Declared -ne '') {
+		if (-not (Test-Path -LiteralPath $Declared)) {
+			return ''
+		}
+		return (Resolve-Path -LiteralPath $Declared).Path
+	}
+
+	$onPath = Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue
+	if ($onPath) {
+		return $onPath.Source
+	}
+	if (Test-Path -LiteralPath $Fallback) {
+		return $Fallback
+	}
+	return ''
+}
+
+# A pinned tool that is not the pinned one: refused in CI, warned about anywhere
+# else. ONE copy of the policy, because it is one policy -- it was written out
+# twice, at length, and two copies of a rule are two rules the moment one moves.
+#
+# An unpinned toolchain turns an upstream change into a build failure on an
+# unrelated commit and makes "it passed yesterday" unanswerable, so the shared
+# answer -- what CI says about a branch -- comes from the pinned tools and
+# nothing else.
+#
+# A hard local refusal buys nothing on top of that and costs a great deal. The
+# first upstream retag, or the first contributor whose nightly is a week off,
+# makes the repository unbuildable and untestable for them until the pin moves
+# -- and the warning already tells them how, while CI still catches a change
+# that only works on their toolchain.
+function Confirm-PinnedTool {
+	param(
+		[Parameter(Mandatory)] [string] $Mismatch,
+		[Parameter(Mandatory)] [string] $Local,
+		[Parameter(Mandatory)] [string] $Remedy
+	)
+
+	if ($env:CI) {
+		throw "$Mismatch`nCI runs the pinned toolchain and nothing else. $Remedy"
+	}
+	Write-Warning "$Mismatch`n$Local $Remedy"
+}
+
+# The Odin compiler. Set $env:ODIN to override; this is the only copy of the
+# fallback path.
 function Resolve-OdinCompiler {
-	$odin = $null
-	if ($env:ODIN) {
-		if (-not (Test-Path -LiteralPath $env:ODIN)) {
+	$odin = Resolve-ToolPath -Name 'odin' -Declared $env:ODIN -Fallback 'C:\Odin\dist\odin.exe'
+	if ($odin -eq '') {
+		if ($env:ODIN) {
 			throw "ODIN is set to '$env:ODIN' but no file is there."
 		}
-		$odin = (Resolve-Path -LiteralPath $env:ODIN).Path
-	}
-	else {
-		$onPath = Get-Command 'odin' -CommandType Application -ErrorAction SilentlyContinue
-		if ($onPath) {
-			$odin = $onPath.Source
-		}
-		else {
-			$fallback = 'C:\Odin\dist\odin.exe'
-			if (-not (Test-Path -LiteralPath $fallback)) {
-				throw "Cannot find the Odin compiler. Put 'odin' on PATH or set `$env:ODIN to its full path."
-			}
-			$odin = $fallback
-		}
+		throw "Cannot find the Odin compiler. Put 'odin' on PATH or set `$env:ODIN to its full path."
 	}
 
 	Confirm-OdinVersion -Odin $odin
@@ -302,7 +445,7 @@ function Read-NativeOutput {
 	)
 
 	$ErrorActionPreference = 'Continue'
-	$capture = Join-Path ([System.IO.Path]::GetTempPath()) "transcibr-$PID-$([System.Guid]::NewGuid().ToString('N')).out"
+	$capture = New-CapturePath -Extension 'out'
 	try {
 		$started = Start-NativeProcess -Command $Command -Arguments $Arguments -OutFile $capture
 		$run = Wait-ProcessTree -Process $started -TimeoutSeconds $TimeoutSeconds
@@ -318,18 +461,7 @@ function Read-NativeOutput {
 	}
 }
 
-# The pin: refused in CI, warned about anywhere else.
-#
-# An unpinned toolchain turns an upstream change into a build failure on an
-# unrelated commit and makes "it passed yesterday" unanswerable, so the shared
-# answer -- what CI says about a branch -- comes from the pinned compiler and
-# nothing else.
-#
-# A hard local refusal buys nothing on top of that and costs a great deal. The
-# first upstream retag, or the first contributor whose nightly is a week off,
-# makes the repository unbuildable and untestable for them until the pin moves
-# -- and the warning already tells them how, while CI still catches a change
-# that only compiles on their compiler.
+# The compiler pin, under the policy Confirm-PinnedTool sets out.
 function Confirm-OdinVersion {
 	param([Parameter(Mandatory)] [string] $Odin)
 
@@ -360,28 +492,313 @@ Odin version mismatch.
 	# together or CI downloads one compiler and then refuses it.
 	$remedy = 'Point $env:ODIN at the pinned compiler, or move $OdinVersionPin and $OdinReleaseTag together in scripts\common.ps1 if you mean to move the pin.'
 
-	if ($env:CI) {
-		throw "$mismatch`nCI runs the pinned compiler and nothing else. $remedy"
-	}
-
-	Write-Warning "$mismatch`nContinuing on this one. CI will not: anything that builds here and not on the pinned compiler fails there instead. $remedy"
+	Confirm-PinnedTool -Mismatch $mismatch -Remedy $remedy `
+		-Local 'Continuing on this one. CI will not: anything that builds here and not on the pinned compiler fails there instead.'
 }
 
-# The src-relative name of a package directory, forward-slashed: `version`,
-# `cli`, `net/winhttp`. Used as the sweep's label and as the key the test-less
-# list is matched against.
+# A file's SHA-256, uppercase hex.
 #
-# Guarded rather than a bare Substring: a subst drive, a UNC path or a
-# junctioned checkout can hand back a path that does not share a prefix with
-# $SrcRoot at all, and trimming a length off that yields a garbled label or an
-# exception. Showing the whole path is the honest answer in that case.
-function Get-OdinPackageName {
+# Through .NET rather than Get-FileHash, which is NOT always there. CI runs
+# these scripts under pwsh 7, and scripts\selftest.ps1 starts its fixtures with
+# powershell.exe -- a 5.1 child that inherits pwsh's PSModulePath, where
+# Get-FileHash does not resolve. Locally it is present and everything passed;
+# in CI every fixture that reached the formatter pin died on
+# "The term 'Get-FileHash' is not recognized", and the failure was in the
+# fixture rather than in the thing under test.
+#
+# The BCL is on both hosts by construction. Streamed rather than read whole:
+# the file is a megabyte today and this says nothing about how large a pinned
+# binary is allowed to get.
+function Get-FileSha256 {
 	param([Parameter(Mandatory)] [string] $Path)
 
+	$sha = [System.Security.Cryptography.SHA256]::Create()
+	try {
+		$stream = [System.IO.File]::OpenRead($Path)
+		try {
+			$hash = $sha.ComputeHash($stream)
+		}
+		finally {
+			$stream.Dispose()
+		}
+	}
+	finally {
+		$sha.Dispose()
+	}
+	return [System.BitConverter]::ToString($hash).Replace('-', '')
+}
+
+# odinfmt, resolved the way the compiler is -- and MISSING the way a mismatched
+# one is: warned about locally, refused under CI.
+#
+# The two were not treated alike, and the asymmetry ran the wrong way round. A
+# formatter whose build did not match the pin warned and carried on; a formatter
+# that was not installed at all failed the build outright, so a contributor with
+# the pinned compiler but without the ols zip could not build anything at all.
+# Confirm-PinnedTool argues against exactly that, at length, and nothing in the
+# argument is about compilers.
+#
+# -Optional is the BUILD's answer and not the format command's. build.ps1 has a
+# compiler and work to do, and rule S1 is still enforced against the branch by
+# CI, which installs the pinned formatter and refuses to skip anything.
+# format.ps1 has nothing to do without a formatter, so asking it to run without
+# one is a request that can only be refused.
+#
+# The empty string is what a skipped resolve returns; the caller that passed
+# -Optional is the only one that can receive it.
+function Resolve-OdinFormatter {
+	param([switch] $Optional)
+
+	$fallback = 'C:\Odin\dist\odinfmt.exe'
+	$odinfmt = Resolve-ToolPath -Name 'odinfmt' -Declared $env:ODINFMT -Fallback $fallback
+	if ($odinfmt -ne '') {
+		Confirm-OdinfmtVersion -Odinfmt $odinfmt
+		return $odinfmt
+	}
+
+	$missing = "Cannot find odinfmt. It ships in $OdinfmtAsset on the ols release $OdinfmtReleaseTag (https://github.com/DanielGavin/ols/releases), not with the Odin compiler."
+	if ($env:ODINFMT) {
+		$missing = "ODINFMT is set to '$env:ODINFMT' but no file is there."
+	}
+	$remedy = "Put 'odinfmt' on PATH, drop it at $fallback, or set `$env:ODINFMT to its full path."
+
+	if (-not $Optional) {
+		throw "$missing $remedy"
+	}
+	Confirm-PinnedTool -Mismatch $missing -Remedy $remedy `
+		-Local 'Building without the formatting check on this one. CI will not: a misformatted file fails there instead.'
+	return ''
+}
+
+# The formatter pin, under the policy Confirm-PinnedTool sets out.
+#
+# By CONTENT, because odinfmt has no version flag to ask (see $OdinfmtSha256).
+# A formatter is a stronger case for pinning than a compiler, not a weaker one:
+# two builds that lay out one line differently make every file in the repository
+# fail a check that passed yesterday, on a commit that touched none of them.
+function Confirm-OdinfmtVersion {
+	param([Parameter(Mandatory)] [string] $Odinfmt)
+
+	$found = Get-FileSha256 -Path $Odinfmt
+	if ($found -eq $OdinfmtSha256) {
+		return
+	}
+
+	$mismatch = @"
+odinfmt build mismatch.
+  expected SHA-256: $OdinfmtSha256 (the pin in scripts\common.ps1, from ols $OdinfmtReleaseTag)
+  found SHA-256:    $found ($Odinfmt)
+"@
+	$remedy = "Point `$env:ODINFMT at $OdinfmtAsset from the ols release $OdinfmtReleaseTag, or move `$OdinfmtSha256 and `$OdinfmtReleaseTag together in scripts\common.ps1 if you mean to move the pin."
+
+	Confirm-PinnedTool -Mismatch $mismatch -Remedy $remedy `
+		-Local 'Continuing on this one. CI will not: anything this build formats differently from the pinned one fails there instead.'
+}
+
+# One value against the type odinfmt reads that key as. The fault, or an empty
+# string where there is none.
+function Test-OdinFormatConfigValue {
+	param(
+		[Parameter(Mandatory)] [string] $Key,
+		[Parameter(Mandatory)] [AllowNull()] $Value,
+		[Parameter(Mandatory)] [string] $Expected
+	)
+
+	$found = 'null'
+	if ($null -ne $Value) {
+		if ($Value -is [bool]) { $found = "the boolean $(([string] $Value).ToLower())" }
+		elseif (($Value -is [int]) -or ($Value -is [long])) { $found = "the whole number $Value" }
+		elseif ($Value -is [string]) { $found = "the string '$Value'" }
+		else { $found = "a $($Value.GetType().Name) ($Value)" }
+	}
+
+	if ($Expected -eq 'int') {
+		if (($Value -is [int]) -or ($Value -is [long])) { return '' }
+		return "'$Key' is $found; odinfmt reads it as a whole number."
+	}
+	if ($Expected -eq 'bool') {
+		if ($Value -is [bool]) { return '' }
+		return "'$Key' is $found; odinfmt reads it as true or false."
+	}
+
+	# An enum, and the names are odinfmt's own, matched case-sensitively because
+	# that is how it matches them.
+	$names = @($Expected -split '\|')
+	if (($Value -is [string]) -and ($names -ccontains $Value)) { return '' }
+	return "'$Key' is $found; odinfmt reads it as one of $($names -join ', ')."
+}
+
+# Prove odinfmt.json says what this repository means, key by key.
+#
+# Not a formality, and not something the formatter can be asked. odinfmt's
+# find_config_file_or_default returns its built-in default_style whenever
+# json.unmarshal fails and says NOTHING -- but that is only the loudest of the
+# ways a config goes wrong in silence, and MEASURED against the pinned ols build
+# they do not even fail alike:
+#
+#   { "character_widht": 100 }   an unknown key is ignored; the rest applies
+#   { "spaces": "8" }            a string where an int belongs is COERCED to 8
+#   { "newline_style": "NOPE" }  an unknown enum name leaves the field at default
+#   { "tabs": 1 }                an int where a bool belongs drops the WHOLE file
+#   { "tabs": null }             null is read as false
+#   { }                          an absent key takes odinfmt's own default, and
+#                                that default is platform-dependent: newline_style
+#                                is CRLF on Windows and LF everywhere else
+#   { "tabs": true, }            ACCEPTED, and applied in full. odinfmt reads
+#   { /* or */ // a comment }    this file with core:encoding/json, whose
+#                                DEFAULT_SPECIFICATION is JSON5 -- so the two
+#                                likeliest syntax errors are not errors to it at
+#                                all. Measured: a config carrying either formats
+#                                byte-identically to the same config without it,
+#                                and differently from no config at all.
+#
+# This was first written as a PROBE: format a small file, read the indentation
+# and line endings back out of the answer, the way Assert-PeSubsystem reads the
+# header rather than the flag that built it. That cannot work here, and no probe
+# can. odinfmt's built-in Windows default is already tabs, CRLF and
+# character_width 100 -- so on the only platform this repository supports,
+# formatting with this config and with no config at all is byte-identical, and a
+# probe measuring the difference agrees with itself whatever the file says. The
+# hole it was written to close stayed open: `"tabs": "true"` passed it green.
+#
+# So the file is checked against the SCHEMA instead, which covers the class
+# rather than the incident. Every key odinfmt reads must be present, spelled the
+# way odinfmt spells it and typed the way odinfmt types it, and nothing else may
+# appear. Present as well as correct, because a key left out is not a key left
+# alone: it silently takes a default this repository did not choose.
+function Confirm-OdinFormatConfig {
+	if (-not (Test-Path -LiteralPath $OdinFormatConfig)) {
+		throw "no $OdinFormatConfig. Without it odinfmt formats to a built-in default that differs by platform, and this check would be measuring against a style nobody chose."
+	}
+
+	try {
+		$declared = Get-Content -LiteralPath $OdinFormatConfig -Raw | ConvertFrom-Json
+	}
+	catch {
+		# Refused, not diagnosed. This parser is the STRICTER of the two -- odinfmt
+		# reads the file as JSON5 and would have taken a trailing comma or a
+		# comment in its stride -- so the honest claim is that the file no longer
+		# says which way odinfmt went, not that odinfmt ignored it.
+		throw "$OdinFormatConfig is not valid JSON: $($_.Exception.Message). Refused rather than guessed at: odinfmt reads this file as JSON5, which accepts a trailing comma and a comment that this parser will not, so the file alone cannot say whether odinfmt read it or fell back to its own default -- and that default is platform-dependent."
+	}
+	if ($declared -isnot [System.Management.Automation.PSCustomObject]) {
+		throw "$OdinFormatConfig is not a JSON object, so there is nothing for odinfmt to read printer.Config out of."
+	}
+
+	# Case-SENSITIVE on both sides. PowerShell compares names case-insensitively
+	# by default, which would read `Tabs` as the key `tabs` and wave through a
+	# spelling odinfmt does not answer to.
+	$known = @($OdinFormatConfigSchema.Keys)
+	$present = @($declared.PSObject.Properties.Name)
+	$faults = @()
+
+	foreach ($key in $present) {
+		if ($known -cnotcontains $key) {
+			$faults += "  - '$key' is not a key odinfmt reads. It is ignored in silence."
+		}
+	}
+	foreach ($key in $known) {
+		if ($present -cnotcontains $key) {
+			$faults += "  - '$key' is missing. odinfmt would use its own default, which differs by platform."
+			continue
+		}
+		$fault = Test-OdinFormatConfigValue -Key $key -Value $declared.$key -Expected $OdinFormatConfigSchema[$key]
+		if ($fault -ne '') {
+			$faults += "  - $fault"
+		}
+	}
+
+	if ($faults.Count -gt 0) {
+		throw "$OdinFormatConfig is not the config odinfmt would read:`n$($faults -join "`n")`nodinfmt reports none of this. It ignores what it cannot read and formats to its own default, and every check here would pass against a style nobody chose."
+	}
+}
+
+# What odinfmt would write for one file, as BYTES.
+#
+# Bytes and not text, because the difference that matters is sometimes invisible
+# as text: src\transcript\repetition.odin carried a UTF-8 BOM that
+# [System.IO.File]::ReadAllText strips from the file AND from odinfmt's answer,
+# so a text comparison called it clean. Line endings go the same way through a
+# careless read.
+#
+# Started through Start-NativeProcess like every other child this repository
+# runs -- the Windows argv quoter is not optional the moment a checkout path
+# holds a space, and nothing in the toolchain has a timeout of its own -- and
+# captured through New-CapturePath like every other child's output, so the file
+# this leaves behind when killed is a file something sweeps.
+function Format-OdinSource {
+	param(
+		[Parameter(Mandatory)] [string] $Odinfmt,
+		[Parameter(Mandatory)] [string] $Path,
+		[ValidateRange(1, 86400)] [int] $TimeoutSeconds = $OdinCommandTimeoutSeconds
+	)
+
+	$ErrorActionPreference = 'Continue'
+	$capture = New-CapturePath -Extension 'odin'
+	try {
+		$arguments = @("-path:$Path", "-config:$OdinFormatConfig")
+		$started = Start-NativeProcess -Command $Odinfmt -Arguments $arguments -OutFile $capture
+		$run = Wait-ProcessTree -Process $started -TimeoutSeconds $TimeoutSeconds
+
+		if ($run.TimedOut) {
+			throw "odinfmt did not finish formatting $Path within $TimeoutSeconds seconds and was killed."
+		}
+		# Checked, but it is not what catches a file odinfmt cannot read. This once
+		# claimed odinfmt "exits non-zero when it cannot PARSE the file", and it
+		# does not: measured against the pinned build, an unparseable file gives
+		# exit ZERO, an empty standard output and a diagnostic on standard error.
+		# So the guard never fired, and neither did the one below it -- the
+		# redirect creates the capture file whether anything is written to it or
+		# not. What actually stopped the run was Set-StrictMode, several frames
+		# later, turning the empty answer into "The property 'Length' cannot be
+		# found on this object": closed, but by accident, naming no file, and one
+		# StrictMode change away from -Fix writing nothing over a source file.
+		if ($run.ExitCode -ne 0) {
+			throw "odinfmt exited $($run.ExitCode) on $Path."
+		}
+		if (-not (Test-Path -LiteralPath $capture)) {
+			throw "odinfmt wrote nothing at all for $Path."
+		}
+
+		# EMPTY is the answer that means failure, and it is checked here rather
+		# than left to a caller: the shortest legal Odin file is a package clause,
+		# so no bytes is never a formatting result. Named against the file, because
+		# that is the only thing pointing at what to go and look at.
+		$bytes = [System.IO.File]::ReadAllBytes($capture)
+		if ($bytes.Length -eq 0) {
+			throw "odinfmt produced no output for $Path, so it could not parse the file. Its diagnostic is on standard error, above."
+		}
+
+		# Returned as ONE object: a bare `return $bytes` unrolls the array into the
+		# pipeline, and a one-byte answer comes back as a scalar with no .Length.
+		return , $bytes
+	}
+	finally {
+		Remove-Item -LiteralPath $capture -Force -ErrorAction SilentlyContinue
+	}
+}
+
+# A path as it is spelled relative to a root, forward-slashed: `version`,
+# `net/winhttp`, `src/version/version.odin`. The empty string is the root itself.
+#
+# Guarded rather than a bare Substring: a subst drive, a UNC path or a
+# junctioned checkout can hand back a path that does not share a prefix with the
+# root at all, and trimming a length off that yields a garbled label or an
+# exception. Showing the whole path is the honest answer in that case.
+#
+# One copy, used by both callers. Get-OdinSource carried its own, under a
+# comment saying it was "Guarded like Get-OdinPackageName" -- so the duplication
+# had already been noticed and written down instead of removed.
+function Get-RelativeName {
+	param(
+		[Parameter(Mandatory)] [string] $Path,
+		[Parameter(Mandatory)] [string] $Root
+	)
+
 	$full = [System.IO.Path]::GetFullPath($Path)
-	$root = $SrcRoot.TrimEnd('\', '/')
+	$root = $Root.TrimEnd('\', '/')
 	if ($full.Equals($root, [System.StringComparison]::OrdinalIgnoreCase)) {
-		return 'src'
+		return ''
 	}
 
 	$prefix = $root + [System.IO.Path]::DirectorySeparatorChar
@@ -390,6 +807,37 @@ function Get-OdinPackageName {
 	}
 
 	return $full
+}
+
+# The src-relative name of a package directory: `version`, `cli`, `net/winhttp`.
+# Used as the sweep's label and as the key the test-less list is matched against.
+function Get-OdinPackageName {
+	param([Parameter(Mandatory)] [string] $Path)
+
+	$name = Get-RelativeName -Path $Path -Root $SrcRoot
+	if ($name -eq '') {
+		return 'src'
+	}
+	return $name
+}
+
+# Every .odin file under a root, as FileInfo.
+#
+# -Filter rather than a bare walk plus a Where-Object: the filter is applied by
+# the filesystem, and the repository root holds several hundred files inside
+# .git alone that there is no reason to materialise and then discard. The
+# extension is checked afterwards ALL THE SAME -- Windows matches a -Filter
+# against a file's 8.3 short name as well as its long one, so `*.odin` also
+# matches a `notes.odinography` whose short name happens to end `.ODI`.
+#
+# -Force walks hidden directories and -ErrorAction Stop turns an unreadable one
+# into a crash: discovery that silently returns a short list is the one failure
+# a user cannot detect (ADR-0009), and it reads as a clean pass.
+function Get-OdinFile {
+	param([Parameter(Mandatory)] [string] $Root)
+
+	return Get-ChildItem -LiteralPath $Root -Recurse -File -Force -Filter '*.odin' -ErrorAction Stop |
+		Where-Object { $_.Extension -eq '.odin' }
 }
 
 # Every directory under src\ holding at least one .odin file is a package.
@@ -406,19 +854,203 @@ function Get-OdinPackageName {
 # in @(); scripts\selftest.ps1 keeps a one-package repository in the suite so
 # that contract cannot rot again.
 function Get-OdinPackage {
-	$sources = Get-ChildItem -LiteralPath $SrcRoot -Recurse -File -Force -ErrorAction Stop |
-		Where-Object { $_.Extension -eq '.odin' }
+	$directories = @(Get-OdinFile -Root $SrcRoot | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique)
 
-	$directories = @($sources | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique)
-
-	$packages = @()
+	$packages = [System.Collections.Generic.List[object]]::new()
 	foreach ($directory in $directories) {
-		$packages += [pscustomobject]@{
-			Path = $directory
-			Name = Get-OdinPackageName -Path $directory
+		$packages.Add([pscustomobject]@{
+				Path = $directory
+				Name = Get-OdinPackageName -Path $directory
+			})
+	}
+	return $packages.ToArray()
+}
+
+# Every .odin file in the repository, wherever it lives. Discovered rather than
+# listed, for the reason $OdinFormatExcludedDirectories sets out: a file list
+# stops covering the file somebody adds tomorrow and nothing says so.
+#
+# $RepoRoot and not $SrcRoot, because src\ is not where all the Odin is --
+# docs\reference\ holds a spike that is still Odin somebody reads and copies
+# from. A check scoped to src\ would leave it drifting.
+#
+# -Force walks hidden directories and -ErrorAction Stop turns an unreadable one
+# into a crash, exactly as Get-OdinPackage does: discovery that silently returns
+# a short list is the one failure a user cannot detect (ADR-0009), and it reads
+# as a clean pass.
+#
+# Wrapped in @() by EVERY caller: PowerShell unrolls a one-element result to a
+# bare object, and under Set-StrictMode `.Count` on that throws.
+function Get-OdinSource {
+	$sources = [System.Collections.Generic.List[object]]::new()
+	foreach ($file in @(Get-OdinFile -Root $RepoRoot)) {
+		$full = [System.IO.Path]::GetFullPath($file.FullName)
+		$skip = $false
+		foreach ($directory in $OdinFormatExcludedDirectories) {
+			if ($full.StartsWith($directory, [System.StringComparison]::OrdinalIgnoreCase)) {
+				$skip = $true
+				break
+			}
+		}
+		if ($skip) {
+			continue
+		}
+
+		# Repository-relative and forward-slashed, so the report names
+		# `src/version/version.odin` rather than a machine-specific absolute path.
+		$sources.Add([pscustomobject]@{ Path = $full; Name = (Get-RelativeName -Path $full -Root $RepoRoot) })
+	}
+	return $sources.ToArray()
+}
+
+# How many .odin files were looked at, and which of them odinfmt would rewrite,
+# with what it would write. No misformatted files is the passing answer.
+#
+# The total comes back WITH the verdict rather than being counted again by the
+# caller: format.ps1 walked the repository a second time purely to print a number
+# this sweep already had, and a total taken from a second walk is a total that
+# can disagree with the check it is reported beside.
+#
+# The sweep FAILS when it finds nothing to look at. A formatting check that
+# covers zero files passes forever and reports the same green as one that
+# checked everything -- the deny-by-default lesson this repository has now
+# learned twice, in $OdinPackagesWithoutTests and in the test sweep's own
+# zero-collected rule.
+#
+# Bounded as a WHOLE and not merely per file, which is the same defect the test
+# sweep had and the same mechanism that fixed it ($OdinSweepTimeoutSeconds). One
+# file's ceiling times however many files exist is not a bound anybody chose: at
+# thirteen files it is 130 minutes against a 30-minute CI job, so a sweep that
+# wedged would be reported by GitHub's job timeout, which names no file and
+# prints no output, rather than by this naming the file. The clock starts before
+# the config is read, because everything after that point is inside the budget.
+function Get-OdinFormatReport {
+	param(
+		[Parameter(Mandatory)] [string] $Odinfmt,
+		[ValidateRange(1, 86400)] [int] $SweepTimeoutSeconds = $OdinSweepTimeoutSeconds
+	)
+
+	$sweepEnd = (Get-Date).AddSeconds($SweepTimeoutSeconds)
+
+	Confirm-OdinFormatConfig
+
+	$sources = @(Get-OdinSource)
+	if ($sources.Count -eq 0) {
+		throw "no .odin files found under $RepoRoot, so this check would pass having compared nothing."
+	}
+
+	# What a killed -Fix stranded beside a source, reclaimed the way every other
+	# artefact this repository leaks is. Write-FileAtomically removes its staged
+	# file however the replace ended, so a survivor is a run hard-killed between
+	# the write and the rename -- and no later run will ever name that file again.
+	# `git status` does show it, which is what keeps it harmless; being visible is
+	# not the same as being cleaned up.
+	#
+	# The directories holding sources, and only those: a repository-wide walk for
+	# this would be a second discovery pass disagreeing with the one that matters.
+	# Age is what protects a CONCURRENT rewrite, whose staged file is seconds old
+	# -- deleting that one would corrupt the run it belongs to.
+	foreach ($directory in @($sources | ForEach-Object { [System.IO.Path]::GetDirectoryName($_.Path) } | Sort-Object -Unique)) {
+		Remove-StaleTestArtefact -Root $directory -Pattern "*$OdinFormatStagedSuffix"
+	}
+
+	$misformatted = @()
+	$checked = 0
+	foreach ($source in $sources) {
+		# What is left of the sweep's budget, which is what this file gets if that
+		# is less than its own ceiling. A file left with none of it is not started:
+		# a run nobody waits for cannot be reported, and this sweep has no verdict
+		# to give about the files it never reached.
+		$remaining = [int][math]::Floor(($sweepEnd - (Get-Date)).TotalSeconds)
+		if ($remaining -lt 1) {
+			throw "the format sweep's $SweepTimeoutSeconds-second budget ran out at $($source.Name), having checked $checked of $($sources.Count) file(s)."
+		}
+		$budget = [math]::Min($OdinCommandTimeoutSeconds, $remaining)
+
+		$formatted = Format-OdinSource -Odinfmt $Odinfmt -Path $source.Path -TimeoutSeconds $budget
+		$current = [System.IO.File]::ReadAllBytes($source.Path)
+		$checked += 1
+
+		# Bytes, not text: the BOM and the line endings are exactly the differences
+		# a text comparison hides. See Format-OdinSource. SequenceEqual rather than
+		# a PowerShell loop over the indices, which is about a hundred times slower
+		# on a file this size and says nothing a reader could not already assume.
+		if (-not [System.Linq.Enumerable]::SequenceEqual($current, $formatted)) {
+			$misformatted += [pscustomobject]@{
+				Path      = $source.Path
+				Name      = $source.Name
+				Formatted = $formatted
+			}
 		}
 	}
-	return $packages
+	return [pscustomobject]@{ Total = $sources.Count; Misformatted = $misformatted }
+}
+
+# One file's contents replaced by another's, in a single step.
+#
+# Not [System.IO.File]::WriteAllBytes, which opens the destination with
+# FileMode.Create: it TRUNCATES and then writes, so for the length of that write
+# every byte of the source file is already gone, and a run killed inside it
+# leaves a truncated or empty .odin file with nothing to say which. That window
+# is wider than the one `odinfmt -w` carries, which was rejected here for
+# leaving a `<name>_bk` behind when interrupted -- a file that is neither source
+# nor artefact and is ignored by nothing.
+#
+# File.Replace closes both. The new bytes are written and closed under a
+# neighbouring name first, and the destination then goes from all of the old
+# bytes to all of the new ones in one rename; no backup is kept, because there
+# is no moment at which one would be read. Beside the destination rather than in
+# TEMP because Replace needs both on one volume, and named with the extension
+# $OdinFormatStagedSuffix spells -- one the sweep does not discover, so a leaked
+# one is never mistaken for source, and one Get-OdinFormatReport reclaims, so a
+# run killed between the write and the rename does not strand it beside the
+# source forever.
+#
+# DO NOT swap this back for a plain write. What this buys is the ABSENCE of that
+# window, and nothing here can open a window to prove it is gone: staging a kill
+# inside a .NET call is not something scripts\selftest.ps1 can do, and the revert
+# leaves every case about the -Fix path green. What that suite pins instead is
+# the MECHANISM -- "the rewrite swaps a new file in rather than writing over the
+# old one" watches the destination's NTFS identity, which a truncating write
+# keeps and a replace changes. That case is the only thing standing between this
+# procedure and a quiet revert, so a change here that turns it red is the change
+# this comment is about.
+function Write-FileAtomically {
+	param(
+		[Parameter(Mandatory)] [string] $Path,
+		[Parameter(Mandatory)] [byte[]] $Bytes
+	)
+
+	$staged = "$Path.$PID-$([System.Guid]::NewGuid().ToString('N'))$OdinFormatStagedSuffix"
+	try {
+		[System.IO.File]::WriteAllBytes($staged, $Bytes)
+		# [NullString]::Value and not $null: PowerShell converts $null to the EMPTY
+		# STRING when it binds to a .NET string parameter, and File.Replace reads an
+		# empty backup path as a path, failing with "The path is not of a legal
+		# form" after the staged file has already been written.
+		[System.IO.File]::Replace($staged, $Path, [NullString]::Value)
+	}
+	finally {
+		# However this ended, nothing of it is left beside the source. A Replace
+		# that succeeded has already consumed the staged file.
+		Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+	}
+}
+
+# The sweep as a single verdict, for callers that only want it to pass -- which
+# is build.ps1, so that a misformatted file fails the BUILD and not merely a
+# check somebody remembers to run. Rule S1 is a rule; the vet flags beside it
+# already fail the build, and this is the third of them.
+function Assert-OdinFormatting {
+	param([Parameter(Mandatory)] [string] $Odinfmt)
+
+	$misformatted = @((Get-OdinFormatReport -Odinfmt $Odinfmt).Misformatted)
+	if ($misformatted.Count -eq 0) {
+		return
+	}
+
+	$named = ($misformatted | ForEach-Object { "  - $($_.Name)" }) -join "`n"
+	throw "$($misformatted.Count) file(s) are not formatted as odinfmt.json says (CLAUDE.md rule S1):`n$named`nRun .\scripts\format.ps1 -Fix to rewrite them."
 }
 
 # Reclaim what earlier runs left behind. test.ps1 names every artefact for the
@@ -433,12 +1065,42 @@ function Get-OdinPackage {
 # this run's verdict to deliver, and reclamation is not what either command is
 # being asked for.
 function Remove-StaleTestArtefact {
-	param([Parameter(Mandatory)] [string] $Root)
+	param(
+		[Parameter(Mandatory)] [string] $Root,
+		# Which files under $Root are this repository's to reclaim. Everything,
+		# under a directory this repository owns; NAMED, under one it merely
+		# borrows -- the system temp directory belongs to the user and to every
+		# other program on the machine.
+		[string] $Pattern = '*'
+	)
 
 	$cutoff = (Get-Date).AddDays(-1)
-	Get-ChildItem -LiteralPath $Root -File -Force -ErrorAction SilentlyContinue |
+	Get-ChildItem -LiteralPath $Root -File -Force -Filter $Pattern -ErrorAction SilentlyContinue |
 		Where-Object { $_.LastWriteTime -lt $cutoff } |
 		Remove-Item -Force -ErrorAction SilentlyContinue
+}
+
+# Where one child's captured output goes, named for the run that made it.
+#
+# ONE recipe. There were three, each spelling its own GUID-named temp file, and
+# not one of them was ever swept: every capture is deleted on the way out, so
+# what survives is what a KILLED run left behind -- in the system temp
+# directory, which nobody looks in and which only grows. Reclaimed here the same
+# way build\odin-test is, filtered to this repository's own names so the sweep
+# is never pointed at somebody else's files.
+#
+# Swept once per process rather than once per capture: the sweep costs a
+# directory listing, and there is one of these per .odin file.
+$script:SweptCaptures = $false
+function New-CapturePath {
+	param([Parameter(Mandatory)] [string] $Extension)
+
+	$root = [System.IO.Path]::GetTempPath()
+	if (-not $script:SweptCaptures) {
+		$script:SweptCaptures = $true
+		Remove-StaleTestArtefact -Root $root -Pattern 'transcibr-capture-*'
+	}
+	return Join-Path $root "transcibr-capture-$PID-$([System.Guid]::NewGuid().ToString('N')).$Extension"
 }
 
 # A directory that exists and contains no space, for `odin test` to write the

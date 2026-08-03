@@ -1,4 +1,4 @@
-﻿package transcript
+package transcript
 
 import "core:mem"
 import "core:strings"
@@ -75,10 +75,22 @@ COLLAPSE_THRESHOLDS :: Collapse_Params {
 //
 // The allocator is explicit and never defaulted: the Cue set this returns
 // outlives this procedure and crosses a worker boundary (ADR-0010).
-collapse_repetition :: proc(cues: []Cue, p: Collapse_Params, allocator: mem.Allocator) -> (kept: []Cue) {
+collapse_repetition :: proc(
+	cues: []Cue,
+	p: Collapse_Params,
+	allocator: mem.Allocator,
+) -> (
+	kept: []Cue,
+) {
 	assert(p.max_run > 0, "a run collapsed to nothing deletes the speech it was made of")
-	assert(p.invention_at > p.max_run, "a run condemned at what survives it is a cap on length alone")
-	assert(allocator.procedure != nil, "the cue set outlives this procedure and needs a chosen allocator")
+	assert(
+		p.invention_at > p.max_run,
+		"a run condemned at what survives it is a cap on length alone",
+	)
+	assert(
+		allocator.procedure != nil,
+		"the cue set outlives this procedure and needs a chosen allocator",
+	)
 	// What every consumer in this package asserts on the way in (CLAUDE.md A4).
 	// A set whose starts go backwards would have runs split across the reordering
 	// and the spans below measured off the wrong end.
@@ -134,7 +146,10 @@ collapse_repetition :: proc(cues: []Cue, p: Collapse_Params, allocator: mem.Allo
 @(private)
 is_invention :: proc(run: []Cue, p: Collapse_Params) -> bool {
 	assert(len(run) > 0, "a run with no cues in it is not a run")
-	assert(p.invention_at > p.max_run, "a run condemned at what survives it is a cap on length alone")
+	assert(
+		p.invention_at > p.max_run,
+		"a run condemned at what survives it is a cap on length alone",
+	)
 
 	// SAYINGS and not Cues, which is what keeps the Engine's own silence out of
 	// this. Silence is identical to silence, so counting Cues makes eight minutes

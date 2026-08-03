@@ -47,7 +47,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 26
+$ExpectedCaseCount = 41
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -92,7 +92,31 @@ function New-FixtureRepo {
 	Copy-Item -Path (Join-Path $ScriptRoot 'common.ps1') -Destination $scripts -Force
 	Copy-Item -Path (Join-Path $ScriptRoot 'test.ps1') -Destination $scripts -Force
 	Copy-Item -Path (Join-Path $ScriptRoot 'build.ps1') -Destination $scripts -Force
+	Copy-Item -Path (Join-Path $ScriptRoot 'format.ps1') -Destination $scripts -Force
+	# The style, copied rather than left out: build.ps1 checks formatting, and
+	# common.ps1 resolves odinfmt.json from $RepoRoot -- which in here is the
+	# fixture. Without it every build case fails on a missing config instead of
+	# on the thing it checks.
+	Copy-Item -Path (Join-Path $RepoRoot 'odinfmt.json') -Destination $root -Force
 	return $root
+}
+
+# One fixture source file, written the way the real working tree holds one:
+# UTF-8 with no BOM, tab-indented, and CRLF-terminated.
+#
+# CRLF is not cosmetic here. core.autocrlf is on, so every .odin file in a
+# Windows checkout has CRLF endings, and odinfmt.json pins newline_style to
+# match. A fixture written with bare LF is not a faithful copy of the repository
+# it stands in for: it fails the formatting check on its line endings alone, and
+# every build case would fail for a reason none of them is about.
+function Write-FixtureSource {
+	param(
+		[Parameter(Mandatory)] [string] $Path,
+		[Parameter(Mandatory)] [AllowEmptyString()] [string] $Text
+	)
+
+	$crlf = ($Text -replace "`r`n", "`n") -replace "`n", "`r`n"
+	[System.IO.File]::WriteAllText($Path, $crlf, $Utf8NoBom)
 }
 
 # Odin source, written ASCII/no-BOM with tab indentation so the fixtures pass
@@ -118,10 +142,13 @@ function Add-FixturePackage {
 	# time; it is two or more firing CONCURRENTLY that either crash the runner
 	# with no summary or hang it forever (issue #22). The mechanism is written out
 	# once, in CLAUDE.md's Odin notes.
-	$asserting = ''
-	foreach ($ordinal in @(1, 2, 3)) {
-		$asserting += "@(test)`n${Name}_asserts_$ordinal :: proc(t: ^testing.T) {`n`ttesting.expect(t, true)`n`tassert(false, `"deliberate assertion`")`n}`n`n"
-	}
+	#
+	# Joined rather than accumulated with a trailing blank line each: odinfmt
+	# trims the blank line off the end of a file, so the accumulating form plants
+	# a fixture that fails the formatting check on its last byte.
+	$asserting = (@(1, 2, 3) | ForEach-Object {
+			"@(test)`n${Name}_asserts_$_ :: proc(t: ^testing.T) {`n`ttesting.expect(t, true)`n`tassert(false, `"deliberate assertion`")`n}`n"
+		}) -join "`n"
 
 	$body = switch ($Test) {
 		'passing' { "import `"core:testing`"`n`n@(test)`n${Name}_passes :: proc(t: ^testing.T) {`n`ttesting.expect(t, true)`n}`n" }
@@ -132,7 +159,7 @@ function Add-FixturePackage {
 		'none' { "${Name}_CONSTANT :: 1`n" }
 	}
 	$source = "package $Name`n`n$body"
-	[System.IO.File]::WriteAllText((Join-Path $dir "$Name.odin"), $source, $Utf8NoBom)
+	Write-FixtureSource -Path (Join-Path $dir "$Name.odin") -Text $source
 	return $dir
 }
 
@@ -146,7 +173,7 @@ function Add-FixtureBinary {
 
 	$dir = Join-Path (Join-Path $RepoRoot 'src') $SmokeTarget.Package
 	New-Item -ItemType Directory -Path $dir -Force | Out-Null
-	[System.IO.File]::WriteAllText((Join-Path $dir 'main.odin'), "package main`n`n$Body", $Utf8NoBom)
+	Write-FixtureSource -Path (Join-Path $dir 'main.odin') -Text "package main`n`n$Body"
 	return $dir
 }
 
@@ -160,7 +187,7 @@ function Build-FixtureArgvDumper {
 	$dir = Join-Path (Join-Path $RepoRoot 'src') 'argv'
 	New-Item -ItemType Directory -Path $dir -Force | Out-Null
 	$source = "package main`n`nimport `"core:fmt`"`nimport `"core:os`"`n`nmain :: proc() {`n`tfor argument in os.args[1:] {`n`t`tfmt.printfln(`"[%s]`", argument)`n`t}`n}`n"
-	[System.IO.File]::WriteAllText((Join-Path $dir 'argv.odin'), $source, $Utf8NoBom)
+	Write-FixtureSource -Path (Join-Path $dir 'argv.odin') -Text $source
 
 	$exe = Join-Path $RepoRoot 'argv.exe'
 	$built = Invoke-NativeCommand -Command (Resolve-OdinCompiler) -TimeoutSeconds $FixtureTimeoutSeconds `
@@ -223,7 +250,16 @@ function Start-FixtureScript {
 		# Have the CHILD merge its own streams with 2>&1, the way a caller
 		# piping the script's whole output would. Redirecting at the process
 		# level, as below, does not exercise that path at all.
-		[switch] $MergeStreams
+		[switch] $MergeStreams,
+
+		# Environment the child is to see, as name -> value. Start-Process has no
+		# way to pass one, so these are set on THIS process across the start and
+		# put back afterwards -- the child inherits at CreateProcess time, so the
+		# window is the one call. An empty value UNSETS the variable, which is how
+		# a case asks for a child that is not running under CI: PowerShell deletes
+		# an environment variable assigned the empty string, and the whole suite
+		# runs with $env:CI set when CI is the thing running it.
+		[hashtable] $Environment = @{}
 	)
 
 	$outFile = Join-Path $FixtureRoot "out-$([System.Guid]::NewGuid().ToString('N')).log"
@@ -241,9 +277,26 @@ function Start-FixtureScript {
 		$arguments += @('-File', "`"$scriptPath`"") + $ScriptArguments
 	}
 
-	$process = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments `
-		-WorkingDirectory $RepoRoot -NoNewWindow -PassThru `
-		-RedirectStandardOutput $outFile -RedirectStandardError $errFile
+	$restore = @{}
+	foreach ($name in $Environment.Keys) {
+		$restore[$name] = [System.Environment]::GetEnvironmentVariable($name)
+		Set-Item -LiteralPath "env:$name" -Value $Environment[$name]
+	}
+	try {
+		$process = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments `
+			-WorkingDirectory $RepoRoot -NoNewWindow -PassThru `
+			-RedirectStandardOutput $outFile -RedirectStandardError $errFile
+	}
+	finally {
+		# Put back whatever was there, including nothing. A leaked ODINFMT would
+		# silently retarget every case after this one, and a leaked CI would flip
+		# the whole pin policy.
+		foreach ($name in $restore.Keys) {
+			$value = $restore[$name]
+			if ($null -eq $value) { $value = '' }
+			Set-Item -LiteralPath "env:$name" -Value $value
+		}
+	}
 
 	# Touching .Handle makes the Process object cache the native handle. Without
 	# -Wait it does not, and .ExitCode then reads back empty once the child is
@@ -296,11 +349,12 @@ function Invoke-FixtureScript {
 		[Parameter(Mandatory)] [string] $Script,
 		[string[]] $ScriptArguments = @(),
 		[ValidateRange(1, 86400)] [int] $TimeoutSeconds = $script:CaseTimeoutSeconds,
-		[switch] $MergeStreams
+		[switch] $MergeStreams,
+		[hashtable] $Environment = @{}
 	)
 
 	return Wait-FixtureScript -TimeoutSeconds $TimeoutSeconds -Run (Start-FixtureScript -RepoRoot $RepoRoot `
-			-Script $Script -ScriptArguments $ScriptArguments -MergeStreams:$MergeStreams)
+			-Script $Script -ScriptArguments $ScriptArguments -MergeStreams:$MergeStreams -Environment $Environment)
 }
 
 # -------------------------------------------------------------- assertions --
@@ -379,6 +433,39 @@ function Assert-Result {
 	if (($Matching -ne '') -and ($Result.Output -notmatch $Matching)) {
 		throw "output did not match /$Matching/.`n$($Result.Output)"
 	}
+}
+
+# Every top-level procedure in one file, measured the way CLAUDE.md rule F1
+# measures: from the line carrying `::` through the closing brace, comments and
+# blanks included.
+#
+# Column zero is what makes this readable rather than a parser. Every file the
+# check covers has been through odinfmt, so a top-level declaration starts at
+# column 0 and its closing brace is a bare `}` there -- which is exactly what
+# separates a procedure from the `proc(...) ---` entries inside a foreign block,
+# indented one level in. A header with no body (a procedure TYPE) is recognised
+# by the next column-0 declaration arriving before any closing brace does.
+function Get-OdinProcedureLength {
+	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
+
+	$lines = $Text -split "`r?`n"
+	$found = @()
+	for ($i = 0; $i -lt $lines.Count; $i++) {
+		if ($lines[$i] -notmatch '^([A-Za-z_][A-Za-z0-9_]*)\s*::\s*proc\b') {
+			continue
+		}
+		$name = $Matches[1]
+		for ($j = $i + 1; $j -lt $lines.Count; $j++) {
+			if ($lines[$j] -eq '}') {
+				$found += [pscustomobject]@{ Name = $name; Lines = ($j - $i + 1) }
+				break
+			}
+			if (($lines[$j] -match '^[A-Za-z_][A-Za-z0-9_]*\s*::') -or ($lines[$j] -match '^@\(')) {
+				break
+			}
+		}
+	}
+	return $found
 }
 
 # The <package>.<test> names a document hands a reader to run, in every spelling
@@ -615,6 +702,10 @@ Test-Case 'a test that never returns is killed and reported against its package'
 # reported by GitHub -- which names no package, prints no output, and uploads no
 # report -- rather than by the sweep. Checked rather than written down, because
 # the fourth package is exactly when nobody re-reads the comment.
+#
+# $OdinSweepTimeoutSeconds now bounds the FORMAT sweep as well as the test sweep,
+# so this arithmetic answers for both. The behaviour each of them gets out of it
+# is pinned separately, by a case apiece.
 Test-Case 'the sweep budget fits inside the CI job that has to report it' {
 	$workflow = Join-Path $RepoRoot '.github\workflows\ci.yml'
 	if (-not (Test-Path -LiteralPath $workflow)) {
@@ -708,7 +799,7 @@ Test-Case 'a package that does not compile fails the sweep' {
 	$repo = New-FixtureRepo 'broken-orphan'
 	Add-FixturePackage -RepoRoot $repo -Name 'good' -Test 'passing' | Out-Null
 	$orphan = Add-FixturePackage -RepoRoot $repo -Name 'orphan' -Test 'passing'
-	[System.IO.File]::WriteAllText((Join-Path $orphan 'orphan.odin'), "package orphan`n`nthis is not Odin`n", $Utf8NoBom)
+	Write-FixtureSource -Path (Join-Path $orphan 'orphan.odin') -Text "package orphan`n`nthis is not Odin`n"
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
 	Assert-Result -Result $result -Fails -Matching 'orphan'
 }
@@ -815,6 +906,640 @@ Test-Case 'the subsystem is read out of the PE header, not taken from the flag' 
 	try { Assert-PeSubsystem -Path (Join-Path $ScriptRoot 'common.ps1') -Subsystem 'console' } catch { $notAnImage = $_.Exception.Message }
 	if ($notAnImage -notmatch 'does not start with the MZ signature') {
 		throw "reading a script as a PE image gave: '$notAnImage'"
+	}
+}
+
+# ------------------------------------------------------ cases for format.ps1 --
+#
+# CLAUDE.md rule S1's formatter, which until now nothing ran at all. The check
+# it drives has the same failure mode the test sweep has -- silence -- so it is
+# guarded the same way: every case below is about the check REFUSING something,
+# and the two that are about it accepting exist so the refusals cannot be
+# satisfied by a check that refuses everything.
+#
+# The fixtures misformat by IMPORT ORDER. It is valid Odin, it passes the whole
+# vet set, so a case that fails is failing on FORMATTING and not on something
+# the compiler would have caught anyway -- and the misformatted and formatted
+# forms are the same LENGTH, so a check comparing file sizes rather than
+# contents would wave every one of them through.
+#
+# Otherwise the binary New-FixtureMain builds: it still prints the banner and
+# still exits zero, so build.ps1's smoke test passes once the imports are put
+# back in order. That is what makes the -Fix case able to build what it rewrote.
+function New-FixtureMainUnsorted {
+	param([Parameter(Mandatory)] [string] $Line)
+
+	return "import `"core:os`"`nimport `"core:fmt`"`n`nmain :: proc() {`n`tfmt.println(`"$Line`")`n`tos.exit(0)`n}`n"
+}
+
+$SmokeBanner = "$($SmokeTarget.Name) 0.1.0"
+
+Test-Case 'a misformatted file fails the build' {
+	$repo = New-FixtureRepo 'build-misformatted'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMainUnsorted -Line $SmokeBanner) | Out-Null
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Fails -Matching 'not formatted as odinfmt.json says'
+	Assert-Result -Result $result -Fails -Matching 'main\.odin'
+}
+
+Test-Case 'the format command passes a formatted file and fails a misformatted one' {
+	# Both halves, because either alone proves nothing: a check that accepts
+	# everything passes the first, and one that accepts nothing passes the second
+	# (CLAUDE.md rule A3).
+	$clean = New-FixtureRepo 'format-clean'
+	Add-FixtureBinary -RepoRoot $clean -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $clean -Script 'format.ps1') -Matching 'are formatted as odinfmt.json says'
+
+	$dirty = New-FixtureRepo 'format-dirty'
+	Add-FixtureBinary -RepoRoot $dirty -Body (New-FixtureMainUnsorted -Line $SmokeBanner) | Out-Null
+	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $dirty -Script 'format.ps1') -Fails -Matching 'main\.odin'
+}
+
+Test-Case 'the format check covers Odin outside src' {
+	# The sweep walks $RepoRoot and not $SrcRoot on purpose: docs\reference\ holds
+	# a spike that is still Odin somebody reads and copies from, and a check
+	# scoped to src\ would leave it drifting. Discovered rather than listed, so
+	# this file is covered by having been WRITTEN and not by being named anywhere.
+	$repo = New-FixtureRepo 'format-outside-src'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	$spike = Join-Path $repo 'docs\reference'
+	New-Item -ItemType Directory -Path $spike -Force | Out-Null
+	Write-FixtureSource -Path (Join-Path $spike 'spike.odin') `
+		-Text "package reference`n`nimport `"core:os`"`nimport `"core:fmt`"`n`nspike :: proc() {`n`tfmt.println(os.args[0])`n}`n"
+
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1'
+	Assert-Result -Result $result -Fails -Matching 'docs/reference/spike\.odin'
+}
+
+Test-Case 'a repository with no Odin at all fails the format command' {
+	# The deny-by-default rule, in the one place it matters most. A formatting
+	# check that discovers nothing reports exactly the green a check that
+	# discovered everything reports, and no one can tell the two apart.
+	$repo = New-FixtureRepo 'format-no-sources'
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1'
+	Assert-Result -Result $result -Fails -Matching 'no \.odin files found'
+}
+
+Test-Case 'a source with LF line endings fails the format check' {
+	# Deliberate, and recorded here rather than left to be discovered: the check
+	# IS line-ending-sensitive. core.autocrlf is on, so a Windows checkout holds
+	# CRLF, odinfmt.json pins newline_style to CRLF to match, and odinfmt's own
+	# default would have been LF had this run anywhere but Windows.
+	$repo = New-FixtureRepo 'format-lf-endings'
+	$dir = Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line $SmokeBanner)
+	$main = Join-Path $dir 'main.odin'
+	# Only the line endings differ from the file that just passed; nothing else
+	# about the fixture changes.
+	$lf = [System.IO.File]::ReadAllText($main) -replace "`r`n", "`n"
+	[System.IO.File]::WriteAllText($main, $lf, $Utf8NoBom)
+
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1'
+	Assert-Result -Result $result -Fails -Matching 'main\.odin'
+}
+
+Test-Case 'a config odinfmt would silently ignore fails the format command' {
+	# odinfmt's find_config_file_or_default returns its own built-in default
+	# whenever the file is missing or json.unmarshal fails, and says NOTHING --
+	# which would leave every command here passing against a style nobody chose,
+	# and that default is platform-dependent, so it would not even be the same
+	# style twice.
+	$missing = New-FixtureRepo 'format-config-missing'
+	Add-FixtureBinary -RepoRoot $missing -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	Remove-Item -LiteralPath (Join-Path $missing 'odinfmt.json') -Force
+	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $missing -Script 'format.ps1') -Fails -Matching 'no .*odinfmt\.json'
+
+	$broken = New-FixtureRepo 'format-config-broken'
+	Add-FixtureBinary -RepoRoot $broken -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	[System.IO.File]::WriteAllText((Join-Path $broken 'odinfmt.json'), '{ "character_width": 100, oops }', $Utf8NoBom)
+	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $broken -Script 'format.ps1') -Fails -Matching 'not valid JSON'
+
+	# And the same refusal for a config odinfmt would have read perfectly well.
+	# A trailing comma is the likeliest syntax error there is, and it is NOT one
+	# of the silent-default cases above: odinfmt reads this file with
+	# core:encoding/json, whose DEFAULT_SPECIFICATION is JSON5, and measured
+	# against the pinned build a trailing comma and a // comment both parse and
+	# apply IN FULL -- byte-identical output to the same config without them, and
+	# different from the output with no config at all.
+	#
+	# So this refusal is the check being deliberately stricter than odinfmt, which
+	# is the fail-closed answer: `{ "character_width": 100, oops }` above and this
+	# file are the same file to anything reading it here, and nothing on disk says
+	# which way odinfmt went. The refusal has to say THAT, and not the opposite.
+	$tolerated = New-FixtureRepo 'format-config-trailing-comma'
+	Add-FixtureBinary -RepoRoot $tolerated -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	$path = Join-Path $tolerated 'odinfmt.json'
+	# Built by hand rather than by regex: a `$`-anchored pattern does not match
+	# what it looks like it matches once the file arrives with CRLF endings.
+	$text = [System.IO.File]::ReadAllText($path)
+	$brace = $text.LastIndexOf('}')
+	if ($brace -lt 0) {
+		throw "the fixture's odinfmt.json has no closing brace to put a comma in front of."
+	}
+	[System.IO.File]::WriteAllText($path, ($text.Substring(0, $brace).TrimEnd() + ",`n}`n"), $Utf8NoBom)
+
+	$result = Invoke-FixtureScript -RepoRoot $tolerated -Script 'format.ps1'
+	Assert-Result -Result $result -Fails -Matching 'not valid JSON'
+	Assert-Result -Result $result -Fails -Matching 'JSON5'
+	# The claim the refusal must not make, kept as its own assertion because it is
+	# the whole finding: the message said odinfmt "would ignore it silently and
+	# format to its own default instead", and for this file odinfmt does neither.
+	if ($result.Output -match 'ignore it silently') {
+		throw "the refusal still claims odinfmt ignores this config, which it measurably does not.`n$($result.Output)"
+	}
+}
+
+# CLAUDE.md rule F1, in its own words: a hard limit, "checkable by machine and
+# has no exceptions without a maintainer decision recorded at the site".
+$OdinProcedureLineLimit = 70
+
+Test-Case 'no procedure the format check covers is over the line limit' {
+	# Measured over every file the FORMAT check covers, which is the scope that
+	# moved: the audit behind this rule was scoped to src\, and then the formatter
+	# was given authority over docs\reference\ as well. It reformatted the spike
+	# there from 62 lines to 107 and nothing noticed, because nothing was looking
+	# outside src\. The two scopes are the same scope now, by construction --
+	# Get-OdinSource is what both of them ask.
+	$sources = @(Get-OdinSource)
+	if ($sources.Count -eq 0) {
+		throw "no .odin files under $RepoRoot, so this case would pass having measured nothing."
+	}
+
+	$measured = @()
+	foreach ($source in $sources) {
+		foreach ($procedure in @(Get-OdinProcedureLength -Text ([System.IO.File]::ReadAllText($source.Path)))) {
+			$measured += [pscustomobject]@{ Where = "$($source.Name):$($procedure.Name)"; Lines = $procedure.Lines }
+		}
+	}
+	if ($measured.Count -eq 0) {
+		throw "read no procedures at all out of $($sources.Count) file(s), so this case measured nothing."
+	}
+
+	$over = @($measured | Where-Object { $_.Lines -gt $OdinProcedureLineLimit } | Sort-Object Lines -Descending)
+	if ($over.Count -gt 0) {
+		$named = ($over | ForEach-Object { "  - $($_.Where) is $($_.Lines) lines" }) -join "`n"
+		throw "$($over.Count) procedure(s) over CLAUDE.md rule F1's $OdinProcedureLineLimit-line limit:`n$named"
+	}
+
+	# The negative space (rule A3), and not a formality: a reader that finds no
+	# procedure at all, or one that never counts past the limit, satisfies every
+	# line above. Both halves are checked against a procedure built to a known
+	# length, so the expected number comes from how it was built and not from
+	# running the same count twice.
+	$long = "over :: proc() {`n" + (("`t// filler`n") * ($OdinProcedureLineLimit - 1)) + "}`n"
+	$read = @(Get-OdinProcedureLength -Text $long)
+	if ($read.Count -ne 1) {
+		throw "read $($read.Count) procedures out of a text holding exactly one."
+	}
+	if ($read[0].Lines -ne ($OdinProcedureLineLimit + 1)) {
+		throw "measured a $($OdinProcedureLineLimit + 1)-line procedure as $($read[0].Lines) lines."
+	}
+
+	# And a procedure TYPE, which carries no body and must not be measured as
+	# though the next declaration's brace were its own.
+	$bodyless = "Callback :: proc(held: int) -> bool`n`nCaller :: proc() {`n`treturn`n}`n"
+	$names = @(Get-OdinProcedureLength -Text $bodyless | ForEach-Object { $_.Name })
+	if (($names.Count -ne 1) -or ($names[0] -ne 'Caller')) {
+		throw "reading a bodyless procedure type gave: $($names -join ', ')"
+	}
+}
+
+Test-Case 'git checks out every .odin file with the endings the check demands' -MaySkip {
+	# The formatting check compares BYTES, and odinfmt.json pins newline_style to
+	# CRLF -- so what puts CRLF in a working tree decides whether this repository
+	# builds at all. Nothing in the repository did. The blobs are stored LF, and
+	# the only thing converting them on the way out was Git for Windows' SYSTEM
+	# gitconfig setting core.autocrlf=true: a machine-global setting, on a machine
+	# that happened to have it. `git -c core.autocrlf=false clone` produced a
+	# checkout where all 13 files failed the check and build.ps1 refused to build
+	# anything, and running the remedy the failure prints would have rewritten
+	# every one of them to CRLF and flipped the object store for everybody else.
+	#
+	# Asked of GIT rather than read off .gitattributes, and per FILE rather than
+	# per rule: what matters is the answer git's own attribute resolution gives for
+	# each path the sweep covers, and a rule written for the wrong glob reads
+	# perfectly well and matches nothing.
+	if (-not (Get-Command 'git' -CommandType Application -ErrorAction SilentlyContinue)) {
+		Skip-Case -Reason 'no git on PATH to ask what it would check out'
+	}
+	$inside = Read-NativeOutput -Command 'git' -TimeoutSeconds $FixtureTimeoutSeconds `
+		-Arguments @('-C', $RepoRoot, 'rev-parse', '--is-inside-work-tree')
+	if ($inside.TimedOut -or ($inside.ExitCode -ne 0) -or ($inside.Output -ne 'true')) {
+		Skip-Case -Reason "$RepoRoot is not a git work tree, so there are no checkout rules to ask about"
+	}
+
+	$sources = @(Get-OdinSource)
+	if ($sources.Count -eq 0) {
+		throw "no .odin files under $RepoRoot, so this case would pass having asked about nothing."
+	}
+
+	$asked = Read-NativeOutput -Command 'git' -TimeoutSeconds $FixtureTimeoutSeconds `
+		-Arguments (@('-C', $RepoRoot, 'check-attr', 'eol', '--') + @($sources | ForEach-Object { $_.Name }))
+	if ($asked.TimedOut) {
+		throw "git check-attr did not finish within $FixtureTimeoutSeconds seconds."
+	}
+	if ($asked.ExitCode -ne 0) {
+		throw "git check-attr exited $($asked.ExitCode).`n$($asked.Output)"
+	}
+
+	$answers = @($asked.Output -split "`r?`n" | Where-Object { $_ -ne '' })
+	if ($answers.Count -ne $sources.Count) {
+		throw "asked about $($sources.Count) files and git answered for $($answers.Count).`n$($asked.Output)"
+	}
+	$adrift = @($answers | Where-Object { $_ -notmatch ': eol: crlf$' })
+	if ($adrift.Count -gt 0) {
+		throw "$($adrift.Count) .odin file(s) have no eol=crlf rule in .gitattributes, so their line endings come from whatever core.autocrlf the machine happens to set:`n$($adrift -join "`n")"
+	}
+
+	# The negative space (rule A3). Without it this case passes for a reader that
+	# cannot tell the answers apart -- and the fixtures are the proof, because
+	# `**/fixtures/** -text` deliberately leaves them unconverted (ADR-0001).
+	$fixture = 'src/transcript/fixtures/engine-output.json'
+	$evidence = Read-NativeOutput -Command 'git' -TimeoutSeconds $FixtureTimeoutSeconds `
+		-Arguments @('-C', $RepoRoot, 'check-attr', 'eol', '--', $fixture)
+	if ($evidence.Output -match ': eol: crlf$') {
+		throw "git says it converts $fixture, which .gitattributes exempts as evidence: $($evidence.Output)"
+	}
+}
+
+# The repository's OWN odinfmt.json with one edit made to it, which is what
+# keeps these cases about the edit. A config written from scratch here would
+# pass or fail for reasons the real one never has.
+function Edit-FixtureFormatConfig {
+	param(
+		[Parameter(Mandatory)] [string] $RepoRoot,
+		[Parameter(Mandatory)] [scriptblock] $Edit
+	)
+
+	$path = Join-Path $RepoRoot 'odinfmt.json'
+	$config = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+	& $Edit $config
+	[System.IO.File]::WriteAllText($path, ($config | ConvertTo-Json), $Utf8NoBom)
+}
+
+Test-Case 'a config key odinfmt would not read fails the format command by name' {
+	# The four ways a config goes wrong WITHOUT odinfmt saying anything, each
+	# planted in the real file. None of them is caught by formatting something and
+	# looking at the answer, which is what this check used to do: odinfmt's
+	# built-in Windows default is already tabs, CRLF and character_width 100, so
+	# on this platform formatting with the config and with no config at all is
+	# byte-identical. `"tabs": "true"` passed that check green.
+	#
+	# Each case asserts the KEY is named. A refusal that does not say which key is
+	# a refusal somebody has to bisect by hand -- which is what removing a key
+	# used to give: "The property 'tabs' cannot be found on this object."
+	$faults = @(
+		@{
+			Name    = 'wrong-type'
+			Edit    = { param($c) $c.tabs = 'true' }
+			Matches = "'tabs' is the string 'true'"
+		}
+		@{
+			Name    = 'misspelled-key'
+			Edit    = {
+				param($c)
+				$c.PSObject.Properties.Remove('character_width')
+				$c | Add-Member -NotePropertyName 'character_widht' -NotePropertyValue 100
+			}
+			Matches = "'character_widht' is not a key odinfmt reads"
+		}
+		@{
+			Name    = 'missing-key'
+			Edit    = { param($c) $c.PSObject.Properties.Remove('tabs') }
+			Matches = "'tabs' is missing"
+		}
+		@{
+			Name    = 'unknown-enum-name'
+			Edit    = { param($c) $c.newline_style = 'CR' }
+			Matches = "'newline_style' is the string 'CR'"
+		}
+	)
+
+	foreach ($fault in $faults) {
+		$repo = New-FixtureRepo "format-config-$($fault.Name)"
+		Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+		Edit-FixtureFormatConfig -RepoRoot $repo -Edit $fault.Edit
+		$result = Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1'
+		Assert-Result -Result $result -Fails -Matching ([regex]::Escape($fault.Matches))
+	}
+
+	# The negative space (rule A3). Every refusal above is satisfied by a check
+	# that refuses every config there is -- including this repository's own, which
+	# is the one config that has to pass. Written through the same editor that
+	# planted the faults, so a helper that corrupts the file on the way through
+	# cannot make the four cases above pass for the wrong reason.
+	$sound = New-FixtureRepo 'format-config-sound'
+	Add-FixtureBinary -RepoRoot $sound -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	Edit-FixtureFormatConfig -RepoRoot $sound -Edit { param($c) $c.tabs = $true }
+	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $sound -Script 'format.ps1') `
+		-Matching 'are formatted as odinfmt\.json says'
+}
+
+# Where a run of NUL-terminated names sits inside a byte image, and how many
+# places it sits in. The names must be adjacent and in the order given.
+#
+# Odin emits the field names of every type a program reflects over as
+# NUL-terminated strings, laid down contiguously and in declaration order, so a
+# struct's field names appear in the binary as exactly one such run. Searching
+# for the run is therefore a question the binary can answer NO to.
+function Find-ByteRun {
+	param(
+		[Parameter(Mandatory)] [string] $Image,
+		[Parameter(Mandatory)] [string[]] $Names
+	)
+
+	$needle = ($Names -join "`0") + "`0"
+	$offsets = @()
+	$at = 0
+	while ($true) {
+		$at = $Image.IndexOf($needle, $at, [System.StringComparison]::Ordinal)
+		if ($at -lt 0) {
+			break
+		}
+		$offsets += $at
+		$at += 1
+	}
+	return [pscustomobject]@{ Offsets = $offsets; Length = $needle.Length }
+}
+
+Test-Case 'the config schema is the key set inside the pinned odinfmt' -MaySkip {
+	# $OdinFormatConfigSchema was read out of the pinned binary once, by hand, and
+	# then nothing held it there. The comment beside it claimed that "if a future
+	# ols adds a key, odinfmt.json fails here naming it", and it would not have:
+	# the check compares odinfmt.json against the schema, and both are files in
+	# this repository. Dropping a key from the schema and from odinfmt.json
+	# together -- which is exactly the shape of a sixteenth key arriving upstream
+	# -- left format.ps1 exiting 0, naming nothing, with odinfmt quietly applying
+	# its own default for the key nobody had listed.
+	#
+	# So the schema is checked against the binary it was read out of, which is
+	# what makes moving the pin a decision about the schema too. Deterministic by
+	# construction: the binary is pinned by CONTENT, so while the pin holds this
+	# case is a fixed question about a fixed byte string and cannot flake. The
+	# only thing that can turn it red is the pin moving -- which is the moment
+	# somebody is supposed to look.
+	$odinfmt = Resolve-OdinFormatter -Optional
+	if ($odinfmt -eq '') {
+		Skip-Case 'odinfmt is not installed, and this case is a claim about the pinned build.'
+	}
+	$found = Get-FileSha256 -Path $odinfmt
+	if ($found -ne $OdinfmtSha256) {
+		Skip-Case "$odinfmt hashes to $found, not the pinned $OdinfmtSha256, and only the pinned build can answer this."
+	}
+
+	# Latin-1, alone among the encodings, maps every one of the 256 byte values to
+	# exactly one character and back. Decoding the image through it turns a byte
+	# search into IndexOf; UTF-8 would fold invalid sequences onto U+FFFD and lose
+	# the very bytes being searched for.
+	$bytes = [System.IO.File]::ReadAllBytes($odinfmt)
+	$image = [System.Text.Encoding]::GetEncoding(28591).GetString($bytes)
+
+	$keys = @($OdinFormatConfigSchema.Keys)
+	if ($keys.Count -lt 2) {
+		throw "the schema declares $($keys.Count) key(s), so this case would be searching for almost nothing."
+	}
+
+	$run = Find-ByteRun -Image $image -Names $keys
+	if ($run.Offsets.Count -ne 1) {
+		throw "the $($keys.Count) schema keys do not appear in $odinfmt as one contiguous run in that order (found $($run.Offsets.Count) such runs). printer.Config has been renamed, reordered, or had a key added in the middle of it: read the field list out of the newly pinned build and move `$OdinFormatConfigSchema with the pin."
+	}
+
+	# And nothing follows them. The run above is satisfied by a printer.Config
+	# that STARTS with these fifteen keys, which is exactly what a sixteenth key
+	# appended upstream would look like -- and an unlisted key is the harmful
+	# direction, because odinfmt fills it from its own default in silence while
+	# every check here passes. A sixteenth name is emitted directly after the
+	# fifteenth, so this byte is either the padding that ends the run or the first
+	# letter of a key nobody chose.
+	$after = $run.Offsets[0] + $run.Length
+	if ($after -ge $bytes.Length) {
+		throw "the schema's key run ends at the very end of $odinfmt, which is not a layout this case knows how to read."
+	}
+	if ($bytes[$after] -ne 0) {
+		$next = ($image.Substring($after, [math]::Min(40, $bytes.Length - $after)) -split "`0")[0]
+		throw "printer.Config carries at least one key past the $($keys.Count) in `$OdinFormatConfigSchema -- the name after '$($keys[-1])' is '$next'. An unlisted key takes odinfmt's own default in silence: add it to the schema and to odinfmt.json."
+	}
+
+	# The enum members too, and for the same reason in reverse. A member RENAMED
+	# upstream leaves odinfmt.json naming one that no longer exists, which odinfmt
+	# answers by leaving the field at its default and saying nothing, while the
+	# check here passes -- brace_style is "_1TBS" in this repository's own config,
+	# so that is a live path and not a hypothetical.
+	#
+	# Not bounded the way the keys are: a member ADDED upstream can only ever be
+	# refused here, and a refusal is somebody reading this comment rather than a
+	# style nobody chose.
+	foreach ($key in $keys) {
+		$expected = $OdinFormatConfigSchema[$key]
+		if (($expected -eq 'int') -or ($expected -eq 'bool')) {
+			continue
+		}
+		$members = @($expected -split '\|')
+		$enum = Find-ByteRun -Image $image -Names $members
+		if ($enum.Offsets.Count -ne 1) {
+			throw "the names '$($members -join ", ")' the schema accepts for '$key' do not appear in $odinfmt as one contiguous run in that order (found $($enum.Offsets.Count) such runs). Read the enum out of the newly pinned build and move `$OdinFormatConfigSchema with the pin."
+		}
+	}
+}
+
+Test-Case 'a formatter that is not installed warns the build locally and stops it under CI' {
+	# The asymmetry this closes ran the wrong way round. A formatter whose build
+	# did not match the SHA-256 pin warned and carried on; a formatter that was
+	# not installed at all failed the build outright -- so a contributor with the
+	# pinned compiler but without the ols zip could not build anything, which is
+	# the exact outcome the pin policy argues against.
+	#
+	# A path that is not there rather than an unset variable, because the fallback
+	# location and PATH are both outside this suite's control: the development
+	# machine has odinfmt at C:\Odin\dist\, and a case that turned on its absence
+	# would pass there for the wrong reason.
+	$absent = Join-Path $FixtureRoot 'no-such-odinfmt.exe'
+	if (Test-Path -LiteralPath $absent) {
+		throw "$absent exists, so this case cannot ask for a formatter that is missing."
+	}
+
+	# CI unset, whatever this suite is itself running under: on a CI runner
+	# $env:CI is set for every case, and without this the local half would be
+	# measuring the CI half.
+	$local = New-FixtureRepo 'formatter-absent-local'
+	Add-FixtureBinary -RepoRoot $local -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	$built = Invoke-FixtureScript -RepoRoot $local -Script 'build.ps1' -Environment @{ ODINFMT = $absent; CI = '' }
+	Assert-Result -Result $built -Matching 'NOT CHECKED'
+	# Built, not merely warned about: the whole point is that the build finishes.
+	Assert-Result -Result $built -Matching "printed: $([regex]::Escape($SmokeTarget.Name)) 0\.1\.0"
+
+	# And CI refuses, which is what makes the local warning affordable.
+	$ci = New-FixtureRepo 'formatter-absent-ci'
+	Add-FixtureBinary -RepoRoot $ci -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	Assert-Result -Fails -Matching 'BUILD FAILED' -Result (Invoke-FixtureScript -RepoRoot $ci `
+			-Script 'build.ps1' -Environment @{ ODINFMT = $absent; CI = '1' })
+
+	# The format command has nothing to do without a formatter, so asking it to
+	# run is a request that can only be refused -- locally too. Without this the
+	# change above would read as "a missing formatter is never an error".
+	$asked = New-FixtureRepo 'formatter-absent-asked'
+	Add-FixtureBinary -RepoRoot $asked -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	Assert-Result -Fails -Matching 'no file is there' -Result (Invoke-FixtureScript -RepoRoot $asked `
+			-Script 'format.ps1' -Environment @{ ODINFMT = $absent; CI = '' })
+}
+
+Test-Case 'a file odinfmt cannot parse fails the format command by name' {
+	# odinfmt does NOT exit non-zero on a file it cannot parse. Measured against
+	# the pinned build: exit ZERO, an empty standard output, and the diagnostic on
+	# standard error. The guard that claimed otherwise never fired, and what
+	# stopped the run instead was Set-StrictMode several frames later, reporting
+	# "The property 'Length' cannot be found on this object" and naming no file.
+	$repo = New-FixtureRepo 'format-unparseable'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	$dir = Join-Path (Join-Path $repo 'src') 'unreadable'
+	New-Item -ItemType Directory -Path $dir -Force | Out-Null
+	Write-FixtureSource -Path (Join-Path $dir 'unreadable.odin') -Text "package unreadable`n`nthis is not Odin at all {`n"
+
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1'
+	Assert-Result -Result $result -Fails -Matching 'could not parse the file'
+	# The file, by name. A refusal that names nothing is the failure this case is
+	# about, not the exit code -- which the accident already produced.
+	Assert-Result -Result $result -Fails -Matching 'unreadable\.odin'
+}
+
+Test-Case 'the format sweep gives up on its own budget rather than running forever' {
+	# Each FILE was bounded and the sweep was not, which is the defect the test
+	# sweep already had once: one file's ceiling times however many files exist is
+	# not a bound anybody chose, and at thirteen files it was 130 minutes against
+	# a 30-minute CI job. Past that line the report comes from GitHub's job
+	# timeout, which names no file and prints no output.
+	#
+	# One second, so the budget is spent before the first file rather than by
+	# waiting: the clock starts before the config is read, so any elapsed time at
+	# all floors the remainder to zero.
+	$repo = New-FixtureRepo 'format-sweep-budget'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1' -ScriptArguments @('-SweepTimeoutSeconds', '1')
+	Assert-Result -Result $result -Fails -Matching "1-second budget ran out"
+	# Naming the file it stopped at is the point: "something timed out" over a
+	# sweep of every .odin file in the repository is not a report anyone can act on.
+	Assert-Result -Result $result -Fails -Matching 'main\.odin'
+
+	# The negative space (rule A3). Without it this case passes for a sweep that
+	# has run out of budget before it starts, whatever the budget is.
+	$roomy = New-FixtureRepo 'format-sweep-budget-ample'
+	Add-FixtureBinary -RepoRoot $roomy -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $roomy -Script 'format.ps1') `
+		-Matching 'are formatted as odinfmt\.json says'
+}
+
+Test-Case 'the format command rewrites exactly what it named' {
+	$repo = New-FixtureRepo 'format-fix'
+	$dir = Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMainUnsorted -Line $SmokeBanner)
+
+	# What a hard-killed -Fix strands beside a source, planted before the sweep
+	# runs. Write-FileAtomically deletes its staged file however the replace
+	# ended, so the only way one survives is a run killed between the write and
+	# the rename -- after which nothing names that file again. Get-OdinSource does
+	# not discover it and .gitignore does not cover it, so `git status` shows it:
+	# that is what makes it harmless, not what makes it somebody else's problem.
+	$stranded = Join-Path $dir "main.odin.4242-$([System.Guid]::NewGuid().ToString('N'))$OdinFormatStagedSuffix"
+	[System.IO.File]::WriteAllText($stranded, 'staged bytes from a run nobody waited for')
+	(Get-Item -LiteralPath $stranded).LastWriteTime = (Get-Date).AddDays(-3)
+
+	# And one belonging to a run that is still going. Reclaimed on AGE for exactly
+	# this reason (rule A3, and the reason Remove-StaleTestArtefact was written
+	# that way): a concurrent -Fix has a staged file seconds old, and a sweep that
+	# took that one would corrupt the rewrite it belongs to.
+	$live = Join-Path $dir "main.odin.4243-$([System.Guid]::NewGuid().ToString('N'))$OdinFormatStagedSuffix"
+	[System.IO.File]::WriteAllText($live, 'staged bytes from a run still going')
+
+	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1') -Fails
+
+	if (Test-Path -LiteralPath $stranded) {
+		throw "the sweep left a three-day-old staged file beside the source: $stranded"
+	}
+	if (-not (Test-Path -LiteralPath $live)) {
+		throw "the sweep took a staged file a concurrent rewrite is still using: $live"
+	}
+
+	# Everything under src\ before the rewrite, so "exactly what it named" can be
+	# checked against the tree and not only against the file. -Fix stages the new
+	# bytes beside the source and swaps them in with File.Replace, and a staged
+	# file left behind would be a `_bk` by another name -- the very thing the
+	# rewrite path was written to avoid.
+	$before = @(Get-ChildItem -LiteralPath (Join-Path $repo 'src') -Recurse -File -Force |
+			ForEach-Object { $_.FullName } | Sort-Object)
+
+	$fixed = Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1' -ScriptArguments @('-Fix')
+	Assert-Result -Result $fixed -Matching 'rewrote'
+
+	$after = @(Get-ChildItem -LiteralPath (Join-Path $repo 'src') -Recurse -File -Force |
+			ForEach-Object { $_.FullName } | Sort-Object)
+	if ($after.Count -ne $before.Count) {
+		$added = @($after | Where-Object { $before -notcontains $_ })
+		throw "the rewrite left $($added.Count) extra file(s) behind: $($added -join ', ')"
+	}
+
+	# The check after the fix, which is the only thing that makes -Fix worth
+	# having: a rewrite the check still rejects is a rewrite to a third style.
+	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1') -Matching 'are formatted as odinfmt.json says'
+
+	# And it still compiles -- a formatter that produces something the vet set
+	# rejects has fixed nothing.
+	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1')
+}
+
+# The identity NTFS gave a file, as whatever fsutil prints, or the empty string
+# where the volume or the tool cannot say.
+#
+# Compared only against another reading of ITSELF, never against a literal, so
+# neither the format of the number nor the localised words around it matter.
+function Get-NtfsFileId {
+	param([Parameter(Mandatory)] [string] $Path)
+
+	$printed = fsutil file queryfileid "$Path" 2>$null
+	if ($LASTEXITCODE -ne 0) {
+		return ''
+	}
+	return (($printed -join ' ').Trim())
+}
+
+Test-Case 'the rewrite swaps a new file in rather than writing over the old one' -MaySkip {
+	# Write-FileAtomically's whole argument is about a window nothing here can
+	# open: a run killed midway through writing the destination. Staging a crash
+	# inside a .NET call is not something this suite can do, so the atomicity
+	# itself is not what is checked -- swapping File.Replace back for a plain
+	# WriteAllBytes leaves every other case in this file green, which is exactly
+	# the silent revert the argument at the site warns about.
+	#
+	# What IS checkable is the mechanism, and cheaply. A truncating write keeps
+	# the file it writes into; a replace gives the name a different file
+	# altogether, and NTFS says which happened. So this pins "the bytes arrived by
+	# rename" without needing the crash that makes it matter.
+	$dir = Join-Path $FixtureRoot 'atomic-rewrite'
+	New-Item -ItemType Directory -Path $dir -Force | Out-Null
+	$target = Join-Path $dir 'target.odin'
+	[System.IO.File]::WriteAllText($target, 'package before')
+
+	$created = Get-NtfsFileId -Path $target
+	if ($created -eq '') {
+		Skip-Case "fsutil will not name the files on the volume holding $dir, so there is no identity here to watch."
+	}
+
+	# The control, and the negative space rule A3 asks for. Without it this case
+	# passes for any file identity that happens to move, and says nothing about
+	# WHY: a plain write keeps the file, which is the truncation window the
+	# rewrite path exists to avoid.
+	[System.IO.File]::WriteAllBytes($target, [System.Text.Encoding]::ASCII.GetBytes('package written over'))
+	$overwritten = Get-NtfsFileId -Path $target
+	if ($overwritten -ne $created) {
+		throw "a plain WriteAllBytes changed the file's identity on this volume ($created -> $overwritten), so a changed identity proves nothing about how the rewrite below put its bytes there."
+	}
+
+	Write-FileAtomically -Path $target -Bytes ([System.Text.Encoding]::ASCII.GetBytes('package swapped in'))
+
+	$swapped = Get-NtfsFileId -Path $target
+	if ($swapped -eq $overwritten) {
+		throw "the rewrite wrote over $target in place -- its identity is still $swapped. File.Replace has been swapped for a write that truncates first, and a run killed inside that write leaves a truncated .odin file with nothing to say so."
+	}
+	$landed = [System.IO.File]::ReadAllText($target)
+	if ($landed -ne 'package swapped in') {
+		throw "the rewrite left '$landed' in $target rather than the bytes it was given."
 	}
 }
 

@@ -24,7 +24,11 @@ PINNED_MERGE :: Merge_Params {
 a_short_gap_does_not_break_a_paragraph :: proc(t: ^testing.T) {
 	shape := []Shaped_Cue {
 		{duration_ms = 3_480, text = " This is a recording made to exercise the merger."},
-		{gap_ms = 400, duration_ms = 4_060, text = " The engine emits one fragment of speech at a time,"},
+		{
+			gap_ms = 400,
+			duration_ms = 4_060,
+			text = " The engine emits one fragment of speech at a time,",
+		},
 		{gap_ms = 120, duration_ms = 4_620, text = " and the merger puts them back together."},
 	}
 	cues := shaped_cues(shape, context.allocator)
@@ -55,7 +59,11 @@ a_short_gap_does_not_break_a_paragraph :: proc(t: ^testing.T) {
 a_long_gap_after_a_sentence_breaks_a_paragraph :: proc(t: ^testing.T) {
 	shape := []Shaped_Cue {
 		{duration_ms = 3_480, text = " That is the first thing I wanted to say."},
-		{gap_ms = 2_400, duration_ms = 4_060, text = " The second one needs a paragraph of its own."},
+		{
+			gap_ms = 2_400,
+			duration_ms = 4_060,
+			text = " The second one needs a paragraph of its own.",
+		},
 	}
 	cues := shaped_cues(shape, context.allocator)
 	defer delete(cues, context.allocator)
@@ -84,7 +92,11 @@ a_long_gap_after_a_sentence_breaks_a_paragraph :: proc(t: ^testing.T) {
 the_same_gap_in_the_middle_of_a_sentence_does_not :: proc(t: ^testing.T) {
 	shape := []Shaped_Cue {
 		{duration_ms = 3_480, text = " That is the first thing I wanted to say,"},
-		{gap_ms = 2_400, duration_ms = 4_060, text = " and the second follows straight on from it."},
+		{
+			gap_ms = 2_400,
+			duration_ms = 4_060,
+			text = " and the second follows straight on from it.",
+		},
 	}
 	cues := shaped_cues(shape, context.allocator)
 	defer delete(cues, context.allocator)
@@ -109,7 +121,11 @@ the_same_gap_in_the_middle_of_a_sentence_does_not :: proc(t: ^testing.T) {
 a_gap_past_the_hard_threshold_breaks_a_paragraph_mid_sentence :: proc(t: ^testing.T) {
 	shape := []Shaped_Cue {
 		{duration_ms = 3_480, text = " That is the first thing I wanted to say,"},
-		{gap_ms = 5_000, duration_ms = 4_060, text = " and this is what came after a very long pause."},
+		{
+			gap_ms = 5_000,
+			duration_ms = 4_060,
+			text = " and this is what came after a very long pause.",
+		},
 	}
 	cues := shaped_cues(shape, context.allocator)
 	defer delete(cues, context.allocator)
@@ -207,7 +223,11 @@ cue_speech :: proc(cues: []Cue, allocator: mem.Allocator) -> string {
 // case with a different expectation.
 @(test)
 a_paragraph_never_exceeds_the_character_cap :: proc(t: ^testing.T) {
-	tight := Merge_Params{max_gap_ms = 1_000, hard_gap_ms = 3_000, max_para_chars = 120}
+	tight := Merge_Params {
+		max_gap_ms     = 1_000,
+		hard_gap_ms    = 3_000,
+		max_para_chars = 120,
+	}
 	shape := []Shaped_Cue {
 		{duration_ms = 4_000, text = " and we went on talking about it for a while,"},
 		{duration_ms = 4_000, text = " with nobody stopping to finish a sentence anywhere,"},
@@ -224,7 +244,13 @@ a_paragraph_never_exceeds_the_character_cap :: proc(t: ^testing.T) {
 	testing.expect(t, len(paragraphs) > 1, "the cap broke nothing on speech four times its length")
 	for paragraph, i in paragraphs {
 		held := strings.rune_count(paragraph.text)
-		testing.expectf(t, held <= tight.max_para_chars, "paragraph %d holds %d characters", i + 1, held)
+		testing.expectf(
+			t,
+			held <= tight.max_para_chars,
+			"paragraph %d holds %d characters",
+			i + 1,
+			held,
+		)
 		testing.expectf(t, held > 0, "paragraph %d holds nothing at all", i + 1)
 	}
 
@@ -240,11 +266,20 @@ a_paragraph_never_exceeds_the_character_cap :: proc(t: ^testing.T) {
 // it still has to arrive, in order, with nothing invented between them.
 @(test)
 a_cue_longer_than_the_cap_is_carved_rather_than_looping :: proc(t: ^testing.T) {
-	tight := Merge_Params{max_gap_ms = 1_000, hard_gap_ms = 3_000, max_para_chars = 10}
+	tight := Merge_Params {
+		max_gap_ms     = 1_000,
+		hard_gap_ms    = 3_000,
+		max_para_chars = 10,
+	}
 	// Derived rather than written twice: the same 58 characters spelled out in
 	// two literals is two things to keep in step, and the case that puts them
 	// back together would pass a drift between them straight through.
-	shape := []Shaped_Cue{{duration_ms = 4_000, text = " Llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch"}}
+	shape := []Shaped_Cue {
+		{
+			duration_ms = 4_000,
+			text = " Llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch",
+		},
+	}
 	word := strings.trim_space(shape[0].text)
 	cues := shaped_cues(shape, context.allocator)
 	defer delete(cues, context.allocator)
@@ -258,7 +293,13 @@ a_cue_longer_than_the_cap_is_carved_rather_than_looping :: proc(t: ^testing.T) {
 	}
 	for paragraph, i in paragraphs {
 		held := strings.rune_count(paragraph.text)
-		testing.expectf(t, held <= tight.max_para_chars, "piece %d holds %d characters", i + 1, held)
+		testing.expectf(
+			t,
+			held <= tight.max_para_chars,
+			"piece %d holds %d characters",
+			i + 1,
+			held,
+		)
 		testing.expectf(t, held > 0, "piece %d holds nothing at all", i + 1)
 		// Every piece carries the Cue's own offsets. Nothing in the Engine's
 		// output says where inside a Cue a carve landed, and inventing an
@@ -293,7 +334,11 @@ a_cue_longer_than_the_cap_is_carved_rather_than_looping :: proc(t: ^testing.T) {
 // than discovers it.
 @(test)
 carved_paragraphs_all_claim_their_cue_and_so_overlap_each_other :: proc(t: ^testing.T) {
-	tight := Merge_Params{max_gap_ms = 1_000, hard_gap_ms = 3_000, max_para_chars = 20}
+	tight := Merge_Params {
+		max_gap_ms     = 1_000,
+		hard_gap_ms    = 3_000,
+		max_para_chars = 20,
+	}
 	// One Cue holding a minute of Recording and one unbroken 70-character word,
 	// between two ordinary short ones.
 	long := strings.repeat("x", 70, context.allocator)
@@ -346,7 +391,11 @@ the_character_cap_counts_characters_and_not_bytes :: proc(t: ^testing.T) {
 	said := "Déjà vu, déjà vu, déjà vu"
 	// Twenty-five characters and thirty-one bytes, so a cap of twenty-five holds
 	// it whole by one measure and breaks it three times by the other.
-	tight := Merge_Params{max_gap_ms = 1_000, hard_gap_ms = 3_000, max_para_chars = 25}
+	tight := Merge_Params {
+		max_gap_ms     = 1_000,
+		hard_gap_ms    = 3_000,
+		max_para_chars = 25,
+	}
 	testing.expect_value(t, strings.rune_count(said), 25)
 	testing.expect_value(t, len(said), 31)
 
@@ -373,7 +422,11 @@ merging_no_cues_yields_no_paragraphs :: proc(t: ^testing.T) {
 	defer destroy_paragraphs(paragraphs, context.allocator)
 
 	testing.expect_value(t, len(paragraphs), 0)
-	testing.expect(t, paragraphs == nil, "an empty paragraph set came back with memory behind it to free")
+	testing.expect(
+		t,
+		paragraphs == nil,
+		"an empty paragraph set came back with memory behind it to free",
+	)
 }
 
 // The other way a Cue set can hold no prose. The Engine writes these over
@@ -397,7 +450,11 @@ merging_cues_that_say_nothing_yields_no_paragraphs :: proc(t: ^testing.T) {
 	// The same claim the no-Cues case makes, by the other route into it: this one
 	// reaches the end with an array reserved and never filled, and a reservation
 	// handed back unshrunk is a block destroy_paragraphs frees at the wrong size.
-	testing.expect(t, paragraphs == nil, "an empty paragraph set came back with memory behind it to free")
+	testing.expect(
+		t,
+		paragraphs == nil,
+		"an empty paragraph set came back with memory behind it to free",
+	)
 }
 
 // ---------------------------------------------------------------------------
@@ -469,7 +526,11 @@ a_run_of_spaces_is_kept_whole_or_is_the_break :: proc(t: ^testing.T) {
 	defer delete(cues, context.allocator)
 
 	// Room for all of it: nothing breaks, so every run is left exactly alone.
-	roomy := Merge_Params{max_gap_ms = 1_000, hard_gap_ms = 3_000, max_para_chars = 30}
+	roomy := Merge_Params {
+		max_gap_ms     = 1_000,
+		hard_gap_ms    = 3_000,
+		max_para_chars = 30,
+	}
 	whole := merge_paragraphs(cues, roomy, context.allocator)
 	defer destroy_paragraphs(whole, context.allocator)
 	if testing.expect_value(t, len(whole), 1) {
@@ -478,7 +539,11 @@ a_run_of_spaces_is_kept_whole_or_is_the_break :: proc(t: ^testing.T) {
 
 	// Room for eight characters at a time: each run the cap reaches is a break,
 	// and no run survives as a single space on either side of one.
-	tight := Merge_Params{max_gap_ms = 1_000, hard_gap_ms = 3_000, max_para_chars = 10}
+	tight := Merge_Params {
+		max_gap_ms     = 1_000,
+		hard_gap_ms    = 3_000,
+		max_para_chars = 10,
+	}
 	broken := merge_paragraphs(cues, tight, context.allocator)
 	defer destroy_paragraphs(broken, context.allocator)
 
@@ -501,7 +566,11 @@ a_run_of_spaces_is_kept_whole_or_is_the_break :: proc(t: ^testing.T) {
 // a run the cap does NOT reach.
 @(test)
 a_carve_at_a_word_boundary_leaves_no_padding_behind :: proc(t: ^testing.T) {
-	tight := Merge_Params{max_gap_ms = 1_000, hard_gap_ms = 3_000, max_para_chars = 5}
+	tight := Merge_Params {
+		max_gap_ms     = 1_000,
+		hard_gap_ms    = 3_000,
+		max_para_chars = 5,
+	}
 	shape := []Shaped_Cue{{duration_ms = 2_000, text = "  one  two   three  "}}
 	cues := shaped_cues(shape, context.allocator)
 	defer delete(cues, context.allocator)
