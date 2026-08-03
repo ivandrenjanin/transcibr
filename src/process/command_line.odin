@@ -103,11 +103,11 @@ Build_Error :: struct {
 // What a caller should DO with a refusal, which is not something it can work out
 // from the fault's name.
 //
-// Four of the five are inputs that cannot be spelled on a Windows command line
+// Six of the seven are inputs that cannot be spelled on a Windows command line
 // at all: no retry changes that. `.Too_Long` is a different kind of refusal
 // entirely -- the same job fits if it is built from shorter paths, and ADR-0002
 // puts the Engine's output under `<cache>\<job_id>` with the cache path
-// transcibr's own to choose. A caller that treated all five alike would either
+// transcibr's own to choose. A caller that treated all seven alike would either
 // retry the unfixable forever or fail a job one shorter path would have run.
 //
 // Public and answered from the table below, for the reason engine_json.odin
@@ -528,6 +528,30 @@ write_executable :: proc(b: ^strings.Builder, executable: string) {
 	strings.write_string(b, executable)
 	strings.write_byte(b, '"')
 
+	// READ THIS BEFORE RELAXING IT. It is the first of three checks that stand
+	// between a wrong argv[0] and a child, and it is the one a maintainer meets --
+	// the mutant it stops is the reader's own "correction" of the rule above:
+	// double the trailing backslash run here, the way write_argument does, and
+	// `C:\dir with space\` reaches the child as `C:\dir with space\\`, a path
+	// carrying a second backslash the filesystem does not have.
+	//
+	// MEASURED, defeating them one at a time:
+	//   1. this one -- "the executable path was not written whole"
+	//   2. "the escaping outgrew the reservation made for it", in
+	//      build_command_line, because the extra byte overruns a reservation that
+	//      allowed the path exactly its own length plus two quotes
+	//   3. "a command line with no arguments carries something anyway", the A3
+	//      negative-space check a few lines below that one
+	//   4. only then do tests fail, and the right two do:
+	//      a_trailing_backslash_in_the_executable_path_is_not_an_escape and
+	//      the_executable_path_round_trips_under_its_own_rule, both naming the
+	//      doubled path they got back from CommandLineToArgvW.
+	//
+	// Which is what A4's paired write-side and read-side assertions buy, and it is
+	// worth knowing what the first three cost: the mutant HANGS the test runner
+	// rather than crashing it, at any thread count, because two tests trip the
+	// same assertion and that is the case CLAUDE.md names. A mutation run in this
+	// package reads its answer off the [FATAL] line, not off a summary.
 	assert(
 		strings.builder_len(b^) == start + len(executable) + 2,
 		"the executable path was not written whole",

@@ -613,9 +613,9 @@ every_fault_renders_as_the_line_its_row_describes :: proc(t: ^testing.T) {
 //
 // `.Too_Long` is the one that a different plan fixes: ADR-0002 puts the Engine's
 // output under a cache path transcibr chooses, so a shorter one makes the same
-// job fit. The other four are inputs that cannot be spelled on a Windows command
+// job fit. The other six are inputs that cannot be spelled on a Windows command
 // line at all, and re-running with them changes nothing. A caller that treated
-// all five alike would either retry the unfixable forever or fail a job that one
+// all seven alike would either retry the unfixable forever or fail a job that one
 // shorter path would have run.
 //
 // Walked over the whole enumeration rather than case by case, so a fault added
@@ -823,21 +823,17 @@ the_ceiling_admits_the_longest_line_that_fits :: proc(t: ^testing.T) {
 // argument after it survives. Doubling it -- the argument rule, misapplied --
 // would put a second backslash in the path instead.
 //
-// THE MUTANT THIS CASE HOLDS, written out because the measurement it rests on is
-// the one a reader is most likely to get backwards. Make write_executable double a
-// trailing run the way write_argument does, and `C:\dir with space\` reaches the
-// child as `C:\dir with space\\` -- a path carrying a second backslash that the
-// filesystem does not have.
+// THE MUTANT THIS CASE HOLDS is the reader's own "correction" of that rule: make
+// write_executable double a trailing run the way write_argument does, and
+// `C:\dir with space\` reaches the child as `C:\dir with space\\` -- a path
+// carrying a second backslash the filesystem does not have.
 //
-// MEASURED, and worth knowing before trusting the tests alone to catch it: that
-// mutant never reaches an expectation in this file. write_executable's own length
-// assertion fires first ("the executable path was not written whole"), and a
-// maintainer who relaxes that one to match is stopped by build_command_line's second,
-// independent one ("a command line with no arguments carries something anyway").
-// Three separate checks have to be defeated before a wrong argv[0] can be
-// observed rather than crashed on -- which is what A4's paired write-side and
-// read-side assertions buy, stated here because the crash names the assertion
-// and not the reason.
+// This is one of the two tests that catch it, and it catches it LAST. THREE
+// assertions have to be defeated before a wrong argv[0] can be observed here
+// rather than crashed on, and they are named where the person about to relax the
+// first one will read them: beside write_executable's own length assertion, in
+// command_line.odin. Naming them over here as well is how the list went stale
+// inside this same pull request, two commits after it was written.
 //
 // The second half is the same rule read from the other end, and it is the half
 // that catches a reader who "corrects" the first. A path that ALREADY ends in a
