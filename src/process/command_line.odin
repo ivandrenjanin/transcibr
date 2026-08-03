@@ -4,21 +4,21 @@
 // events" -- and names one test seam over both (spec S3). The second half is
 // issue #9 and is not here yet.
 //
-// Named for the module rather than for this file, and split by file the way
-// src/transcript is: that package is 1:1 with its own spec module and divided
-// internally into cue, paragraph, render and engine_json. The alternative was a
-// package called command_line that would end up holding progress parsing, or one
-// spec module and one named seam spread over two directories. The rename cost a
-// directory and no configuration, because packages are discovered rather than
-// listed -- which is only true while the module has no consumers, so it was done
-// now rather than after #9.
-//
-// THIS FILE builds the one string Windows hands a child process as its command
-// line, from an executable path and a list of arguments.
+// Named for the module and split by file, which is a decision with a cost and a
+// deadline rather than a layout preference: see ADR-0017.
 //
 // Pure core (ADR-0009), and on that ADR's own list: no I/O, no clock, no Win32,
-// no globals. The result is UTF-8 and the caller owns it; converting to UTF-16
-// and handing it to `CreateProcessW` is the shell's job (ADR-0004).
+// no globals. Every result is UTF-8, the caller owns it, and converting to
+// UTF-16 for Win32 is the shell's job (ADR-0004).
+package process
+
+import "core:fmt"
+import "core:mem"
+import "core:strings"
+import "core:unicode/utf8"
+
+// This file builds the one string Windows hands a child process as its command
+// line, from an executable path and a list of arguments.
 //
 // Windows has no argument vector. `CreateProcessW` takes a single string, and
 // the child splits it again -- almost always with `CommandLineToArgvW`, or with
@@ -31,12 +31,6 @@
 // The rules below are not this package's reading of the documentation. They were
 // measured against `CommandLineToArgvW` itself, and the suite in
 // command_line_test.odin re-measures them on every run.
-package process
-
-import "core:fmt"
-import "core:mem"
-import "core:strings"
-import "core:unicode/utf8"
 
 // How the builder refused. `.None` is the only value that comes with a result.
 //
