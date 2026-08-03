@@ -231,23 +231,52 @@ error_message :: proc(err: Build_Error, allocator: mem.Allocator) -> string {
 	facts := fault_facts(err.fault)
 	switch facts.blames {
 	case .An_Argument:
-		return fmt.aprintf(
-			"argument %d (%q): %s",
-			err.argument,
-			err.culprit,
-			facts.says,
-			allocator = allocator,
+		return deliverable(
+			fmt.aprintf(
+				"argument %d (%q): %s",
+				err.argument,
+				err.culprit,
+				facts.says,
+				allocator = allocator,
+			),
 		)
 	case .The_Executable:
-		return fmt.aprintf("%s: %s", err.culprit, facts.says, allocator = allocator)
+		return deliverable(fmt.aprintf("%q: %s", err.culprit, facts.says, allocator = allocator))
 	case .Nothing:
-		return strings.clone(facts.says, allocator)
+		return deliverable(strings.clone(facts.says, allocator))
 	case .Unset:
 	}
 	// Unreachable: fault_facts refuses a row that blames nothing, and the switch
 	// above covers every other value. Stated rather than left as a bare fallthrough
 	// returning an empty string nobody could diagnose.
 	panic("a fault's row in FAULT names nothing to blame")
+}
+
+// One rendered refusal, checked at the one place all three branches leave
+// through. The read side (A4) of the escaping those branches do, and the reason
+// the postcondition is HERE rather than repeated three times.
+//
+// The property is that the line can actually be SHOWN, and no format string
+// guarantees it. A refusal reaches a user through a UTF-16 Win32 call
+// (ADR-0004): a raw NUL cuts the report off where it is printed, and a byte that
+// is not UTF-8 makes `utf8_to_utf16` answer nil for the whole line. Two of this
+// package's faults exist so that a refusal can NAME a culprit carrying exactly
+// those bytes, which is why the culprit is printed with %q rather than %s: %q
+// escapes both, and this is what says so rather than a reader having to notice
+// that two branches happened to use the same verb.
+//
+// The culprit is external input and this is not a check on it (A8). It is a check
+// on the rendering, which is this package's own: %q cannot produce either byte,
+// so a failure here is a bug in the branch above and never a bad path.
+@(private)
+deliverable :: proc(message: string) -> string {
+	assert(len(message) > 0, "a refusal rendered as nothing at all")
+	assert(
+		strings.index_byte(message, 0) < 0,
+		"a refusal carrying a NUL is cut short where it is printed",
+	)
+	assert(utf8.valid_string(message), "a refusal that is not valid UTF-8 cannot be shown at all")
+	return message
 }
 
 // Builds a report, checking at the one place they are made that every report can

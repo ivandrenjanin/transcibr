@@ -450,25 +450,57 @@ a_refused_argument_is_reported_by_position :: proc(t: ^testing.T) {
 	testing.expect_value(t, executable_err.culprit, `C:\a"b\ffmpeg.exe`)
 }
 
-// Every refusal renders as one line the caller can print, which is the whole
+// The sentence both NUL faults carry, spelled out on this side so the two
+// expectations below are EXACT lines. The source keeps its own copy: a test that
+// read FAULT would agree with the rendering by construction and could never
+// disagree with it.
+@(private)
+NUL_SAYS :: "contains a NUL, which ends the command line where Windows reads it"
+
+// Every refusal renders as ONE line the caller can print, which is the whole
 // reason the fault carries what it does. The alternative is every consumer
 // hand-rolling a switch over the enumeration, which is what engine_json.odin
 // argues against at length -- and this package would be the second copy of it.
+//
+// EXACT lines, one per branch of error_message, and NOT a substring search --
+// because a substring search is what let two branches of a 28-line procedure
+// drift apart unnoticed. The argument branch printed its culprit with %q and the
+// executable branch with %s, and `contains(culprit)` is satisfied by both.
+//
+// MEASURED, what %s cost on the two faults this package added so that a refusal
+// could name its cause: `.Nul_In_Executable` rendered the culprit's raw NUL into
+// the report, so MessageBoxW, SetWindowTextW, a UTF-16 log or any C-string
+// consumer shows `C:` and stops -- the one message whose entire job is naming the
+// path that carries a NUL. `.Invalid_Utf8_In_Executable` rendered bytes that are
+// not valid UTF-8, so `utf8_to_utf16` answers nil for the report about a path it
+// answers nil for. %q escapes both into printable text.
+//
+// So the expectations below no longer see that mutant, and it is worth knowing
+// before trusting them to catch it: `deliverable`'s postcondition now fires
+// first, and the first case here is the one that trips it. Measured, under
+// -define:ODIN_TEST_THREADS=1 -- which is how a mutant is run in this package at
+// all, since the runner hangs when two tests assert at once.
 @(test)
 a_refusal_renders_as_one_line_naming_its_input :: proc(t: ^testing.T) {
-	_, quote_err := build_command_line(`C:\a"b\ffmpeg.exe`, {}, context.allocator)
-	quoted := error_message(quote_err, context.allocator)
-	defer delete(quoted, context.allocator)
-	testing.expect(
-		t,
-		strings.contains(quoted, `C:\a"b\ffmpeg.exe`),
-		"a refusal that does not say which path to go and fix",
-	)
+	// The executable branch, on the path an_embedded_nul_is_refused already uses.
+	_, nul_err := build_command_line("C:\\a\x00b\\ffmpeg.exe", {"-i"}, context.allocator)
+	in_executable := error_message(nul_err, context.allocator)
+	defer delete(in_executable, context.allocator)
+	testing.expect_value(t, in_executable, `"C:\\a\x00b\\ffmpeg.exe": ` + NUL_SAYS)
 
+	// The argument branch, which carries the ordinal as well.
 	_, argument_err := build_command_line(EXE, {"-i", "a\x00b.mkv"}, context.allocator)
 	named := error_message(argument_err, context.allocator)
 	defer delete(named, context.allocator)
-	testing.expect(t, strings.contains(named, "argument 2"), "the report does not say which")
+	testing.expect_value(t, named, `argument 2 ("a\x00b.mkv"): ` + NUL_SAYS)
+
+	// The branch that names nothing, and the only one that CLONES rather than
+	// formatting -- so it is also the one that checks the caller is handed memory
+	// it can hand back (ODIN_TEST_FAIL_ON_BAD_MEMORY).
+	_, empty_err := build_command_line("", {"-i"}, context.allocator)
+	nothing := error_message(empty_err, context.allocator)
+	defer delete(nothing, context.allocator)
+	testing.expect_value(t, nothing, "there is no executable to run")
 }
 
 // Every fault has a row, and the two kinds of refusal are told apart.
