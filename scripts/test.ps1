@@ -29,6 +29,9 @@ param(
 	# everywhere but scripts\selftest.ps1: it plants packages built to hang, and
 	# cannot wait ten minutes to find out that they did. Resolved after the
 	# dot-source below, because a param default is bound before it runs.
+	#
+	# The sweep as a whole is bounded separately, by $OdinSweepTimeoutSeconds:
+	# this number times however many packages exist is not a ceiling anyone chose.
 	[ValidateRange(0, 86400)]
 	[int] $TimeoutSeconds = 0
 )
@@ -68,6 +71,13 @@ if ($focused) {
 # chosen space-free and swept of what earlier runs left -- see Get-OdinTestRoot.
 $testRoot = Get-OdinTestRoot
 
+# The ceiling on the sweep as a whole and not merely on each package in it --
+# see $OdinSweepTimeoutSeconds for why the product of the two was not one.
+# Never below the per-package ceiling, so a caller who raises -TimeoutSeconds
+# past it is not silently capped at it instead.
+$sweepSeconds = [math]::Max($TimeoutSeconds, $OdinSweepTimeoutSeconds)
+$sweepEnd = (Get-Date).AddSeconds($sweepSeconds)
+
 $failures = @()
 $totalTests = 0
 $position = 0
@@ -76,6 +86,18 @@ foreach ($package in $packages) {
 	Write-Host ''
 	Write-Host "=== $($package.Name) ===" -ForegroundColor Cyan
 	$position += 1
+
+	# What is left of the sweep's own budget, which is what this package gets if
+	# that is less than its own ceiling. A package left with none of it is not
+	# started: a run nobody waits for cannot be reported, and naming the package
+	# that would have gone next is the only thing left pointing anywhere.
+	$remaining = [int][math]::Floor(($sweepEnd - (Get-Date)).TotalSeconds)
+	if ($remaining -lt 1) {
+		$failures += "$($package.Name): the sweep's $sweepSeconds-second budget ran out before this package ran"
+		Write-Host "-> FAILED (the sweep's $sweepSeconds-second budget ran out)" -ForegroundColor Red
+		continue
+	}
+	$budget = [math]::Min($TimeoutSeconds, $remaining)
 
 	# The stem every artefact of this package's run is named from. Two
 	# properties, neither optional:
@@ -114,7 +136,7 @@ foreach ($package in $packages) {
 	# hangs outright when two or more tests assert concurrently -- see
 	# $OdinCommandTimeoutSeconds. Nothing is redirected, so the runner's output
 	# still reaches the console as it happens.
-	$run = Invoke-NativeCommand -Command $odin -Arguments $arguments -TimeoutSeconds $TimeoutSeconds
+	$run = Invoke-NativeCommand -Command $odin -Arguments $arguments -TimeoutSeconds $budget
 	$odinExit = $run.ExitCode
 
 	# The runner's machine-readable report, not its console prose. It writes no
@@ -140,8 +162,8 @@ foreach ($package in $packages) {
 	# kill rather than to the tests. Named against the package, since that is
 	# the only thing left pointing at what to go and look at.
 	if ($run.TimedOut) {
-		$failures += "$($package.Name): odin test did not finish within $TimeoutSeconds seconds and was killed"
-		Write-Host "-> FAILED (did not finish within $TimeoutSeconds seconds; killed)" -ForegroundColor Red
+		$failures += "$($package.Name): odin test did not finish within $budget seconds and was killed"
+		Write-Host "-> FAILED (did not finish within $budget seconds; killed)" -ForegroundColor Red
 	}
 	elseif ($odinExit -ne 0) {
 		$failures += "$($package.Name): odin exited $odinExit"

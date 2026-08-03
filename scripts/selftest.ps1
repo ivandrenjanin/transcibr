@@ -47,19 +47,28 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 24
+$ExpectedCaseCount = 25
 
 # What the two cases that plant a package built to HANG give the sweep before
-# they expect it to give up, and how long this suite then waits for the sweep.
+# they expect it to give up, and how long this suite then waits for any case.
 #
 # Far below $OdinCommandTimeoutSeconds, which is sized for a cold CI runner
-# compiling from an empty cache: these fixtures are one file of five lines, and
-# a suite that waited ten minutes to learn that a deliberate hang hung would not
-# be run. The suite's own bound is the wider of the two on purpose -- it is the
-# backstop for the sweep failing to have a ceiling at all, so it must outlast
-# the ceiling it is checking.
-$FixtureTimeoutSeconds = 45
-$CaseTimeoutSeconds = 240
+# compiling from an empty cache: these fixtures are one file of five lines, whose
+# slowest legitimate finish observed here is under ten seconds, and a suite that
+# waited ten minutes to learn that a deliberate hang hung would not be run.
+#
+# $CaseTimeoutSeconds is EVERY case's bound and not just those two -- it is the
+# default on the two procedures below that wait, so there is one number and not a
+# named one beside an unnamed one that happened to be larger. It is the wider of
+# the two on purpose: it is the backstop for the sweep failing to have a ceiling
+# at all, so it must outlast the ceiling it is checking, which is what the guard
+# below states.
+$FixtureTimeoutSeconds = 20
+$CaseTimeoutSeconds = 300
+
+if ($CaseTimeoutSeconds -le $FixtureTimeoutSeconds) {
+	throw "a case bound of $CaseTimeoutSeconds does not outlast the $FixtureTimeoutSeconds it hands the sweep, so every hang case would be killed by this suite instead of by the script it is checking."
+}
 
 # A skip is signalled by throwing THIS OBJECT and nothing else, matched on
 # reference identity of an instance private to this file.
@@ -107,9 +116,8 @@ function Add-FixturePackage {
 
 	# THREE asserting tests, not one. A single assertion fails cleanly every
 	# time; it is two or more firing CONCURRENTLY that either crash the runner
-	# with no summary or hang it forever (issue #22), because the Windows signal
-	# handler records into one global slot and the main loop must TerminateThread
-	# the faulting thread before the OS kills the process.
+	# with no summary or hang it forever (issue #22). The mechanism is written out
+	# once, in CLAUDE.md's Odin notes.
 	$asserting = ''
 	foreach ($ordinal in @(1, 2, 3)) {
 		$asserting += "@(test)`n${Name}_asserts_$ordinal :: proc(t: ^testing.T) {`n`ttesting.expect(t, true)`n`tassert(false, `"deliberate assertion`")`n}`n`n"
@@ -140,6 +148,30 @@ function Add-FixtureBinary {
 	New-Item -ItemType Directory -Path $dir -Force | Out-Null
 	[System.IO.File]::WriteAllText((Join-Path $dir 'main.odin'), "package main`n`n$Body", $Utf8NoBom)
 	return $dir
+}
+
+# A built executable that prints the argv it received, one bracketed argument per
+# line. Ground truth for the quoter and for nothing else, which is why it is not
+# built through build.ps1: that command smoke-tests what it builds against the
+# version banner, and this program has no version to report.
+function Build-FixtureArgvDumper {
+	param([Parameter(Mandatory)] [string] $RepoRoot)
+
+	$dir = Join-Path (Join-Path $RepoRoot 'src') 'argv'
+	New-Item -ItemType Directory -Path $dir -Force | Out-Null
+	$source = "package main`n`nimport `"core:fmt`"`nimport `"core:os`"`n`nmain :: proc() {`n`tfor argument in os.args[1:] {`n`t`tfmt.printfln(`"[%s]`", argument)`n`t}`n}`n"
+	[System.IO.File]::WriteAllText((Join-Path $dir 'argv.odin'), $source, $Utf8NoBom)
+
+	$exe = Join-Path $RepoRoot 'argv.exe'
+	$built = Invoke-NativeCommand -Command (Resolve-OdinCompiler) -TimeoutSeconds $FixtureTimeoutSeconds `
+		-Arguments (@('build', $dir, "-out:$exe") + $OdinVetFlags)
+	if ($built.TimedOut) {
+		throw "building the argv dumper did not finish within $FixtureTimeoutSeconds seconds."
+	}
+	if ($built.ExitCode -ne 0) {
+		throw "building the argv dumper exited $($built.ExitCode)."
+	}
+	return $exe
 }
 
 # A binary that prints one line and exits zero, the shape build.ps1's smoke
@@ -215,7 +247,9 @@ function Start-FixtureScript {
 
 	# Touching .Handle makes the Process object cache the native handle. Without
 	# -Wait it does not, and .ExitCode then reads back empty once the child is
-	# gone -- which the concurrency case would report as a collision.
+	# gone -- which the concurrency case would report as a collision. It has to
+	# happen HERE, at the start site, the same way Start-NativeProcess does it:
+	# measured, asking for it after the child has exited does not work.
 	$null = $process.Handle
 	return [pscustomobject]@{ Process = $process; Out = $outFile; Err = $errFile }
 }
@@ -227,19 +261,18 @@ function Start-FixtureScript {
 # report anything at all. The bound is the suite's own backstop and not the
 # thing under test -- $TimedOut is a FAILURE wherever Assert-Result reads it, so
 # a case that hits it says the script under test has no ceiling of its own.
+#
+# The wait, the tree kill and the re-wait are Wait-ProcessTree in common.ps1,
+# which this file dot-sources: the script under test spawns odin.exe, which
+# spawns the test binary, and it is the innermost one that hangs -- the same
+# thing common.ps1 says about the same three processes.
 function Wait-FixtureScript {
 	param(
 		[Parameter(Mandatory)] $Run,
-		[ValidateRange(1, 86400)] [int] $TimeoutSeconds = 300
+		[ValidateRange(1, 86400)] [int] $TimeoutSeconds = $script:CaseTimeoutSeconds
 	)
 
-	$finished = $Run.Process.WaitForExit($TimeoutSeconds * 1000)
-	if (-not $finished) {
-		# The tree: the script under test spawns odin.exe, which spawns the test
-		# binary, and it is the innermost one that hangs.
-		Stop-ProcessTree -Id $Run.Process.Id
-		$Run.Process.WaitForExit(30000) | Out-Null
-	}
+	$waited = Wait-ProcessTree -Process $Run.Process -TimeoutSeconds $TimeoutSeconds
 
 	$text = ''
 	foreach ($file in @($Run.Out, $Run.Err)) {
@@ -248,11 +281,12 @@ function Wait-FixtureScript {
 			Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
 		}
 	}
-	$code = -1
-	if ($Run.Process.HasExited) {
-		$code = $Run.Process.ExitCode
+	return [pscustomobject]@{
+		ExitCode = $waited.ExitCode
+		Output   = $text
+		TimedOut = $waited.TimedOut
+		Waited   = $TimeoutSeconds
 	}
-	return [pscustomobject]@{ ExitCode = $code; Output = $text; TimedOut = (-not $finished); Waited = $TimeoutSeconds }
 }
 
 # The shape every case but one wants: start it, wait for it, read it.
@@ -261,7 +295,7 @@ function Invoke-FixtureScript {
 		[Parameter(Mandatory)] [string] $RepoRoot,
 		[Parameter(Mandatory)] [string] $Script,
 		[string[]] $ScriptArguments = @(),
-		[ValidateRange(1, 86400)] [int] $TimeoutSeconds = 300,
+		[ValidateRange(1, 86400)] [int] $TimeoutSeconds = $script:CaseTimeoutSeconds,
 		[switch] $MergeStreams
 	)
 
@@ -395,6 +429,48 @@ Test-Case 'a package directory containing a space still runs its tests' {
 	Assert-Result -Result $result -Matching 'All 1 tests? passed'
 }
 
+# Both scripts hand user-controlled strings to a native command line, and Windows
+# has no array form of one: CreateProcessW takes a single string, so every
+# argument is escaped by ConvertTo-NativeArgument and un-escaped by
+# CommandLineToArgvW inside the child. The two space-in-a-path cases above check
+# that indirectly, through whether the sweep works at all. This checks it
+# directly, against the only ground truth there is -- a program printing the argv
+# it actually received.
+Test-Case 'every argument survives the trip through a native command line' {
+	$repo = New-FixtureRepo 'argv-round-trip'
+	$dumper = Build-FixtureArgvDumper -RepoRoot $repo
+
+	# The empty string is first because it is the one PowerShell's own native
+	# argument passing drops outright, and a dropped argument shifts every
+	# argument after it by one.
+	$sent = @(
+		''
+		'plain'
+		'two words'
+		'C:\path with space\'
+		'a"quoted"b'
+		'trailing\\'
+		'-define:NAME=a b"c'
+	)
+	$read = Read-NativeOutput -Command $dumper -Arguments $sent -TimeoutSeconds $FixtureTimeoutSeconds
+	if ($read.TimedOut) {
+		throw "the argv dumper did not finish within $FixtureTimeoutSeconds seconds."
+	}
+	if ($read.ExitCode -ne 0) {
+		throw "the argv dumper exited $($read.ExitCode).`n$($read.Output)"
+	}
+
+	$received = @($read.Output -split "`r?`n")
+	if ($received.Count -ne $sent.Count) {
+		throw "sent $($sent.Count) arguments, the child received $($received.Count).`n$($read.Output)"
+	}
+	for ($i = 0; $i -lt $sent.Count; $i++) {
+		if ($received[$i] -ne "[$($sent[$i])]") {
+			throw "argument $i arrived as $($received[$i]), sent [$($sent[$i])]."
+		}
+	}
+}
+
 Test-Case 'two sweeps at once in one checkout do not collide' {
 	$repo = New-FixtureRepo 'concurrent-sweeps'
 	Add-FixturePackage -RepoRoot $repo -Name 'alpha' -Test 'passing' | Out-Null
@@ -500,9 +576,7 @@ Test-Case 'a test that fails an expectation fails the sweep' {
 }
 
 # The case above's missing half, and the reason issue #22 exists. Three tests
-# assert CONCURRENTLY, which is the shape that breaks the runner: one assertion
-# fails cleanly every time, two or more either crash the process with no summary
-# and no JSON report, or hang forever.
+# assert CONCURRENTLY, which is the shape that breaks the runner.
 #
 # What is pinned is the outcome and not the mechanism, deliberately. Whichever
 # of the three the runner does on the day -- hang, crash, or the rare clean exit
@@ -512,7 +586,7 @@ Test-Case 'tests that assert concurrently fail the sweep in bounded time' {
 	$repo = New-FixtureRepo 'asserting-tests'
 	Add-FixturePackage -RepoRoot $repo -Name 'tripwire' -Test 'asserting' | Out-Null
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1' `
-		-ScriptArguments @('-TimeoutSeconds', "$FixtureTimeoutSeconds") -TimeoutSeconds $CaseTimeoutSeconds
+		-ScriptArguments @('-TimeoutSeconds', "$FixtureTimeoutSeconds")
 	Assert-Result -Result $result -Fails -Matching 'TEST COMMAND FAILED'
 }
 
@@ -528,7 +602,7 @@ Test-Case 'a test that never returns is killed and reported against its package'
 	$repo = New-FixtureRepo 'hanging-test'
 	Add-FixturePackage -RepoRoot $repo -Name 'wedged' -Test 'hanging' | Out-Null
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1' `
-		-ScriptArguments @('-TimeoutSeconds', "$FixtureTimeoutSeconds") -TimeoutSeconds $CaseTimeoutSeconds
+		-ScriptArguments @('-TimeoutSeconds', "$FixtureTimeoutSeconds")
 	Assert-Result -Result $result -Fails -Matching 'wedged'
 	Assert-Result -Result $result -Fails -Matching "did not finish within $FixtureTimeoutSeconds"
 }

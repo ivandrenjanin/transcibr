@@ -1,9 +1,14 @@
-# Shared build configuration, dot-sourced by build.ps1, test.ps1, selftest.ps1
-# and the workflow in .github/workflows/ci.yml.
+# Everything build.ps1, test.ps1, selftest.ps1 and .github/workflows/ci.yml
+# share, dot-sourced by all four.
 #
-# The vet set, the compiler pin, the list of binaries and the list of packages
-# expected to hold no tests all live here once. Held separately, the commands
-# drift, and code that compiles under one starts failing under the other.
+# Two halves, and they are here for one reason: all three commands need them and
+# none of them may answer differently. The DECLARATIONS -- the vet set, the
+# compiler pin, the list of binaries, the list of packages expected to hold no
+# tests, the ceilings -- live here once, because held separately they drift and
+# code that compiles under one command starts failing under the other. The
+# PROCESS PLUMBING below them knows nothing about Odin: how to escape an argument
+# for a Windows command line, how to start a child and read what it printed, and
+# how to stop waiting for one that is never coming back.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -30,29 +35,44 @@ $OdinVetFlags = @(
 # Packages import each other as `transcibr:<package>`.
 $OdinCollection = "-collection:transcibr=$SrcRoot"
 
-# The wall-clock ceiling on one `odin` invocation, in seconds.
+# The wall-clock ceiling on ONE child process this repository starts, in seconds.
 #
 # Nothing in the toolchain has one of its own. `odin test` builds a test
 # executable and then RUNS it, and that runner hangs outright when two or more
-# tests assert concurrently: the Windows signal handler records into a single
-# global slot and returns EXCEPTION_CONTINUE_SEARCH, so the faulting thread
-# races a main loop that must TerminateThread it, and a second concurrent
-# assertion overwrites the slot while TerminateThread abandons the locks of a
-# thread killed mid-log. One asserting test fails cleanly; two hang or crash,
-# and -define:ODIN_TEST_THREADS=1 makes the hang DETERMINISTIC rather than
-# mitigating it. See the cases in scripts\selftest.ps1 that pin this.
-#
-# Assertions are the failure mode this repository's whole design rests on
-# (CLAUDE.md section 1), so a sweep that waits forever for one is a developer's
-# terminal that never comes back and a CI job that burns the platform's
-# six-hour default before saying anything.
+# tests assert concurrently -- the mechanism is written out once, in CLAUDE.md's
+# Odin notes, and the cases that pin it are in scripts\selftest.ps1. Assertions
+# are the failure mode this repository's whole design rests on (CLAUDE.md section
+# 1), so a sweep that waits forever for one is a developer's terminal that never
+# comes back and a CI job that burns the platform's six-hour default before
+# saying anything.
 #
 # Ten minutes, not one: this repository's whole sweep takes seconds, but a cold
 # CI runner compiling from an empty cache is exactly the run that must not be
-# killed for being slow. The ceiling exists to bound a HANG, not to police
-# speed. scripts\selftest.ps1 passes its own, far shorter, because it plants
-# packages built to hang and cannot wait ten minutes to find out that they did.
+# killed for being slow. The ceiling exists to bound a HANG, not to police speed.
+# build.ps1's smoke test runs under it as well: a binary that should answer in
+# milliseconds needs no knob of its own, and a knob nobody would ever tune is a
+# knob that goes stale. scripts\selftest.ps1 passes its own, far shorter, because
+# it plants packages built to hang and cannot wait ten minutes to find out that
+# they did.
 $OdinCommandTimeoutSeconds = 600
+
+# The wall-clock ceiling on a WHOLE test sweep, in seconds, whatever it finds
+# under src\.
+#
+# The ceiling above bounds one package. Without this one the sweep's worst case
+# is that number times however many packages exist, and nothing states the
+# relationship: at the three packages here it is already the CI job's entire
+# 30-minute budget (.github/workflows/ci.yml), and a fourth crosses it. Past that
+# line a sweep where several packages hang is reported by GitHub's job timeout,
+# which names nothing and produces no output, rather than by the sweep naming the
+# package that wedged. Fifteen minutes keeps the toolchain download and both
+# builds inside the job's budget alongside it.
+$OdinSweepTimeoutSeconds = 900
+
+# How long a killed process tree is given to actually die, in seconds, before its
+# exit code is written off as unreadable. Best effort by nature: taskkill has
+# already been asked, and what is being waited for is the OS getting round to it.
+$ProcessKillGraceSeconds = 30
 
 # The compiler this repository is pinned to, in its two spellings: the release
 # tag CI downloads, and the string that release's `odin version` prints. They
@@ -189,67 +209,113 @@ function ConvertTo-NativeArgument {
 	return $quoted.ToString()
 }
 
-# Run a native command under a wall-clock ceiling, letting its output through to
-# the console untouched. Returns the exit code and whether the ceiling was hit.
+# Start a native command, escaping every argument on the way and caching the
+# handle on the way out. The one start site, so neither of those can be
+# remembered at one call site and forgotten at the next.
 #
 # STARTED rather than invoked with `&`, because a synchronous native call cannot
 # be interrupted and nothing in the toolchain has a ceiling of its own -- see
-# $OdinCommandTimeoutSeconds for what hangs and why it matters.
+# $OdinCommandTimeoutSeconds for what hangs and why it matters. It also settles
+# the $ErrorActionPreference trap the `&` form carried: the test runner writes
+# its entire log to stderr, and a caller that merged the streams --
+# `.\scripts\test.ps1 2>&1`, or `*>` to a file -- had PowerShell wrap every one
+# of those lines in an ErrorRecord, turning the first INFO line of a good run
+# into a terminating error under 'Stop'. A started child's streams never enter
+# the PowerShell pipeline at all.
 #
-# The child inherits this process's streams, so the runner's log still reaches
-# the console as it happens. It never enters the PowerShell pipeline, which is
-# what makes returning a value safe here where the `&` form's return would have
-# been indistinguishable from the command's own output. That also settles the
-# $ErrorActionPreference trap the `&` form carried: the test runner writes its
-# entire log to stderr, and a caller that merged the streams -- `.\scripts\test.ps1
-# 2>&1`, or `*>` to a file -- had PowerShell wrap every one of those lines in an
-# ErrorRecord, turning the first INFO line of a good run into a terminating
-# error under 'Stop'. PowerShell no longer sees those lines at all.
-function Invoke-NativeCommand {
+# $OutFile captures standard output where a caller has to read it. Standard error
+# is never redirected: it is the stream the compiler and the test runner report
+# through, and a developer watching a build must see it as it happens.
+function Start-NativeProcess {
 	param(
 		[Parameter(Mandatory)] [string] $Command,
-		[Parameter(Mandatory)] [AllowEmptyCollection()] [string[]] $Arguments,
-		[Parameter(Mandatory)] [ValidateRange(1, 86400)] [int] $TimeoutSeconds
+		[Parameter(Mandatory)] [AllowEmptyCollection()] [AllowEmptyString()] [string[]] $Arguments,
+		[string] $OutFile = ''
 	)
 
-	$ErrorActionPreference = 'Continue'
-	if ($Arguments.Count -eq 0) {
-		$started = Start-Process -FilePath $Command -NoNewWindow -PassThru
+	$options = @{ FilePath = $Command; NoNewWindow = $true; PassThru = $true }
+	if ($Arguments.Count -gt 0) {
+		$options.ArgumentList = (@($Arguments | ForEach-Object { ConvertTo-NativeArgument -Value $_ }) -join ' ')
 	}
-	else {
-		$line = (@($Arguments | ForEach-Object { ConvertTo-NativeArgument -Value $_ }) -join ' ')
-		$started = Start-Process -FilePath $Command -ArgumentList $line -NoNewWindow -PassThru
+	if ($OutFile -ne '') {
+		$options.RedirectStandardOutput = $OutFile
 	}
+	$started = Start-Process @options
 
 	# Touching .Handle makes the Process object cache the native handle. Without
 	# it .ExitCode reads back empty once the child is gone, and a perfectly good
-	# run reports no verdict at all.
+	# run reports no verdict at all. It has to happen HERE, at the start site:
+	# measured, asking for it after the child has exited does not work.
 	$null = $started.Handle
+	return $started
+}
 
-	if ($started.WaitForExit($TimeoutSeconds * 1000)) {
-		return [pscustomobject]@{ ExitCode = $started.ExitCode; TimedOut = $false }
+# Wait for a started process under a wall-clock ceiling, killing its tree if the
+# ceiling is hit. Returns the exit code and whether it was hit; the code is -1
+# where the kill left nothing to read.
+#
+# The TREE and not the process, and the caller must have cached the handle --
+# Start-NativeProcess and scripts\selftest.ps1's Start-FixtureScript both do,
+# which is why the policy is written once here and not three times.
+function Wait-ProcessTree {
+	param(
+		[Parameter(Mandatory)] [System.Diagnostics.Process] $Process,
+		[Parameter(Mandatory)] [ValidateRange(1, 86400)] [int] $TimeoutSeconds
+	)
+
+	if ($Process.WaitForExit($TimeoutSeconds * 1000)) {
+		return [pscustomobject]@{ ExitCode = $Process.ExitCode; TimedOut = $false }
 	}
 
-	Stop-ProcessTree -Id $started.Id
+	Stop-ProcessTree -Id $Process.Id
 	$code = -1
-	if ($started.WaitForExit(30000)) {
-		$code = $started.ExitCode
+	if ($Process.WaitForExit($ProcessKillGraceSeconds * 1000)) {
+		$code = $Process.ExitCode
 	}
 	return [pscustomobject]@{ ExitCode = $code; TimedOut = $true }
 }
 
-# The same call with the output CAPTURED instead of passed through, for the two
-# places that need to read what a program printed: the version check and the
-# build's smoke test.
-function Read-NativeOutput {
+# Run a native command under a wall-clock ceiling, letting its output through to
+# the console untouched. Returns the exit code and whether the ceiling was hit.
+function Invoke-NativeCommand {
 	param(
 		[Parameter(Mandatory)] [string] $Command,
-		[Parameter(Mandatory)] [AllowEmptyCollection()] [string[]] $Arguments
+		[Parameter(Mandatory)] [AllowEmptyCollection()] [AllowEmptyString()] [string[]] $Arguments,
+		[Parameter(Mandatory)] [ValidateRange(1, 86400)] [int] $TimeoutSeconds
 	)
 
 	$ErrorActionPreference = 'Continue'
-	$text = (& $Command @Arguments | Out-String)
-	return [pscustomobject]@{ Output = $text.Trim(); ExitCode = $LASTEXITCODE }
+	$started = Start-NativeProcess -Command $Command -Arguments $Arguments
+	return Wait-ProcessTree -Process $started -TimeoutSeconds $TimeoutSeconds
+}
+
+# The same call with standard output CAPTURED instead of passed through, for the
+# two places that need to read what a program printed: the version check and the
+# build's smoke test. Under the same ceiling and through the same quoter -- the
+# smoke test runs the binary this repository has just compiled, and a `main` that
+# wedges is a build command that never comes back.
+function Read-NativeOutput {
+	param(
+		[Parameter(Mandatory)] [string] $Command,
+		[Parameter(Mandatory)] [AllowEmptyCollection()] [AllowEmptyString()] [string[]] $Arguments,
+		[Parameter(Mandatory)] [ValidateRange(1, 86400)] [int] $TimeoutSeconds
+	)
+
+	$ErrorActionPreference = 'Continue'
+	$capture = Join-Path ([System.IO.Path]::GetTempPath()) "transcibr-$PID-$([System.Guid]::NewGuid().ToString('N')).out"
+	try {
+		$started = Start-NativeProcess -Command $Command -Arguments $Arguments -OutFile $capture
+		$run = Wait-ProcessTree -Process $started -TimeoutSeconds $TimeoutSeconds
+
+		$text = ''
+		if (Test-Path -LiteralPath $capture) {
+			$text = [System.IO.File]::ReadAllText($capture)
+		}
+		return [pscustomobject]@{ Output = $text.Trim(); ExitCode = $run.ExitCode; TimedOut = $run.TimedOut }
+	}
+	finally {
+		Remove-Item -LiteralPath $capture -Force -ErrorAction SilentlyContinue
+	}
 }
 
 # The pin: refused in CI, warned about anywhere else.
@@ -267,7 +333,10 @@ function Read-NativeOutput {
 function Confirm-OdinVersion {
 	param([Parameter(Mandatory)] [string] $Odin)
 
-	$reported = Read-NativeOutput -Command $Odin -Arguments @('version')
+	$reported = Read-NativeOutput -Command $Odin -Arguments @('version') -TimeoutSeconds $OdinCommandTimeoutSeconds
+	if ($reported.TimedOut) {
+		throw "'$Odin version' did not finish within $OdinCommandTimeoutSeconds seconds and was killed."
+	}
 	if ($reported.ExitCode -ne 0) {
 		throw "'$Odin version' exited $($reported.ExitCode)."
 	}

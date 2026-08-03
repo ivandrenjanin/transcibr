@@ -73,7 +73,13 @@ foreach ($target in $OdinTargets) {
 	Write-Host "-> $out is subsystem $($target.Subsystem)" -ForegroundColor Green
 
 	if ($target.Smoke) {
-		$smoke = Read-NativeOutput -Command $out -Arguments @()
+		# Under the same ceiling as the compiler that produced it. A `main` that
+		# wedges is this command never coming back, with nothing but the CI job's
+		# own timeout behind it -- and that is not a backstop a developer has.
+		$smoke = Read-NativeOutput -Command $out -Arguments @() -TimeoutSeconds $OdinCommandTimeoutSeconds
+		if ($smoke.TimedOut) {
+			throw "$($target.Name) did not finish within $OdinCommandTimeoutSeconds seconds and was killed."
+		}
 		if ($smoke.ExitCode -ne 0) {
 			throw "$($target.Name) exited $($smoke.ExitCode), expected 0."
 		}
