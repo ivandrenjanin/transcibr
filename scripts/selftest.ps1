@@ -54,7 +54,7 @@ $script:Passes = 0
 # Keep $ExpectedCaseCount in step with the cases below; a mismatch either way
 # fails the run. Skipping is deny-by-default, same as $OdinPackagesWithoutTests
 # in common.ps1: a case may end in a skip only if it is named here.
-$ExpectedCaseCount = 20
+$ExpectedCaseCount = 21
 $CasesAllowedToSkip = @(
 	'an unreadable directory fails discovery rather than shortening it'
 	'the subsystem is read out of the PE header, not taken from the flag'
@@ -506,6 +506,38 @@ Test-Case 'a package that does not compile fails the sweep' {
 	[System.IO.File]::WriteAllText((Join-Path $orphan 'orphan.odin'), "package orphan`n`nthis is not Odin`n", $Utf8NoBom)
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
 	Assert-Result -Result $result -Fails -Matching 'orphan'
+}
+
+Test-Case 'an artefact left behind by an earlier run is reclaimed, a fresh one is not' {
+	# test.ps1 names every artefact for the run that wrote it and deletes its
+	# own on the way out, so nothing will ever name the files a KILLED run left
+	# -- or the files an older naming scheme wrote. Under build\ that is merely
+	# untidy; under the ProgramData fallback it is a machine-wide directory that
+	# only grows, and no one ever looks in it.
+	$root = Get-OdinTestRoot
+	$stale = Join-Path $root "selftest-stale-$PID.json"
+	$fresh = Join-Path $root "selftest-fresh-$PID.json"
+	try {
+		[System.IO.File]::WriteAllText($stale, '{}', $Utf8NoBom)
+		[System.IO.File]::WriteAllText($fresh, '{}', $Utf8NoBom)
+		(Get-Item -LiteralPath $stale -Force).LastWriteTime = (Get-Date).AddDays(-30)
+
+		Get-OdinTestRoot | Out-Null
+
+		if (Test-Path -LiteralPath $stale) {
+			throw "a 30-day-old artefact survived the sweep: $stale"
+		}
+		# The negative space (rule A3), and not a formality: a sweep with no age
+		# bound at all passes the check above and destroys the executable a
+		# concurrent run is at that moment trying to launch.
+		if (-not (Test-Path -LiteralPath $fresh)) {
+			throw "an artefact written moments ago was reclaimed: $fresh"
+		}
+	}
+	finally {
+		Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue
+		Remove-Item -LiteralPath $fresh -Force -ErrorAction SilentlyContinue
+	}
 }
 
 # ------------------------------------------------------- cases for build.ps1 --

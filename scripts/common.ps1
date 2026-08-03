@@ -243,6 +243,26 @@ function Get-OdinPackage {
 	return $packages
 }
 
+# Reclaim what earlier runs left behind. test.ps1 names every artefact for the
+# run that wrote it and deletes its own on the way out, so nothing will ever
+# name again the files a KILLED run left -- or the files an older naming scheme
+# wrote. Under build\ that is untidy; under the ProgramData fallback below it is
+# a machine-wide directory that only ever grows, and no one looks in it.
+#
+# A day, so nothing in flight is ever a candidate: this repository's whole sweep
+# takes seconds, and a concurrent run's artefacts are minutes old at the very
+# most. Best effort throughout -- a file another process still holds open is not
+# this run's verdict to deliver, and reclamation is not what either command is
+# being asked for.
+function Remove-StaleTestArtefact {
+	param([Parameter(Mandatory)] [string] $Root)
+
+	$cutoff = (Get-Date).AddDays(-1)
+	Get-ChildItem -LiteralPath $Root -File -Force -ErrorAction SilentlyContinue |
+		Where-Object { $_.LastWriteTime -lt $cutoff } |
+		Remove-Item -Force -ErrorAction SilentlyContinue
+}
+
 # A directory that exists and contains no space, for `odin test` to write the
 # executable it builds and the runner to write its JSON report into.
 #
@@ -266,6 +286,7 @@ function Get-OdinTestRoot {
 	$preferred = Join-Path $BuildRoot 'odin-test'
 	if ($preferred -notmatch ' ') {
 		New-Item -ItemType Directory -Path $preferred -Force | Out-Null
+		Remove-StaleTestArtefact -Root $preferred
 		return $preferred
 	}
 
@@ -289,6 +310,7 @@ function Get-OdinTestRoot {
 	catch {
 		throw "$preferred contains a space, and $chosen could not be created to hold the test executables instead: $($_.Exception.Message) $advice"
 	}
+	Remove-StaleTestArtefact -Root $chosen
 	return $chosen
 }
 
