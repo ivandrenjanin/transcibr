@@ -364,6 +364,20 @@ parses_the_ugly_cases :: proc(t: ^testing.T) {
 			expected = []Cue{{0, 3_480, " one"}, {4_380, 8_440, " two"}},
 		},
 		{
+			// The negative space of the range check (CLAUDE.md A3). 2^53 is the
+			// limit and not one short of it, in both number forms, so a check
+			// written with the wrong comparison rejects a value it should read.
+			name = "offset-at-the-limit.json",
+			json = `{"transcription": [
+				{"offsets": {"from": 0, "to": 9007199254740992},                "text": " one"},
+				{"offsets": {"from": 9007199254740992, "to": 9007199254740992.0}, "text": " two"}
+			]}`,
+			expected = []Cue {
+				{0, 9_007_199_254_740_992, " one"},
+				{9_007_199_254_740_992, 9_007_199_254_740_992, " two"},
+			},
+		},
+		{
 			// Escapes are undone exactly once. Twice mangles a Transcript;
 			// not at all leaves a literal backslash-n mid-sentence.
 			name = "escaped-text.json",
@@ -473,6 +487,37 @@ rejects_the_ugly_cases :: proc(t: ^testing.T) {
 			// so converting is guessing at a number nobody has.
 			name = "offset-out-of-range.json",
 			json = `{"transcription": [{"offsets": {"from": 0, "to": 1e300}, "text": " one"}]}`,
+			fault = .Offset_Out_Of_Range,
+			cue = 1,
+		},
+		{
+			// The same magnitude written WITHOUT a decimal point, which the
+			// tokenizer classifies as an integer instead. core:encoding/json
+			// reads it with strconv.parse_i64 and DISCARDS the error, so the
+			// overflow arrives as a plausible small number -- 2e17 or so, about
+			// six million years -- rather than as a refusal. A corrupt cache
+			// file is ADR-0002's explicit case, and this one used to parse.
+			name = "integer-offset-overflows.json",
+			json = `{"transcription": [{"offsets": {"from": 0, "to": 99999999999999999999999},
+				"text": " one"}]}`,
+			fault = .Offset_Out_Of_Range,
+			cue = 1,
+		},
+		{
+			// One past the limit, in each form. The two branches took different
+			// answers here: the float was refused and the integer was accepted
+			// exactly, so which one a Recording got depended on whether the
+			// Engine happened to write a decimal point.
+			name = "integer-offset-past-the-limit.json",
+			json = `{"transcription": [{"offsets": {"from": 0, "to": 9007199254740993}, "text": " one"}]}`,
+			fault = .Offset_Out_Of_Range,
+			cue = 1,
+		},
+		{
+			// And below it, which Negative_Offset never sees: read_millis
+			// refuses the magnitude before cue_follows is asked about the sign.
+			name = "integer-offset-below-the-limit.json",
+			json = `{"transcription": [{"offsets": {"from": -9007199254740993, "to": 0}, "text": " one"}]}`,
 			fault = .Offset_Out_Of_Range,
 			cue = 1,
 		},

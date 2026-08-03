@@ -323,10 +323,12 @@ read_cue :: proc(entry: json.Value, allocator: mem.Allocator) -> (cue: Cue, faul
 // The widest offset this parser will read, either sign: 2^53 milliseconds, the
 // largest integer an f64 still represents exactly. Past it a JSON float has
 // already lost the value it was written with, so converting is guessing.
+//
+// Untyped, so the one number serves both branches of read_millis: naming it
+// twice, once per width, is how the two branches came to disagree about where
+// the limit was.
 @(private)
 READABLE_MS :: 1 << 53
-@(private)
-READABLE_MS_LIMIT :: f64(READABLE_MS)
 
 // The range check in read_millis is the only thing keeping the conversion to
 // Millis from overflowing, and it does that job only while the limit it checks
@@ -349,6 +351,22 @@ READABLE_MS_LIMIT :: f64(READABLE_MS)
 // the flag on its own is one brace, not a belt. The tokenizer classifies on the
 // decimal point, so `4380.0` stays a Float under that flag and would start
 // reading as zero the day an Engine release writes it that way.
+//
+// THE RANGE CHECK IS ON BOTH BRANCHES, and it has to be. `core:encoding/json`
+// reads an integer token with `strconv.parse_i64` and discards the error -- but
+// the error is not even set: parse_i64 WRAPS on overflow and reports success, so
+// `99999999999999999999999` arrives as 200376420520689663, about six million
+// years, and `170141183460469231731687303715884105728` arrives as 0. There is
+// nothing to read the failure off. The magnitude is the only signal left, which
+// is why the same limit is applied to a number that arrived already parsed.
+//
+// It is not a complete guard and cannot be from here: a literal big enough to
+// wrap back INSIDE the limit -- 18446744073709556616 wraps to 5000 -- is
+// indistinguishable from a Recording that really has a Cue at 5 seconds, and
+// the token text it was written as is gone by the time this sees it. What that
+// case cannot do is escape the parser's other promises: it is still one whole,
+// in-range, ordered offset, and the wrap-to-zero end of it is exactly what
+// check_cue_set refuses.
 @(private)
 read_millis :: proc(offsets: json.Object, key: string) -> (Millis, Parse_Fault) {
 	assert(len(key) > 0, "an offset is read by name; the empty key is a caller defect")
@@ -360,12 +378,15 @@ read_millis :: proc(offsets: json.Object, key: string) -> (Millis, Parse_Fault) 
 
 	#partial switch number in value {
 	case json.Integer:
+		if number < -READABLE_MS || number > READABLE_MS {
+			return 0, .Offset_Out_Of_Range
+		}
 		return Millis(number), .None
 	case json.Float:
 		if number != math.trunc(number) {
 			return 0, .Offset_Not_Whole
 		}
-		if number < -READABLE_MS_LIMIT || number > READABLE_MS_LIMIT {
+		if number < -READABLE_MS || number > READABLE_MS {
 			return 0, .Offset_Out_Of_Range
 		}
 		converted := Millis(number)
