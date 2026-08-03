@@ -52,8 +52,9 @@ Cue :: struct {
 // asserted is the answer this procedure gives about them.
 first_disordered_cue :: proc(cues: []Cue) -> (ordinal: int) {
 	// The ordinal convention checked where it is PRODUCED; fault_at checks the
-	// same range where one is written into a Parse_Error (CLAUDE.md A4). Off by
-	// one on either side reports a fault against a Cue that is not in the set.
+	// ordinal against the fault's scope where one is written into a Parse_Error
+	// (CLAUDE.md A4). Off by one on either side reports a fault against a Cue
+	// that is not in the set.
 	defer assert(ordinal >= 0, "a cue ordinal is a position or zero, never negative")
 	defer assert(ordinal <= len(cues), "named a cue position past the end of the set")
 
@@ -73,10 +74,12 @@ first_disordered_cue :: proc(cues: []Cue) -> (ordinal: int) {
 
 // Whether a Cue set satisfies the ordering above.
 //
-// The property is enforced twice (CLAUDE.md A4): parse_cues rejects the
-// Engine's output as an operating error, per Cue, as it builds -- and then
-// asserts this on the slice it hands back. Every consumer asserts it on the way
-// in, which is why this is public rather than an internal detail of the parser.
+// The property is enforced twice by two routes (CLAUDE.md A4): read_cues
+// rejects the Engine's output as an operating error, per Cue, as it builds and
+// then asserts the answer on what it built; check_cue_set asserts it again on
+// the way in, because the implication it draws is sound only on an ordered set.
+// Every consumer asserts it on the way in too, which is why this is public
+// rather than an internal detail of the parser.
 cues_are_ordered :: proc(cues: []Cue) -> bool {
 	ordinal := first_disordered_cue(cues)
 	// The negative space of the same fact (CLAUDE.md A3), checked at the one

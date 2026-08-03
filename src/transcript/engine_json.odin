@@ -9,9 +9,11 @@ import "core:strings"
 // What was wrong with a piece of Engine output.
 //
 // Every one of these is an OPERATING error (CLAUDE.md A8): the Engine is
-// outside this program, and nothing outside may crash it. ADR-0002 settles what
-// happens next -- output that will not parse is treated as *absent*, quarantined
-// and re-run, never reported as a permanent failure.
+// outside this program, and nothing outside may crash it. What happens next is
+// not the same for all of them -- ADR-0002 quarantines and re-runs output that
+// will not parse, but calls "exit 0 with no or empty output" a hard
+// per-Recording failure -- so it is answered by disposition_of rather than left
+// for a caller to infer from the name.
 Parse_Fault :: enum u8 {
 	None = 0,
 	Empty_Input,
@@ -41,15 +43,168 @@ Parse_Error :: struct {
 	fault:     Parse_Fault,
 	json_name: string,
 	// The 1-based position of the offending Cue, or 0 when the fault is about
-	// the input as a whole.
+	// the input as a whole. Which of the two it is follows from the fault and
+	// is checked in fault_at -- never guessed at from the number.
 	cue:       int,
+}
+
+// What ADR-0002 does with the input a fault was reported against.
+//
+// Not something a caller can work out from the fault: "a validated JSON that
+// fails to parse is treated as ABSENT -- quarantine it and re-run the full
+// pipeline, rather than reporting a permanent failure", while "exit 0 but no or
+// empty output is a hard per-Recording failure". Two of the sixteen fall on the
+// second side and nothing in their names says so.
+//
+// Public and answered from the table below, because the alternative is the
+// shell reconstructing this from a sixteen-way switch in another package that
+// nothing keeps in step with the enumeration.
+Disposition :: enum u8 {
+	// The file is not what the Engine writes, which says nothing about whether
+	// the Engine can write it. Quarantine it to `.json.bad` and re-run.
+	Quarantine_And_Rerun = 0,
+	// The Engine exited having transcribed nothing, and re-running it
+	// transcribes nothing again.
+	Fail_The_Recording,
+}
+
+// Whether a fault is about the input as a whole or about one Cue in it.
+//
+// Carried by Parse_Fault rather than by Parse_Error.cue being zero or not. The
+// number was doing two jobs -- a Cue's position, and a flag for whether there
+// was one -- so the convention had to be remembered at every call site, and
+// FAULT silently held two grammars because of it: "the engine wrote nothing" is
+// a sentence about a file, and "ends before it starts" is a sentence about a
+// Cue, and only the ordinal said which was about to be printed.
+@(private)
+Fault_Scope :: enum u8 {
+	Input = 0,
+	Cue,
+}
+
+// Everything this package knows about a fault beyond its name.
+//
+// One record per fault rather than three parallel tables: they are three
+// answers to the same question and a fault added to one but not the others is
+// the drift they exist to prevent.
+@(private)
+Fault_Facts :: struct {
+	// What the fault reads as, WITHOUT the input's name or the Cue's position
+	// -- error_message supplies those, so no entry here can forget to.
+	says:        string,
+	scope:       Fault_Scope,
+	disposition: Disposition,
+}
+
+// An enumerated array rather than a switch: adding a Parse_Fault without an
+// entry here leaves an empty sentence, which the assertion in error_message
+// catches on the first report rather than shipping a diagnostic that says
+// nothing -- and takes the scope and the disposition down with it, so one
+// missing row is caught by one check.
+@(private, rodata)
+FAULT := [Parse_Fault]Fault_Facts {
+	.None = {},
+	.Empty_Input = {
+		says = "the engine wrote nothing",
+		scope = .Input,
+		disposition = .Fail_The_Recording,
+	},
+	.Malformed_Json = {
+		says = "not valid json; the file is truncated or was not written by the engine",
+		scope = .Input,
+		disposition = .Quarantine_And_Rerun,
+	},
+	.Not_An_Object = {
+		says = "valid json, but not the object the engine writes",
+		scope = .Input,
+		disposition = .Quarantine_And_Rerun,
+	},
+	.No_Transcription = {
+		says = "no `transcription` array",
+		scope = .Input,
+		disposition = .Quarantine_And_Rerun,
+	},
+	.Too_Deeply_Nested = {
+		says = "json nested far deeper than the engine writes; the file was not written by the engine",
+		scope = .Input,
+		disposition = .Quarantine_And_Rerun,
+	},
+	.No_Cues = {
+		says = "the `transcription` array is empty; the engine transcribed nothing",
+		scope = .Input,
+		disposition = .Fail_The_Recording,
+	},
+	.Cue_Not_An_Object = {
+		says = "is not an object",
+		scope = .Cue,
+		disposition = .Quarantine_And_Rerun,
+	},
+	.No_Offsets = {
+		says = "has no `offsets` object",
+		scope = .Cue,
+		disposition = .Quarantine_And_Rerun,
+	},
+	.Offset_Missing = {
+		says = "is missing one of its `from`/`to` offsets",
+		scope = .Cue,
+		disposition = .Quarantine_And_Rerun,
+	},
+	.Offset_Not_A_Number = {
+		says = "has an offset that is not a number",
+		scope = .Cue,
+		disposition = .Quarantine_And_Rerun,
+	},
+	.Offset_Not_Whole = {
+		says = "has an offset that is not a whole number of milliseconds",
+		scope = .Cue,
+		disposition = .Quarantine_And_Rerun,
+	},
+	.Offset_Out_Of_Range = {
+		says = "has an offset too large to read as milliseconds",
+		scope = .Cue,
+		disposition = .Quarantine_And_Rerun,
+	},
+	.No_Text = {says = "has no `text` string", scope = .Cue, disposition = .Quarantine_And_Rerun},
+	.Negative_Offset = {
+		says = "starts before the recording does",
+		scope = .Cue,
+		disposition = .Quarantine_And_Rerun,
+	},
+	.Cue_Ends_Before_It_Starts = {
+		says = "ends before it starts",
+		scope = .Cue,
+		disposition = .Quarantine_And_Rerun,
+	},
+	.Cues_Out_Of_Order = {
+		says = "starts before the cue in front of it",
+		scope = .Cue,
+		disposition = .Quarantine_And_Rerun,
+	},
+	.Final_Offset_Is_Zero = {
+		says = "ends at offset zero and is the last cue, over a recording that is not empty; the engine's offsets did not survive being read",
+		scope = .Cue,
+		disposition = .Quarantine_And_Rerun,
+	},
+}
+
+// What ADR-0002 does with the input this fault was reported against.
+disposition_of :: proc(fault: Parse_Fault) -> Disposition {
+	assert(fault != .None, "a parse that did not fail has nothing to dispose of")
+	// The same missing-row check error_message makes, at the other place the
+	// table is read (CLAUDE.md A4). A fault added without an entry answers
+	// "quarantine and re-run" here, which is a sentence nobody wrote.
+	assert(len(FAULT[fault].says) > 0, "a fault was added to Parse_Fault without a row in FAULT")
+	return FAULT[fault].disposition
 }
 
 // Parses the Engine's JSON into Cues.
 //
 // `json_name` is what to report an operating error against -- the path the
 // Engine wrote, as the caller spells it. `recording_duration` is what the shell
-// probed off the container (ADR-0009).
+// probed off the container (ADR-0009), or nothing where the probe could not
+// settle it -- a Maybe rather than a zero, because a Recording measured at zero
+// and a Recording nobody measured are different facts and the check that reads
+// this is the one place the difference matters.
 //
 // The allocator is explicit and never defaulted: the Cue set outlives this
 // procedure and crosses a worker boundary (ADR-0010). Free it with
@@ -57,15 +212,17 @@ Parse_Error :: struct {
 parse_cues :: proc(
 	json_name: string,
 	json_text: string,
-	recording_duration: Millis,
+	recording_duration: Maybe(Millis),
 	allocator: mem.Allocator,
 ) -> (
 	cues: []Cue,
 	err: Parse_Error,
 ) {
 	assert(len(json_name) > 0, "the input must be named; a report nobody can locate is not a report")
-	assert(recording_duration >= 0, "a negative recording duration is a probe defect, not engine output")
 	assert(allocator.procedure != nil, "the cue set outlives this procedure and needs a chosen allocator")
+	if duration, measured := recording_duration.?; measured {
+		assert(duration >= 0, "a negative recording duration is a probe defect, not engine output")
+	}
 
 	// A zero-byte file and a file the Engine opened and never wrote to are one
 	// operating error, and neither is malformed json worth a word about syntax.
@@ -80,7 +237,7 @@ parse_cues :: proc(
 	mem.dynamic_arena_init(&scratch, block_allocator = allocator, array_allocator = allocator)
 	defer mem.dynamic_arena_destroy(&scratch)
 
-	root, decode_fault := decode_engine_json(json_text, &scratch)
+	root, decode_fault := decode_engine_json(json_text, mem.dynamic_arena_allocator(&scratch))
 	if decode_fault != .None {
 		return nil, fault_at(decode_fault, json_name, 0)
 	}
@@ -102,12 +259,12 @@ parse_cues :: proc(
 		return nil, fault_at(set_fault, json_name, set_at)
 	}
 
-	// The parser's own promise, asserted where it is made; every consumer
-	// asserts the same on the way in (CLAUDE.md A4). Nothing external reaches
-	// these -- read_cues has already rejected, as an operating error, everything
-	// the Engine could have written that breaks them.
+	// The one promise about the returned set that nothing else has said yet.
+	// The ordering is NOT re-checked here: read_cues asserted it on the way out
+	// of building and check_cue_set asserted it on the way in, on this exact
+	// slice, five lines ago -- that is A4's pair, and a third scan is a third
+	// copy of one claim rather than a second route to it.
 	assert(len(built) > 0, "returned an empty cue set without reporting No_Cues")
-	assert(cues_are_ordered(built), "returned a cue set that is not ordered")
 	return built, Parse_Error{}
 }
 
@@ -127,15 +284,9 @@ parse_cues :: proc(
 // means this is not what the Engine wrote, and ADR-0002 wants that quarantined
 // rather than guessed at.
 @(private)
-decode_engine_json :: proc(
-	json_text: string,
-	scratch: ^mem.Dynamic_Arena,
-) -> (
-	json.Value,
-	Parse_Fault,
-) {
+decode_engine_json :: proc(json_text: string, scratch: mem.Allocator) -> (json.Value, Parse_Fault) {
 	assert(len(json_text) > 0, "an empty input is Empty_Input, settled before this point")
-	assert(scratch.block_allocator.procedure != nil, "the scratch arena was never initialised")
+	assert(scratch.procedure != nil, "the decoded tree has to live somewhere")
 
 	// BEFORE the decode, because this is the one thing wrong with a file that
 	// the decode cannot survive to report -- see json_nesting_is_bounded.
@@ -143,7 +294,7 @@ decode_engine_json :: proc(
 		return nil, .Too_Deeply_Nested
 	}
 
-	root, decode_err := json.parse(json_text, .JSON, true, mem.dynamic_arena_allocator(scratch))
+	root, decode_err := json.parse(json_text, .JSON, true, scratch)
 	if decode_err != nil {
 		return nil, .Malformed_Json
 	}
@@ -243,17 +394,25 @@ json_nesting_is_bounded :: proc(json_text: string) -> bool {
 // Reported and never asserted: a genuine Engine failure produces the same shape,
 // and nothing outside this program may crash it (CLAUDE.md A8).
 @(private)
-check_cue_set :: proc(cues: []Cue, recording_duration: Millis) -> (Parse_Fault, int) {
+check_cue_set :: proc(cues: []Cue, recording_duration: Maybe(Millis)) -> (Parse_Fault, int) {
 	assert(len(cues) > 0, "an empty cue set is No_Cues, settled before this point")
 	// The read side of the ordering read_cues enforced per Cue as it built
 	// (CLAUDE.md A4). The implication below is sound only on an ordered set.
-	assert(cues_are_ordered(cues), "a disordered cue set reached the set-wide checks")
-	assert(recording_duration >= 0, "a negative recording duration is a probe defect")
+	disordered := first_disordered_cue(cues)
+	fmt.assertf(disordered == 0, "cue %d broke the ordering before the set-wide checks", disordered)
 
-	// A Recording the shell could not measure arrives as zero, and a comparison
-	// against an unknown has nothing to say. Inventing a failure out of missing
-	// information is how a working Recording gets quarantined forever.
-	if recording_duration == 0 {
+	// A comparison against an unknown has nothing to say, and inventing a
+	// failure out of missing information is how a working Recording gets
+	// quarantined forever.
+	duration, measured := recording_duration.?
+	if !measured {
+		return .None, 0
+	}
+	assert(duration >= 0, "a negative recording duration is a probe defect")
+
+	// A Recording MEASURED at zero is a different statement with the same
+	// answer: a Cue set covering none of it covers all of it.
+	if duration == 0 {
 		return .None, 0
 	}
 	if cues[len(cues) - 1].end != 0 {
@@ -284,18 +443,35 @@ read_transcription :: proc(root: json.Value) -> (json.Array, Parse_Fault) {
 	if !is_object {
 		return nil, .Not_An_Object
 	}
-	listed, present := body["transcription"]
+	entries, present := field(json.Array, body, "transcription")
 	if !present {
-		return nil, .No_Transcription
-	}
-	entries, is_array := listed.(json.Array)
-	if !is_array {
 		return nil, .No_Transcription
 	}
 	if len(entries) == 0 {
 		return nil, .No_Cues
 	}
 	return entries, .None
+}
+
+// One field of a json object, by name AND by type.
+//
+// "Is there a `text` string here" is one question, and asking it in two steps
+// -- look the key up, then assert the type -- is two places for the answers to
+// drift apart, three times over. Every caller reports the same fault for both
+// halves anyway: a `text` that is a number and a `text` that is missing are
+// both No_Text, because the Engine wrote neither.
+//
+// Leaf lookup over external data; the callers carry the assertions (A1, A8).
+@(private)
+field :: proc($T: typeid, object: json.Object, key: string) -> (value: T, present: bool) {
+	assert(len(key) > 0, "a field is read by name; the empty key is a caller defect")
+
+	found, exists := object[key]
+	if !exists {
+		return {}, false
+	}
+	value, present = found.(T)
+	return
 }
 
 // Reads every entry into a Cue, checking the ordering as it goes so that a
@@ -316,14 +492,16 @@ read_cues :: proc(
 	assert(len(entries) > 0, "an empty transcription array is No_Cues, settled before this point")
 	assert(allocator.procedure != nil, "a cue's text outlives this procedure")
 
-	built := make([]Cue, len(entries), allocator)
-	filled := 0
-	handed_over := false
-	defer if !handed_over {
-		for i in 0 ..< filled {
-			delete(built[i].text, allocator)
+	// How far it got is the array's own length, and whether it was handed over
+	// is whether the return carries it. Both were tracked in locals beside the
+	// values that already knew, which is two more things to keep in step on
+	// every path out of the loop.
+	built := make([dynamic]Cue, 0, len(entries), allocator)
+	defer if cues == nil {
+		for cue in built {
+			delete(cue.text, allocator)
 		}
-		delete(built, allocator)
+		delete(built)
 	}
 
 	for entry, i in entries {
@@ -331,26 +509,31 @@ read_cues :: proc(
 		if cue_fault != .None {
 			return nil, cue_fault, i + 1
 		}
-		built[i] = cue
-		filled = i + 1
+		append(&built, cue)
 
-		order_fault := cue_follows(cue, built[:i])
+		order_fault := cue_follows(cue, built[:len(built) - 1])
 		if order_fault != .None {
 			return nil, order_fault, i + 1
 		}
 	}
 
-	handed_over = true
-	assert(filled == len(built), "left a cue unread without reporting a fault")
-	assert(cues_are_ordered(built), "built a cue set the per-cue checks should have rejected")
-	return built, .None, 0
+	assert(len(built) == len(entries), "left a cue unread without reporting a fault")
+	// destroy_cues frees the returned SLICE, so the block behind it has to be
+	// exactly as long as the slice says. It is, because nothing here appends
+	// past the capacity reserved above -- asserted rather than trusted, since a
+	// grown array would be freed at the wrong size and stay silent until an
+	// unrelated allocation came back corrupted.
+	assert(cap(built) == len(built), "the returned slice does not own exactly the block it names")
+	disordered := first_disordered_cue(built[:])
+	fmt.assertf(disordered == 0, "built cue %d, which the per-cue checks should have rejected", disordered)
+	return built[:], .None, 0
 }
 
 // Whether a Cue may follow the ones already built, and why not if it may not.
 //
-// The write side of the ordering cues_are_ordered checks on the read side
-// (CLAUDE.md A4), stated per Cue so the report can name which one. Leaf
-// comparison over external data; read_cues carries the assertions (A8).
+// The write side of the ordering first_disordered_cue is asked about on the
+// read side (CLAUDE.md A4), stated per Cue so the report can name which one.
+// Leaf comparison over external data; read_cues carries the assertions (A8).
 @(private)
 cue_follows :: proc(cue: Cue, built: []Cue) -> Parse_Fault {
 	if cue.start < 0 {
@@ -375,12 +558,8 @@ read_cue :: proc(entry: json.Value, allocator: mem.Allocator) -> (cue: Cue, faul
 		return Cue{}, .Cue_Not_An_Object
 	}
 
-	offsets_value, has_offsets := fields["offsets"]
+	offsets, has_offsets := field(json.Object, fields, "offsets")
 	if !has_offsets {
-		return Cue{}, .No_Offsets
-	}
-	offsets, offsets_is_object := offsets_value.(json.Object)
-	if !offsets_is_object {
 		return Cue{}, .No_Offsets
 	}
 
@@ -393,12 +572,8 @@ read_cue :: proc(entry: json.Value, allocator: mem.Allocator) -> (cue: Cue, faul
 		return Cue{}, end_fault
 	}
 
-	text_value, has_text := fields["text"]
+	text, has_text := field(json.String, fields, "text")
 	if !has_text {
-		return Cue{}, .No_Text
-	}
-	text, text_is_string := text_value.(json.String)
-	if !text_is_string {
 		return Cue{}, .No_Text
 	}
 
@@ -485,35 +660,6 @@ read_millis :: proc(offsets: json.Object, key: string) -> (Millis, Parse_Fault) 
 	return 0, .Offset_Not_A_Number
 }
 
-// What each fault reads as, without the input's name or the Cue's position --
-// error_message supplies those, so no entry here can forget to.
-//
-// An enumerated array rather than a switch: adding a Parse_Fault without a
-// sentence for it leaves an empty string here, which the assertion in
-// error_message catches on the first report rather than shipping a diagnostic
-// that says nothing.
-@(private, rodata)
-FAULT_TEXT := [Parse_Fault]string {
-	.None                      = "",
-	.Empty_Input               = "the engine wrote nothing",
-	.Malformed_Json            = "not valid json; the file is truncated or was not written by the engine",
-	.Too_Deeply_Nested         = "json nested far deeper than the engine writes; the file was not written by the engine",
-	.Not_An_Object             = "valid json, but not the object the engine writes",
-	.No_Transcription          = "no `transcription` array",
-	.No_Cues                   = "the `transcription` array is empty; the engine transcribed nothing",
-	.Cue_Not_An_Object         = "is not an object",
-	.No_Offsets                = "has no `offsets` object",
-	.Offset_Missing            = "is missing one of its `from`/`to` offsets",
-	.Offset_Not_A_Number       = "has an offset that is not a number",
-	.Offset_Not_Whole          = "has an offset that is not a whole number of milliseconds",
-	.Offset_Out_Of_Range       = "has an offset too large to read as milliseconds",
-	.No_Text                   = "has no `text` string",
-	.Negative_Offset           = "starts before the recording does",
-	.Cue_Ends_Before_It_Starts = "ends before it starts",
-	.Cues_Out_Of_Order         = "starts before the cue in front of it",
-	.Final_Offset_Is_Zero      = "ends at offset zero and is the last cue, over a recording that is not empty; the engine's offsets did not survive being read",
-}
-
 // Renders one operating error as a line naming the input it came from.
 //
 // The allocator is explicit and never defaulted: the line outlives this
@@ -522,17 +668,20 @@ FAULT_TEXT := [Parse_Fault]string {
 error_message :: proc(err: Parse_Error, allocator: mem.Allocator) -> string {
 	assert(err.fault != .None, "there is no message for a parse that did not fail")
 	assert(len(err.json_name) > 0, "an operating error must name the input it is reported against")
-	assert(err.cue >= 0, "a cue ordinal is a position, or zero for the input as a whole")
 	assert(allocator.procedure != nil, "the message outlives this procedure and needs a chosen allocator")
 
-	text := FAULT_TEXT[err.fault]
-	assert(len(text) > 0, "a fault was added to Parse_Fault without a sentence in FAULT_TEXT")
+	facts := FAULT[err.fault]
+	assert(len(facts.says) > 0, "a fault was added to Parse_Fault without a row in FAULT")
 
+	// Which sentence is being printed decides the grammar, and the fault says
+	// which sentence it is. Reading that off the ordinal instead made an
+	// ordinal accidentally left at zero print a Cue's half-sentence as though
+	// it were about the file.
 	out: string
-	if err.cue == 0 {
-		out = fmt.aprintf("%s: %s", err.json_name, text, allocator = allocator)
+	if facts.scope == .Input {
+		out = fmt.aprintf("%s: %s", err.json_name, facts.says, allocator = allocator)
 	} else {
-		out = fmt.aprintf("%s: cue %d: %s", err.json_name, err.cue, text, allocator = allocator)
+		out = fmt.aprintf("%s: cue %d: %s", err.json_name, err.cue, facts.says, allocator = allocator)
 	}
 
 	// The one property every caller depends on and no format string guarantees:
@@ -548,8 +697,16 @@ error_message :: proc(err: Parse_Error, allocator: mem.Allocator) -> string {
 fault_at :: proc(fault: Parse_Fault, json_name: string, cue: int) -> Parse_Error {
 	assert(fault != .None, "a fault of .None is the success value and reports nothing")
 	assert(len(json_name) > 0, "an operating error must name the input it is reported against")
-	// The ordinal convention checked where a Parse_Error is WRITTEN;
-	// cues_are_ordered checks the same range where one is read (CLAUDE.md A4).
-	assert(cue >= 0, "a cue ordinal is a position, or zero for the input as a whole")
+
+	// The ordinal against the scope the fault declares, at the one place a
+	// Parse_Error is written, so no call site has to remember the convention
+	// and error_message can print by scope without checking the number. Both
+	// sides of it (CLAUDE.md A3): a fault about the file may not blame a Cue,
+	// and a fault about a Cue must say which one.
+	if FAULT[fault].scope == .Input {
+		assert(cue == 0, "a fault about the input as a whole blamed a cue")
+	} else {
+		assert(cue > 0, "a fault about one cue did not say which")
+	}
 	return Parse_Error{fault = fault, json_name = json_name, cue = cue}
 }

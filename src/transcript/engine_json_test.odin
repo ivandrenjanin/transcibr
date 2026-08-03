@@ -1,6 +1,7 @@
 package transcript
 
 import "core:mem"
+import "core:slice"
 import "core:strings"
 import "core:testing"
 
@@ -260,18 +261,79 @@ rejects_a_cue_set_whose_final_offset_is_zero :: proc(t: ^testing.T) {
 	testing.expect(t, strings.contains(message, "cue 2"), "the report does not name the cue")
 }
 
-// The negative space of the check above (CLAUDE.md A3). A Recording whose
-// length the shell could not settle arrives as zero, and a comparison against
-// an unknown has nothing to say -- inventing a failure out of missing
-// information is how a working Recording gets quarantined forever.
+// The negative space of the check above (CLAUDE.md A3), on both sides of it.
+//
+// A Recording whose length the shell could not settle arrives as nothing at
+// all, and a comparison against an unknown has nothing to say -- inventing a
+// failure out of missing information is how a working Recording gets
+// quarantined forever. A Recording MEASURED at zero is a different statement
+// with the same answer: a Cue set covering none of it covers all of it.
+//
+// The two are separate cases because the type keeps them separate. They shared
+// one spelling while an unmeasured Recording arrived as the number zero.
 @(test)
-accepts_zero_offsets_when_the_recording_length_is_unknown :: proc(t: ^testing.T) {
+accepts_zero_offsets_when_the_recording_is_not_known_to_be_longer :: proc(t: ^testing.T) {
 	text := `{"transcription": [{"offsets": {"from": 0, "to": 0}, "text": ""}]}`
-	cues, err := parse_cues("all-zero.json", text, 0, context.allocator)
-	defer destroy_cues(cues, context.allocator)
+	lengths := []Maybe(Millis){nil, Millis(0)}
+	for length, i in lengths {
+		cues, err := parse_cues("all-zero.json", text, length, context.allocator)
+		defer destroy_cues(cues, context.allocator)
 
-	testing.expect_value(t, err.fault, Parse_Fault.None)
-	testing.expect_value(t, len(cues), 1)
+		testing.expectf(t, err.fault == .None, "case %d rejected with %v", i, err.fault)
+		testing.expectf(t, len(cues) == 1, "case %d handed back %d cues", i, len(cues))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// What ADR-0002 does about each fault.
+//
+// "A validated JSON that fails to parse is treated as ABSENT: quarantine it and
+// re-run the full pipeline, rather than reporting a permanent failure. Exit 0
+// but no or empty output is a hard per-Recording failure." The fault's own name
+// does not say which side it falls on, and a caller that had to work it out
+// would work it out with a switch in another package that nothing keeps in step
+// with this enumeration.
+// ---------------------------------------------------------------------------
+
+@(test)
+every_fault_says_what_adr_0002_does_with_it :: proc(t: ^testing.T) {
+	// The two the ADR calls a hard per-Recording failure: the Engine exited
+	// having transcribed nothing, and re-running it transcribes nothing again.
+	// Everything else is a file that is not what the Engine writes, which says
+	// nothing about whether the Engine can write it.
+	hard := []Parse_Fault{.Empty_Input, .No_Cues}
+
+	for fault in Parse_Fault {
+		if fault == .None {
+			continue
+		}
+		want := Disposition.Quarantine_And_Rerun
+		if slice.contains(hard, fault) {
+			want = .Fail_The_Recording
+		}
+		got := disposition_of(fault)
+		testing.expectf(t, got == want, "%v is %v, want %v", fault, got, want)
+	}
+}
+
+// And the two the parser really produces for it, reached through the parser
+// rather than read off the table the answer comes from.
+@(test)
+an_engine_that_transcribed_nothing_fails_its_recording :: proc(t: ^testing.T) {
+	empty := []string{"", `{"transcription": []}`}
+	for text, i in empty {
+		cues, err := parse_cues("nothing.json", text, FIXTURE_DURATION, context.allocator)
+		defer destroy_cues(cues, context.allocator)
+
+		testing.expectf(t, err.fault != .None, "case %d was accepted", i)
+		testing.expectf(
+			t,
+			disposition_of(err.fault) == .Fail_The_Recording,
+			"case %d (%v) would be re-run forever",
+			i,
+			err.fault,
+		)
+	}
 }
 
 // It is the FINAL offset that decides, not the first. Every Recording's first
