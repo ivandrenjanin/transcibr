@@ -18,10 +18,23 @@
 [CmdletBinding()]
 param(
 	# Rewrite the misformatted files instead of only naming them.
-	[switch] $Fix
+	[switch] $Fix,
+
+	# Wall-clock ceiling on the WHOLE sweep, in seconds. Zero takes
+	# $OdinSweepTimeoutSeconds from scripts\common.ps1, which is the answer
+	# everywhere but scripts\selftest.ps1 -- it has to prove the budget is
+	# enforced, and cannot wait fifteen minutes to find out that it is. Each
+	# FILE is bounded separately by $OdinCommandTimeoutSeconds; this is the
+	# ceiling on all of them together, which the product of the two was not.
+	[ValidateRange(0, 86400)]
+	[int] $SweepTimeoutSeconds = 0
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
+
+if ($SweepTimeoutSeconds -eq 0) {
+	$SweepTimeoutSeconds = $OdinSweepTimeoutSeconds
+}
 
 # No terminating error may leave a zero exit behind -- the trap test.ps1 carries,
 # for the reason it carries it.
@@ -35,12 +48,15 @@ $odinfmt = Resolve-OdinFormatter
 Write-Host "odinfmt: $odinfmt (ols $OdinfmtReleaseTag)"
 Write-Host "Style:   $OdinFormatConfig"
 
-$misformatted = @(Get-MisformattedOdinSource -Odinfmt $odinfmt)
+$report = Get-OdinFormatReport -Odinfmt $odinfmt -SweepTimeoutSeconds $SweepTimeoutSeconds
+$misformatted = @($report.Misformatted)
 
 # Reported whatever the verdict, because the interesting failure is a sweep that
-# looked at nothing. Get-MisformattedOdinSource throws on zero files; this is the
-# number a reader can check against what they expected to be covered.
-$total = @(Get-OdinSource).Count
+# looked at nothing. Get-OdinFormatReport throws on zero files; this is the
+# number a reader can check against what they expected to be covered. Taken from
+# the sweep rather than from a second walk of the repository, so the count and
+# the verdict cannot come from two different answers to the same question.
+$total = $report.Total
 Write-Host ''
 Write-Host "Files checked: $total"
 
@@ -52,13 +68,11 @@ if ($misformatted.Count -eq 0) {
 
 foreach ($file in $misformatted) {
 	if ($Fix) {
-		# The bytes the sweep already computed, written whole. Not `odinfmt -w`,
-		# which renames the original to `<name>_bk` and removes it only after the
-		# write succeeds -- an interrupted run leaves that backup behind, and a
-		# `_bk` file is neither source nor artefact and is ignored by nothing.
-		# Writing what the check compared against also makes it impossible for the
-		# fix and the check to disagree about what the answer was.
-		[System.IO.File]::WriteAllBytes($file.Path, $file.Formatted)
+		# The bytes the sweep already computed, so the fix and the check cannot
+		# disagree about what the answer was -- and swapped in rather than written
+		# over. See Write-FileAtomically for why neither `odinfmt -w` nor a plain
+		# WriteAllBytes is the way to put them there.
+		Write-FileAtomically -Path $file.Path -Bytes $file.Formatted
 		Write-Host "-> rewrote $($file.Name)" -ForegroundColor Green
 	}
 	else {

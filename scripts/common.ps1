@@ -661,16 +661,35 @@ function Format-OdinSource {
 		if ($run.TimedOut) {
 			throw "odinfmt did not finish formatting $Path within $TimeoutSeconds seconds and was killed."
 		}
-		# odinfmt exits non-zero when it cannot PARSE the file, and prints nothing.
-		# Reported here rather than read as an empty formatting result, which would
-		# otherwise look like a file whose correct form is no bytes at all.
+		# Checked, but it is not what catches a file odinfmt cannot read. This once
+		# claimed odinfmt "exits non-zero when it cannot PARSE the file", and it
+		# does not: measured against the pinned build, an unparseable file gives
+		# exit ZERO, an empty standard output and a diagnostic on standard error.
+		# So the guard never fired, and neither did the one below it -- the
+		# redirect creates the capture file whether anything is written to it or
+		# not. What actually stopped the run was Set-StrictMode, several frames
+		# later, turning the empty answer into "The property 'Length' cannot be
+		# found on this object": closed, but by accident, naming no file, and one
+		# StrictMode change away from -Fix writing nothing over a source file.
 		if ($run.ExitCode -ne 0) {
-			throw "odinfmt exited $($run.ExitCode) on $Path; it could not parse the file."
+			throw "odinfmt exited $($run.ExitCode) on $Path."
 		}
 		if (-not (Test-Path -LiteralPath $capture)) {
 			throw "odinfmt wrote nothing at all for $Path."
 		}
-		return [System.IO.File]::ReadAllBytes($capture)
+
+		# EMPTY is the answer that means failure, and it is checked here rather
+		# than left to a caller: the shortest legal Odin file is a package clause,
+		# so no bytes is never a formatting result. Named against the file, because
+		# that is the only thing pointing at what to go and look at.
+		$bytes = [System.IO.File]::ReadAllBytes($capture)
+		if ($bytes.Length -eq 0) {
+			throw "odinfmt produced no output for $Path, so it could not parse the file. Its diagnostic is on standard error, above."
+		}
+
+		# Returned as ONE object: a bare `return $bytes` unrolls the array into the
+		# pipeline, and a one-byte answer comes back as a scalar with no .Length.
+		return , $bytes
 	}
 	finally {
 		Remove-Item -LiteralPath $capture -Force -ErrorAction SilentlyContinue
@@ -784,16 +803,34 @@ function Get-OdinSource {
 	return $sources
 }
 
-# Every .odin file odinfmt would rewrite, with what it would write. Empty is the
-# passing answer.
+# How many .odin files were looked at, and which of them odinfmt would rewrite,
+# with what it would write. No misformatted files is the passing answer.
+#
+# The total comes back WITH the verdict rather than being counted again by the
+# caller: format.ps1 walked the repository a second time purely to print a number
+# this sweep already had, and a total taken from a second walk is a total that
+# can disagree with the check it is reported beside.
 #
 # The sweep FAILS when it finds nothing to look at. A formatting check that
 # covers zero files passes forever and reports the same green as one that
 # checked everything -- the deny-by-default lesson this repository has now
 # learned twice, in $OdinPackagesWithoutTests and in the test sweep's own
 # zero-collected rule.
-function Get-MisformattedOdinSource {
-	param([Parameter(Mandatory)] [string] $Odinfmt)
+#
+# Bounded as a WHOLE and not merely per file, which is the same defect the test
+# sweep had and the same mechanism that fixed it ($OdinSweepTimeoutSeconds). One
+# file's ceiling times however many files exist is not a bound anybody chose: at
+# thirteen files it is 130 minutes against a 30-minute CI job, so a sweep that
+# wedged would be reported by GitHub's job timeout, which names no file and
+# prints no output, rather than by this naming the file. The clock starts before
+# the config is read, because everything after that point is inside the budget.
+function Get-OdinFormatReport {
+	param(
+		[Parameter(Mandatory)] [string] $Odinfmt,
+		[ValidateRange(1, 86400)] [int] $SweepTimeoutSeconds = $OdinSweepTimeoutSeconds
+	)
+
+	$sweepEnd = (Get-Date).AddSeconds($SweepTimeoutSeconds)
 
 	Confirm-OdinFormatConfig
 
@@ -803,22 +840,27 @@ function Get-MisformattedOdinSource {
 	}
 
 	$misformatted = @()
+	$checked = 0
 	foreach ($source in $sources) {
-		$formatted = Format-OdinSource -Odinfmt $Odinfmt -Path $source.Path
+		# What is left of the sweep's budget, which is what this file gets if that
+		# is less than its own ceiling. A file left with none of it is not started:
+		# a run nobody waits for cannot be reported, and this sweep has no verdict
+		# to give about the files it never reached.
+		$remaining = [int][math]::Floor(($sweepEnd - (Get-Date)).TotalSeconds)
+		if ($remaining -lt 1) {
+			throw "the format sweep's $SweepTimeoutSeconds-second budget ran out at $($source.Name), having checked $checked of $($sources.Count) file(s)."
+		}
+		$budget = [math]::Min($OdinCommandTimeoutSeconds, $remaining)
+
+		$formatted = Format-OdinSource -Odinfmt $Odinfmt -Path $source.Path -TimeoutSeconds $budget
 		$current = [System.IO.File]::ReadAllBytes($source.Path)
+		$checked += 1
 
 		# Bytes, not text: the BOM and the line endings are exactly the differences
-		# a text comparison hides. See Format-OdinSource.
-		$same = ($current.Length -eq $formatted.Length)
-		if ($same) {
-			for ($i = 0; $i -lt $current.Length; $i++) {
-				if ($current[$i] -ne $formatted[$i]) {
-					$same = $false
-					break
-				}
-			}
-		}
-		if (-not $same) {
+		# a text comparison hides. See Format-OdinSource. SequenceEqual rather than
+		# a PowerShell loop over the indices, which is about a hundred times slower
+		# on a file this size and says nothing a reader could not already assume.
+		if (-not [System.Linq.Enumerable]::SequenceEqual($current, $formatted)) {
 			$misformatted += [pscustomobject]@{
 				Path      = $source.Path
 				Name      = $source.Name
@@ -826,7 +868,45 @@ function Get-MisformattedOdinSource {
 			}
 		}
 	}
-	return $misformatted
+	return [pscustomobject]@{ Total = $sources.Count; Misformatted = $misformatted }
+}
+
+# One file's contents replaced by another's, in a single step.
+#
+# Not [System.IO.File]::WriteAllBytes, which opens the destination with
+# FileMode.Create: it TRUNCATES and then writes, so for the length of that write
+# every byte of the source file is already gone, and a run killed inside it
+# leaves a truncated or empty .odin file with nothing to say which. That window
+# is wider than the one `odinfmt -w` carries, which was rejected here for
+# leaving a `<name>_bk` behind when interrupted -- a file that is neither source
+# nor artefact and is ignored by nothing.
+#
+# File.Replace closes both. The new bytes are written and closed under a
+# neighbouring name first, and the destination then goes from all of the old
+# bytes to all of the new ones in one rename; no backup is kept, because there
+# is no moment at which one would be read. Beside the destination rather than in
+# TEMP because Replace needs both on one volume, and named with an extension the
+# sweep does not discover so a leaked one is never mistaken for source.
+function Write-FileAtomically {
+	param(
+		[Parameter(Mandatory)] [string] $Path,
+		[Parameter(Mandatory)] [byte[]] $Bytes
+	)
+
+	$staged = "$Path.$PID-$([System.Guid]::NewGuid().ToString('N')).odinfmt-tmp"
+	try {
+		[System.IO.File]::WriteAllBytes($staged, $Bytes)
+		# [NullString]::Value and not $null: PowerShell converts $null to the EMPTY
+		# STRING when it binds to a .NET string parameter, and File.Replace reads an
+		# empty backup path as a path, failing with "The path is not of a legal
+		# form" after the staged file has already been written.
+		[System.IO.File]::Replace($staged, $Path, [NullString]::Value)
+	}
+	finally {
+		# However this ended, nothing of it is left beside the source. A Replace
+		# that succeeded has already consumed the staged file.
+		Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+	}
 }
 
 # The sweep as a single verdict, for callers that only want it to pass -- which
@@ -836,7 +916,7 @@ function Get-MisformattedOdinSource {
 function Assert-OdinFormatting {
 	param([Parameter(Mandatory)] [string] $Odinfmt)
 
-	$misformatted = @(Get-MisformattedOdinSource -Odinfmt $Odinfmt)
+	$misformatted = @((Get-OdinFormatReport -Odinfmt $Odinfmt).Misformatted)
 	if ($misformatted.Count -eq 0) {
 		return
 	}

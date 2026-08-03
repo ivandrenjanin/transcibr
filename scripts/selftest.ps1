@@ -47,7 +47,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 36
+$ExpectedCaseCount = 38
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -675,6 +675,10 @@ Test-Case 'a test that never returns is killed and reported against its package'
 # reported by GitHub -- which names no package, prints no output, and uploads no
 # report -- rather than by the sweep. Checked rather than written down, because
 # the fourth package is exactly when nobody re-reads the comment.
+#
+# $OdinSweepTimeoutSeconds now bounds the FORMAT sweep as well as the test sweep,
+# so this arithmetic answers for both. The behaviour each of them gets out of it
+# is pinned separately, by a case apiece.
 Test-Case 'the sweep budget fits inside the CI job that has to report it' {
 	$workflow = Join-Path $RepoRoot '.github\workflows\ci.yml'
 	if (-not (Test-Path -LiteralPath $workflow)) {
@@ -1169,13 +1173,73 @@ Test-Case 'a config key odinfmt would not read fails the format command by name'
 		-Matching 'are formatted as odinfmt\.json says'
 }
 
+Test-Case 'a file odinfmt cannot parse fails the format command by name' {
+	# odinfmt does NOT exit non-zero on a file it cannot parse. Measured against
+	# the pinned build: exit ZERO, an empty standard output, and the diagnostic on
+	# standard error. The guard that claimed otherwise never fired, and what
+	# stopped the run instead was Set-StrictMode several frames later, reporting
+	# "The property 'Length' cannot be found on this object" and naming no file.
+	$repo = New-FixtureRepo 'format-unparseable'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	$dir = Join-Path (Join-Path $repo 'src') 'unreadable'
+	New-Item -ItemType Directory -Path $dir -Force | Out-Null
+	Write-FixtureSource -Path (Join-Path $dir 'unreadable.odin') -Text "package unreadable`n`nthis is not Odin at all {`n"
+
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1'
+	Assert-Result -Result $result -Fails -Matching 'could not parse the file'
+	# The file, by name. A refusal that names nothing is the failure this case is
+	# about, not the exit code -- which the accident already produced.
+	Assert-Result -Result $result -Fails -Matching 'unreadable\.odin'
+}
+
+Test-Case 'the format sweep gives up on its own budget rather than running forever' {
+	# Each FILE was bounded and the sweep was not, which is the defect the test
+	# sweep already had once: one file's ceiling times however many files exist is
+	# not a bound anybody chose, and at thirteen files it was 130 minutes against
+	# a 30-minute CI job. Past that line the report comes from GitHub's job
+	# timeout, which names no file and prints no output.
+	#
+	# One second, so the budget is spent before the first file rather than by
+	# waiting: the clock starts before the config is read, so any elapsed time at
+	# all floors the remainder to zero.
+	$repo = New-FixtureRepo 'format-sweep-budget'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1' -ScriptArguments @('-SweepTimeoutSeconds', '1')
+	Assert-Result -Result $result -Fails -Matching "1-second budget ran out"
+	# Naming the file it stopped at is the point: "something timed out" over a
+	# sweep of every .odin file in the repository is not a report anyone can act on.
+	Assert-Result -Result $result -Fails -Matching 'main\.odin'
+
+	# The negative space (rule A3). Without it this case passes for a sweep that
+	# has run out of budget before it starts, whatever the budget is.
+	$roomy = New-FixtureRepo 'format-sweep-budget-ample'
+	Add-FixtureBinary -RepoRoot $roomy -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $roomy -Script 'format.ps1') `
+		-Matching 'are formatted as odinfmt\.json says'
+}
+
 Test-Case 'the format command rewrites exactly what it named' {
 	$repo = New-FixtureRepo 'format-fix'
 	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMainUnsorted -Line $SmokeBanner) | Out-Null
 	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1') -Fails
 
+	# Everything under src\ before the rewrite, so "exactly what it named" can be
+	# checked against the tree and not only against the file. -Fix stages the new
+	# bytes beside the source and swaps them in with File.Replace, and a staged
+	# file left behind would be a `_bk` by another name -- the very thing the
+	# rewrite path was written to avoid.
+	$before = @(Get-ChildItem -LiteralPath (Join-Path $repo 'src') -Recurse -File -Force |
+			ForEach-Object { $_.FullName } | Sort-Object)
+
 	$fixed = Invoke-FixtureScript -RepoRoot $repo -Script 'format.ps1' -ScriptArguments @('-Fix')
 	Assert-Result -Result $fixed -Matching 'rewrote'
+
+	$after = @(Get-ChildItem -LiteralPath (Join-Path $repo 'src') -Recurse -File -Force |
+			ForEach-Object { $_.FullName } | Sort-Object)
+	if ($after.Count -ne $before.Count) {
+		$added = @($after | Where-Object { $before -notcontains $_ })
+		throw "the rewrite left $($added.Count) extra file(s) behind: $($added -join ', ')"
+	}
 
 	# The check after the fix, which is the only thing that makes -Fix worth
 	# having: a rewrite the check still rejects is a rewrite to a third style.
