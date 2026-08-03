@@ -47,7 +47,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 38
+$ExpectedCaseCount = 39
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -250,7 +250,16 @@ function Start-FixtureScript {
 		# Have the CHILD merge its own streams with 2>&1, the way a caller
 		# piping the script's whole output would. Redirecting at the process
 		# level, as below, does not exercise that path at all.
-		[switch] $MergeStreams
+		[switch] $MergeStreams,
+
+		# Environment the child is to see, as name -> value. Start-Process has no
+		# way to pass one, so these are set on THIS process across the start and
+		# put back afterwards -- the child inherits at CreateProcess time, so the
+		# window is the one call. An empty value UNSETS the variable, which is how
+		# a case asks for a child that is not running under CI: PowerShell deletes
+		# an environment variable assigned the empty string, and the whole suite
+		# runs with $env:CI set when CI is the thing running it.
+		[hashtable] $Environment = @{}
 	)
 
 	$outFile = Join-Path $FixtureRoot "out-$([System.Guid]::NewGuid().ToString('N')).log"
@@ -268,9 +277,26 @@ function Start-FixtureScript {
 		$arguments += @('-File', "`"$scriptPath`"") + $ScriptArguments
 	}
 
-	$process = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments `
-		-WorkingDirectory $RepoRoot -NoNewWindow -PassThru `
-		-RedirectStandardOutput $outFile -RedirectStandardError $errFile
+	$restore = @{}
+	foreach ($name in $Environment.Keys) {
+		$restore[$name] = [System.Environment]::GetEnvironmentVariable($name)
+		Set-Item -LiteralPath "env:$name" -Value $Environment[$name]
+	}
+	try {
+		$process = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments `
+			-WorkingDirectory $RepoRoot -NoNewWindow -PassThru `
+			-RedirectStandardOutput $outFile -RedirectStandardError $errFile
+	}
+	finally {
+		# Put back whatever was there, including nothing. A leaked ODINFMT would
+		# silently retarget every case after this one, and a leaked CI would flip
+		# the whole pin policy.
+		foreach ($name in $restore.Keys) {
+			$value = $restore[$name]
+			if ($null -eq $value) { $value = '' }
+			Set-Item -LiteralPath "env:$name" -Value $value
+		}
+	}
 
 	# Touching .Handle makes the Process object cache the native handle. Without
 	# -Wait it does not, and .ExitCode then reads back empty once the child is
@@ -323,11 +349,12 @@ function Invoke-FixtureScript {
 		[Parameter(Mandatory)] [string] $Script,
 		[string[]] $ScriptArguments = @(),
 		[ValidateRange(1, 86400)] [int] $TimeoutSeconds = $script:CaseTimeoutSeconds,
-		[switch] $MergeStreams
+		[switch] $MergeStreams,
+		[hashtable] $Environment = @{}
 	)
 
 	return Wait-FixtureScript -TimeoutSeconds $TimeoutSeconds -Run (Start-FixtureScript -RepoRoot $RepoRoot `
-			-Script $Script -ScriptArguments $ScriptArguments -MergeStreams:$MergeStreams)
+			-Script $Script -ScriptArguments $ScriptArguments -MergeStreams:$MergeStreams -Environment $Environment)
 }
 
 # -------------------------------------------------------------- assertions --
@@ -1171,6 +1198,47 @@ Test-Case 'a config key odinfmt would not read fails the format command by name'
 	Edit-FixtureFormatConfig -RepoRoot $sound -Edit { param($c) $c.tabs = $true }
 	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $sound -Script 'format.ps1') `
 		-Matching 'are formatted as odinfmt\.json says'
+}
+
+Test-Case 'a formatter that is not installed warns the build locally and stops it under CI' {
+	# The asymmetry this closes ran the wrong way round. A formatter whose build
+	# did not match the SHA-256 pin warned and carried on; a formatter that was
+	# not installed at all failed the build outright -- so a contributor with the
+	# pinned compiler but without the ols zip could not build anything, which is
+	# the exact outcome the pin policy argues against.
+	#
+	# A path that is not there rather than an unset variable, because the fallback
+	# location and PATH are both outside this suite's control: the development
+	# machine has odinfmt at C:\Odin\dist\, and a case that turned on its absence
+	# would pass there for the wrong reason.
+	$absent = Join-Path $FixtureRoot 'no-such-odinfmt.exe'
+	if (Test-Path -LiteralPath $absent) {
+		throw "$absent exists, so this case cannot ask for a formatter that is missing."
+	}
+
+	# CI unset, whatever this suite is itself running under: on a CI runner
+	# $env:CI is set for every case, and without this the local half would be
+	# measuring the CI half.
+	$local = New-FixtureRepo 'formatter-absent-local'
+	Add-FixtureBinary -RepoRoot $local -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	$built = Invoke-FixtureScript -RepoRoot $local -Script 'build.ps1' -Environment @{ ODINFMT = $absent; CI = '' }
+	Assert-Result -Result $built -Matching 'NOT CHECKED'
+	# Built, not merely warned about: the whole point is that the build finishes.
+	Assert-Result -Result $built -Matching "printed: $([regex]::Escape($SmokeTarget.Name)) 0\.1\.0"
+
+	# And CI refuses, which is what makes the local warning affordable.
+	$ci = New-FixtureRepo 'formatter-absent-ci'
+	Add-FixtureBinary -RepoRoot $ci -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	Assert-Result -Fails -Matching 'BUILD FAILED' -Result (Invoke-FixtureScript -RepoRoot $ci `
+			-Script 'build.ps1' -Environment @{ ODINFMT = $absent; CI = '1' })
+
+	# The format command has nothing to do without a formatter, so asking it to
+	# run is a request that can only be refused -- locally too. Without this the
+	# change above would read as "a missing formatter is never an error".
+	$asked = New-FixtureRepo 'formatter-absent-asked'
+	Add-FixtureBinary -RepoRoot $asked -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	Assert-Result -Fails -Matching 'no file is there' -Result (Invoke-FixtureScript -RepoRoot $asked `
+			-Script 'format.ps1' -Environment @{ ODINFMT = $absent; CI = '' })
 }
 
 Test-Case 'a file odinfmt cannot parse fails the format command by name' {

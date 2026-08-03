@@ -185,29 +185,75 @@ $OdinPackagesWithoutTests = @(
 	'cli'
 )
 
-# Odin is not on PATH on the development machine, so fall back to the default
-# install location rather than making every contributor edit their PATH. Set
-# $env:ODIN to override. This is the only copy of the fallback path.
+# One tool of this toolchain, found the one way all of them are found: the
+# environment variable that names it outright, then PATH, then the default
+# install location. Nothing here is on PATH on the development machine, and none
+# of it should need a contributor to edit theirs.
+#
+# The EMPTY STRING means not found, rather than a throw, because what that costs
+# is the caller's to decide and the two callers do not agree: a missing compiler
+# is the end of the matter, and a missing formatter is not (see
+# Resolve-OdinFormatter).
+function Resolve-ToolPath {
+	param(
+		[Parameter(Mandatory)] [string] $Name,
+		[Parameter(Mandatory)] [AllowEmptyString()] [AllowNull()] [string] $Declared,
+		[Parameter(Mandatory)] [string] $Fallback
+	)
+
+	if ($Declared -ne '') {
+		if (-not (Test-Path -LiteralPath $Declared)) {
+			return ''
+		}
+		return (Resolve-Path -LiteralPath $Declared).Path
+	}
+
+	$onPath = Get-Command $Name -CommandType Application -ErrorAction SilentlyContinue
+	if ($onPath) {
+		return $onPath.Source
+	}
+	if (Test-Path -LiteralPath $Fallback) {
+		return $Fallback
+	}
+	return ''
+}
+
+# A pinned tool that is not the pinned one: refused in CI, warned about anywhere
+# else. ONE copy of the policy, because it is one policy -- it was written out
+# twice, at length, and two copies of a rule are two rules the moment one moves.
+#
+# An unpinned toolchain turns an upstream change into a build failure on an
+# unrelated commit and makes "it passed yesterday" unanswerable, so the shared
+# answer -- what CI says about a branch -- comes from the pinned tools and
+# nothing else.
+#
+# A hard local refusal buys nothing on top of that and costs a great deal. The
+# first upstream retag, or the first contributor whose nightly is a week off,
+# makes the repository unbuildable and untestable for them until the pin moves
+# -- and the warning already tells them how, while CI still catches a change
+# that only works on their toolchain.
+function Confirm-PinnedTool {
+	param(
+		[Parameter(Mandatory)] [string] $Mismatch,
+		[Parameter(Mandatory)] [string] $Local,
+		[Parameter(Mandatory)] [string] $Remedy
+	)
+
+	if ($env:CI) {
+		throw "$Mismatch`nCI runs the pinned toolchain and nothing else. $Remedy"
+	}
+	Write-Warning "$Mismatch`n$Local $Remedy"
+}
+
+# The Odin compiler. Set $env:ODIN to override; this is the only copy of the
+# fallback path.
 function Resolve-OdinCompiler {
-	$odin = $null
-	if ($env:ODIN) {
-		if (-not (Test-Path -LiteralPath $env:ODIN)) {
+	$odin = Resolve-ToolPath -Name 'odin' -Declared $env:ODIN -Fallback 'C:\Odin\dist\odin.exe'
+	if ($odin -eq '') {
+		if ($env:ODIN) {
 			throw "ODIN is set to '$env:ODIN' but no file is there."
 		}
-		$odin = (Resolve-Path -LiteralPath $env:ODIN).Path
-	}
-	else {
-		$onPath = Get-Command 'odin' -CommandType Application -ErrorAction SilentlyContinue
-		if ($onPath) {
-			$odin = $onPath.Source
-		}
-		else {
-			$fallback = 'C:\Odin\dist\odin.exe'
-			if (-not (Test-Path -LiteralPath $fallback)) {
-				throw "Cannot find the Odin compiler. Put 'odin' on PATH or set `$env:ODIN to its full path."
-			}
-			$odin = $fallback
-		}
+		throw "Cannot find the Odin compiler. Put 'odin' on PATH or set `$env:ODIN to its full path."
 	}
 
 	Confirm-OdinVersion -Odin $odin
@@ -387,18 +433,7 @@ function Read-NativeOutput {
 	}
 }
 
-# The pin: refused in CI, warned about anywhere else.
-#
-# An unpinned toolchain turns an upstream change into a build failure on an
-# unrelated commit and makes "it passed yesterday" unanswerable, so the shared
-# answer -- what CI says about a branch -- comes from the pinned compiler and
-# nothing else.
-#
-# A hard local refusal buys nothing on top of that and costs a great deal. The
-# first upstream retag, or the first contributor whose nightly is a week off,
-# makes the repository unbuildable and untestable for them until the pin moves
-# -- and the warning already tells them how, while CI still catches a change
-# that only compiles on their compiler.
+# The compiler pin, under the policy Confirm-PinnedTool sets out.
 function Confirm-OdinVersion {
 	param([Parameter(Mandatory)] [string] $Odin)
 
@@ -429,11 +464,8 @@ Odin version mismatch.
 	# together or CI downloads one compiler and then refuses it.
 	$remedy = 'Point $env:ODIN at the pinned compiler, or move $OdinVersionPin and $OdinReleaseTag together in scripts\common.ps1 if you mean to move the pin.'
 
-	if ($env:CI) {
-		throw "$mismatch`nCI runs the pinned compiler and nothing else. $remedy"
-	}
-
-	Write-Warning "$mismatch`nContinuing on this one. CI will not: anything that builds here and not on the pinned compiler fails there instead. $remedy"
+	Confirm-PinnedTool -Mismatch $mismatch -Remedy $remedy `
+		-Local 'Continuing on this one. CI will not: anything that builds here and not on the pinned compiler fails there instead.'
 }
 
 # A file's SHA-256, uppercase hex.
@@ -468,37 +500,49 @@ function Get-FileSha256 {
 	return [System.BitConverter]::ToString($hash).Replace('-', '')
 }
 
-# odinfmt, resolved the way the compiler is: $env:ODINFMT, then PATH, then the
-# default install location beside odin.exe. Neither is on PATH on the
-# development machine, and neither should need a contributor to edit it.
+# odinfmt, resolved the way the compiler is -- and MISSING the way a mismatched
+# one is: warned about locally, refused under CI.
+#
+# The two were not treated alike, and the asymmetry ran the wrong way round. A
+# formatter whose build did not match the pin warned and carried on; a formatter
+# that was not installed at all failed the build outright, so a contributor with
+# the pinned compiler but without the ols zip could not build anything at all.
+# Confirm-PinnedTool argues against exactly that, at length, and nothing in the
+# argument is about compilers.
+#
+# -Optional is the BUILD's answer and not the format command's. build.ps1 has a
+# compiler and work to do, and rule S1 is still enforced against the branch by
+# CI, which installs the pinned formatter and refuses to skip anything.
+# format.ps1 has nothing to do without a formatter, so asking it to run without
+# one is a request that can only be refused.
+#
+# The empty string is what a skipped resolve returns; the caller that passed
+# -Optional is the only one that can receive it.
 function Resolve-OdinFormatter {
-	$odinfmt = $null
-	if ($env:ODINFMT) {
-		if (-not (Test-Path -LiteralPath $env:ODINFMT)) {
-			throw "ODINFMT is set to '$env:ODINFMT' but no file is there."
-		}
-		$odinfmt = (Resolve-Path -LiteralPath $env:ODINFMT).Path
-	}
-	else {
-		$onPath = Get-Command 'odinfmt' -CommandType Application -ErrorAction SilentlyContinue
-		if ($onPath) {
-			$odinfmt = $onPath.Source
-		}
-		else {
-			$fallback = 'C:\Odin\dist\odinfmt.exe'
-			if (-not (Test-Path -LiteralPath $fallback)) {
-				throw "Cannot find odinfmt. It ships in $OdinfmtAsset on the ols release $OdinfmtReleaseTag (https://github.com/DanielGavin/ols/releases), not with the Odin compiler. Put 'odinfmt' on PATH, drop it at $fallback, or set `$env:ODINFMT to its full path."
-			}
-			$odinfmt = $fallback
-		}
+	param([switch] $Optional)
+
+	$fallback = 'C:\Odin\dist\odinfmt.exe'
+	$odinfmt = Resolve-ToolPath -Name 'odinfmt' -Declared $env:ODINFMT -Fallback $fallback
+	if ($odinfmt -ne '') {
+		Confirm-OdinfmtVersion -Odinfmt $odinfmt
+		return $odinfmt
 	}
 
-	Confirm-OdinfmtVersion -Odinfmt $odinfmt
-	return $odinfmt
+	$missing = "Cannot find odinfmt. It ships in $OdinfmtAsset on the ols release $OdinfmtReleaseTag (https://github.com/DanielGavin/ols/releases), not with the Odin compiler."
+	if ($env:ODINFMT) {
+		$missing = "ODINFMT is set to '$env:ODINFMT' but no file is there."
+	}
+	$remedy = "Put 'odinfmt' on PATH, drop it at $fallback, or set `$env:ODINFMT to its full path."
+
+	if (-not $Optional) {
+		throw "$missing $remedy"
+	}
+	Confirm-PinnedTool -Mismatch $missing -Remedy $remedy `
+		-Local 'Building without the formatting check on this one. CI will not: a misformatted file fails there instead.'
+	return ''
 }
 
-# The formatter pin: refused in CI, warned about anywhere else -- the policy
-# Confirm-OdinVersion sets out at length for the compiler, for the same reasons.
+# The formatter pin, under the policy Confirm-PinnedTool sets out.
 #
 # By CONTENT, because odinfmt has no version flag to ask (see $OdinfmtSha256).
 # A formatter is a stronger case for pinning than a compiler, not a weaker one:
@@ -519,11 +563,8 @@ odinfmt build mismatch.
 "@
 	$remedy = "Point `$env:ODINFMT at $OdinfmtAsset from the ols release $OdinfmtReleaseTag, or move `$OdinfmtSha256 and `$OdinfmtReleaseTag together in scripts\common.ps1 if you mean to move the pin."
 
-	if ($env:CI) {
-		throw "$mismatch`nCI runs the pinned formatter and nothing else. $remedy"
-	}
-
-	Write-Warning "$mismatch`nContinuing on this one. CI will not: anything this build formats differently from the pinned one fails there instead. $remedy"
+	Confirm-PinnedTool -Mismatch $mismatch -Remedy $remedy `
+		-Local 'Continuing on this one. CI will not: anything this build formats differently from the pinned one fails there instead.'
 }
 
 # One value against the type odinfmt reads that key as. The fault, or an empty
