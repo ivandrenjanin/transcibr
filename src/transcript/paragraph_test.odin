@@ -98,3 +98,60 @@ the_same_gap_in_the_middle_of_a_sentence_does_not :: proc(t: ^testing.T) {
 		"That is the first thing I wanted to say, and the second follows straight on from it.",
 	)
 }
+
+// And the silence that ends a Paragraph whatever was being said. Without this,
+// a speaker who trails off mid-clause and comes back a minute later leaves one
+// Paragraph with a minute of nothing inside it and no punctuation to break on.
+@(test)
+a_gap_past_the_hard_threshold_breaks_a_paragraph_mid_sentence :: proc(t: ^testing.T) {
+	shape := []Shaped_Cue {
+		{duration_ms = 3_480, text = " That is the first thing I wanted to say,"},
+		{gap_ms = 5_000, duration_ms = 4_060, text = " and this is what came after a very long pause."},
+	}
+	cues := shaped_cues(shape, context.allocator)
+	defer delete(cues, context.allocator)
+
+	paragraphs := merge_paragraphs(cues, PINNED_MERGE, context.allocator)
+	defer destroy_paragraphs(paragraphs, context.allocator)
+
+	expected := []Paragraph {
+		{0, 3_480, "That is the first thing I wanted to say,"},
+		{8_480, 12_540, "and this is what came after a very long pause."},
+	}
+	if !testing.expect_value(t, len(paragraphs), len(expected)) {
+		return
+	}
+	for want, i in expected {
+		testing.expect_value(t, paragraphs[i], want)
+	}
+}
+
+// The Engine writes an empty Cue over silence, and it covers the silence: the
+// gap in FRONT of it is nothing and the gap BEHIND it is nothing, so a merger
+// reading the Cue in front of each Cue sees no pause at all where half a minute
+// of it went by. Both signals are gone at once and the two halves of the
+// Recording run together.
+@(test)
+silence_the_engine_covered_with_an_empty_cue_still_breaks_a_paragraph :: proc(t: ^testing.T) {
+	shape := []Shaped_Cue {
+		{duration_ms = 3_480, text = " That is the first thing I wanted to say."},
+		{duration_ms = 30_000, text = ""},
+		{duration_ms = 4_060, text = " And that is the second."},
+	}
+	cues := shaped_cues(shape, context.allocator)
+	defer delete(cues, context.allocator)
+
+	paragraphs := merge_paragraphs(cues, PINNED_MERGE, context.allocator)
+	defer destroy_paragraphs(paragraphs, context.allocator)
+
+	expected := []Paragraph {
+		{0, 3_480, "That is the first thing I wanted to say."},
+		{33_480, 37_540, "And that is the second."},
+	}
+	if !testing.expect_value(t, len(paragraphs), len(expected)) {
+		return
+	}
+	for want, i in expected {
+		testing.expect_value(t, paragraphs[i], want)
+	}
+}
