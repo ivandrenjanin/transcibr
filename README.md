@@ -114,6 +114,21 @@ cannot run locally.
 .\scripts\selftest.ps1  # checks that the three above still fail when they should
 ```
 
+The command-line binary re-renders a transcript from retained engine output, without touching the
+GPU — which is what makes tuning the paragraphing cost seconds instead of hours:
+
+```powershell
+.\build\transcibr-cli.exe                          # report the version and exit
+.\build\transcibr-cli.exe --from-json out.json --profile conversation `
+    --source talk.mp4 --engine "whisper.cpp 1.9.1" --model ggml-large-v3-turbo.bin
+```
+
+The transcript goes to standard output. `--source`, `--engine` and `--model` are what its front
+matter records about how it was made; the engine's own output cannot settle them — it carries no
+engine version and reports every large model as `large` (ADR-0003) — so anything not given is
+recorded as `unknown` rather than guessed at. The detected language *is* read out of that output,
+because it is the one such fact the engine does report (ADR-0001).
+
 The Odin compiler is pinned to release `dev-2026-07a`. The pin lives in `scripts/common.ps1` and
 nowhere else — CI dot-sources that file for the release tag rather than keeping a second copy that
 can drift. The scripts look for the compiler in `$env:ODIN`, then on `PATH`, then at
