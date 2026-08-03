@@ -207,6 +207,14 @@ render_markdown :: proc(
 	// falls: the Anchor names the Paragraph's own start, because the boundary that
 	// made it due is a moment nobody spoke at, and a reader who seeks there hears
 	// the tail of the passage before.
+	//
+	// "No more often than" and never "every": on material whose Paragraphs all
+	// stand more than one interval apart -- an interview with long silences
+	// between turns, under the aggressive profile -- every Paragraph is overdue
+	// when it arrives and every one of them carries an Anchor. That is the rule
+	// working and not failing. What spec story 33 refuses is a timestamp on every
+	// LINE of a wall of fragments, and the Paragraph is what stops that being the
+	// same thing.
 	due := Millis(0)
 	previous := Millis(0)
 	for paragraph in paragraphs {
@@ -255,10 +263,36 @@ render_markdown :: proc(
 // than a line beginning with one -- so it is handled at the line start instead,
 // where it can actually do harm.
 //
-// `&` is NOT here either, and that is a judgement rather than an oversight. It
-// is structure only as the opening of a named entity -- `&amp;` and its
-// relatives -- which is a spelling a speech model does not produce, and escaping
-// every ampersand would put a backslash into every "R&D" a Transcript holds.
+// `&` is NOT here either. That is a JUDGEMENT AND A TRADE, made deliberately,
+// and it is recorded here in full because the cost of it is real.
+//
+// What it costs: an ampersand that opens a VALID HTML5 entity name is resolved
+// by every renderer there is, and the speech carrying it changes on the page.
+// Measured through the built binary against commonmark.js and marked --
+//
+//   `&copy; 2026`     reaches the reader as `© 2026`
+//   `spaced&nbsp;out` reaches the reader with a non-breaking space in it
+//   `&lt;b&gt;`       reaches the reader as `<b>`
+//   `&amp;`           reaches the reader as `&`
+//
+// -- and one spelling even divides the two: `&notit;` is not a valid entity, so
+// commonmark.js leaves it alone and marked resolves the `&not` prefix in it and
+// writes `¬it;`.
+//
+// What escaping it would cost instead: a backslash in front of the ampersand in
+// every "R&D", "AT&T", "Q&A", "H&M" and "Fish & chips" a Transcript holds --
+// which is what an Engine transcribing speech actually writes. Every one of
+// those was measured too, and every one of them reaches the reader verbatim
+// today, because an ampersand is structure only where a valid entity NAME
+// follows it.
+//
+// The trade is taken because the harmful spelling is one a speech model does not
+// produce. `&copy;` is not a sound; it is punctuation somebody typed. A
+// Transcript is transcribed speech, and the escaper that protected it from
+// `&copy;` would disfigure every department, every band and every fish supper in
+// it. If Engine output ever does start carrying entity spellings -- a subtitle
+// track read back through it, say -- this is the line to revisit, and the
+// measurements above are what it would be revisited against.
 @(private)
 INLINE_SPECIALS :: `\` + "`" + `*_[]<|`
 
@@ -523,18 +557,16 @@ write_yaml_quoted :: proc(out: ^strings.Builder, value: string) {
 			// Everything else a text editor renders as nothing at all. Written as
 			// the byte it is, because a control character dropped silently is a
 			// front matter field that no longer matches what planning recorded.
-			strings.write_string(out, `\x`)
-			strings.write_byte(out, HEX[value[i] >> 4])
-			strings.write_byte(out, HEX[value[i] & 0x0F])
+			//
+			// Lower case, because YAML's `\x` escape is written that way and a
+			// header this program cannot read back is a Transcript planning treats
+			// as somebody's notes (ADR-0008). `%x` is lower case, which is the
+			// whole of what a sixteen-entry table of hex digits beside this was
+			// for -- and core:fmt is already how write_anchor lays out a number.
+			fmt.sbprintf(out, `\x%02x`, value[i])
 		case:
 			strings.write_byte(out, value[i])
 		}
 	}
 	strings.write_byte(out, '"')
 }
-
-// Lower case, because YAML's `\x` escape is written that way and a header this
-// program cannot read back is a Transcript planning treats as somebody's notes
-// (ADR-0008).
-@(private, rodata)
-HEX := [16]u8{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'}
