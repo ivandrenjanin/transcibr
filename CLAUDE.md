@@ -249,17 +249,34 @@ opt-in per test. `scripts\common.ps1` therefore runs every `odin` invocation und
 compiler alone orphans it — and `.github/workflows/ci.yml` carries an explicit `timeout-minutes`.
 Do not remove either; a sweep with no ceiling is a CI job that burns six hours to say nothing.
 
-**`core:encoding/json` does not parse integers, and leaks when it refuses a file.** `parse_integers`
-defaults to *false* on every entry point, so `12345` arrives as a `json.Float` and the natural
-`value.(json.Integer)` matches nothing at all — every number silently reads as its zero value, and a
-monotonicity check downstream still passes, because zero is monotonic. Pass the flag, and *also*
-accept `json.Float`: the tokenizer classifies on the decimal point, so `12345.0` stays a Float even
-with the flag on. `DEFAULT_SPECIFICATION` is `JSON5` as well, which accepts trailing commas and
-comments — pass `.JSON` where the input is supposed to be strict. Separately, the parser leaks on
-several of its error paths: an object key parsed just before the value after it fails is never
-inserted into the object, so the cleanup that walks that object never frees it, and a truncated file
-takes exactly that path. Decode into an arena you destroy unconditionally rather than trying to free
-the tree. `src\transcript\engine_json.odin` is the worked example, and
+**`core:encoding/json` does not parse integers, silently wraps the ones it does, leaks when it
+refuses a file, and crashes on deep nesting.** Four traps, all measured, all with a worked example in
+`src\transcript\engine_json.odin`.
+
+`parse_integers` defaults to *false* on every entry point, so `12345` arrives as a `json.Float` and
+the natural `value.(json.Integer)` matches nothing at all — every number silently reads as its zero
+value, and a monotonicity check downstream still passes, because zero is monotonic. Pass the flag,
+and *also* accept `json.Float`: the tokenizer classifies on the decimal point **and on an `e`/`E`
+exponent** (`tokenizer.odin:264-271`), so `12345.0` and `1.2e4` both stay Floats with the flag on.
+`DEFAULT_SPECIFICATION` is `JSON5` as well, which accepts trailing commas and comments — pass `.JSON`
+where the input is supposed to be strict.
+
+An integer token is read with `i, _ := strconv.parse_i64(token.text)` (`parser.odin:148`), and the
+discarded error is not the problem: `parse_i64` **wraps on overflow and returns `ok = true`**, so
+there is no failure to read even if you read it. `99999999999999999999999` arrives as
+`200376420520689663` and `2^127` arrives as `0`. Range-check every integer you take out of a
+`json.Value`; the magnitude is the only signal left.
+
+The parser leaks on several of its error paths: an object key parsed just before the value after it
+fails is never inserted into the object, so the cleanup that walks that object never frees it, and a
+truncated file takes exactly that path. Decode into an arena you destroy unconditionally rather than
+trying to free the tree.
+
+It is a recursive descent with **no depth limit**, so nesting deep enough runs the thread off its
+stack and takes the process down — 0xC00000FD from 1694 bytes, 751 levels fine and 801 fatal. There
+is no error return to catch, so the depth has to be bounded *before* the decode; A8 has no exception
+for input that is merely unusual.
+
 `.\scripts\test.ps1 -TestName transcript.parses_real_engine_output_into_cues` is the test that
 catches the integer default against real Engine output.
 
