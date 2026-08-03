@@ -106,7 +106,7 @@ merge_paragraphs :: proc(
 		if spoke_before && breaks_paragraph(before, cue, p) {
 			paragraph_close(&state, allocator)
 		}
-		paragraph_extend(&state, cue, said)
+		paragraph_admit(&state, cue, said, p, allocator)
 		previous = cue
 	}
 	paragraph_close(&state, allocator)
@@ -207,6 +207,119 @@ ends_a_sentence :: proc(said: string) -> bool {
 	// rune-aware and `…` is three bytes: a byte comparison would answer no to
 	// every trailing-off the Engine writes.
 	return len(strings.trim_right(bare, SENTENCE_ENDS)) < len(bare)
+}
+
+// Adds one Cue's speech under the cap, closing Paragraphs as it fills them and
+// carving speech no Paragraph could ever hold whole.
+//
+// THE LOOP THAT MUST TERMINATE. Three things keep it honest, and all three are
+// asserted rather than argued: a close always hands the whole cap to the next
+// Paragraph, the cap is positive, and every round either closes an open
+// Paragraph or consumes at least one character of what is left.
+@(private)
+paragraph_admit :: proc(s: ^Merge_State, cue: Cue, said: string, p: Merge_Params, allocator: mem.Allocator) {
+	assert(len(said) > 0, "empty speech opens a paragraph that can never be closed")
+	assert(p.max_para_chars > 0, "a paragraph that may hold no characters can never be closed")
+
+	rest := said
+	for len(rest) > 0 {
+		room := paragraph_room(s^, p)
+		take, tail := word_split(rest, room)
+
+		if len(take) == 0 && s.open {
+			// Not enough room left for the next whole word. Closing offers the
+			// whole cap instead, which is strictly more room than there was.
+			paragraph_close(s, allocator)
+			continue
+		}
+		if len(take) == 0 {
+			// One word longer than the entire cap. It cannot be admitted whole,
+			// must not be dropped, and has no boundary to prefer -- so the carve
+			// falls inside the word, which is the last resort and looks like one.
+			assert(room == p.max_para_chars, "carved a word into a paragraph that was not empty")
+			take, tail = character_split(rest, room)
+		}
+
+		assert(len(take) > 0, "a split that took no speech at all")
+		assert(len(tail) < len(rest), "a split that consumed no speech at all")
+		paragraph_extend(s, cue, take)
+		rest = tail
+	}
+}
+
+// How many more characters the Paragraph being built can hold, counting the
+// space that would stand at the seam. Zero or less where what is open is already
+// full; the whole cap where nothing is open.
+@(private)
+paragraph_room :: proc(s: Merge_State, p: Merge_Params) -> int {
+	assert(p.max_para_chars > 0, "a paragraph that may hold no characters can never be closed")
+
+	if !s.open {
+		return p.max_para_chars
+	}
+	return p.max_para_chars - s.runes - 1
+}
+
+// Splits speech at the last word boundary that fits in `room` characters.
+//
+// Reports that NOTHING fits rather than breaking a word, which is what makes the
+// caller's two cases two cases: a Paragraph with a few characters left closes
+// and offers the whole cap, and only one that has already offered the whole cap
+// carves the word itself.
+@(private)
+word_split :: proc(said: string, room: int) -> (take, rest: string) {
+	assert(len(said) > 0, "there is nothing here to split")
+
+	if room <= 0 {
+		return "", said
+	}
+	if strings.rune_count(said) <= room {
+		return said, ""
+	}
+
+	// More characters than there is room for, so there is a character sitting at
+	// the cut and it can be read.
+	cut := character_offset(said, room)
+	assert(cut < len(said), "speech longer than the room measured out no shorter than itself")
+	if said[cut] == ' ' {
+		return said[:cut], strings.trim_left_space(said[cut:])
+	}
+
+	at := strings.last_index_byte(said[:cut], ' ')
+	if at <= 0 {
+		return "", said
+	}
+	return said[:at], strings.trim_left_space(said[at:])
+}
+
+// Splits speech at exactly `room` characters, wherever that falls.
+@(private)
+character_split :: proc(said: string, room: int) -> (take, rest: string) {
+	assert(len(said) > 0, "there is nothing here to carve")
+	assert(room > 0, "a carve that may take no characters never finishes")
+
+	cut := character_offset(said, room)
+	// Characters and not bytes, which is the whole reason this walks the string
+	// instead of slicing it: a cut taken at a byte offset lands inside an
+	// accented character and puts a broken one into the deliverable.
+	assert(cut > 0, "a positive room measured out no characters at all")
+	return said[:cut], strings.trim_left_space(said[cut:])
+}
+
+// The byte offset one past the `count`th character, or the whole length where
+// there are fewer than that many.
+@(private)
+character_offset :: proc(said: string, count: int) -> int {
+	assert(count > 0, "the offset of no characters at all is not a position")
+
+	seen := 0
+	for _, at in said {
+		if seen == count {
+			return at
+		}
+		seen += 1
+	}
+	return len(said)
 }
 
 // Adds one Cue's speech to the Paragraph being built, opening one if none is.

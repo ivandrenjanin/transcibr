@@ -1,5 +1,7 @@
 package transcript
 
+import "core:mem"
+import "core:strings"
 import "core:testing"
 
 // The thresholds every case below pins for itself, so that tuning MONOLOGUE and
@@ -154,4 +156,139 @@ silence_the_engine_covered_with_an_empty_cue_still_breaks_a_paragraph :: proc(t:
 	for want, i in expected {
 		testing.expect_value(t, paragraphs[i], want)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// The character cap.
+//
+// It is the only thing standing between a Recording with no pauses in it and one
+// unbroken wall of text, and it is the acceptance criterion stated absolutely: a
+// Paragraph NEVER exceeds it. That absolute is what forces the carve -- a Cue
+// whose own speech is longer than the cap cannot be admitted whole, cannot be
+// dropped, and must not send the loop that admits it round for ever.
+// ---------------------------------------------------------------------------
+
+// The Paragraphs' prose put back together, so a case can say "nothing was lost"
+// rather than listing every break the cap happened to make.
+@(private)
+paragraph_prose :: proc(paragraphs: []Paragraph, sep: string, allocator: mem.Allocator) -> string {
+	assert(len(paragraphs) > 0, "no paragraphs to put back together")
+	assert(allocator.procedure != nil, "the joined prose outlives this procedure")
+
+	parts := make([]string, len(paragraphs), allocator)
+	defer delete(parts, allocator)
+	for paragraph, i in paragraphs {
+		parts[i] = paragraph.text
+	}
+	return strings.join(parts, sep, allocator)
+}
+
+// The same, off the Cues that went in.
+@(private)
+cue_speech :: proc(cues: []Cue, allocator: mem.Allocator) -> string {
+	assert(len(cues) > 0, "no cues to put back together")
+	assert(allocator.procedure != nil, "the joined speech outlives this procedure")
+
+	parts := make([]string, len(cues), allocator)
+	defer delete(parts, allocator)
+	for cue, i in cues {
+		parts[i] = spoken_text(cue)
+	}
+	return strings.join(parts, " ", allocator)
+}
+
+// Speech with no pause and no full stop in it: neither signal fires, so the cap
+// is the only thing that can break this and every break it makes falls at a word
+// boundary. Putting the Paragraphs back together has to give back exactly what
+// went in.
+@(test)
+a_paragraph_never_exceeds_the_character_cap :: proc(t: ^testing.T) {
+	tight := Merge_Params{max_gap_ms = 1_000, hard_gap_ms = 3_000, max_para_chars = 120}
+	shape := []Shaped_Cue {
+		{duration_ms = 4_000, text = " and we went on talking about it for a while,"},
+		{duration_ms = 4_000, text = " with nobody stopping to finish a sentence anywhere,"},
+		{duration_ms = 4_000, text = " which is the shape of speech this cap exists for,"},
+		{duration_ms = 4_000, text = " and it runs on well past anything a reader can hold,"},
+		{duration_ms = 4_000, text = " so the merger has to put a break in somewhere itself."},
+	}
+	cues := shaped_cues(shape, context.allocator)
+	defer delete(cues, context.allocator)
+
+	paragraphs := merge_paragraphs(cues, tight, context.allocator)
+	defer destroy_paragraphs(paragraphs, context.allocator)
+
+	testing.expect(t, len(paragraphs) > 1, "the cap broke nothing on speech four times its length")
+	for paragraph, i in paragraphs {
+		held := strings.rune_count(paragraph.text)
+		testing.expectf(t, held <= tight.max_para_chars, "paragraph %d holds %d characters", i + 1, held)
+		testing.expectf(t, held > 0, "paragraph %d holds nothing at all", i + 1)
+	}
+
+	prose := paragraph_prose(paragraphs, " ", context.allocator)
+	defer delete(prose, context.allocator)
+	speech := cue_speech(cues, context.allocator)
+	defer delete(speech, context.allocator)
+	testing.expect_value(t, prose, speech)
+}
+
+// One word longer than the cap, with no space anywhere in it to break at. There
+// is no word boundary, so the carve falls inside the word -- and every piece of
+// it still has to arrive, in order, with nothing invented between them.
+@(test)
+a_cue_longer_than_the_cap_is_carved_rather_than_looping :: proc(t: ^testing.T) {
+	tight := Merge_Params{max_gap_ms = 1_000, hard_gap_ms = 3_000, max_para_chars = 10}
+	word := "Llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch"
+	shape := []Shaped_Cue{{duration_ms = 4_000, text = " Llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch"}}
+	cues := shaped_cues(shape, context.allocator)
+	defer delete(cues, context.allocator)
+
+	paragraphs := merge_paragraphs(cues, tight, context.allocator)
+	defer destroy_paragraphs(paragraphs, context.allocator)
+
+	// 58 characters carved ten at a time, so six pieces and the last one short.
+	if !testing.expect_value(t, len(paragraphs), 6) {
+		return
+	}
+	for paragraph, i in paragraphs {
+		held := strings.rune_count(paragraph.text)
+		testing.expectf(t, held <= tight.max_para_chars, "piece %d holds %d characters", i + 1, held)
+		testing.expectf(t, held > 0, "piece %d holds nothing at all", i + 1)
+		// Every piece carries the Cue's own offsets. Nothing in the Engine's
+		// output says where inside a Cue a carve landed, and inventing an
+		// offset for it would put an Anchor at a time nobody spoke.
+		testing.expectf(t, paragraph.start == 0, "piece %d starts at %v", i + 1, paragraph.start)
+		testing.expectf(t, paragraph.end == 4_000, "piece %d ends at %v", i + 1, paragraph.end)
+	}
+
+	// Concatenated with NOTHING between them: a carve inside a word must not
+	// leave a space behind where the word had none.
+	prose := paragraph_prose(paragraphs, "", context.allocator)
+	defer delete(prose, context.allocator)
+	testing.expect_value(t, prose, word)
+}
+
+// The cap counts CHARACTERS. Every accented character the Engine writes is two
+// bytes or more, so a cap enforced on bytes cuts a Recording of French short of
+// one recorded in English -- silently, and only on the material where it is
+// hardest to notice.
+@(test)
+the_character_cap_counts_characters_and_not_bytes :: proc(t: ^testing.T) {
+	said := "Déjà vu, déjà vu, déjà vu"
+	// Twenty-five characters and thirty-one bytes, so a cap of twenty-five holds
+	// it whole by one measure and breaks it three times by the other.
+	tight := Merge_Params{max_gap_ms = 1_000, hard_gap_ms = 3_000, max_para_chars = 25}
+	testing.expect_value(t, strings.rune_count(said), 25)
+	testing.expect_value(t, len(said), 31)
+
+	shape := []Shaped_Cue{{duration_ms = 2_000, text = " Déjà vu, déjà vu, déjà vu"}}
+	cues := shaped_cues(shape, context.allocator)
+	defer delete(cues, context.allocator)
+
+	paragraphs := merge_paragraphs(cues, tight, context.allocator)
+	defer destroy_paragraphs(paragraphs, context.allocator)
+
+	if !testing.expect_value(t, len(paragraphs), 1) {
+		return
+	}
+	testing.expect_value(t, paragraphs[0].text, said)
 }
