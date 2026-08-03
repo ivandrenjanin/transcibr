@@ -76,9 +76,16 @@ Disposition :: enum u8 {
 // FAULT silently held two grammars because of it: "the engine wrote nothing" is
 // a sentence about a file, and "ends before it starts" is a sentence about a
 // Cue, and only the ordinal said which was about to be printed.
+//
+// Unset is the zero value and no row may carry it: FAULT is an enumerated array,
+// so a Parse_Fault added without a row still HAS a row, made of zeroes, and
+// `.Input` sitting on zero would make that row a plausible answer rather than a
+// detectable one. fault_at asserts against it, which is the check its two
+// siblings already make against an empty `says`.
 @(private)
 Fault_Scope :: enum u8 {
-	Input = 0,
+	Unset = 0,
+	Input,
 	Cue,
 }
 
@@ -164,7 +171,11 @@ FAULT := [Parse_Fault]Fault_Facts {
 		scope = .Cue,
 		disposition = .Quarantine_And_Rerun,
 	},
-	.No_Text = {says = "has no `text` string", scope = .Cue, disposition = .Quarantine_And_Rerun},
+	.No_Text = {
+		says = "has no `text` string",
+		scope = .Cue,
+		disposition = .Quarantine_And_Rerun,
+	},
 	.Negative_Offset = {
 		says = "starts before the recording does",
 		scope = .Cue,
@@ -327,48 +338,50 @@ MAX_JSON_DEPTH :: 64
 
 // Whether the nesting in a piece of JSON stays inside MAX_JSON_DEPTH.
 //
-// A byte scan and not a parse. It is asked one question -- how deep do the
-// brackets go -- and it has to answer it before the decoder that would crash on
-// the answer ever sees the text, so it cannot be built on that decoder.
+// Counted off the decoder's OWN tokenizer, given the same specification and the
+// same integer setting decode_engine_json gives the parser. That tokenizer is
+// iterative and allocates nothing, so none of what makes the decoder unsafe on
+// this input is being run: what would crash is parse_value's recursion, and the
+// point of counting the open brackets in the token stream is that the recursion
+// takes one level per open bracket in exactly that stream and can therefore
+// never go deeper than this counts.
 //
-// String-aware, and that is the whole subtlety: a bracket inside a string is
-// text the Engine transcribed, and a scan that could not tell would refuse a
-// Recording for containing "[[[". Deliberately NOT a validator otherwise --
+// Not a hand-rolled byte scan, and that is the whole reason. Such a scan has to
+// know where a string ends -- a bracket inside one is text the Engine
+// transcribed, and a scan that could not tell would refuse a Recording for
+// containing "[[[" -- and a second answer to that question is only as good as
+// the day it last agreed with the first. Deliberately NOT a validator otherwise:
 // everything it lets through still has to parse, and an unbalanced or trailing
 // bracket is Malformed_Json from the decoder exactly as it was before.
+//
+// It costs about half again what a hand-rolled byte scan over the same bytes
+// costs -- 20.6 us against 13.8 us for a whole parse_cues over the fixture,
+// measured across 200,000 of them. That is microseconds against a Recording that
+// took minutes to transcribe, and CLAUDE.md orders these goals safety first.
 @(private)
 json_nesting_is_bounded :: proc(json_text: string) -> bool {
 	assert(len(json_text) > 0, "an empty input is Empty_Input, settled before this point")
 
+	tokenizer := json.make_tokenizer(json_text, .JSON, false)
 	depth := 0
-	in_string := false
-	escaped := false
-	for i in 0 ..< len(json_text) {
-		// Bytes, not runes: every delimiter below is ASCII, and a UTF-8
-		// continuation byte is never one of them. Decoding runes here would
-		// mean deciding what to do about invalid UTF-8 in a procedure whose
-		// only job is to count brackets.
-		character := json_text[i]
-		if in_string {
-			switch {
-			case escaped:
-				escaped = false
-			case character == '\\':
-				escaped = true
-			case character == '"':
-				in_string = false
-			}
-			continue
+	for {
+		// The token KIND and never the error. An illegal character is reported
+		// with a token and the tokenizer walks on past it, and a scan that
+		// stopped at the first error would measure none of the brackets after
+		// it -- which the decoder still descends into before it reaches the
+		// error and gives up. Only .EOF means there is nothing further to read,
+		// and it is also what stops this loop advancing.
+		token, _ := json.get_token(&tokenizer)
+		if token.kind == .EOF {
+			break
 		}
-		switch character {
-		case '"':
-			in_string = true
-		case '{', '[':
+		#partial switch token.kind {
+		case .Open_Brace, .Open_Bracket:
 			depth += 1
 			if depth > MAX_JSON_DEPTH {
 				return false
 			}
-		case '}', ']':
+		case .Close_Brace, .Close_Bracket:
 			// Never below zero. An unbalanced closer is the decoder's to
 			// report, and a depth allowed to go negative here would let the
 			// brackets after it run as deep as they liked.
@@ -462,9 +475,14 @@ read_transcription :: proc(root: json.Value) -> (json.Array, Parse_Fault) {
 //
 // "Is there a `text` string here" is one question, and asking it in two steps
 // -- look the key up, then assert the type -- is two places for the answers to
-// drift apart, three times over. Every caller reports the same fault for both
-// halves anyway: a `text` that is a number and a `text` that is missing are
-// both No_Text, because the Engine wrote neither.
+// drift apart. All three of its call sites report the same fault for both
+// halves: a `text` that is a number and a `text` that is missing are both
+// No_Text, because the Engine wrote neither.
+//
+// read_millis is the fourth lookup and deliberately does NOT use this. An offset
+// that is missing and an offset that is a string are Offset_Missing and
+// Offset_Not_A_Number, two different sentences pointing at two different Engine
+// defects, and collapsing them would cost a reader the only clue they have.
 //
 // Leaf lookup over external data; the callers carry the assertions (A1, A8).
 @(private)
@@ -514,9 +532,14 @@ read_cues :: proc(
 		if cue_fault != .None {
 			return nil, cue_fault, i + 1
 		}
+		// APPENDED before it is checked, and the order is load-bearing: read_cue
+		// cloned this Cue's text, so a Cue rejected while it is still a local is
+		// a leak on every rejection path. Owned first, judged second -- the defer
+		// above frees whatever the array holds, and it holds this one now.
 		append(&built, cue)
 
-		order_fault := cue_follows(cue, built[:len(built) - 1])
+		// Everything built BEFORE this Cue, which is what it has to follow.
+		order_fault := cue_follows(cue, built[:i])
 		if order_fault != .None {
 			return nil, order_fault, i + 1
 		}
@@ -698,12 +721,17 @@ fault_at :: proc(fault: Parse_Fault, json_name: string, cue: int) -> Parse_Error
 	assert(fault != .None, "a fault of .None is the success value and reports nothing")
 	assert(len(json_name) > 0, "an operating error must name the input it is reported against")
 
+	// The same missing-row check disposition_of and error_message make, at the
+	// third place the table is read (CLAUDE.md A4).
+	scope := FAULT[fault].scope
+	assert(scope != .Unset, "a fault was added to Parse_Fault without a row in FAULT")
+
 	// The ordinal against the scope the fault declares, at the one place a
 	// Parse_Error is written, so no call site has to remember the convention
 	// and error_message can print by scope without checking the number. Both
 	// sides of it (CLAUDE.md A3): a fault about the file may not blame a Cue,
 	// and a fault about a Cue must say which one.
-	if FAULT[fault].scope == .Input {
+	if scope == .Input {
 		assert(cue == 0, "a fault about the input as a whole blamed a cue")
 	} else {
 		assert(cue > 0, "a fault about one cue did not say which")

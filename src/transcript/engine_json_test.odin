@@ -13,6 +13,7 @@ import "core:testing"
 //
 // `#load` rather than a runtime read: the core is pure (ADR-0009), and a test
 // that opens a file is testing the filesystem too.
+@(private)
 ENGINE_JSON :: #load("fixtures/engine-output.json", string)
 
 // The size the Engine wrote, in checked code rather than in prose (CLAUDE.md
@@ -27,6 +28,7 @@ ENGINE_JSON :: #load("fixtures/engine-output.json", string)
 // What ffprobe reports for the Recording the fixture was transcribed from:
 // 30.355875 s. Passed as the Recording's length rather than derived from the
 // Cues, which is the circular measurement ADR-0009 rules out.
+@(private)
 FIXTURE_DURATION :: Millis(30_356)
 
 @(test)
@@ -164,8 +166,8 @@ nested_engine_json :: proc(inner_depth: int, allocator: mem.Allocator) -> string
 // The only place to stop it is before the decoder sees the text.
 @(test)
 refuses_nesting_that_would_crash_the_decoder :: proc(t: ^testing.T) {
-	// 750 levels survived on the build machine and 800 did not, so this is the
-	// document that used to end the run rather than fail it.
+	// Past the depth recorded at MAX_JSON_DEPTH as the one that ended the run
+	// rather than failing it, and an order of magnitude past the limit itself.
 	deep := nested_engine_json(800, context.allocator)
 	defer delete(deep, context.allocator)
 
@@ -384,6 +386,7 @@ real_engine_output_is_ordered_on_the_way_out :: proc(t: ^testing.T) {
 // ---------------------------------------------------------------------------
 
 // One shape the parser must accept, and the Cues it must produce from it.
+@(private)
 Accepted_Case :: struct {
 	name:     string,
 	json:     string,
@@ -534,6 +537,7 @@ parses_the_ugly_cases :: proc(t: ^testing.T) {
 }
 
 // One shape the parser must refuse, and what it must say about it.
+@(private)
 Rejected_Case :: struct {
 	name:  string,
 	json:  string,
@@ -726,7 +730,7 @@ rejects_the_ugly_cases :: proc(t: ^testing.T) {
 		testing.expectf(t, err.json_name == c.name, "%s: reported against %q", c.name, err.json_name)
 
 		// Every rejection renders, and every rendering names the input: a fault
-		// added without a sentence in FAULT_TEXT trips the assertion inside.
+		// added without a row in FAULT trips the assertion inside.
 		message := error_message(err, context.allocator)
 		defer delete(message, context.allocator)
 		testing.expectf(t, strings.contains(message, c.name), "%s: report does not name it", c.name)
