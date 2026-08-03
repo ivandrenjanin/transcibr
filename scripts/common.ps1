@@ -1005,6 +1005,16 @@ function Get-OdinFormatReport {
 # one is never mistaken for source, and one Get-OdinFormatReport reclaims, so a
 # run killed between the write and the rename does not strand it beside the
 # source forever.
+#
+# DO NOT swap this back for a plain write. What this buys is the ABSENCE of that
+# window, and nothing here can open a window to prove it is gone: staging a kill
+# inside a .NET call is not something scripts\selftest.ps1 can do, and the revert
+# leaves every case about the -Fix path green. What that suite pins instead is
+# the MECHANISM -- "the rewrite swaps a new file in rather than writing over the
+# old one" watches the destination's NTFS identity, which a truncating write
+# keeps and a replace changes. That case is the only thing standing between this
+# procedure and a quiet revert, so a change here that turns it red is the change
+# this comment is about.
 function Write-FileAtomically {
 	param(
 		[Parameter(Mandatory)] [string] $Path,

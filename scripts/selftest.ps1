@@ -47,7 +47,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 40
+$ExpectedCaseCount = 41
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -1482,6 +1482,65 @@ Test-Case 'the format command rewrites exactly what it named' {
 	# And it still compiles -- a formatter that produces something the vet set
 	# rejects has fixed nothing.
 	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1')
+}
+
+# The identity NTFS gave a file, as whatever fsutil prints, or the empty string
+# where the volume or the tool cannot say.
+#
+# Compared only against another reading of ITSELF, never against a literal, so
+# neither the format of the number nor the localised words around it matter.
+function Get-NtfsFileId {
+	param([Parameter(Mandatory)] [string] $Path)
+
+	$printed = fsutil file queryfileid "$Path" 2>$null
+	if ($LASTEXITCODE -ne 0) {
+		return ''
+	}
+	return (($printed -join ' ').Trim())
+}
+
+Test-Case 'the rewrite swaps a new file in rather than writing over the old one' -MaySkip {
+	# Write-FileAtomically's whole argument is about a window nothing here can
+	# open: a run killed midway through writing the destination. Staging a crash
+	# inside a .NET call is not something this suite can do, so the atomicity
+	# itself is not what is checked -- swapping File.Replace back for a plain
+	# WriteAllBytes leaves every other case in this file green, which is exactly
+	# the silent revert the argument at the site warns about.
+	#
+	# What IS checkable is the mechanism, and cheaply. A truncating write keeps
+	# the file it writes into; a replace gives the name a different file
+	# altogether, and NTFS says which happened. So this pins "the bytes arrived by
+	# rename" without needing the crash that makes it matter.
+	$dir = Join-Path $FixtureRoot 'atomic-rewrite'
+	New-Item -ItemType Directory -Path $dir -Force | Out-Null
+	$target = Join-Path $dir 'target.odin'
+	[System.IO.File]::WriteAllText($target, 'package before')
+
+	$created = Get-NtfsFileId -Path $target
+	if ($created -eq '') {
+		Skip-Case "fsutil will not name the files on the volume holding $dir, so there is no identity here to watch."
+	}
+
+	# The control, and the negative space rule A3 asks for. Without it this case
+	# passes for any file identity that happens to move, and says nothing about
+	# WHY: a plain write keeps the file, which is the truncation window the
+	# rewrite path exists to avoid.
+	[System.IO.File]::WriteAllBytes($target, [System.Text.Encoding]::ASCII.GetBytes('package written over'))
+	$overwritten = Get-NtfsFileId -Path $target
+	if ($overwritten -ne $created) {
+		throw "a plain WriteAllBytes changed the file's identity on this volume ($created -> $overwritten), so a changed identity proves nothing about how the rewrite below put its bytes there."
+	}
+
+	Write-FileAtomically -Path $target -Bytes ([System.Text.Encoding]::ASCII.GetBytes('package swapped in'))
+
+	$swapped = Get-NtfsFileId -Path $target
+	if ($swapped -eq $overwritten) {
+		throw "the rewrite wrote over $target in place -- its identity is still $swapped. File.Replace has been swapped for a write that truncates first, and a run killed inside that write leaves a truncated .odin file with nothing to say so."
+	}
+	$landed = [System.IO.File]::ReadAllText($target)
+	if ($landed -ne 'package swapped in') {
+		throw "the rewrite left '$landed' in $target rather than the bytes it was given."
+	}
 }
 
 # ----------------------------------------------------------------- summary --
