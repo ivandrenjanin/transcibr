@@ -5,9 +5,6 @@ Local transcription tool. Converts video and audio files into text transcripts u
 > **Status: early implementation.** The specification is in `docs/spec/`. The build and test
 > commands work (see [Building from source](#building-from-source)); `transcibr-cli` currently
 > reports its version and nothing else. There are no releases yet.
->
-> Building needs a checkout path without spaces, or a volume with 8.3 short names enabled:
-> `odin test` runs the binary it builds through an unquoted command line.
 
 ## What it does
 

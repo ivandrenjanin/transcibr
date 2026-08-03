@@ -59,8 +59,8 @@ if ($focused) {
 
 # The test executables and the runner's reports both land here. Space-free
 # because `odin test` runs the binary it builds through an unquoted command
-# line -- see Get-SpaceFreeDirectory.
-$testRoot = Get-SpaceFreeDirectory -Path (Join-Path $BuildRoot 'odin-test')
+# line -- see Get-OdinTestRoot.
+$testRoot = Get-OdinTestRoot
 
 $failures = @()
 $totalTests = 0

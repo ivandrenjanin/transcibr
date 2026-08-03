@@ -202,8 +202,8 @@ function Get-OdinPackage {
 	return $packages
 }
 
-# A directory guaranteed to exist and to contain no space, for `odin test` to
-# write its test executable into.
+# A directory that exists and contains no space, for `odin test` to write the
+# executable it builds and the runner to write its JSON report into.
 #
 # `odin test` builds a test binary and then runs it, and the command line it
 # builds to do that is not quoted: any space in the executable's path is
@@ -213,28 +213,42 @@ function Get-OdinPackage {
 # Smith\` breaks the sweep before a single test runs -- and CI never sees it,
 # because a runner's D:\a\... path has no spaces. `odin build` is unaffected.
 #
-# The 8.3 short name is the escape: `John Smith` becomes `JOHNSM~1`. It is not
-# guaranteed to exist (8.3 generation can be turned off per volume), so the
-# result is checked rather than assumed.
-function Get-SpaceFreeDirectory {
-	param([Parameter(Mandatory)] [string] $Path)
-
-	New-Item -ItemType Directory -Path $Path -Force | Out-Null
-	if ($Path -notmatch ' ') {
-		return $Path
+# build\ is where these belong and is the answer whenever the checkout allows
+# it. Where it does not, the space-free property is CHOSEN rather than
+# sanitised for: the 8.3 short name (`John Smith` -> `JOHNSM~1`) looks like the
+# escape and is not one. Generation is a per-volume policy that can be off; it
+# runs at creation time, so enabling it does not retroactively name a directory
+# that already exists; and the lookup goes through Scripting.FileSystemObject,
+# a raw COM failure wherever Windows Script Host is disabled by policy.
+# ADR-0002 settles the same question the same way for the engine's cache.
+function Get-OdinTestRoot {
+	$preferred = Join-Path $BuildRoot 'odin-test'
+	if ($preferred -notmatch ' ') {
+		New-Item -ItemType Directory -Path $preferred -Force | Out-Null
+		return $preferred
 	}
 
-	$fso = New-Object -ComObject Scripting.FileSystemObject
-	$short = $fso.GetFolder($Path).ShortPath
-	if ($short -match ' ') {
-		throw @"
-$Path contains a space and has no 8.3 short name to fall back on, so `odin test`
-cannot write its test executable anywhere it can then run. Either check the
-repository out under a path without spaces, or re-enable 8.3 name generation on
-this volume (fsutil 8dot3name set 0).
-"@
+	# ProgramData rather than the drive root: always present, writable without
+	# elevation, and spelled without a space on every Windows install. Checked
+	# all the same -- it is relocatable, and a chosen property that goes
+	# unverified is the assumption this function exists to stop making.
+	$advice = 'Check the repository out under a path with no space in it.'
+	if (-not $env:ProgramData) {
+		throw "$preferred contains a space and ProgramData is unset, so there is nowhere to put a test executable that odin test can then run. $advice"
 	}
-	return $short
+
+	$chosen = Join-Path $env:ProgramData 'transcibr\odin-test'
+	if ($chosen -match ' ') {
+		throw "$preferred contains a space and so does the fallback $chosen. $advice"
+	}
+
+	try {
+		New-Item -ItemType Directory -Path $chosen -Force -ErrorAction Stop | Out-Null
+	}
+	catch {
+		throw "$preferred contains a space, and $chosen could not be created to hold the test executables instead: $($_.Exception.Message) $advice"
+	}
+	return $chosen
 }
 
 # The subsystem recorded in a PE image's optional header. Reading the header is
