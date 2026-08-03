@@ -1,4 +1,4 @@
-package command_line
+package process
 
 import "core:fmt"
 import "core:mem"
@@ -13,12 +13,12 @@ import "core:testing"
 // assumption; both would agree, and a child linked against the real one would
 // still receive something else. So the command line goes to `CommandLineToArgvW`
 // -- the shell32 entry point that actually parses `GetCommandLineW()` for every
-// program that does not roll its own -- and what comes back is compared against
+// child that does not roll its own -- and what comes back is compared against
 // what went in.
 //
 // The builder stays pure (ADR-0009); this does not. That asymmetry is deliberate
 // and is the only reason the criterion can be met at all: purity is a property of
-// `build`, not of the harness that checks it.
+// `build_command_line`, not of the harness that checks it.
 //
 // The caller owns the slice and every string in it; `free_argv` returns both.
 @(private)
@@ -63,12 +63,12 @@ free_argv :: proc(argv: []string, allocator: mem.Allocator) {
 @(private)
 expect_round_trip :: proc(
 	t: ^testing.T,
-	program: string,
+	executable: string,
 	arguments: []string,
 	name: string,
 	loc := #caller_location,
 ) {
-	line, err := build(program, arguments, context.allocator)
+	line, err := build_command_line(executable, arguments, context.allocator)
 	defer delete(line, context.allocator)
 	testing.expectf(t, err.fault == .None, "%s: build refused with %v", name, err.fault, loc = loc)
 
@@ -87,7 +87,14 @@ expect_round_trip :: proc(
 		return
 	}
 
-	testing.expectf(t, argv[0] == program, "%s: argv[0] came back <%s>", name, argv[0], loc = loc)
+	testing.expectf(
+		t,
+		argv[0] == executable,
+		"%s: argv[0] came back <%s>",
+		name,
+		argv[0],
+		loc = loc,
+	)
 	for want, i in arguments {
 		testing.expectf(
 			t,
@@ -196,7 +203,11 @@ whitespace_arguments_round_trip :: proc(t: ^testing.T) {
 // asked for.
 @(test)
 an_empty_argument_is_emitted_rather_than_dropped :: proc(t: ^testing.T) {
-	line, err := build(EXE, {"--language", "", "--model", "big.bin"}, context.allocator)
+	line, err := build_command_line(
+		EXE,
+		{"--language", "", "--model", "big.bin"},
+		context.allocator,
+	)
 	defer delete(line, context.allocator)
 	testing.expect_value(t, err.fault, Build_Fault.None)
 
@@ -284,7 +295,7 @@ backslash_arguments_round_trip :: proc(t: ^testing.T) {
 // line whose UTF-16 form Windows re-splits into exactly these arguments. It says
 // NOTHING about whether the engine can then open the file. `whisper-cli` is
 // `int main(int argc, char**argv)` under MSVC, so its argv arrives in the system
-// ANSI code page and a non-ASCII path is mangled before the program sees it
+// ANSI code page and a non-ASCII path is mangled before the executable sees it
 // (ADR-0002) -- which is precisely why ADR-0002 keeps the engine's cache and
 // model on an ASCII-only path instead. ffmpeg re-reads `GetCommandLineW()` and
 // does not have that bug, so it is the child this actually buys something for.
@@ -320,10 +331,10 @@ non_ascii_arguments_round_trip :: proc(t: ^testing.T) {
 // that reused the argument rule here would double it and hand the child a path
 // with a second backslash that is not in the filesystem.
 //
-// The program path is checked as argv[0] by expect_round_trip on every case in
+// The executable path is checked as argv[0] by expect_round_trip on every case in
 // this file; these are the paths whose SHAPE is the point.
 @(private)
-PROGRAM_CASES :: []string {
+EXECUTABLE_CASES :: []string {
 	// The ordinary path every other test in this file already runs as argv[0],
 	// named once rather than spelled a second time here.
 	EXE,
@@ -344,13 +355,13 @@ PROGRAM_CASES :: []string {
 
 @(test)
 the_program_path_round_trips_under_its_own_rule :: proc(t: ^testing.T) {
-	for program, i in PROGRAM_CASES {
-		expect_round_trip(t, program, {}, tprint_case("program", i, "alone"))
+	for executable, i in EXECUTABLE_CASES {
+		expect_round_trip(t, executable, {}, tprint_case("executable", i, "alone"))
 		expect_round_trip(
 			t,
-			program,
+			executable,
 			{"-i", "a b.mkv", ""},
-			tprint_case("program", i, "with arguments"),
+			tprint_case("executable", i, "with arguments"),
 		)
 	}
 }
@@ -369,16 +380,16 @@ an_unspellable_program_path_is_refused :: proc(t: ^testing.T) {
 	// Empty. `CommandLineToArgvW` measured on an EMPTY command line returns the
 	// running executable's own path as argv[0] -- so a child handed one would
 	// silently run against itself rather than fail.
-	line, err := build("", {"-i", "a.mkv"}, context.allocator)
-	testing.expect_value(t, err.fault, Build_Fault.Empty_Program)
+	line, err := build_command_line("", {"-i", "a.mkv"}, context.allocator)
+	testing.expect_value(t, err.fault, Build_Fault.Empty_Executable)
 	testing.expect_value(t, len(line), 0)
 
 	// A quote. argv[0] has no escape mechanism at all: measured, `"a""b" one`
 	// yields argv[0] `a`, argv[1] `b`, argv[2] `one`, so the path simply cannot
 	// be expressed. Windows forbids `"` in a filename anyway -- a caller holding
 	// one has a bug, not an exotic path.
-	quoted, quote_err := build(`C:\a"b\ffmpeg.exe`, {}, context.allocator)
-	testing.expect_value(t, quote_err.fault, Build_Fault.Quote_In_Program)
+	quoted, quote_err := build_command_line(`C:\a"b\ffmpeg.exe`, {}, context.allocator)
+	testing.expect_value(t, quote_err.fault, Build_Fault.Quote_In_Executable)
 	testing.expect_value(t, len(quoted), 0)
 }
 
@@ -391,11 +402,15 @@ an_unspellable_program_path_is_refused :: proc(t: ^testing.T) {
 // returned from two scans cannot keep it: `a NUL somewhere` names no file.
 @(test)
 an_embedded_nul_is_refused :: proc(t: ^testing.T) {
-	line, err := build("C:\\a\x00b\\ffmpeg.exe", {"-i"}, context.allocator)
-	testing.expect_value(t, err.fault, Build_Fault.Nul_In_Program)
+	line, err := build_command_line("C:\\a\x00b\\ffmpeg.exe", {"-i"}, context.allocator)
+	testing.expect_value(t, err.fault, Build_Fault.Nul_In_Executable)
 	testing.expect_value(t, len(line), 0)
 
-	in_argument, argument_err := build(EXE, {"-i", "a\x00b.mkv", "-y"}, context.allocator)
+	in_argument, argument_err := build_command_line(
+		EXE,
+		{"-i", "a\x00b.mkv", "-y"},
+		context.allocator,
+	)
 	testing.expect_value(t, argument_err.fault, Build_Fault.Nul_In_Argument)
 	testing.expect_value(t, len(in_argument), 0)
 }
@@ -407,16 +422,16 @@ an_embedded_nul_is_refused :: proc(t: ^testing.T) {
 a_refused_argument_is_reported_by_position :: proc(t: ^testing.T) {
 	// 1-based, and the SECOND argument carries it -- so a report that is off by
 	// one names `-i` and sends a reader to the wrong place entirely.
-	_, err := build(EXE, {"-i", "a\x00b.mkv", "-y"}, context.allocator)
+	_, err := build_command_line(EXE, {"-i", "a\x00b.mkv", "-y"}, context.allocator)
 	testing.expect_value(t, err.fault, Build_Fault.Nul_In_Argument)
 	testing.expect_value(t, err.argument, 2)
 	testing.expect_value(t, err.culprit, "a\x00b.mkv")
 
-	// A fault about the program blames no argument, which is the negative space
+	// A fault about the executable blames no argument, which is the negative space
 	// of the same rule (A3): an ordinal left set would print `argument 2` over a
 	// fault that has nothing to do with the argument list.
-	_, program_err := build(`C:\a"b\ffmpeg.exe`, {"-i", "in.mkv"}, context.allocator)
-	testing.expect_value(t, program_err.fault, Build_Fault.Quote_In_Program)
+	_, program_err := build_command_line(`C:\a"b\ffmpeg.exe`, {"-i", "in.mkv"}, context.allocator)
+	testing.expect_value(t, program_err.fault, Build_Fault.Quote_In_Executable)
 	testing.expect_value(t, program_err.argument, 0)
 	testing.expect_value(t, program_err.culprit, `C:\a"b\ffmpeg.exe`)
 }
@@ -427,7 +442,7 @@ a_refused_argument_is_reported_by_position :: proc(t: ^testing.T) {
 // argues against at length -- and this package would be the second copy of it.
 @(test)
 a_refusal_renders_as_one_line_naming_its_input :: proc(t: ^testing.T) {
-	_, quote_err := build(`C:\a"b\ffmpeg.exe`, {}, context.allocator)
+	_, quote_err := build_command_line(`C:\a"b\ffmpeg.exe`, {}, context.allocator)
 	quoted := error_message(quote_err, context.allocator)
 	defer delete(quoted, context.allocator)
 	testing.expect(
@@ -436,7 +451,7 @@ a_refusal_renders_as_one_line_naming_its_input :: proc(t: ^testing.T) {
 		"a refusal that does not say which path to go and fix",
 	)
 
-	_, argument_err := build(EXE, {"-i", "a\x00b.mkv"}, context.allocator)
+	_, argument_err := build_command_line(EXE, {"-i", "a\x00b.mkv"}, context.allocator)
 	named := error_message(argument_err, context.allocator)
 	defer delete(named, context.allocator)
 	testing.expect(t, strings.contains(named, "argument 2"), "the report does not say which")
@@ -490,7 +505,7 @@ UNENCODABLE_CASES :: []string {
 // THE CONTRACT IN BOTH DIRECTIONS, measured against the real conversion rather
 // than reasoned about.
 //
-// `build` returns UTF-8 and the spawner converts it with `utf8_to_utf16`, which
+// `build_command_line` returns UTF-8 and the spawner converts it with `utf8_to_utf16`, which
 // passes MB_ERR_INVALID_CHARS and answers nil rather than substituting anything.
 // So a line this accepts but Windows cannot encode fails LATER, in the shell,
 // with no Build_Error naming the argument that caused it -- and ADR-0009 says
@@ -506,7 +521,7 @@ UNENCODABLE_CASES :: []string {
 @(test)
 what_the_builder_accepts_is_what_windows_can_encode :: proc(t: ^testing.T) {
 	for value, i in UNENCODABLE_CASES {
-		line, err := build(EXE, {value}, context.allocator)
+		line, err := build_command_line(EXE, {value}, context.allocator)
 		defer delete(line, context.allocator)
 		testing.expectf(
 			t,
@@ -517,13 +532,13 @@ what_the_builder_accepts_is_what_windows_can_encode :: proc(t: ^testing.T) {
 		)
 		testing.expectf(t, len(line) == 0, "unencodable[%d]: refused but returned a line", i)
 
-		// The program path carries the same bytes on the same terms.
-		as_program, program_err := build(value, {"-i"}, context.allocator)
+		// The executable path carries the same bytes on the same terms.
+		as_program, program_err := build_command_line(value, {"-i"}, context.allocator)
 		defer delete(as_program, context.allocator)
 		testing.expectf(
 			t,
-			program_err.fault == .Invalid_Utf8_In_Program,
-			"unencodable[%d] as a program path: accepted with %v",
+			program_err.fault == .Invalid_Utf8_In_Executable,
+			"unencodable[%d] as an executable path: accepted with %v",
 			i,
 			program_err.fault,
 		)
@@ -536,7 +551,7 @@ what_the_builder_accepts_is_what_windows_can_encode :: proc(t: ^testing.T) {
 	// this pins the non-ASCII table, which is where a check that was too strict
 	// would bite first.
 	for value, i in NON_ASCII_CASES {
-		line, err := build(EXE, {value}, context.allocator)
+		line, err := build_command_line(EXE, {value}, context.allocator)
 		defer delete(line, context.allocator)
 		testing.expectf(t, err.fault == .None, "non-ascii[%d]: refused with %v", i, err.fault)
 
@@ -559,7 +574,7 @@ a_command_line_past_the_windows_ceiling_is_refused :: proc(t: ^testing.T) {
 	long := strings.repeat("a", MAX_COMMAND_LINE_UNITS, context.allocator)
 	defer delete(long, context.allocator)
 
-	line, err := build(EXE, {long}, context.allocator)
+	line, err := build_command_line(EXE, {long}, context.allocator)
 	testing.expect_value(t, err.fault, Build_Fault.Too_Long)
 	testing.expect_value(t, len(line), 0)
 }
@@ -573,7 +588,7 @@ the_ceiling_is_counted_in_utf16_code_units :: proc(t: ^testing.T) {
 	body := strings.repeat("\U0001F600", runes, context.allocator)
 	defer delete(body, context.allocator)
 
-	line, err := build(EXE, {body}, context.allocator)
+	line, err := build_command_line(EXE, {body}, context.allocator)
 	defer delete(line, context.allocator)
 	testing.expect_value(t, err.fault, Build_Fault.None)
 	testing.expect(
@@ -594,20 +609,20 @@ the_ceiling_is_counted_in_utf16_code_units :: proc(t: ^testing.T) {
 // sides of the boundary, so an off-by-one in either direction is caught (A3).
 @(test)
 the_ceiling_admits_the_longest_line_that_fits :: proc(t: ^testing.T) {
-	// `"x" ` is the quoted program plus the separating space: 4 units. The
+	// `"x" ` is the quoted executable plus the separating space: 4 units. The
 	// terminating null Windows counts takes one more.
 	overhead := len(`"x" `) + 1
 	fits := strings.repeat("a", MAX_COMMAND_LINE_UNITS - overhead, context.allocator)
 	defer delete(fits, context.allocator)
 
-	line, err := build("x", {fits}, context.allocator)
+	line, err := build_command_line("x", {fits}, context.allocator)
 	defer delete(line, context.allocator)
 	testing.expect_value(t, err.fault, Build_Fault.None)
 	testing.expect_value(t, len(line), MAX_COMMAND_LINE_UNITS - 1)
 
 	one_too_many := strings.concatenate({fits, "a"}, context.allocator)
 	defer delete(one_too_many, context.allocator)
-	over, over_err := build("x", {one_too_many}, context.allocator)
+	over, over_err := build_command_line("x", {one_too_many}, context.allocator)
 	testing.expect_value(t, over_err.fault, Build_Fault.Too_Long)
 	testing.expect_value(t, len(over), 0)
 }
@@ -618,14 +633,14 @@ the_ceiling_admits_the_longest_line_that_fits :: proc(t: ^testing.T) {
 // would put a second backslash in the path instead.
 //
 // THE MUTANT THIS CASE HOLDS, written out because the measurement it rests on is
-// the one a reader is most likely to get backwards. Make write_program double a
+// the one a reader is most likely to get backwards. Make write_executable double a
 // trailing run the way write_argument does, and `C:\dir with space\` reaches the
 // child as `C:\dir with space\\` -- a path carrying a second backslash that the
 // filesystem does not have.
 //
 // MEASURED, and worth knowing before trusting the tests alone to catch it: that
-// mutant never reaches an expectation in this file. write_program's own length
-// assertion fires first ("the program path was not written whole"), and a
+// mutant never reaches an expectation in this file. write_executable's own length
+// assertion fires first ("the executable path was not written whole"), and a
 // maintainer who relaxes that one to match is stopped by build's second,
 // independent one ("a command line with no arguments carries something anyway").
 // Three separate checks have to be defeated before a wrong argv[0] can be
@@ -638,10 +653,10 @@ the_ceiling_admits_the_longest_line_that_fits :: proc(t: ^testing.T) {
 // doubled run keeps BOTH backslashes: `"C:\dir\\" one` yields argv[0]
 // `C:\dir\\`, measured, not `C:\dir\`. Nothing in argv[0] collapses, because
 // nothing in argv[0] was ever an escape -- so there is no doubling anywhere for
-// write_program to compensate for.
+// write_executable to compensate for.
 @(test)
 a_trailing_backslash_in_the_program_path_is_not_an_escape :: proc(t: ^testing.T) {
-	line, err := build(`C:\dir with space\`, {"-after"}, context.allocator)
+	line, err := build_command_line(`C:\dir with space\`, {"-after"}, context.allocator)
 	defer delete(line, context.allocator)
 	testing.expect_value(t, err.fault, Build_Fault.None)
 	testing.expect_value(t, line, `"C:\dir with space\" -after`)
@@ -654,7 +669,7 @@ a_trailing_backslash_in_the_program_path_is_not_an_escape :: proc(t: ^testing.T)
 		testing.expect_value(t, argv[1], "-after")
 	}
 
-	doubled, doubled_err := build(`C:\dir\\`, {"one"}, context.allocator)
+	doubled, doubled_err := build_command_line(`C:\dir\\`, {"one"}, context.allocator)
 	defer delete(doubled, context.allocator)
 	testing.expect_value(t, doubled_err.fault, Build_Fault.None)
 	testing.expect_value(t, doubled, `"C:\dir\\" one`)

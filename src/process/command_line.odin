@@ -1,5 +1,20 @@
-// Package command_line builds the one string Windows hands a child process as
-// its command line, from a program path and a list of arguments.
+// Package process is the Process contract: everything pure about driving a child
+// process. The spec names it as ONE core module owning two halves -- "builds
+// command lines; interprets Engine output lines into progress and duration
+// events" -- and names one test seam over both (spec S3). The second half is
+// issue #9 and is not here yet.
+//
+// Named for the module rather than for this file, and split by file the way
+// src/transcript is: that package is 1:1 with its own spec module and divided
+// internally into cue, paragraph, render and engine_json. The alternative was a
+// package called command_line that would end up holding progress parsing, or one
+// spec module and one named seam spread over two directories. The rename cost a
+// directory and no configuration, because packages are discovered rather than
+// listed -- which is only true while the module has no consumers, so it was done
+// now rather than after #9.
+//
+// THIS FILE builds the one string Windows hands a child process as its command
+// line, from an executable path and a list of arguments.
 //
 // Pure core (ADR-0009), and on that ADR's own list: no I/O, no clock, no Win32,
 // no globals. The result is UTF-8 and the caller owns it; converting to UTF-16
@@ -16,7 +31,7 @@
 // The rules below are not this package's reading of the documentation. They were
 // measured against `CommandLineToArgvW` itself, and the suite in
 // command_line_test.odin re-measures them on every run.
-package command_line
+package process
 
 import "core:fmt"
 import "core:mem"
@@ -25,7 +40,7 @@ import "core:unicode/utf8"
 
 // How the builder refused. `.None` is the only value that comes with a result.
 //
-// A8: a program path and an argument list arrive from outside -- a CLI flag, a
+// A8: an executable path and an argument list arrive from outside -- a CLI flag, a
 // discovered recording, a configured model path -- so a bad one is an operating
 // error reported through this return, never an assertion.
 Build_Fault :: enum u8 {
@@ -34,11 +49,11 @@ Build_Fault :: enum u8 {
 	// line is not an error to Windows: measured, `CommandLineToArgvW` answers one
 	// with the RUNNING executable's own path as argv[0], so a child handed one
 	// would silently run against itself.
-	Empty_Program,
+	Empty_Executable,
 	// argv[0] has no escape mechanism -- the scan ends at the next quote, whatever
-	// precedes it -- so a program path containing one cannot be expressed at all.
+	// precedes it -- so an executable path containing one cannot be expressed at all.
 	// Windows forbids `"` in a filename anyway.
-	Quote_In_Program,
+	Quote_In_Executable,
 	// A NUL ends the command line where Windows reads it, silently discarding
 	// every argument after it.
 	//
@@ -47,7 +62,7 @@ Build_Fault :: enum u8 {
 	// `Embedded_Nul` cannot tell which -- so it cannot keep the promise this
 	// package makes below, that a refusal is reported against the input that
 	// caused it. `a NUL somewhere` names no file to go and fix.
-	Nul_In_Program,
+	Nul_In_Executable,
 	Nul_In_Argument,
 	// Not valid UTF-8, and therefore not convertible to the UTF-16 that
 	// `CreateProcessW` is the only form of.
@@ -58,7 +73,7 @@ Build_Fault :: enum u8 {
 	// and nil names no argument -- and ADR-0009 says the layer holding it will
 	// never have a unit test. The same argument that keeps MAX_COMMAND_LINE_UNITS
 	// in the core.
-	Invalid_Utf8_In_Program,
+	Invalid_Utf8_In_Executable,
 	Invalid_Utf8_In_Argument,
 	// Past `CreateProcessW`'s documented ceiling; see MAX_COMMAND_LINE_UNITS.
 	Too_Long,
@@ -66,13 +81,13 @@ Build_Fault :: enum u8 {
 
 // One refused command line, named against the part that carried it.
 //
-// The culprit is BORROWED, never owned: it is the caller's own program path or
+// The culprit is BORROWED, never owned: it is the caller's own executable path or
 // argument, and it lives at least as long as the report. Parse_Error next door
 // holds `json_name` on exactly these terms.
 Build_Error :: struct {
 	fault:    Build_Fault,
-	// The program path or the argument the fault is about, or empty where there
-	// is nothing to name -- which is `.Empty_Program` and only that. Which of the
+	// The executable path or the argument the fault is about, or empty where there
+	// is nothing to name -- which is `.Empty_Executable` and only that. Which of the
 	// three it is follows from the fault and is checked in fault_at, never guessed
 	// at from whether the string happens to be empty.
 	culprit:  string,
@@ -112,9 +127,9 @@ Disposition :: enum u8 {
 @(private)
 Fault_Blames :: enum u8 {
 	Unset = 0,
-	// There is no input to name: there was no program to begin with.
+	// There is no input to name: there was no executable to begin with.
 	Nothing,
-	The_Program,
+	The_Executable,
 	An_Argument,
 }
 
@@ -143,19 +158,19 @@ Fault_Facts :: struct {
 @(private, rodata)
 FAULT := [Build_Fault]Fault_Facts {
 	.None = {},
-	.Empty_Program = {
-		says = "there is no program to run",
+	.Empty_Executable = {
+		says = "there is no executable to run",
 		blames = .Nothing,
 		disposition = .Fail_The_Job,
 	},
-	.Quote_In_Program = {
+	.Quote_In_Executable = {
 		says = "contains a quote, and argv[0] has no escape for one",
-		blames = .The_Program,
+		blames = .The_Executable,
 		disposition = .Fail_The_Job,
 	},
-	.Nul_In_Program = {
+	.Nul_In_Executable = {
 		says = "contains a NUL, which ends the command line where Windows reads it",
-		blames = .The_Program,
+		blames = .The_Executable,
 		disposition = .Fail_The_Job,
 	},
 	.Nul_In_Argument = {
@@ -163,9 +178,9 @@ FAULT := [Build_Fault]Fault_Facts {
 		blames = .An_Argument,
 		disposition = .Fail_The_Job,
 	},
-	.Invalid_Utf8_In_Program = {
+	.Invalid_Utf8_In_Executable = {
 		says = "is not valid UTF-8, so Windows cannot encode it as a command line",
-		blames = .The_Program,
+		blames = .The_Executable,
 		disposition = .Fail_The_Job,
 	},
 	.Invalid_Utf8_In_Argument = {
@@ -175,7 +190,7 @@ FAULT := [Build_Fault]Fault_Facts {
 	},
 	.Too_Long = {
 		says = "needs a command line past the 32,767 code units CreateProcessW accepts",
-		blames = .The_Program,
+		blames = .The_Executable,
 		disposition = .Shorten_And_Replan,
 	},
 }
@@ -190,7 +205,7 @@ fault_facts :: proc(fault: Build_Fault) -> (facts: Fault_Facts) {
 	assert(len(facts.says) > 0, "a fault was added to Build_Fault without a row in FAULT")
 	// The negative space of the same missing row (A3): a row could carry a
 	// sentence and no blame, and error_message would then print an argument's
-	// half-sentence as though it were about the program.
+	// half-sentence as though it were about the executable.
 	assert(facts.blames != .Unset, "a fault's row in FAULT names nothing to blame")
 	return
 }
@@ -223,7 +238,7 @@ error_message :: proc(err: Build_Error, allocator: mem.Allocator) -> string {
 			facts.says,
 			allocator = allocator,
 		)
-	case .The_Program:
+	case .The_Executable:
 		return fmt.aprintf("%s: %s", err.culprit, facts.says, allocator = allocator)
 	case .Nothing:
 		return strings.clone(facts.says, allocator)
@@ -296,24 +311,24 @@ MAX_ESCAPED_OVERHEAD :: 3
 // against, not a limit on what may be handed in, so a one-megabyte argument
 // reserves about two megabytes and is only then refused.
 //
-// A8: the program path and every argument arrive from outside this program -- a
+// A8: the executable path and every argument arrive from outside this program -- a
 // CLI flag, a discovered recording, a configured model path -- so each is checked
 // and refused through `err`. No input reaches an assertion here.
-build :: proc(
-	program: string,
+build_command_line :: proc(
+	executable: string,
 	arguments: []string,
 	allocator: mem.Allocator,
 ) -> (
 	command_line: string,
 	err: Build_Error,
 ) {
-	reserve, refusal := check_inputs(program, arguments)
+	reserve, refusal := check_inputs(executable, arguments)
 	if refusal.fault != .None {
 		return "", refusal
 	}
 
 	b := strings.builder_make(0, reserve, allocator)
-	write_program(&b, program)
+	write_executable(&b, executable)
 	for argument in arguments {
 		strings.write_byte(&b, ' ')
 		write_argument(&b, argument)
@@ -326,16 +341,16 @@ build :: proc(
 	// the bound would go quietly wrong instead of loudly.
 	assert(len(out) <= reserve, "the escaping outgrew the reservation made for it")
 	assert(
-		len(out) >= len(program) + 2,
-		"the command line is shorter than the quoted program path",
+		len(out) >= len(executable) + 2,
+		"the command line is shorter than the quoted executable path",
 	)
-	assert(out[0] == '"', "the program path is not quoted")
+	assert(out[0] == '"', "the executable path is not quoted")
 	// The negative space (A3): with no arguments there is nothing after the
 	// closing quote, so a stray separator or a dropped argument shows up here
 	// rather than as a child's misreading.
 	if len(arguments) == 0 {
 		assert(
-			len(out) == len(program) + 2,
+			len(out) == len(executable) + 2,
 			"a command line with no arguments carries something anyway",
 		)
 	}
@@ -345,7 +360,7 @@ build :: proc(
 	// result would refuse lines that fit.
 	if utf16_units(out) + 1 > MAX_COMMAND_LINE_UNITS {
 		strings.builder_destroy(&b)
-		return "", fault_at(.Too_Long, program, 0)
+		return "", fault_at(.Too_Long, executable, 0)
 	}
 	return out, Build_Error{}
 }
@@ -358,15 +373,15 @@ build :: proc(
 // the same properties on the write side (A4), where a value of this shape
 // becomes a command line nobody can read back.
 @(private)
-check_inputs :: proc(program: string, arguments: []string) -> (reserve: int, err: Build_Error) {
-	if len(program) == 0 {
-		return 0, fault_at(.Empty_Program, "", 0)
+check_inputs :: proc(executable: string, arguments: []string) -> (reserve: int, err: Build_Error) {
+	if len(executable) == 0 {
+		return 0, fault_at(.Empty_Executable, "", 0)
 	}
-	if strings.index_byte(program, '"') >= 0 {
-		return 0, fault_at(.Quote_In_Program, program, 0)
+	if strings.index_byte(executable, '"') >= 0 {
+		return 0, fault_at(.Quote_In_Executable, executable, 0)
 	}
-	if strings.index_byte(program, 0) >= 0 {
-		return 0, fault_at(.Nul_In_Program, program, 0)
+	if strings.index_byte(executable, 0) >= 0 {
+		return 0, fault_at(.Nul_In_Executable, executable, 0)
 	}
 	// utf8.valid_string and not a hand-rolled scan, for the reason
 	// json_nesting_is_bounded gives next door: a second answer to a question the
@@ -379,12 +394,12 @@ check_inputs :: proc(program: string, arguments: []string) -> (reserve: int, err
 	// verdict every time, zero disagreements. Both reject unpaired surrogates,
 	// overlong forms, truncated sequences and stray continuation bytes. The suite
 	// keeps the named cases; the fuzz is what established the rule.
-	if !utf8.valid_string(program) {
-		return 0, fault_at(.Invalid_Utf8_In_Program, program, 0)
+	if !utf8.valid_string(executable) {
+		return 0, fault_at(.Invalid_Utf8_In_Executable, executable, 0)
 	}
 
 	// See MAX_ESCAPED_OVERHEAD; the sum costs an addition per argument.
-	reserve = len(program) + 2
+	reserve = len(executable) + 2
 	for argument, i in arguments {
 		if strings.index_byte(argument, 0) >= 0 {
 			// 1-based, so the report counts the way a reader does.
@@ -424,7 +439,7 @@ utf16_units :: proc(s: string) -> int {
 	return units
 }
 
-// The program path, quoted -- and NOT escaped, because argv[0] is parsed by a
+// The executable path, quoted -- and NOT escaped, because argv[0] is parsed by a
 // different rule from every argument after it.
 //
 // Measured: `"C:\dir with space\" one` yields argv[0] `C:\dir with space\` and
@@ -433,22 +448,22 @@ utf16_units :: proc(s: string) -> int {
 // opening quote, copy until the next one" -- no backslash is special, which is
 // exactly why the general argument rule below must not be reused here.
 @(private)
-write_program :: proc(b: ^strings.Builder, program: string) {
-	// Both of these are refused at the boundary in `build`; asserted again here,
+write_executable :: proc(b: ^strings.Builder, executable: string) {
+	// Both of these are refused at the boundary in `check_inputs`; asserted again here,
 	// on the write side, because that is where a path this shape becomes a command
 	// line nobody can read back (A4). A quote in particular is unrecoverable: it
 	// ends argv[0] early and every argument after it shifts.
-	assert(len(program) > 0, "the program path must not be empty")
-	assert(strings.index_byte(program, '"') == -1, "a quote reached the program path writer")
+	assert(len(executable) > 0, "the executable path must not be empty")
+	assert(strings.index_byte(executable, '"') == -1, "a quote reached the executable path writer")
 
 	start := strings.builder_len(b^)
 	strings.write_byte(b, '"')
-	strings.write_string(b, program)
+	strings.write_string(b, executable)
 	strings.write_byte(b, '"')
 
 	assert(
-		strings.builder_len(b^) == start + len(program) + 2,
-		"the program path was not written whole",
+		strings.builder_len(b^) == start + len(executable) + 2,
+		"the executable path was not written whole",
 	)
 }
 
