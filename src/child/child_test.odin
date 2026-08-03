@@ -7,6 +7,46 @@ import win32 "core:sys/windows"
 import "core:testing"
 import "core:time"
 
+// The two Win32 entry points this suite asks its questions through, declared
+// HERE and not beside the ones the package itself calls.
+//
+// The argument is command_line_test.odin's, measured on that side and carried
+// over: a `_test.odin` file is type-checked in an ordinary build but nothing in
+// it is linked into one, so a probe declared here costs the shipped image
+// nothing. Declared beside the spawner's own bindings they would read as
+// something the spawner uses, and nothing anywhere would say otherwise.
+//
+// A second `foreign import` of the same library under a second name, because one
+// name cannot be bound twice in one package. It is the same Kernel32.
+foreign import kernel32_probe "system:Kernel32.lib"
+
+@(default_calling_convention = "system")
+foreign kernel32_probe {
+	IsProcessInJob :: proc(ProcessHandle: win32.HANDLE, JobHandle: win32.HANDLE, Result: ^win32.BOOL) -> win32.BOOL ---
+	QueryInformationJobObject :: proc(hJob: win32.HANDLE, JobObjectInformationClass: i32, lpJobObjectInformation: win32.LPVOID, cbJobObjectInformationLength: win32.DWORD, lpReturnLength: ^win32.DWORD) -> win32.BOOL ---
+}
+
+// NO CASE HERE COVERS THE CONSOLE-WINDOW CRITERION, and that is a finding rather
+// than an omission -- the pull request records the hand verification instead.
+//
+// The criterion is "no console window appears, from a windowed binary", and a
+// windowed binary is what does not exist yet (issue #15). The proxy that looks
+// obvious is `GetConsoleProcessList`: start a child, ask whether it joined this
+// process's console, and require that it did not. MEASURED against a spike
+// spawning the same child five ways, that proxy answers a different question.
+//
+//   no flags, no std handles     on this console: TRUE
+//   STARTF_USESTDHANDLES alone   on this console: false
+//   handle list                  on this console: false
+//   CREATE_NO_WINDOW alone       on this console: false
+//   CREATE_NO_WINDOW + list      on this console: false
+//
+// Redirecting the standard handles is what takes a child off that list, so the
+// proxy stays green with CREATE_NO_WINDOW deleted -- measured that way too, on
+// this suite, before the case was withdrawn. A case that cannot fail on the edit
+// it exists to catch is a comment with a runtime cost, and this repository has
+// already learned that once, in utf16_units next door.
+//
 // Every child this suite starts is BOUNDED, and that is a rule rather than a
 // habit: `odin test` runs what it builds, and a test that starts a child which
 // never exits wedges the sweep behind scripts\common.ps1's ten-minute ceiling
@@ -29,6 +69,22 @@ STAY_ALIVE :: "waitfor /t 5 transcibrNobodySignalsThis"
 // instead of INFINITE.
 @(private)
 BOUND_MS :: u32(60_000)
+
+// A child for the one case that must still be running long AFTER a bound has
+// run out, and the bound that goes with it.
+//
+// MEASURED, and the reason both exist: the job-object case below first waited
+// BOUND_MS for the child to end, and with the kill-on-close limit mutated away
+// it still passed -- because `waitfor /t 5` ends by itself well inside a
+// sixty-second wait, and a case cannot tell "the job object ended it" from "it
+// finished". A wait bound has to be far shorter than the child's own life or it
+// measures the child's patience instead of the mechanism. Closing a job object
+// ends its members in microseconds, so five seconds is generous by four orders
+// of magnitude and still twenty short of the child.
+@(private)
+STAY_LONGER :: "waitfor /t 25 transcibrNobodySignalsThis"
+@(private)
+KILL_BOUND_MS :: u32(5_000)
 
 // The ceiling on waiting for a child to SAY something, which is a shorter wait
 // than waiting for one to finish and is bounded separately for that reason.
@@ -411,4 +467,85 @@ one_childs_pipe_ends_while_another_child_is_still_running :: proc(t: ^testing.T)
 
 	_, exited := exit_code(&lasting)
 	testing.expect(t, !exited, "the lasting child was gone, so nothing ran alongside anything")
+}
+
+// Half of the criterion about killing the parent, and the half that can be
+// automated: the job object really carries the limit that ends its members when
+// its last handle closes, and the child really is in it.
+//
+// The other half -- that a parent killed outright leaves no child behind -- is
+// the same mechanism seen from outside, because process exit is nothing more
+// than the kernel closing the handles a process held. It is verified by hand and
+// recorded in the pull request; no test can meaningfully kill the process it is
+// running in.
+@(test)
+a_child_is_put_in_a_job_object_that_ends_its_members_when_it_closes :: proc(t: ^testing.T) {
+	group, group_err := job_object_open()
+	defer job_object_close(&group)
+	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+		return
+	}
+
+	limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+	returned: win32.DWORD
+	read := QueryInformationJobObject(
+		group.handle,
+		JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+		rawptr(&limits),
+		size_of(limits),
+		&returned,
+	)
+	if !testing.expect(t, bool(read), "the job object would not say what limits it carries") {
+		return
+	}
+	testing.expect(
+		t,
+		limits.BasicLimitInformation.LimitFlags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE != 0,
+		"the job object does not end its members when it closes, so it contains nothing",
+	)
+
+	c, err := start(&group, CMD, {"/c", STAY_ALIVE}, context.allocator)
+	defer close(&c)
+	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
+		return
+	}
+
+	inside: win32.BOOL
+	asked := IsProcessInJob(c.handle, group.handle, &inside)
+	testing.expect(t, bool(asked), "Windows would not say whether the child is in the job object")
+	testing.expect(t, bool(inside), "the child was started outside the job object it was given")
+}
+
+// The mechanism itself, exercised: a running child ends when the job object
+// holding it is closed, and it ends because of that and not because it had
+// already finished.
+@(test)
+closing_the_job_object_ends_a_child_that_is_still_running :: proc(t: ^testing.T) {
+	group, group_err := job_object_open()
+	// Closed part-way through on purpose. The defer is still here and is still
+	// worth having: it is a no-op on a job object already given back, and it is
+	// what covers every early return above that point.
+	defer job_object_close(&group)
+	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+		return
+	}
+
+	c, err := start(&group, CMD, {"/c", STAY_LONGER}, context.allocator)
+	defer close(&c)
+	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
+		return
+	}
+
+	// The instrument, before anything is proved by it: a child that had already
+	// exited would make the next three lines pass for the wrong reason.
+	_, early := exit_code(&c)
+	if !testing.expect(t, !early, "the child was already gone before the job object closed") {
+		return
+	}
+
+	job_object_close(&group)
+
+	testing.expect(t, wait(&c, KILL_BOUND_MS), "the child outlived the job object that held it")
+	_, gone := exit_code(&c)
+	testing.expect(t, gone, "the child never exited after its job object closed")
 }
