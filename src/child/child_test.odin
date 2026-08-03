@@ -686,38 +686,105 @@ freed_within_bound :: proc(path: string) -> bool {
 	}
 }
 
-// Waits until the child has the file open, under a bound. A child that never got
-// that far would make the case below pass on a file nobody was holding.
+// How many processes the child's own job object holds once the child has got as
+// far as the state the case below is about: cmd.exe, its conhost.exe, and the
+// waitfor.exe cmd starts to do the waiting. Read back BY NAME from the job's
+// process-id list, not counted from a diagram.
+//
+// MEASURED, and it is the whole reliability of that case. `cmd /c (waitfor ...)
+// > path` opens the redirect BEFORE it starts waitfor, so the file reads as held
+// while CMD ALONE holds it -- and in that instant there is no grandchild to
+// leave behind, so a stop reduced to ADR-0004's literal rule passes. Probed with
+// a poll tight enough to see it: in 12 runs of 12 the file first read as held
+// with the job holding TWO processes, and the third arrived about 1.2 ms later.
+// Whether a five-millisecond poll lands inside that window is luck, and it was
+// measured as such -- the literal-rule mutant passed 4 of 12 runs.
+//
+// So the count is what is waited for and the file is only the other half. Three
+// means waitfor.exe is up and holding the handle it inherited, which is the
+// state a process-only terminate is supposed to fail on.
 @(private)
-held_by_the_child :: proc(path: string) -> bool {
+HOLDERS_OF_THE_FILE :: u32(3)
+
+// How many processes a job object is holding right now, or zero where Windows
+// would not say. The same counter `job_emptied` reads, asked for a different
+// number: there, that it has reached zero; here, that it has got as far as three.
+@(private)
+job_holds :: proc(job: win32.HANDLE) -> u32 {
+	accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
+	returned: win32.DWORD
+	read := QueryInformationJobObject(
+		job,
+		JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
+		rawptr(&accounting),
+		size_of(accounting),
+		&returned,
+	)
+	if !read {
+		return 0
+	}
+	return u32(accounting.ActiveProcesses)
+}
+
+// Waits until the child has started the process that holds the file, and that
+// file is held, under a bound. A child that never got that far would make the
+// case below pass on a file nobody was holding -- or, worse and measurably,
+// on a file held by a process the mutant it exists to catch does terminate.
+@(private)
+held_by_the_child :: proc(c: ^Child, path: string) -> bool {
+	assert(c != nil, "there is no child here to wait on")
+	assert(c.tree != nil, "a started child always has a job object of its own")
+
 	started := time.tick_now()
 	for time.tick_since(started) < SAY_BOUND {
-		if os.exists(path) && !taken_exclusively(path) {
-			return true
+		if job_holds(c.tree) >= HOLDERS_OF_THE_FILE {
+			if os.exists(path) && !taken_exclusively(path) {
+				return true
+			}
 		}
 		time.sleep(5 * time.Millisecond)
 	}
 	return false
 }
 
-// Stopping a child is TERMINATE then WAIT, and the wait is the whole value: until
-// the process object signals, the child may still hold a file open, and the next
-// thing transcibr does to a stopped child is move, delete or re-run against the
-// artifacts it was writing (ADR-0002).
+// Stopping a child is TERMINATE THE TREE then WAIT FOR IT TO EMPTY, and the wait
+// is the whole value: until everything the child started has gone, a file may
+// still be open, and the next thing transcibr does to a stopped child is move,
+// delete or re-run against the artifacts it was writing (ADR-0002).
 //
-// So the file is the measurement. The child holds one open for as long as it
-// runs, and an exclusive open conflicts with any handle at all, so the file comes
-// free only when nothing is holding it.
+// TWO measurements, and they are not redundant. The file is the CONSEQUENCE a
+// caller cares about, and the emptied job object is the CLAIM: an exclusive open
+// conflicts with any handle at all, so the file comes free only when nothing
+// holds it, and the job's own process count says whether anything the child
+// started is still running at all.
 //
-// MEASURED against both ways of getting stop wrong:
+// The file alone is not enough, and that was measured rather than reasoned
+// about. Terminating cmd.exe tears down the console it owned, and the grandchild
+// on that console begins exiting too -- so `waitfor.exe` sometimes lets go of
+// the file within milliseconds and sometimes holds it for longer than any bound
+// this case can afford. Over 22 runs of the ADR-0004-literal mutant the file
+// came free at once in 1: the mutant PASSED, having left two processes running.
+// The job's counter said 2 in every one of those 22 runs, the passing one
+// included.
 //
-//   terminate the child and not the tree   -> "the child did not stop within the
-//                                             bound", after three seconds
+// MEASURED against all three ways of getting stop wrong:
+//
+//   terminate the child and not the tree   -> "stop came back with 2 process(es)
+//                                             the child started still running"
 //   terminate and come straight back       -> "stop came back with the child
 //                                             still running", at once
+//   wait for the child and not the job     -> the same counter, same message
 //
-// The first is the mistake that was actually made here, and it is caught by the
-// bound rather than by the file: see STOP_BOUND.
+// The path goes in as its OWN argument rather than inside a command string, and
+// that is not a style choice. build_command_line quotes an argument that holds a
+// space and escapes a quote inside one as `\"` -- which is the rule
+// CommandLineToArgvW reads and NOT the rule cmd.exe reads, so a quoted path
+// buried in a single command string reaches cmd with the backslashes still on
+// it. As its own argument it is quoted once, by us, and cmd sees a path. Spelled
+// as SEPARATE, space-free arguments so that only the path is quoted: cmd.exe
+// strips the outer quotes of a `/c` string when its first character is one, and
+// the quote it removes is the LAST on the line -- which would be the path's own
+// closing quote on a machine whose temp directory holds a space.
 @(test)
 a_stopped_child_has_let_go_of_the_file_it_held :: proc(t: ^testing.T) {
 	path := scratch_path(t, "held-open")
@@ -730,16 +797,6 @@ a_stopped_child_has_let_go_of_the_file_it_held :: proc(t: ^testing.T) {
 		return
 	}
 
-	// The path goes in as its OWN argument rather than inside a command string,
-	// and that is not a style choice. build_command_line quotes an argument that
-	// holds a space and escapes a quote inside one as `\"` -- which is the rule
-	// CommandLineToArgvW reads and NOT the rule cmd.exe reads, so a quoted path
-	// buried in a single command string reaches cmd with the backslashes still on
-	// it. As its own argument it is quoted once, by us, and cmd sees a path.
-	// Spelled as SEPARATE, space-free arguments so that only the path is quoted.
-	// cmd.exe strips the outer quotes of a `/c` string when its first character is
-	// one, and the quote it removes is the LAST on the line -- which would be the
-	// path's own closing quote on a machine whose temp directory holds a space.
 	name := lonely_signal("heldopen", context.allocator)
 	defer delete(name, context.allocator)
 	block := fmt.aprintf("%s)", name, allocator = context.allocator)
@@ -756,8 +813,8 @@ a_stopped_child_has_let_go_of_the_file_it_held :: proc(t: ^testing.T) {
 
 	if !testing.expect(
 		t,
-		held_by_the_child(path),
-		"the child never opened the file it was told to",
+		held_by_the_child(&c, path),
+		"the child never got as far as holding the file through a process of its own",
 	) {
 		return
 	}
@@ -765,10 +822,21 @@ a_stopped_child_has_let_go_of_the_file_it_held :: proc(t: ^testing.T) {
 	testing.expect(t, stop(&c, STOP_BOUND), "the child did not stop within the bound")
 
 	// Asked FIRST and with no waiting of any kind: this is what catches a stop
-	// that terminated and came straight back. The file below is the other half --
+	// that terminated and came straight back. The two below are the other half --
 	// what the child, or anything the child started, was still holding.
 	_, gone := exit_code(&c)
 	testing.expect(t, gone, "stop came back with the child still running")
+	// THE CLAIM STOP ACTUALLY MAKES, and the one reading of it that does not
+	// flake: nothing the child started is still running. Read straight from the
+	// kernel's own counter rather than from the procedure that was supposed to
+	// have waited on it, and read with no waiting, so a stop that skipped the wait
+	// has nothing to hide behind.
+	testing.expectf(
+		t,
+		job_holds(c.tree) == 0,
+		"stop came back with %d process(es) the child started still running",
+		job_holds(c.tree),
+	)
 	testing.expect(
 		t,
 		freed_within_bound(path),
