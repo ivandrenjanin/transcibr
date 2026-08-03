@@ -257,17 +257,50 @@ INLINE_SPECIALS :: `\` + "`" + `*_[]<|`
 BLOCK_STARTERS :: "#>-+=~"
 
 // Writes one Paragraph's speech so that nothing in it can become structure.
+//
+// NORMALISED FIRST, ESCAPED SECOND, and that order is the whole procedure.
+// write_inline flattens every byte a reader cannot see into a space, so a
+// Paragraph opening on one reaches Markdown with a space in front of it -- and
+// Markdown allows up to three spaces before block structure and four before an
+// indented code block. Deciding what opens the line on the byte the ENGINE wrote
+// therefore decides it on a byte that is no longer there: one control character
+// in front of `---` is a thematic break with the Paragraph's speech gone from
+// the page entirely, and four in front of ordinary speech is a code block.
+//
+// So the flattened run comes off first and the block start is decided on what a
+// reader will actually see first. Dropped rather than written out as a space,
+// unlike the ones inside the line: a space separates what stood either side of
+// it, and at the start of a line there is nothing on the left to separate.
 @(private)
 write_prose :: proc(out: ^strings.Builder, said: string) {
 	assert(out != nil, "there is no document here to write prose into")
-	// The write side of what word_split asserts as it carves (CLAUDE.md A4).
-	// Prose opening on whitespace is an indented code block to Markdown, and
-	// there is no backslash escape for a space to fix it with afterwards.
-	if len(said) > 0 {
-		assert(said[0] != ' ', "prose still carrying the engine's padding reached the renderer")
-	}
 
-	write_inline(out, write_block_start(out, said))
+	prose := readable_from(said)
+	// The read side of what spoken_text settles as it trims (CLAUDE.md A4): a
+	// Cue holding nothing a reader could see is not a Saying, so no Paragraph is
+	// built out of one, so no Paragraph's prose can flatten away to nothing.
+	assert(len(prose) > 0, "a paragraph holding nothing a reader could see reached the renderer")
+	assert(prose[0] != ' ', "prose still carrying the engine's padding reached the renderer")
+
+	write_inline(out, write_block_start(out, prose))
+}
+
+// The speech from the first byte of it a reader will actually see.
+//
+// Every byte before that one is written out as a space by write_inline or is
+// already a space, and a run of them at the start of a line is Markdown's own
+// indentation. A byte at a time and never a rune at a time, for the reason
+// write_inline gives: every byte this skips is ASCII, and every byte of a
+// multi-byte character is at or above 0x80 and stops the scan.
+@(private)
+readable_from :: proc(said: string) -> (prose: string) {
+	defer assert(len(prose) <= len(said), "skipping a paragraph's indentation grew it")
+
+	at := 0
+	for at < len(said) && (said[at] < 0x20 || said[at] == 0x7F || said[at] == ' ') {
+		at += 1
+	}
+	return said[at:]
 }
 
 // Escapes what opens a block, and hands back the speech that is left.

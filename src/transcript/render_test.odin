@@ -510,6 +510,72 @@ a_block_character_away_from_the_start_of_a_line_is_left_alone :: proc(t: ^testin
 	}
 }
 
+// THE NEGATIVE SPACE OF THE BLOCK STARTERS (CLAUDE.md A3), and the one the table
+// above cannot reach: speech whose first byte is not what OPENS the line.
+//
+// A control character is written out as a space, so speech carrying one in front
+// of it reaches a Markdown reader with a space in front of it -- and up to three
+// spaces are allowed before block structure, four before an indented code block.
+// Every row here is a Paragraph whose speech LEAVES THE PAGE if the block start
+// is decided on the byte the Engine wrote rather than on the byte a reader sees:
+// one control character is enough for the first five, and four for the last.
+@(private, rodata)
+FLATTENED_START_CASES := []Escape_Case {
+	{"\x01--- and so it went.", `\--- and so it went.`},
+	{"\x01# Hash, they said.", `\# Hash, they said.`},
+	{"\x01> Quoted, they said.", `\> Quoted, they said.`},
+	{"\x01- Dashed, they said.", `\- Dashed, they said.`},
+	{"\x011999. That was the year.", `1999\. That was the year.`},
+	// Four of them, which is the indented code block: the whole Paragraph
+	// rendered as monospace, and every escape inside it shown as a backslash.
+	{"\x01\x01\x01\x01Ordinary speech.", "Ordinary speech."},
+	// A tab and a carriage return are the same problem in a different byte, and
+	// so is a run of them mixed together.
+	{"\t--- and so it went.", `\--- and so it went.`},
+	{"\r\n\x7f\v- Dashed, they said.", `\- Dashed, they said.`},
+	// The other side of it: what follows the flattened run is escaped exactly as
+	// it would have been had the run never been there, and nothing else moves.
+	{"\x01Ordinary speech, nothing special.", "Ordinary speech, nothing special."},
+	{"\x01A back\\slash and *emphasis*.", `A back\\slash and \*emphasis\*.`},
+}
+
+@(test)
+speech_that_opens_with_a_flattened_byte_still_cannot_open_a_block :: proc(t: ^testing.T) {
+	for c in FLATTENED_START_CASES {
+		paragraphs := []Paragraph{{0, 1_000, c.said}}
+		out := render_markdown(paragraphs, SAMPLE_CONTEXT, ANCHOR_INTERVAL_MS, context.allocator)
+		defer delete(out, context.allocator)
+
+		want := strings.concatenate({c.writes, "\n"}, context.allocator)
+		defer delete(want, context.allocator)
+		testing.expectf(t, body_of(out) == want, "%q came out as %q", c.said, body_of(out))
+	}
+}
+
+// The write side of the same claim (CLAUDE.md A4): a Cue holding nothing a
+// reader could see is not a Saying, so no Paragraph is ever built out of one.
+//
+// CONTEXT.md already says the Engine's empty and space-only Cues are not
+// Sayings. A Cue of control characters is the same statement in bytes a text
+// editor renders as nothing at all -- and one admitted as speech would open a
+// Paragraph whose whole prose flattens to whitespace.
+@(test)
+a_cue_holding_nothing_a_reader_could_see_is_not_a_saying :: proc(t: ^testing.T) {
+	silent := []string{"", " ", "   ", "\x01", " \x01\x7f ", "\r\n\t\v"}
+	for text, i in silent {
+		testing.expectf(
+			t,
+			len(spoken_text(Cue{0, 1_000, text})) == 0,
+			"case %d: %q was counted as having said something",
+			i,
+			text,
+		)
+	}
+	// The negative space of THAT (CLAUDE.md A3): a Cue that says something keeps
+	// every byte of it that a reader could see, whatever stands either side.
+	testing.expect_value(t, spoken_text(Cue{0, 1_000, " \x01 Words. \x01"}), "Words.")
+}
+
 // A Paragraph is ONE line, and everything above rests on it: "the start of a
 // line" and "the start of a Paragraph" are the same place only while that holds.
 // The parser is lossless on purpose, so a line break the Engine wrote into a Cue

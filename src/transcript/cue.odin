@@ -36,13 +36,32 @@ Cue :: struct {
 	text:  string,
 }
 
-// What was actually said in a Cue: its text with the Engine's padding taken off.
+// Whether a character is one nobody said: whitespace, or a control byte a text
+// editor renders as nothing at all.
+//
+// The two are one question here, and CONTEXT.md is why: a Saying is "one cue
+// that said something", and the Engine's empty and space-only Cues over silence
+// are not Sayings. A Cue of control characters is that same statement written in
+// bytes -- nothing a reader could see, and nothing a speaker said.
+@(private)
+says_nothing :: proc(r: rune) -> bool {
+	return strings.is_space(r) || r < 0x20 || r == 0x7F
+}
+
+// What was actually said in a Cue: its text with everything nobody said taken
+// off either end.
 //
 // The Engine writes a leading space on every Cue it emits, and writes an empty
 // or space-only Cue over silence, and neither of those is content. The parser
 // keeps them because it is lossless on purpose; every stage after it has to take
 // them off, and doing that in one place is what stops the two stages disagreeing
 // about what a Cue says.
+//
+// Control characters come off the ENDS for the same reason the padding does, and
+// leaving them there costs more than a stray byte: prose opening on one reaches
+// Markdown as prose opening on a space, which is that renderer's own indentation
+// (see write_prose). Inside the speech they stay, and the renderer writes them
+// out as spaces -- there, what they separated is still separated.
 //
 // Repetition collapse compares Cues by this and not by the raw text: " you" and
 // "you " are one phrase said twice, and a comparison that could not tell would
@@ -57,7 +76,7 @@ Cue :: struct {
 // Paragraphs, and the procedures that make them.
 @(private)
 spoken_text :: proc(cue: Cue) -> (said: string) {
-	said = strings.trim_space(cue.text)
+	said = strings.trim_left_proc(strings.trim_right_proc(cue.text, says_nothing), says_nothing)
 	// Both sides of what trimming is allowed to do (CLAUDE.md A3): it only ever
 	// takes bytes away, and what it leaves no longer starts with the one byte it
 	// exists to take away. The second is the claim every caller relies on and the
@@ -65,6 +84,7 @@ spoken_text :: proc(cue: Cue) -> (said: string) {
 	assert(len(said) <= len(cue.text), "trimming a cue's text added bytes to it")
 	if len(said) > 0 {
 		assert(said[0] != ' ', "a trimmed cue still carries the engine's padding")
+		assert(!says_nothing(rune(said[0])), "a trimmed cue still opens on a byte nobody said")
 	}
 	return
 }
