@@ -149,7 +149,10 @@ merge_paragraphs :: proc(
 	assert(p.max_gap_ms > 0, "a paragraph that breaks on no silence at all breaks at every cue")
 	assert(p.hard_gap_ms >= p.max_gap_ms, "hard gap must not sit below max gap")
 	assert(p.max_para_chars > 0, "a paragraph that may hold no characters can never be closed")
-	assert(allocator.procedure != nil, "the paragraphs outlive this procedure and need a chosen allocator")
+	assert(
+		allocator.procedure != nil,
+		"the paragraphs outlive this procedure and need a chosen allocator",
+	)
 	// What every consumer in this package asserts on the way in (CLAUDE.md A4).
 	// Gaps are read between neighbours, and a set whose starts go backwards
 	// yields negative silence where the longest pause in the Recording was.
@@ -208,7 +211,10 @@ merge_paragraphs :: proc(
 // on such a value is a defect, because `context.temp_allocator` is thread-local
 // and the Paragraph set crosses workers.
 destroy_paragraphs :: proc(paragraphs: []Paragraph, allocator: mem.Allocator) {
-	assert(allocator.procedure != nil, "paragraphs cannot be freed without the allocator that made them")
+	assert(
+		allocator.procedure != nil,
+		"paragraphs cannot be freed without the allocator that made them",
+	)
 	// The negative space of merge_paragraphs' allocation (CLAUDE.md A3): a set
 	// with no backing memory but a length in it was assembled by hand out of
 	// parts, and the loop below walks prose that never existed.
@@ -221,7 +227,10 @@ destroy_paragraphs :: proc(paragraphs: []Paragraph, allocator: mem.Allocator) {
 		// emits a Paragraph with nothing in it, so one arriving here belongs to
 		// somebody else and freeing its prose stays silent until an unrelated
 		// allocation comes back corrupted.
-		assert(len(paragraph.text) > 0, "freeing a paragraph merge_paragraphs could not have returned")
+		assert(
+			len(paragraph.text) > 0,
+			"freeing a paragraph merge_paragraphs could not have returned",
+		)
 		delete(paragraph.text, allocator)
 	}
 	delete(paragraphs, allocator)
@@ -298,7 +307,13 @@ ends_a_sentence :: proc(said: string) -> bool {
 // Paragraph, the cap is positive, and every round either closes an open
 // Paragraph or consumes at least one character of what is left.
 @(private)
-paragraph_admit :: proc(s: ^Merge_State, cue: Cue, said: string, p: Merge_Params, allocator: mem.Allocator) {
+paragraph_admit :: proc(
+	s: ^Merge_State,
+	cue: Cue,
+	said: string,
+	p: Merge_Params,
+	allocator: mem.Allocator,
+) {
 	assert(len(said) > 0, "empty speech opens a paragraph that can never be closed")
 	assert(p.max_para_chars > 0, "a paragraph that may hold no characters can never be closed")
 
@@ -444,7 +459,10 @@ paragraph_extend :: proc(s: ^Merge_State, cue: Cue, said: string) {
 		// from two ends of a Recording ends up inside one Paragraph -- and with
 		// "open" derived from the count, those characters would also make this
 		// look like a Paragraph already in progress.
-		assert(strings.builder_len(s.prose) == 0, "opened a paragraph onto prose the last one left behind")
+		assert(
+			strings.builder_len(s.prose) == 0,
+			"opened a paragraph onto prose the last one left behind",
+		)
 		s.start = cue.start
 		s.end = cue.end
 	}
@@ -468,7 +486,10 @@ paragraph_close :: proc(s: ^Merge_State, p: Merge_Params, allocator: mem.Allocat
 		// The negative space of the reset below (CLAUDE.md A3). Nothing counted
 		// means nothing half-written is waiting to be inherited, and the builder
 		// is the other half of that claim.
-		assert(strings.builder_len(s.prose) == 0, "nothing is open but there is prose half-written")
+		assert(
+			strings.builder_len(s.prose) == 0,
+			"nothing is open but there is prose half-written",
+		)
 		return
 	}
 

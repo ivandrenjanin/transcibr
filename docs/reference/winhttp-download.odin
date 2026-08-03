@@ -24,21 +24,21 @@
 // and must never be persisted for resume.
 package whtest
 
-import win32 "core:sys/windows"
 import "core:fmt"
+import win32 "core:sys/windows"
 
 foreign import winhttp "system:Winhttp.lib"
 
 HINTERNET :: win32.LPVOID
 
 WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY :: 4
-WINHTTP_FLAG_SECURE                 :: 0x00800000
-WINHTTP_QUERY_CONTENT_LENGTH        :: 5
-WINHTTP_QUERY_CUSTOM                :: 65535
-WINHTTP_QUERY_STATUS_CODE           :: 19
-WINHTTP_QUERY_FLAG_NUMBER           :: 0x20000000
-WINHTTP_ADDREQ_FLAG_ADD             :: 0x20000000
-INTERNET_DEFAULT_HTTPS_PORT         :: 443
+WINHTTP_FLAG_SECURE :: 0x00800000
+WINHTTP_QUERY_CONTENT_LENGTH :: 5
+WINHTTP_QUERY_CUSTOM :: 65535
+WINHTTP_QUERY_STATUS_CODE :: 19
+WINHTTP_QUERY_FLAG_NUMBER :: 0x20000000
+WINHTTP_ADDREQ_FLAG_ADD :: 0x20000000
+INTERNET_DEFAULT_HTTPS_PORT :: 443
 
 URL_COMPONENTS :: struct {
 	dwStructSize:      win32.DWORD,
@@ -58,7 +58,7 @@ URL_COMPONENTS :: struct {
 	dwExtraInfoLength: win32.DWORD,
 }
 
-@(default_calling_convention="system")
+@(default_calling_convention = "system")
 foreign winhttp {
 	WinHttpOpen :: proc(pszAgentW: win32.LPCWSTR, dwAccessType: win32.DWORD, pszProxyW: win32.LPCWSTR, pszProxyBypassW: win32.LPCWSTR, dwFlags: win32.DWORD) -> HINTERNET ---
 	WinHttpConnect :: proc(hSession: HINTERNET, pswzServerName: win32.LPCWSTR, nServerPort: win32.WORD, dwReserved: win32.DWORD) -> HINTERNET ---
@@ -80,31 +80,54 @@ main :: proc() {
 	host_buf: [256]u16
 	path_buf: [1024]u16
 	uc: URL_COMPONENTS
-	uc.dwStructSize      = size_of(URL_COMPONENTS)
-	uc.lpszHostName      = cast(win32.wstring)&host_buf[0]
-	uc.dwHostNameLength  = len(host_buf)
-	uc.lpszUrlPath       = cast(win32.wstring)&path_buf[0]
-	uc.dwUrlPathLength   = len(path_buf)
+	uc.dwStructSize = size_of(URL_COMPONENTS)
+	uc.lpszHostName = cast(win32.wstring)&host_buf[0]
+	uc.dwHostNameLength = len(host_buf)
+	uc.lpszUrlPath = cast(win32.wstring)&path_buf[0]
+	uc.dwUrlPathLength = len(path_buf)
 	if !WinHttpCrackUrl(win32.utf8_to_wstring(URL), 0, 0, &uc) {
 		fmt.println("CrackUrl FAILED", win32.GetLastError()); return
 	}
-	fmt.printf("CrackUrl ok: host=%s port=%d\n", win32.wstring_to_utf8_alloc(uc.lpszHostName, int(uc.dwHostNameLength)) or_else "?", uc.nPort)
+	fmt.printf(
+		"CrackUrl ok: host=%s port=%d\n",
+		win32.wstring_to_utf8_alloc(uc.lpszHostName, int(uc.dwHostNameLength)) or_else "?",
+		uc.nPort,
+	)
 
-	hSession := WinHttpOpen(win32.utf8_to_wstring("transcibr/0.1"), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nil, nil, 0)
-	if hSession == nil { fmt.println("WinHttpOpen FAILED", win32.GetLastError()); return }
+	hSession := WinHttpOpen(
+		win32.utf8_to_wstring("transcibr/0.1"),
+		WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+		nil,
+		nil,
+		0,
+	)
+	if hSession == nil {fmt.println("WinHttpOpen FAILED", win32.GetLastError()); return}
 	defer WinHttpCloseHandle(hSession)
 	WinHttpSetTimeouts(hSession, 10_000, 20_000, 30_000, 60_000)
 
 	hConnect := WinHttpConnect(hSession, uc.lpszHostName, INTERNET_DEFAULT_HTTPS_PORT, 0)
-	if hConnect == nil { fmt.println("WinHttpConnect FAILED", win32.GetLastError()); return }
+	if hConnect == nil {fmt.println("WinHttpConnect FAILED", win32.GetLastError()); return}
 	defer WinHttpCloseHandle(hConnect)
 
-	hRequest := WinHttpOpenRequest(hConnect, win32.utf8_to_wstring("GET"), uc.lpszUrlPath, nil, nil, nil, WINHTTP_FLAG_SECURE)
-	if hRequest == nil { fmt.println("WinHttpOpenRequest FAILED", win32.GetLastError()); return }
+	hRequest := WinHttpOpenRequest(
+		hConnect,
+		win32.utf8_to_wstring("GET"),
+		uc.lpszUrlPath,
+		nil,
+		nil,
+		nil,
+		WINHTTP_FLAG_SECURE,
+	)
+	if hRequest == nil {fmt.println("WinHttpOpenRequest FAILED", win32.GetLastError()); return}
 	defer WinHttpCloseHandle(hRequest)
 
 	// resume: ask for a byte range
-	if !WinHttpAddRequestHeaders(hRequest, win32.utf8_to_wstring("Range: bytes=1000-1099\r\n"), max(u32), WINHTTP_ADDREQ_FLAG_ADD) {
+	if !WinHttpAddRequestHeaders(
+		hRequest,
+		win32.utf8_to_wstring("Range: bytes=1000-1099\r\n"),
+		max(u32),
+		WINHTTP_ADDREQ_FLAG_ADD,
+	) {
 		fmt.println("AddRequestHeaders FAILED", win32.GetLastError()); return
 	}
 	if !WinHttpSendRequest(hRequest, nil, 0, nil, 0, 0, 0) {
@@ -115,12 +138,29 @@ main :: proc() {
 	}
 
 	status: win32.DWORD; sz := win32.DWORD(size_of(win32.DWORD))
-	WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, nil, &status, &sz, nil)
+	WinHttpQueryHeaders(
+		hRequest,
+		WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+		nil,
+		&status,
+		&sz,
+		nil,
+	)
 	fmt.println("HTTP status =", status, "  (206 => Range survived the cross-host redirect)")
 
 	cr_buf: [256]u16; cr_sz := win32.DWORD(size_of(cr_buf))
-	if WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CUSTOM, win32.utf8_to_wstring("Content-Range"), &cr_buf[0], &cr_sz, nil) {
-		fmt.println("Content-Range =", win32.wstring_to_utf8_alloc(cast(win32.wstring)&cr_buf[0], 256) or_else "?")
+	if WinHttpQueryHeaders(
+		hRequest,
+		WINHTTP_QUERY_CUSTOM,
+		win32.utf8_to_wstring("Content-Range"),
+		&cr_buf[0],
+		&cr_sz,
+		nil,
+	) {
+		fmt.println(
+			"Content-Range =",
+			win32.wstring_to_utf8_alloc(cast(win32.wstring)&cr_buf[0], 256) or_else "?",
+		)
 	} else {
 		fmt.println("no Content-Range header")
 	}
@@ -129,8 +169,13 @@ main :: proc() {
 	buf: [8192]byte
 	for {
 		read: win32.DWORD
-		if !WinHttpReadData(hRequest, &buf[0], len(buf), &read) { fmt.println("ReadData FAILED", win32.GetLastError()); break }
-		if read == 0 { break }
+		if !WinHttpReadData(
+			hRequest,
+			&buf[0],
+			len(buf),
+			&read,
+		) {fmt.println("ReadData FAILED", win32.GetLastError()); break}
+		if read == 0 {break}
 		total += int(read)
 	}
 	fmt.println("bytes read =", total)

@@ -89,20 +89,20 @@ REAL_REPETITIONS := []Real_Repetition {
 		// The rhetorical triple. Inside the cap, so it survives on length
 		// alone -- the row that would still pass if the span threshold were
 		// deleted, and the one that says which rows below prove anything.
-		name = "a flat refusal",
-		text = " No.",
-		count = 3,
+		name        = "a flat refusal",
+		text        = " No.",
+		count       = 3,
 		duration_ms = 700,
-		gap_ms = 120,
+		gap_ms      = 120,
 	},
 	{
 		// Six sayings in under four seconds. A cap on length alone deletes
 		// half of them and the Transcript reads perfectly well without them.
-		name = "urging somebody on",
-		text = " Go!",
-		count = 6,
+		name        = "urging somebody on",
+		text        = " Go!",
+		count       = 6,
 		duration_ms = 480,
-		gap_ms = 90,
+		gap_ms      = 90,
 	},
 	{
 		name = "agreeing in conversation",
@@ -111,59 +111,53 @@ REAL_REPETITIONS := []Real_Repetition {
 		duration_ms = 600,
 		gap_ms = 300,
 	},
-	{
-		name = "a stutter",
-		text = " I--",
-		count = 4,
-		duration_ms = 260,
-		gap_ms = 0,
-	},
+	{name = "a stutter", text = " I--", count = 4, duration_ms = 260, gap_ms = 0},
 	{
 		// A chorus, which is the slowest thing on this list that is still
 		// unmistakably speech: five sayings across ten seconds.
-		name = "a repeated chorus line",
-		text = " Hey Jude.",
-		count = 5,
+		name        = "a repeated chorus line",
+		text        = " Hey Jude.",
+		count       = 5,
 		duration_ms = 1_800,
-		gap_ms = 200,
+		gap_ms      = 200,
 	},
 	{
 		// Repetition with real pauses between the sayings. The gap is longer
 		// than the saying, which is exactly the shape a naive "sparse means
 		// invented" rule would condemn.
-		name = "a phrase repeated after a pause",
-		text = " Never again.",
-		count = 4,
+		name        = "a phrase repeated after a pause",
+		text        = " Never again.",
+		count       = 4,
 		duration_ms = 1_400,
-		gap_ms = 1_600,
+		gap_ms      = 1_600,
 	},
 	{
 		// A meditation instructor, and the worked example the source comment
 		// itself offers as the false positive it is willing to make: five
 		// sayings across twenty-eight and a half seconds.
-		name = "an instruction repeated slowly",
-		text = " Breathe.",
-		count = 5,
+		name        = "an instruction repeated slowly",
+		text        = " Breathe.",
+		count       = 5,
 		duration_ms = 1_500,
-		gap_ms = 5_250,
+		gap_ms      = 5_250,
 	},
 	{
 		// A parent calling a child in from the garden. Seven sayings, and the
 		// pauses between them are the listening.
-		name = "calling somebody who is not answering",
-		text = " Sam!",
-		count = 7,
+		name        = "calling somebody who is not answering",
+		text        = " Sam!",
+		count       = 7,
 		duration_ms = 500,
-		gap_ms = 2_500,
+		gap_ms      = 2_500,
 	},
 	{
 		// A language drill: the same word said back ten times over, with the
 		// teacher's correction in the silence between.
-		name = "a vocabulary drill",
-		text = " Bonjour.",
-		count = 10,
+		name        = "a vocabulary drill",
+		text        = " Bonjour.",
+		count       = 10,
 		duration_ms = 900,
-		gap_ms = 3_100,
+		gap_ms      = 3_100,
 	},
 	{
 		// THE row that says a rate cannot separate the two populations. A
@@ -171,22 +165,22 @@ REAL_REPETITIONS := []Real_Repetition {
 		// the Engine's measured invention of " you" -- one saying every
 		// seventeen seconds (ADR-0001). Anything reading "sparse means
 		// invented" deletes three and a half minutes of a real recording.
-		name = "a call-hold announcement",
-		text = " Your call is important to us.",
-		count = 8,
+		name        = "a call-hold announcement",
+		text        = " Your call is important to us.",
+		count       = 8,
 		duration_ms = 2_400,
-		gap_ms = 27_600,
+		gap_ms      = 27_600,
 	},
 	{
 		// The longest row in this table, and the one that pins the ceiling from
 		// below: eleven sayings across two and three-quarter minutes of a guided
 		// meditation. The ceiling of the TABLE, not of human repetition -- no rig
 		// was ever run for this end of the band, and ADR-0016 says so plainly.
-		name = "a guided meditation",
-		text = " Breathe in, and out.",
-		count = 11,
+		name        = "a guided meditation",
+		text        = " Breathe in, and out.",
+		count       = 11,
 		duration_ms = 1_800,
-		gap_ms = 14_400,
+		gap_ms      = 14_400,
 	},
 }
 
@@ -195,10 +189,19 @@ REAL_REPETITIONS := []Real_Repetition {
 // in, on every row and under every threshold set: a row that came back the right
 // LENGTH with the wrong Cues in it is the same silent deletion by another route.
 @(private)
-real_repetitions_truncated :: proc(t: ^testing.T, p: Collapse_Params, whose: string) -> (truncated: int) {
+real_repetitions_truncated :: proc(
+	t: ^testing.T,
+	p: Collapse_Params,
+	whose: string,
+) -> (
+	truncated: int,
+) {
 	assert(len(REAL_REPETITIONS) > 0, "no real repetitions to run past the thresholds")
 	assert(len(whose) > 0, "a report naming no thresholds says nothing about which ones failed")
-	defer assert(truncated <= len(REAL_REPETITIONS), "counted more rows truncated than there were rows")
+	defer assert(
+		truncated <= len(REAL_REPETITIONS),
+		"counted more rows truncated than there were rows",
+	)
 
 	for said in REAL_REPETITIONS {
 		shape := make([dynamic]Shaped_Cue, context.allocator)
@@ -231,7 +234,11 @@ real_repetitions_truncated :: proc(t: ^testing.T, p: Collapse_Params, whose: str
 
 @(test)
 legitimately_repeated_speech_survives :: proc(t: ^testing.T) {
-	testing.expect_value(t, real_repetitions_truncated(t, PINNED_COLLAPSE, "the pinned thresholds"), 0)
+	testing.expect_value(
+		t,
+		real_repetitions_truncated(t, PINNED_COLLAPSE, "the pinned thresholds"),
+		0,
+	)
 }
 
 // The same speech through the constant that actually ships. PINNED_COLLAPSE is
@@ -244,7 +251,11 @@ legitimately_repeated_speech_survives :: proc(t: ^testing.T) {
 // this fails (ADR-0016).
 @(test)
 the_shipped_collapse_thresholds_leave_real_speech_alone :: proc(t: ^testing.T) {
-	testing.expect_value(t, real_repetitions_truncated(t, COLLAPSE_THRESHOLDS, "the shipped thresholds"), 0)
+	testing.expect_value(
+		t,
+		real_repetitions_truncated(t, COLLAPSE_THRESHOLDS, "the shipped thresholds"),
+		0,
+	)
 }
 
 // Why the ceiling sits above what survives rather than at it, said in checked
@@ -263,7 +274,11 @@ a_cap_on_length_alone_would_delete_real_words :: proc(t: ^testing.T) {
 
 	// Ten of the eleven rows say their phrase more than three times over; the
 	// eleventh is inside the cap and survives either way.
-	testing.expect_value(t, real_repetitions_truncated(t, length_only, "a cap on length alone"), 10)
+	testing.expect_value(
+		t,
+		real_repetitions_truncated(t, length_only, "a cap on length alone"),
+		10,
+	)
 }
 
 // ---------------------------------------------------------------------------
@@ -279,7 +294,12 @@ a_cap_on_length_alone_would_delete_real_words :: proc(t: ^testing.T) {
 
 @(private, rodata)
 INVENTION_LOOPS := []Real_Repetition {
-	{name = "the classic tail loop", text = " Thank you for watching!", count = 19, duration_ms = 1_000},
+	{
+		name = "the classic tail loop",
+		text = " Thank you for watching!",
+		count = 19,
+		duration_ms = 1_000,
+	},
 	{name = "a subscribe loop", text = " Please subscribe.", count = 40, duration_ms = 400},
 	{name = "a single word at machine speed", text = " you", count = 100, duration_ms = 150},
 }

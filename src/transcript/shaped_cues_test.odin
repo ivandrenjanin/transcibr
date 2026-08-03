@@ -53,7 +53,12 @@ shaped_cues :: proc(shape: []Shaped_Cue, allocator: mem.Allocator) -> []Cue {
 // Appends one phrase said `count` times over, each saying the same length and
 // separated by the same silence.
 @(private)
-say_repeatedly :: proc(shape: ^[dynamic]Shaped_Cue, text: string, count: int, duration, gap: Millis) {
+say_repeatedly :: proc(
+	shape: ^[dynamic]Shaped_Cue,
+	text: string,
+	count: int,
+	duration, gap: Millis,
+) {
 	assert(count > 0, "a phrase said no times at all is not a repetition")
 	assert(duration >= 0, "a cue cannot end before it starts")
 	assert(gap >= 0, "silence cannot run backwards")
