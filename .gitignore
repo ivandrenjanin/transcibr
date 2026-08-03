@@ -1,0 +1,73 @@
+# ---- Odin build output --------------------------------------------------
+# `odin build` and `odin test` drop the binary in the working directory by
+# default, so these are matched anywhere rather than only under build dirs.
+*.exe
+*.obj
+*.o
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+
+# MSVC linker leftovers (Odin links through MSVC on Windows).
+*.pdb
+*.ilk
+*.exp
+*.map
+
+# Conventional output directories.
+/build/
+/bin/
+/out/
+
+# ---- transcibr runtime artifacts ----------------------------------------
+# Every artifact is written to `.part` and renamed on success; a `.part` file
+# in the tree means an interrupted run, never something to commit.
+*.part
+
+# Whisper models are >1 GB and are fetched, not vendored.
+/models/
+*.gguf
+ggml-*.bin
+
+# Source recordings and extracted audio. Budget is ~115 MB per hour of audio,
+# and none of it belongs in git.
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+*.m4v
+*.wmv
+*.flv
+*.mp3
+*.m4a
+*.wav
+*.flac
+*.aac
+*.ogg
+*.opus
+
+# ...except the committed test fixtures — the short clip the extraction
+# integration test runs against, alongside its expected SRT and Markdown.
+!**/fixtures/**
+
+# ---- agent and tooling scratch ------------------------------------------
+# Working notes and throwaway prototypes.
+/.scratch/
+
+# Skills are restored from skills-lock.json (committed); the installed copies
+# are third-party content and stay out of this repository.
+/.claude/skills/
+/.claude/settings.local.json
+
+# ---- editor and OS --------------------------------------------------------
+.vs/
+.idea/
+*.swp
+*~
+Thumbs.db
+ehthumbs.db
+desktop.ini
+.DS_Store
