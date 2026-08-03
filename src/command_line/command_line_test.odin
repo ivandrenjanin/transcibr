@@ -155,6 +155,44 @@ whitespace_arguments_round_trip :: proc(t: ^testing.T) {
 	expect_each_and_all(t, "whitespace", WHITESPACE_CASES)
 }
 
+// An empty argument survives as an argument.
+//
+// It is the one case where being wrong is worse than a mangled string. A dropped
+// empty argument does not produce an empty value at the child -- it produces one
+// FEWER argument, so every argument after it shifts down a place and the child
+// reads the next flag as this one's value. `--language "" --model big.bin` with
+// the empty dropped is a child told its language is `--model`.
+//
+// The count is asserted separately from the values, because that shift is a
+// count failure first: measured, `x.exe  -flag` reaches CommandLineToArgvW as
+// argc 2 and `x.exe "" -flag` as argc 3, and only the second one is what was
+// asked for.
+@(test)
+an_empty_argument_is_emitted_rather_than_dropped :: proc(t: ^testing.T) {
+	line, err := build(EXE, {"--language", "", "--model", "big.bin"}, context.allocator)
+	defer delete(line, context.allocator)
+	testing.expect_value(t, err, Build_Error.None)
+
+	argv := argv_of(t, line, context.allocator)
+	defer free_argv(argv, context.allocator)
+	testing.expect_value(t, len(argv), 5)
+	if len(argv) == 5 {
+		testing.expect_value(t, argv[2], "")
+		// The flag AFTER the empty one is the thing that actually breaks, so it
+		// is checked by name rather than left to the loop above.
+		testing.expect_value(t, argv[3], "--model")
+	}
+}
+
+@(test)
+empty_arguments_round_trip_in_every_position :: proc(t: ^testing.T) {
+	expect_round_trip(t, EXE, {""}, "empty alone")
+	expect_round_trip(t, EXE, {"", "-after"}, "empty first")
+	expect_round_trip(t, EXE, {"-before", ""}, "empty last")
+	expect_round_trip(t, EXE, {"", "", ""}, "nothing but empties")
+	expect_round_trip(t, EXE, {"-a", "", "-b", "", "-c"}, "empties between flags")
+}
+
 // The backslash-before-quote rule, which is the part of Windows quoting that
 // people get wrong. A run of backslashes is literal UNLESS it meets a quote, and
 // the closing quote counts -- so `C:\path with space\` quoted naively ends in
