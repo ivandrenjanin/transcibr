@@ -228,3 +228,95 @@ BACKSLASH_CASES :: []string {
 backslash_arguments_round_trip :: proc(t: ^testing.T) {
 	expect_each_and_all(t, "backslash", BACKSLASH_CASES)
 }
+
+// Non-ASCII survives the trip, including outside the Basic Multilingual Plane,
+// where one rune is a surrogate PAIR in UTF-16 and a builder that escaped
+// rune-wise could split it.
+//
+// READ WHAT THIS DOES AND DOES NOT CLAIM. It says the builder produces a command
+// line whose UTF-16 form Windows re-splits into exactly these arguments. It says
+// NOTHING about whether the engine can then open the file. `whisper-cli` is
+// `int main(int argc, char**argv)` under MSVC, so its argv arrives in the system
+// ANSI code page and a non-ASCII path is mangled before the program sees it
+// (ADR-0002) -- which is precisely why ADR-0002 keeps the engine's cache and
+// model on an ASCII-only path instead. ffmpeg re-reads `GetCommandLineW()` and
+// does not have that bug, so it is the child this actually buys something for.
+// A correct command line is a precondition for that fix, never a substitute.
+@(private)
+NON_ASCII_CASES :: []string {
+	"C:\\Users\\Иван\\recording.mkv",
+	"C:\\Users\\Ivan Drenjanin\\Видео 2026\\zapis.mkv",
+	"ü",
+	"Ω",
+	"日本語のファイル名.mp4",
+	"emoji 😀 and 𝄞 outside the BMP",
+	"𝄞",
+	"\U0001F600\U0001F601\U0001F602",
+	"combining a\u0301 e\u0301",
+	"right-to-left \u05D0\u05D1\u05D2",
+	"C:\\ø\\å\\æ\\file with space.wav",
+	"trailing surrogate-pair then backslash 𝄞\\",
+	"quote and 𝄞\" together",
+}
+
+@(test)
+non_ascii_arguments_round_trip :: proc(t: ^testing.T) {
+	expect_each_and_all(t, "non-ascii", NON_ASCII_CASES)
+}
+
+// argv[0] is parsed by a DIFFERENT rule, and this is the case where getting it
+// wrong is silent in the way the ticket describes.
+//
+// Measured, every line of it: for argv[0] Windows skips the opening quote and
+// copies to the next one, and NO backslash is special. So `"C:\dir\" one` gives
+// argv[0] `C:\dir\` -- the trailing backslash needs no doubling, and a builder
+// that reused the argument rule here would double it and hand the child a path
+// with a second backslash that is not in the filesystem.
+//
+// The program path is checked as argv[0] by expect_round_trip on every case in
+// this file; these are the paths whose SHAPE is the point.
+@(private)
+PROGRAM_CASES :: []string {
+	`C:\tools\ffmpeg.exe`,
+	`C:\Program Files\ffmpeg\bin\ffmpeg.exe`,
+	`C:\dir with space\`,
+	`C:\trailing\`,
+	`C:\trailing\\`,
+	`C:\trailing\\\`,
+	`\\server\share with space\whisper-cli.exe`,
+	`ffmpeg.exe`,
+	`C:\Users\Иван\bin\ffmpeg.exe`,
+	`C:\ö ü\𝄞\ffmpeg.exe`,
+	"C:\\tab\tin\\path.exe",
+	`C:\a^b&c\ffmpeg.exe`,
+	`.\relative\ffmpeg.exe`,
+	`C:/forward/slashes/ffmpeg.exe`,
+}
+
+@(test)
+the_program_path_round_trips_under_its_own_rule :: proc(t: ^testing.T) {
+	for program, i in PROGRAM_CASES {
+		expect_round_trip(t, program, {}, tprint_case("program alone", i))
+		expect_round_trip(t, program, {"-i", "a b.mkv", ""}, tprint_case("program", i))
+	}
+}
+
+// The rule the case above rests on, stated as a fact about Windows rather than
+// about this package: a trailing backslash in argv[0] is NOT an escape, so the
+// argument after it survives. Doubling it -- the argument rule, misapplied --
+// would put a second backslash in the path instead.
+@(test)
+a_trailing_backslash_in_the_program_path_is_not_an_escape :: proc(t: ^testing.T) {
+	line, err := build(`C:\dir with space\`, {"-after"}, context.allocator)
+	defer delete(line, context.allocator)
+	testing.expect_value(t, err, Build_Error.None)
+	testing.expect_value(t, line, `"C:\dir with space\" -after`)
+
+	argv := argv_of(t, line, context.allocator)
+	defer free_argv(argv, context.allocator)
+	testing.expect_value(t, len(argv), 2)
+	if len(argv) == 2 {
+		testing.expect_value(t, argv[0], `C:\dir with space\`)
+		testing.expect_value(t, argv[1], "-after")
+	}
+}
