@@ -73,71 +73,64 @@ foreign winhttp {
 	WinHttpCrackUrl :: proc(pwszUrl: win32.LPCWSTR, dwUrlLength: win32.DWORD, dwFlags: win32.DWORD, lpUrlComponents: ^URL_COMPONENTS) -> win32.BOOL ---
 }
 
-main :: proc() {
-	URL :: "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-cublas-12.4.0-bin-x64.zip"
-
-	// --- WinHttpCrackUrl ---
-	host_buf: [256]u16
-	path_buf: [1024]u16
-	uc: URL_COMPONENTS
+// One URL cracked into CALLER-owned buffers.
+//
+// The buffers are the caller's on purpose: URL_COMPONENTS holds pointers into
+// them, so returning the struct by value carries pointers out of this frame and
+// they must outlive it.
+crack_url :: proc(
+	url: string,
+	host_buf: []u16,
+	path_buf: []u16,
+) -> (
+	uc: URL_COMPONENTS,
+	ok: bool,
+) {
 	uc.dwStructSize = size_of(URL_COMPONENTS)
 	uc.lpszHostName = cast(win32.wstring)&host_buf[0]
-	uc.dwHostNameLength = len(host_buf)
+	uc.dwHostNameLength = win32.DWORD(len(host_buf))
 	uc.lpszUrlPath = cast(win32.wstring)&path_buf[0]
-	uc.dwUrlPathLength = len(path_buf)
-	if !WinHttpCrackUrl(win32.utf8_to_wstring(URL), 0, 0, &uc) {
-		fmt.println("CrackUrl FAILED", win32.GetLastError()); return
+	uc.dwUrlPathLength = win32.DWORD(len(path_buf))
+	if !WinHttpCrackUrl(win32.utf8_to_wstring(url), 0, 0, &uc) {
+		fmt.println("CrackUrl FAILED", win32.GetLastError())
+		return uc, false
 	}
 	fmt.printf(
 		"CrackUrl ok: host=%s port=%d\n",
 		win32.wstring_to_utf8_alloc(uc.lpszHostName, int(uc.dwHostNameLength)) or_else "?",
 		uc.nPort,
 	)
+	return uc, true
+}
 
-	hSession := WinHttpOpen(
-		win32.utf8_to_wstring("transcibr/0.1"),
-		WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-		nil,
-		nil,
-		0,
-	)
-	if hSession == nil {fmt.println("WinHttpOpen FAILED", win32.GetLastError()); return}
-	defer WinHttpCloseHandle(hSession)
-	WinHttpSetTimeouts(hSession, 10_000, 20_000, 30_000, 60_000)
-
-	hConnect := WinHttpConnect(hSession, uc.lpszHostName, INTERNET_DEFAULT_HTTPS_PORT, 0)
-	if hConnect == nil {fmt.println("WinHttpConnect FAILED", win32.GetLastError()); return}
-	defer WinHttpCloseHandle(hConnect)
-
-	hRequest := WinHttpOpenRequest(
-		hConnect,
-		win32.utf8_to_wstring("GET"),
-		uc.lpszUrlPath,
-		nil,
-		nil,
-		nil,
-		WINHTTP_FLAG_SECURE,
-	)
-	if hRequest == nil {fmt.println("WinHttpOpenRequest FAILED", win32.GetLastError()); return}
-	defer WinHttpCloseHandle(hRequest)
-
-	// resume: ask for a byte range
+// The GET, with the header this spike exists to test. Added BEFORE
+// WinHttpSendRequest, which is what makes it survive the cross-host redirect.
+send_ranged_request :: proc(hRequest: HINTERNET, header: string) -> bool {
 	if !WinHttpAddRequestHeaders(
 		hRequest,
-		win32.utf8_to_wstring("Range: bytes=1000-1099\r\n"),
+		win32.utf8_to_wstring(header),
 		max(u32),
 		WINHTTP_ADDREQ_FLAG_ADD,
 	) {
-		fmt.println("AddRequestHeaders FAILED", win32.GetLastError()); return
+		fmt.println("AddRequestHeaders FAILED", win32.GetLastError())
+		return false
 	}
 	if !WinHttpSendRequest(hRequest, nil, 0, nil, 0, 0, 0) {
-		fmt.println("SendRequest FAILED", win32.GetLastError()); return
+		fmt.println("SendRequest FAILED", win32.GetLastError())
+		return false
 	}
 	if !WinHttpReceiveResponse(hRequest, nil) {
-		fmt.println("ReceiveResponse FAILED", win32.GetLastError()); return
+		fmt.println("ReceiveResponse FAILED", win32.GetLastError())
+		return false
 	}
+	return true
+}
 
-	status: win32.DWORD; sz := win32.DWORD(size_of(win32.DWORD))
+// The status line as a number, which is what WINHTTP_QUERY_FLAG_NUMBER buys:
+// without it the same query hands back the status as text.
+response_status :: proc(hRequest: HINTERNET) -> win32.DWORD {
+	status: win32.DWORD
+	sz := win32.DWORD(size_of(win32.DWORD))
 	WinHttpQueryHeaders(
 		hRequest,
 		WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
@@ -146,9 +139,15 @@ main :: proc() {
 		&sz,
 		nil,
 	)
-	fmt.println("HTTP status =", status, "  (206 => Range survived the cross-host redirect)")
+	return status
+}
 
-	cr_buf: [256]u16; cr_sz := win32.DWORD(size_of(cr_buf))
+// Read with WINHTTP_QUERY_CUSTOM plus the header NAME, because there is no
+// WINHTTP_QUERY_CONTENT_RANGE constant: 16, which looks like one, is
+// WINHTTP_QUERY_LINK.
+report_content_range :: proc(hRequest: HINTERNET) {
+	cr_buf: [256]u16
+	cr_sz := win32.DWORD(size_of(cr_buf))
 	if WinHttpQueryHeaders(
 		hRequest,
 		WINHTTP_QUERY_CUSTOM,
@@ -164,19 +163,84 @@ main :: proc() {
 	} else {
 		fmt.println("no Content-Range header")
 	}
+}
 
-	total := 0
+// Everything the response body holds, counted and thrown away. A read of zero
+// bytes is the end of it; a failed read is reported and ends it too.
+drain_body :: proc(hRequest: HINTERNET) -> (total: int) {
 	buf: [8192]byte
 	for {
 		read: win32.DWORD
-		if !WinHttpReadData(
-			hRequest,
-			&buf[0],
-			len(buf),
-			&read,
-		) {fmt.println("ReadData FAILED", win32.GetLastError()); break}
-		if read == 0 {break}
+		if !WinHttpReadData(hRequest, &buf[0], len(buf), &read) {
+			fmt.println("ReadData FAILED", win32.GetLastError())
+			break
+		}
+		if read == 0 {
+			break
+		}
 		total += int(read)
 	}
-	fmt.println("bytes read =", total)
+	return total
+}
+
+main :: proc() {
+	URL :: "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-cublas-12.4.0-bin-x64.zip"
+	RANGE :: "Range: bytes=1000-1099\r\n"
+
+	// The three handles stay here, and so do their defers: a handle closed by
+	// the procedure that opened it is closed before the next call needs it.
+	host_buf: [256]u16
+	path_buf: [1024]u16
+	uc, cracked := crack_url(URL, host_buf[:], path_buf[:])
+	if !cracked {
+		return
+	}
+
+	hSession := WinHttpOpen(
+		win32.utf8_to_wstring("transcibr/0.1"),
+		WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+		nil,
+		nil,
+		0,
+	)
+	if hSession == nil {
+		fmt.println("WinHttpOpen FAILED", win32.GetLastError())
+		return
+	}
+	defer WinHttpCloseHandle(hSession)
+	WinHttpSetTimeouts(hSession, 10_000, 20_000, 30_000, 60_000)
+
+	hConnect := WinHttpConnect(hSession, uc.lpszHostName, INTERNET_DEFAULT_HTTPS_PORT, 0)
+	if hConnect == nil {
+		fmt.println("WinHttpConnect FAILED", win32.GetLastError())
+		return
+	}
+	defer WinHttpCloseHandle(hConnect)
+
+	hRequest := WinHttpOpenRequest(
+		hConnect,
+		win32.utf8_to_wstring("GET"),
+		uc.lpszUrlPath,
+		nil,
+		nil,
+		nil,
+		WINHTTP_FLAG_SECURE,
+	)
+	if hRequest == nil {
+		fmt.println("WinHttpOpenRequest FAILED", win32.GetLastError())
+		return
+	}
+	defer WinHttpCloseHandle(hRequest)
+
+	if !send_ranged_request(hRequest, RANGE) {
+		return
+	}
+
+	fmt.println(
+		"HTTP status =",
+		response_status(hRequest),
+		"  (206 => Range survived the cross-host redirect)",
+	)
+	report_content_range(hRequest)
+	fmt.println("bytes read =", drain_body(hRequest))
 }

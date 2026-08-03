@@ -47,7 +47,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 34
+$ExpectedCaseCount = 35
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -406,6 +406,39 @@ function Assert-Result {
 	if (($Matching -ne '') -and ($Result.Output -notmatch $Matching)) {
 		throw "output did not match /$Matching/.`n$($Result.Output)"
 	}
+}
+
+# Every top-level procedure in one file, measured the way CLAUDE.md rule F1
+# measures: from the line carrying `::` through the closing brace, comments and
+# blanks included.
+#
+# Column zero is what makes this readable rather than a parser. Every file the
+# check covers has been through odinfmt, so a top-level declaration starts at
+# column 0 and its closing brace is a bare `}` there -- which is exactly what
+# separates a procedure from the `proc(...) ---` entries inside a foreign block,
+# indented one level in. A header with no body (a procedure TYPE) is recognised
+# by the next column-0 declaration arriving before any closing brace does.
+function Get-OdinProcedureLength {
+	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
+
+	$lines = $Text -split "`r?`n"
+	$found = @()
+	for ($i = 0; $i -lt $lines.Count; $i++) {
+		if ($lines[$i] -notmatch '^([A-Za-z_][A-Za-z0-9_]*)\s*::\s*proc\b') {
+			continue
+		}
+		$name = $Matches[1]
+		for ($j = $i + 1; $j -lt $lines.Count; $j++) {
+			if ($lines[$j] -eq '}') {
+				$found += [pscustomobject]@{ Name = $name; Lines = ($j - $i + 1) }
+				break
+			}
+			if (($lines[$j] -match '^[A-Za-z_][A-Za-z0-9_]*\s*::') -or ($lines[$j] -match '^@\(')) {
+				break
+			}
+		}
+	}
+	return $found
 }
 
 # The <package>.<test> names a document hands a reader to run, in every spelling
@@ -948,6 +981,61 @@ Test-Case 'a config odinfmt would silently ignore fails the format command' {
 	Add-FixtureBinary -RepoRoot $broken -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
 	[System.IO.File]::WriteAllText((Join-Path $broken 'odinfmt.json'), '{ "character_width": 100, oops }', $Utf8NoBom)
 	Assert-Result -Result (Invoke-FixtureScript -RepoRoot $broken -Script 'format.ps1') -Fails -Matching 'not valid JSON'
+}
+
+# CLAUDE.md rule F1, in its own words: a hard limit, "checkable by machine and
+# has no exceptions without a maintainer decision recorded at the site".
+$OdinProcedureLineLimit = 70
+
+Test-Case 'no procedure the format check covers is over the line limit' {
+	# Measured over every file the FORMAT check covers, which is the scope that
+	# moved: the audit behind this rule was scoped to src\, and then the formatter
+	# was given authority over docs\reference\ as well. It reformatted the spike
+	# there from 62 lines to 107 and nothing noticed, because nothing was looking
+	# outside src\. The two scopes are the same scope now, by construction --
+	# Get-OdinSource is what both of them ask.
+	$sources = @(Get-OdinSource)
+	if ($sources.Count -eq 0) {
+		throw "no .odin files under $RepoRoot, so this case would pass having measured nothing."
+	}
+
+	$measured = @()
+	foreach ($source in $sources) {
+		foreach ($procedure in @(Get-OdinProcedureLength -Text ([System.IO.File]::ReadAllText($source.Path)))) {
+			$measured += [pscustomobject]@{ Where = "$($source.Name):$($procedure.Name)"; Lines = $procedure.Lines }
+		}
+	}
+	if ($measured.Count -eq 0) {
+		throw "read no procedures at all out of $($sources.Count) file(s), so this case measured nothing."
+	}
+
+	$over = @($measured | Where-Object { $_.Lines -gt $OdinProcedureLineLimit } | Sort-Object Lines -Descending)
+	if ($over.Count -gt 0) {
+		$named = ($over | ForEach-Object { "  - $($_.Where) is $($_.Lines) lines" }) -join "`n"
+		throw "$($over.Count) procedure(s) over CLAUDE.md rule F1's $OdinProcedureLineLimit-line limit:`n$named"
+	}
+
+	# The negative space (rule A3), and not a formality: a reader that finds no
+	# procedure at all, or one that never counts past the limit, satisfies every
+	# line above. Both halves are checked against a procedure built to a known
+	# length, so the expected number comes from how it was built and not from
+	# running the same count twice.
+	$long = "over :: proc() {`n" + (("`t// filler`n") * ($OdinProcedureLineLimit - 1)) + "}`n"
+	$read = @(Get-OdinProcedureLength -Text $long)
+	if ($read.Count -ne 1) {
+		throw "read $($read.Count) procedures out of a text holding exactly one."
+	}
+	if ($read[0].Lines -ne ($OdinProcedureLineLimit + 1)) {
+		throw "measured a $($OdinProcedureLineLimit + 1)-line procedure as $($read[0].Lines) lines."
+	}
+
+	# And a procedure TYPE, which carries no body and must not be measured as
+	# though the next declaration's brace were its own.
+	$bodyless = "Callback :: proc(held: int) -> bool`n`nCaller :: proc() {`n`treturn`n}`n"
+	$names = @(Get-OdinProcedureLength -Text $bodyless | ForEach-Object { $_.Name })
+	if (($names.Count -ne 1) -or ($names[0] -ne 'Caller')) {
+		throw "reading a bodyless procedure type gave: $($names -join ', ')"
+	}
 }
 
 Test-Case 'git checks out every .odin file with the endings the check demands' -MaySkip {
