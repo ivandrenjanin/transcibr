@@ -40,9 +40,7 @@ Write-Host "Odin: $odin ($OdinVersionPin)"
 
 $packages = @(Get-OdinPackage)
 if ($packages.Count -eq 0) {
-	Write-Host ''
-	Write-Host "TEST COMMAND FAILED: no Odin packages found under $SrcRoot." -ForegroundColor Red
-	exit 1
+	throw "no Odin packages found under $SrcRoot."
 }
 
 $focused = ($TestName -ne '')
@@ -50,10 +48,7 @@ if ($focused) {
 	$wanted = $TestName.Split('.')[0]
 	$packages = @($packages | Where-Object { ($_.Name -split '/')[-1] -eq $wanted })
 	if ($packages.Count -eq 0) {
-		Write-Host ''
-		Write-Host "TEST COMMAND FAILED: no package '$wanted' under $SrcRoot." -ForegroundColor Red
-		Write-Host '-TestName takes <package>.<test>.' -ForegroundColor Red
-		exit 1
+		throw "no package '$wanted' under $SrcRoot. -TestName takes <package>.<test>."
 	}
 }
 

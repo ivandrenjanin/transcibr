@@ -110,7 +110,7 @@ cannot run locally.
 ```powershell
 .\scripts\build.ps1     # -> build\transcibr-cli.exe   (add -Configuration release for -o:speed)
 .\scripts\test.ps1      # every package under src\
-.\scripts\selftest.ps1  # checks that test.ps1 still fails when it should
+.\scripts\selftest.ps1  # checks that the two above still fail when they should
 ```
 
 The Odin compiler is pinned to release `dev-2026-07a`. The pin lives in `scripts/common.ps1` and

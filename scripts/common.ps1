@@ -1,4 +1,5 @@
-# Shared build configuration, dot-sourced by build.ps1, test.ps1 and selftest.ps1.
+# Shared build configuration, dot-sourced by build.ps1, test.ps1, selftest.ps1
+# and the workflow in .github/workflows/ci.yml.
 #
 # The vet set, the compiler pin, the list of binaries and the list of packages
 # expected to hold no tests all live here once. Held separately, the commands
@@ -291,11 +292,15 @@ function Get-OdinTestRoot {
 	return $chosen
 }
 
-# The subsystem recorded in a PE image's optional header. Reading the header is
-# the only check that actually proves ADR-0004's console/GUI split; running the
-# binary and watching it print proves only that it runs.
-function Get-PeSubsystem {
-	param([Parameter(Mandatory)] [string] $Path)
+# The subsystem an image was actually built for, read out of its PE optional
+# header. Reading the header is the only check that proves ADR-0004's
+# console/GUI split; running the binary and watching it print proves only that
+# it runs, and trusting the flag that went in proves nothing at all.
+function Assert-PeSubsystem {
+	param(
+		[Parameter(Mandatory)] [string] $Path,
+		[Parameter(Mandatory)] [ValidateSet('console', 'windows')] [string] $Subsystem
+	)
 
 	$bytes = [System.IO.File]::ReadAllBytes($Path)
 	if ($bytes.Length -lt 64) {
@@ -316,21 +321,8 @@ function Get-PeSubsystem {
 		throw "$Path has no PE signature at offset $peOffset."
 	}
 
-	return [System.BitConverter]::ToUInt16($bytes, $subsystemOffset)
-}
-
-function Assert-PeSubsystem {
-	param(
-		[Parameter(Mandatory)] [string] $Path,
-		[Parameter(Mandatory)] [string] $Subsystem
-	)
-
-	if (-not $PeSubsystemCodes.ContainsKey($Subsystem)) {
-		throw "Unknown subsystem '$Subsystem'; expected one of: $($PeSubsystemCodes.Keys -join ', ')."
-	}
-
 	$expected = $PeSubsystemCodes[$Subsystem]
-	$found = Get-PeSubsystem -Path $Path
+	$found = [System.BitConverter]::ToUInt16($bytes, $subsystemOffset)
 	if ($found -ne $expected) {
 		throw "$Path is subsystem $found, expected $expected ($Subsystem)."
 	}

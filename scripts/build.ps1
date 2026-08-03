@@ -56,9 +56,7 @@ foreach ($target in $OdinTargets) {
 	Invoke-Odin -Odin $odin -Arguments $arguments
 	$odinExit = $LASTEXITCODE
 	if ($odinExit -ne 0) {
-		Write-Host ''
-		Write-Host "BUILD FAILED: odin exited $odinExit building $($target.Name)." -ForegroundColor Red
-		exit 1
+		throw "odin exited $odinExit building $($target.Name)."
 	}
 
 	# Read out of the image rather than trusted from the flag that went in.
@@ -78,7 +76,7 @@ foreach ($target in $OdinTargets) {
 }
 
 Write-Host ''
-Write-Host "Built $($OdinTargets.Count) of $($OdinTargets.Count) targets into $BuildRoot" -ForegroundColor Green
+Write-Host "Built $($OdinTargets.Count) target(s) into $BuildRoot" -ForegroundColor Green
 
 # Stated, not inherited from whichever native command happened to run last.
 exit 0

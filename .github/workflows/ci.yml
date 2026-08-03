@@ -74,8 +74,10 @@ jobs:
         shell: pwsh
         run: .\scripts\test.ps1
 
-      # The sweep's own checks. It is the script whose failure mode is silence,
-      # so it is the one script CI cannot take on trust.
+      # The two commands above, checked against repositories built to make them
+      # fail: the sweep because its failure mode is silence, and the build
+      # because its smoke test and PE-header read are the acceptance criteria
+      # of this repository and nothing else guards them.
       - name: Self-test the build and test commands
         shell: pwsh
         run: .\scripts\selftest.ps1

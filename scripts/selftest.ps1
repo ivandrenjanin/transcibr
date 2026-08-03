@@ -5,10 +5,12 @@
 # The sweep in test.ps1 is the one script whose failure mode is silence: every
 # bug it has shipped so far reported success having run nothing. Checking it by
 # hand is exactly the discipline that let those bugs through, so the checks live
-# here instead.
+# here instead. build.ps1's checks -- the smoke test and the PE subsystem read
+# -- fail loudly rather than silently, but they are checks nothing else checks,
+# so they are covered here too.
 #
 # Each case plants a throwaway repository -- a copy of scripts\ next to a
-# hand-built src\ -- runs the real test.ps1 inside it as a separate process, and
+# hand-built src\ -- runs the real script inside it as a separate process, and
 # asserts on the exit code and the output. Nothing here touches the real src\.
 
 [CmdletBinding()]
@@ -17,9 +19,26 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Dot-sourced for the declarations the fixtures have to agree with: the
+# test-less package list a case plants a package into, and the target list a
+# case builds. Spelled again here, they would go on passing while the real
+# lists moved underneath them.
+. (Join-Path $PSScriptRoot 'common.ps1')
+
 $ScriptRoot = $PSScriptRoot
 $FixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) "transcibr-selftest-$PID"
 $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+if ($OdinPackagesWithoutTests.Count -lt 1) {
+	throw 'common.ps1 declares no test-less package, so two cases below have nothing to name.'
+}
+$DeclaredTestlessPackage = $OdinPackagesWithoutTests[0]
+
+$SmokeTargets = @($OdinTargets | Where-Object { $_.Smoke })
+if ($SmokeTargets.Count -lt 1) {
+	throw 'common.ps1 declares no smoke-tested target, so the build cases have nothing to build.'
+}
+$SmokeTarget = $SmokeTargets[0]
 
 $script:Failures = @()
 $script:Skips = @()
@@ -35,9 +54,10 @@ $script:Passes = 0
 # Keep $ExpectedCaseCount in step with the cases below; a mismatch either way
 # fails the run. Skipping is deny-by-default, same as $OdinPackagesWithoutTests
 # in common.ps1: a case may end in a skip only if it is named here.
-$ExpectedCaseCount = 14
+$ExpectedCaseCount = 19
 $CasesAllowedToSkip = @(
 	'an unreadable directory fails discovery rather than shortening it'
+	'the subsystem is read out of the PE header, not taken from the flag'
 )
 
 # A skip is signalled by throwing THIS OBJECT and nothing else, matched on
@@ -56,9 +76,6 @@ function New-FixtureRepo {
 	param([Parameter(Mandatory)] [string] $Name)
 
 	$root = Join-Path $FixtureRoot $Name
-	if (Test-Path -LiteralPath $root) {
-		Remove-Item -LiteralPath $root -Recurse -Force
-	}
 	$scripts = Join-Path $root 'scripts'
 	New-Item -ItemType Directory -Path $scripts -Force | Out-Null
 	New-Item -ItemType Directory -Path (Join-Path $root 'src') -Force | Out-Null
@@ -102,6 +119,40 @@ function Add-FixturePackage {
 		$item.Attributes = $item.Attributes -bor [System.IO.FileAttributes]::Hidden
 	}
 	return $dir
+}
+
+# The package build.ps1 will find at $SmokeTarget.Package, so the build cases
+# drive the real target list rather than a name spelled again here.
+function Add-FixtureBinary {
+	param(
+		[Parameter(Mandatory)] [string] $RepoRoot,
+		[Parameter(Mandatory)] [string] $Body
+	)
+
+	$dir = Join-Path (Join-Path $RepoRoot 'src') $SmokeTarget.Package
+	New-Item -ItemType Directory -Path $dir -Force | Out-Null
+	[System.IO.File]::WriteAllText((Join-Path $dir 'main.odin'), "package main`n`n$Body", $Utf8NoBom)
+	return $dir
+}
+
+# A binary that prints one line and exits zero, the shape build.ps1's smoke
+# test is looking for. $Line and $Exit are what each case varies.
+function New-FixtureMain {
+	param(
+		[Parameter(Mandatory)] [AllowEmptyString()] [string] $Line,
+		[int] $Exit = 0
+	)
+
+	$body = "import `"core:fmt`"`nimport `"core:os`"`n`nmain :: proc() {`n"
+	if ($Line -ne '') {
+		$body += "`tfmt.println(`"$Line`")`n"
+	}
+	else {
+		# os is imported unconditionally so -vet stays happy either way.
+		$body += "`tfmt.print(`"`")`n"
+	}
+	$body += "`tos.exit($Exit)`n}`n"
+	return $body
 }
 
 # A separate process, so the child's Set-StrictMode, exit code and $LASTEXITCODE
@@ -229,30 +280,46 @@ function Skip-Case {
 	throw $SkipSignal
 }
 
-function Assert-ExitCode {
+# What a case has to say about a run: whether it should have failed, and what
+# its output should have named. Never one without the other in practice -- an
+# exit code alone does not say the script failed for the reason under test --
+# so they are one assertion with the pattern optional.
+function Assert-Result {
 	param(
 		[Parameter(Mandatory)] $Result,
-		[Parameter(Mandatory)] [ValidateSet('zero', 'nonzero')] [string] $Expected
+		[switch] $Fails,
+		[string] $Matching = ''
 	)
 
 	$isZero = ($Result.ExitCode -eq 0)
-	if (($Expected -eq 'zero') -and (-not $isZero)) {
+	if ($Fails -and $isZero) {
+		throw "expected a non-zero exit, got 0.`n$($Result.Output)"
+	}
+	if ((-not $Fails) -and (-not $isZero)) {
 		throw "expected exit 0, got $($Result.ExitCode).`n$($Result.Output)"
 	}
-	if (($Expected -eq 'nonzero') -and $isZero) {
-		throw "expected a non-zero exit, got 0.`n$($Result.Output)"
+	if (($Matching -ne '') -and ($Result.Output -notmatch $Matching)) {
+		throw "output did not match /$Matching/.`n$($Result.Output)"
 	}
 }
 
-function Assert-Output {
+# For the checks that are called in-process rather than through a child script.
+function Assert-Throws {
 	param(
-		[Parameter(Mandatory)] $Result,
-		[Parameter(Mandatory)] [string] $Pattern
+		[Parameter(Mandatory)] [scriptblock] $Body,
+		[Parameter(Mandatory)] [string] $Matching
 	)
 
-	if ($Result.Output -notmatch $Pattern) {
-		throw "output did not match /$Pattern/.`n$($Result.Output)"
+	try {
+		& $Body
 	}
+	catch {
+		if ($_.Exception.Message -notmatch $Matching) {
+			throw "threw, but not matching /$Matching/: $($_.Exception.Message)"
+		}
+		return
+	}
+	throw "expected a throw matching /$Matching/, and nothing was thrown."
 }
 
 # ------------------------------------------------------------------- cases --
@@ -264,23 +331,20 @@ Test-Case 'a single package with zero tests fails loudly' {
 	$repo = New-FixtureRepo 'one-package'
 	Add-FixturePackage -RepoRoot $repo -Name 'solo' -Test 'none' | Out-Null
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
-	Assert-ExitCode -Result $result -Expected 'nonzero'
-	Assert-Output -Result $result -Pattern 'TEST COMMAND FAILED'
+	Assert-Result -Result $result -Fails -Matching 'TEST COMMAND FAILED'
 }
 
 Test-Case 'no packages at all fails loudly' {
 	$repo = New-FixtureRepo 'no-packages'
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
-	Assert-ExitCode -Result $result -Expected 'nonzero'
-	Assert-Output -Result $result -Pattern 'TEST COMMAND FAILED'
+	Assert-Result -Result $result -Fails -Matching 'TEST COMMAND FAILED'
 }
 
 Test-Case 'a repository path containing a space still runs its tests' {
 	$repo = New-FixtureRepo 'path with space'
 	Add-FixturePackage -RepoRoot $repo -Name 'spaced' -Test 'passing' | Out-Null
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
-	Assert-ExitCode -Result $result -Expected 'zero'
-	Assert-Output -Result $result -Pattern 'All 1 tests? passed'
+	Assert-Result -Result $result -Matching 'All 1 tests? passed'
 }
 
 Test-Case 'a package directory containing a space still runs its tests' {
@@ -291,8 +355,7 @@ Test-Case 'a package directory containing a space still runs its tests' {
 	# 'pkg.exe'" and the sweep runs nothing.
 	Add-FixturePackage -RepoRoot $repo -Name 'spaced' -Directory 'my pkg' -Test 'passing' | Out-Null
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
-	Assert-ExitCode -Result $result -Expected 'zero'
-	Assert-Output -Result $result -Pattern 'All 1 tests? passed'
+	Assert-Result -Result $result -Matching 'All 1 tests? passed'
 }
 
 Test-Case 'two sweeps at once in one checkout do not collide' {
@@ -304,8 +367,7 @@ Test-Case 'two sweeps at once in one checkout do not collide' {
 	# other still held: a spurious "collected ZERO tests" in an untouched tree.
 	$results = @(Invoke-FixtureScriptConcurrently -RepoRoot $repo -Script 'test.ps1' -Count 2)
 	foreach ($result in $results) {
-		Assert-ExitCode -Result $result -Expected 'zero'
-		Assert-Output -Result $result -Pattern 'All 2 tests? passed'
+		Assert-Result -Result $result -Matching 'All 2 tests? passed'
 	}
 }
 
@@ -316,8 +378,7 @@ Test-Case 'a passing sweep survives a caller that merges the output streams' {
 	# ErrorRecords, and the sweep runs under $ErrorActionPreference = 'Stop':
 	# without care the first INFO line of a good run terminates the script.
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1' -MergeStreams
-	Assert-ExitCode -Result $result -Expected 'zero'
-	Assert-Output -Result $result -Pattern 'All 1 tests? passed'
+	Assert-Result -Result $result -Matching 'All 1 tests? passed'
 }
 
 Test-Case 'a hidden package is discovered, not skipped' {
@@ -325,8 +386,7 @@ Test-Case 'a hidden package is discovered, not skipped' {
 	Add-FixturePackage -RepoRoot $repo -Name 'visible' -Test 'passing' | Out-Null
 	Add-FixturePackage -RepoRoot $repo -Name 'concealed' -Test 'failing' -Hidden | Out-Null
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
-	Assert-ExitCode -Result $result -Expected 'nonzero'
-	Assert-Output -Result $result -Pattern 'concealed'
+	Assert-Result -Result $result -Fails -Matching 'concealed'
 }
 
 Test-Case 'an unreadable directory fails discovery rather than shortening it' {
@@ -352,8 +412,7 @@ Test-Case 'an unreadable directory fails discovery rather than shortening it' {
 		}
 
 		$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
-		Assert-ExitCode -Result $result -Expected 'nonzero'
-		Assert-Output -Result $result -Pattern 'TEST COMMAND FAILED'
+		Assert-Result -Result $result -Fails -Matching 'TEST COMMAND FAILED'
 	}
 	finally {
 		& icacls $locked /remove:d "$env:USERNAME" | Out-Null
@@ -365,39 +424,36 @@ Test-Case 'an undeclared package that collects zero tests fails the sweep' {
 	Add-FixturePackage -RepoRoot $repo -Name 'alpha' -Test 'passing' | Out-Null
 	Add-FixturePackage -RepoRoot $repo -Name 'beta' -Test 'none' | Out-Null
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
-	Assert-ExitCode -Result $result -Expected 'nonzero'
-	Assert-Output -Result $result -Pattern 'beta'
+	Assert-Result -Result $result -Fails -Matching 'beta'
 }
 
 Test-Case 'a package declared test-less is allowed to have none' {
 	$repo = New-FixtureRepo 'declared-testless'
 	Add-FixturePackage -RepoRoot $repo -Name 'alpha' -Test 'passing' | Out-Null
-	Add-FixturePackage -RepoRoot $repo -Name 'cli' -Test 'none' | Out-Null
+	Add-FixturePackage -RepoRoot $repo -Name $DeclaredTestlessPackage -Test 'none' | Out-Null
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
-	Assert-ExitCode -Result $result -Expected 'zero'
+	Assert-Result -Result $result
 }
 
 Test-Case 'a package declared test-less that grows tests fails the sweep' {
 	$repo = New-FixtureRepo 'stale-declaration'
-	Add-FixturePackage -RepoRoot $repo -Name 'cli' -Test 'passing' | Out-Null
+	Add-FixturePackage -RepoRoot $repo -Name $DeclaredTestlessPackage -Test 'passing' | Out-Null
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
-	Assert-ExitCode -Result $result -Expected 'nonzero'
-	Assert-Output -Result $result -Pattern 'cli'
+	Assert-Result -Result $result -Fails -Matching $DeclaredTestlessPackage
 }
 
 Test-Case 'a deliberately failing test fails the sweep' {
 	$repo = New-FixtureRepo 'failing-test'
 	Add-FixturePackage -RepoRoot $repo -Name 'broken' -Test 'failing' | Out-Null
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
-	Assert-ExitCode -Result $result -Expected 'nonzero'
-	Assert-Output -Result $result -Pattern 'TEST COMMAND FAILED'
+	Assert-Result -Result $result -Fails -Matching 'TEST COMMAND FAILED'
 }
 
 Test-Case 'a test that leaks its returned slice fails rather than warns' {
 	$repo = New-FixtureRepo 'leaking-test'
 	Add-FixturePackage -RepoRoot $repo -Name 'leaky' -Test 'leaking' | Out-Null
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
-	Assert-ExitCode -Result $result -Expected 'nonzero'
+	Assert-Result -Result $result -Fails
 }
 
 Test-Case 'a package that does not compile fails the sweep' {
@@ -406,8 +462,69 @@ Test-Case 'a package that does not compile fails the sweep' {
 	$orphan = Add-FixturePackage -RepoRoot $repo -Name 'orphan' -Test 'passing'
 	[System.IO.File]::WriteAllText((Join-Path $orphan 'orphan.odin'), "package orphan`n`nthis is not Odin`n", $Utf8NoBom)
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
-	Assert-ExitCode -Result $result -Expected 'nonzero'
-	Assert-Output -Result $result -Pattern 'orphan'
+	Assert-Result -Result $result -Fails -Matching 'orphan'
+}
+
+# ------------------------------------------------------- cases for build.ps1 --
+#
+# The build's own checks -- that the binary starts, reports a version, exits
+# zero, and carries the subsystem it was built for -- are the acceptance
+# criteria of this repository's first ticket, and until now nothing but a
+# careful reader guarded them.
+
+Test-Case 'the build command builds, smoke-tests and reports its target' {
+	$repo = New-FixtureRepo 'build-happy'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line "$($SmokeTarget.Name) 0.1.0") | Out-Null
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Matching "printed: $([regex]::Escape($SmokeTarget.Name)) 0\.1\.0"
+}
+
+Test-Case 'a binary that prints nothing fails the build' {
+	$repo = New-FixtureRepo 'build-silent'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line '') | Out-Null
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Fails -Matching 'did not report a version'
+}
+
+Test-Case 'a binary that prints the wrong text fails the build' {
+	$repo = New-FixtureRepo 'build-wrong-text'
+	# Right shape, wrong program: a binary reporting someone else's name is the
+	# failure a check for "printed something" would wave through.
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line 'some-other-program 0.1.0') | Out-Null
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Fails -Matching 'did not report a version'
+}
+
+Test-Case 'a binary that exits non-zero fails the build' {
+	$repo = New-FixtureRepo 'build-bad-exit'
+	# Prints exactly what is wanted and then fails, so it is the exit code and
+	# nothing else that this case turns on.
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line "$($SmokeTarget.Name) 0.1.0" -Exit 3) | Out-Null
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Fails -Matching 'exited 3, expected 0'
+}
+
+Test-Case 'the subsystem is read out of the PE header, not taken from the flag' {
+	# Ground truth Windows ships: cmd.exe is a console image and explorer.exe is
+	# a GUI one. Checked against those rather than against a binary this suite
+	# built with the same flag it then asserts on, which would agree with itself
+	# whatever the reader did.
+	$console = Join-Path $env:SystemRoot 'System32\cmd.exe'
+	$gui = Join-Path $env:SystemRoot 'explorer.exe'
+	foreach ($path in @($console, $gui)) {
+		if (-not (Test-Path -LiteralPath $path)) {
+			Skip-Case -Reason "this Windows install has no $path to check the PE reader against"
+		}
+	}
+
+	Assert-PeSubsystem -Path $console -Subsystem 'console'
+	Assert-PeSubsystem -Path $gui -Subsystem 'windows'
+	Assert-Throws -Matching 'is subsystem 2, expected 3' -Body {
+		Assert-PeSubsystem -Path $gui -Subsystem 'console'
+	}
+	Assert-Throws -Matching 'does not start with the MZ signature' -Body {
+		Assert-PeSubsystem -Path (Join-Path $ScriptRoot 'common.ps1') -Subsystem 'console'
+	}
 }
 
 # ----------------------------------------------------------------- summary --
