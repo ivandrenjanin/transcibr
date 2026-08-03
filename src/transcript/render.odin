@@ -81,6 +81,76 @@ GENERATOR :: "transcibr"
 @(private)
 FENCE :: "---"
 
+// What a front matter field says where nobody could settle it.
+//
+// A word rather than an empty value or a missing key, because the two of those
+// read as "transcibr forgot" where this reads as "nobody knew". ADR-0003 is the
+// rule it comes from: absent provenance beats wrong provenance, and a Transcript
+// re-rendered from retained Engine output genuinely does not know which Engine
+// build decoded it.
+UNKNOWN :: "unknown"
+
+// Renders one piece of retained Engine output as a Markdown Transcript: parse,
+// collapse repetition, merge into Paragraphs under the Render Context's Merge
+// Profile, and write the document.
+//
+// The whole pure core in one call, and the seam the golden fixture is compared
+// at (spec S1). Nothing here touches the GPU, the clock or the filesystem: the
+// Engine's output arrives as text and the Recording's length as a number, both
+// settled by the shell (ADR-0009), which is what makes re-rendering cost seconds
+// rather than hours (spec story 43).
+//
+// An operating error names the input it came from and comes back with no
+// document at all, never a short one: what to do about it is disposition_of, and
+// ADR-0002 quarantines and re-runs most of them.
+//
+// The allocator is explicit and never defaulted: the document outlives this
+// procedure and crosses a worker boundary (ADR-0010). Free it with `delete`,
+// passing the same allocator.
+render_transcript :: proc(
+	json_name: string,
+	json_text: string,
+	recording_duration: Maybe(Millis),
+	rc: Render_Context,
+	allocator: mem.Allocator,
+) -> (
+	markdown: string,
+	err: Parse_Error,
+) {
+	assert(
+		len(json_name) > 0,
+		"the input must be named; a report nobody can locate is not a report",
+	)
+	assert(
+		allocator.procedure != nil,
+		"the document outlives this procedure and needs a chosen allocator",
+	)
+	// Both sides of what a return means (CLAUDE.md A3), at the one place both are
+	// in hand: a refusal hands back nothing to free, and an acceptance hands back
+	// a document that at least holds its own header.
+	defer if err.fault != .None {
+		assert(len(markdown) == 0, "reported an operating error and handed back a transcript")
+	} else {
+		assert(len(markdown) > 0, "rendered a transcript with nothing in it, not even a header")
+	}
+
+	cues, parse_err := parse_cues(json_name, json_text, recording_duration, allocator)
+	if parse_err.fault != .None {
+		return "", parse_err
+	}
+	defer destroy_cues(cues, allocator)
+
+	// The Cues come back CLONED, so both sets are freed and neither borrows from
+	// the other (see collapse_repetition).
+	kept := collapse_repetition(cues, COLLAPSE_THRESHOLDS, allocator)
+	defer destroy_cues(kept, allocator)
+
+	paragraphs := merge_paragraphs(kept, profile_params(rc.profile), allocator)
+	defer destroy_paragraphs(paragraphs, allocator)
+
+	return render_markdown(paragraphs, rc, ANCHOR_INTERVAL_MS, allocator), Parse_Error{}
+}
+
 // Renders Paragraphs as a Markdown Transcript.
 //
 // Pure: the same arguments produce the same bytes, every time, which is what
