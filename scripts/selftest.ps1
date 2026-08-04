@@ -47,7 +47,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 51
+$ExpectedCaseCount = 52
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -1566,6 +1566,89 @@ Test-Case 'a procedure that returns without the attribute fails the build' {
 	# runs. Line 5 is where Add-FixtureBinary's `package main` preamble and the
 	# import above put the declaration.
 	Assert-Result -Result $result -Fails -Matching 'main\.odin:5 banner'
+}
+
+Test-Case 'the result policy refuses a procedure it cannot see, on its own' {
+	# Rule F2's verdict is a claim about EVERY procedure in the tree, and a
+	# procedure declared indented is one no column-zero scan can see.
+	# Assert-OdinVisibleProcedure is what keeps that claim true, and it used to sit
+	# inside the comment policy alone -- so rule F2 was complete only because
+	# build.ps1 happened to call that one first, an ordering nothing stated.
+	#
+	# ON ITS OWN is the whole case. Both policies call the guard now, and nothing
+	# else in this suite can tell that version from the one where only the comment
+	# policy does: that policy still refuses the same declaration, build.ps1 still
+	# runs it first, and every other case here stays green with the call deleted
+	# from Assert-OdinResultPolicy. It costs nothing today and it is the next edit
+	# to build.ps1 that collects.
+	#
+	# The procedure carries the attribute, so nothing about rule F2's own reading
+	# can refuse it: what is left to refuse it is the guard, and only the guard.
+	$repo = New-FixtureRepo 'result-policy-hidden'
+	$package = Join-Path (Join-Path $repo 'src') 'hidden'
+	New-Item -ItemType Directory -Path $package -Force | Out-Null
+	$indented = @(
+		'package hidden'
+		''
+		'when ODIN_OS == .Windows {'
+		"`t@(require_results)"
+		"`thelper :: proc() -> bool {"
+		"`t`treturn true"
+		"`t}"
+		'}'
+	) -join "`n"
+	Write-FixtureSource -Path (Join-Path $package 'hidden.odin') -Text "$indented`n"
+
+	# The policy takes no arguments and reads the tree through Get-OdinSource, so
+	# the root it reads is the seam. Rebound in a scope of its own rather than over
+	# this case, and it fails SAFE: a rebinding that stopped reaching the function
+	# would point it at the real repository, which carries no indented procedure,
+	# and this case would fail rather than quietly pass.
+	$refused = & {
+		$RepoRoot = $repo
+		try {
+			Assert-OdinResultPolicy
+			''
+		}
+		catch {
+			$_.Exception.Message
+		}
+	}
+	if ($refused -eq '') {
+		throw 'Assert-OdinResultPolicy accepted a repository whose only returning procedure is declared where it cannot see it, so its verdict is a claim about procedures it never read.'
+	}
+	foreach ($claim in @('declared indented', 'src/hidden/hidden\.odin:5 declares helper')) {
+		if ($refused -notmatch $claim) {
+			throw "the refusal did not name /$claim/: $refused"
+		}
+	}
+
+	# The negative space (rule A3). Every line above is satisfied by a policy that
+	# refuses whatever it is pointed at, so the same procedure is checked hoisted
+	# to column 0 -- same attribute, same body, one indentation of difference --
+	# and there it has to pass.
+	$hoisted = @(
+		'package hidden'
+		''
+		'@(require_results)'
+		'helper :: proc() -> bool {'
+		"`treturn true"
+		'}'
+	) -join "`n"
+	Write-FixtureSource -Path (Join-Path $package 'hidden.odin') -Text "$hoisted`n"
+	$accepted = & {
+		$RepoRoot = $repo
+		try {
+			Assert-OdinResultPolicy
+			''
+		}
+		catch {
+			$_.Exception.Message
+		}
+	}
+	if ($accepted -ne '') {
+		throw "the same procedure at column 0, carrying the attribute, was refused: $accepted"
+	}
 }
 
 Test-Case 'a procedure TYPE above a table builds, because nothing can annotate one' {
