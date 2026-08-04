@@ -74,7 +74,7 @@ names_of :: proc(source: string, allocator: mem.Allocator) -> (names: Names, ok:
 		assert(names.engine_output != names.sidecar, "two artifacts under one name")
 	}
 
-	stem := stem_of(source)
+	stem := path_stem_of(source)
 	if len(stem) == 0 {
 		return {}, false
 	}
@@ -93,6 +93,41 @@ destroy_names :: proc(names: Names, allocator: mem.Allocator) {
 	delete(names.sidecar, allocator)
 }
 
+// Where a Recording's own name begins in its path and where its extension
+// starts: the whole of ADR-0008's rule about names, in ONE place, as two indices
+// into the argument. Both are zero where the path names no file at all.
+//
+// One rule and not two, which is the point of it being here rather than spelled
+// at each of the two callers. It was two: this package answered one way and the
+// command line asked `filepath.stem`, which reads `.talk` as an empty name with
+// a `talk` extension -- so a dotfile Recording was refused by the shell and
+// accepted here, and the case that pins the acceptance had no production caller.
+@(private)
+name_bounds :: proc(source: string) -> (from: int, to: int) {
+	defer {
+		assert(to >= from, "a Recording's name was said to end before it begins")
+		assert(to <= len(source), "a Recording's name was said to run past its own path")
+	}
+
+	// Both separators, because Windows accepts both and a command line carrying
+	// forward slashes is an ordinary thing to be handed. Only the LAST of either
+	// matters, so the two are asked separately and the further one wins.
+	cut := max(strings.last_index_byte(source, '\\'), strings.last_index_byte(source, '/'))
+	from = cut + 1
+	if from == len(source) {
+		return 0, 0
+	}
+
+	// A LEADING DOT IS A NAME. `.talk` is a file called `.talk` and not an empty
+	// name with a `talk` extension, and reading it the other way would map every
+	// dotfile in one directory onto one artifact path.
+	dot := strings.last_index_byte(source[from:], '.')
+	if dot <= 0 {
+		return from, len(source)
+	}
+	return from, from + dot
+}
+
 // A Recording's path with its extension taken off, DIRECTORY AND ALL, or the
 // empty string where it names no file.
 //
@@ -102,26 +137,25 @@ destroy_names :: proc(names: Names, allocator: mem.Allocator) {
 // caller who typed `C:/clips/talk.mp4` would get their Transcript at
 // `C:\clips\talk.md`: the same file, spelled a way they did not choose and would
 // not find in a diagnostic.
-//
-// A LEADING DOT IS A NAME. `.talk` is a file called `.talk` and not an empty
-// name with a `talk` extension, and reading it the other way would map every
-// dotfile in one directory onto one artifact path.
 @(private)
-stem_of :: proc(source: string) -> string {
-	// Both separators, because Windows accepts both and a command line carrying
-	// forward slashes is an ordinary thing to be handed. Only the LAST of either
-	// matters, so the two are asked separately and the further one wins.
-	cut := max(strings.last_index_byte(source, '\\'), strings.last_index_byte(source, '/'))
-	name := source[cut + 1:]
-	if len(name) == 0 {
-		return ""
-	}
+path_stem_of :: proc(source: string) -> string {
+	_, to := name_bounds(source)
+	return source[:to]
+}
 
-	dot := strings.last_index_byte(name, '.')
-	if dot <= 0 {
-		return source
-	}
-	return source[:cut + 1 + dot]
+// The stem every artifact of one Recording is named from: the Recording's own
+// name with its extension taken off, and the directory left behind. Empty where
+// the path names no file, which is the same refusal names_of makes.
+//
+// THE SHELL'S COPY OF THIS RULE IS WHAT THIS REPLACES. Everything named from one
+// Recording -- the scratch audio, the Engine's output prefix, the progress line,
+// and through names_of the three artifacts themselves -- has to come from one
+// answer, or a Recording is refused at one stage and accepted at the next.
+// ADR-0008's injectivity check over a Batch is still planning's: over one
+// Recording there is no pair for it to be about.
+stem_of :: proc(source: string) -> string {
+	from, to := name_bounds(source)
+	return source[from:to]
 }
 
 // The temporary name an artifact is written under before it is moved into place.

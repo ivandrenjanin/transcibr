@@ -66,6 +66,43 @@ a_leading_dot_is_a_name_and_not_an_extension :: proc(t: ^testing.T) {
 }
 
 @(test)
+the_stem_a_recording_is_named_from_is_the_one_the_shell_uses_too :: proc(t: ^testing.T) {
+	// ONE ANSWER TO "WHAT IS A STEM" AND NOT TWO. The scratch audio, the Engine's
+	// output prefix and the progress line are all named from this, and the three
+	// artifacts beside the Recording come from names_of; they used to be two
+	// different rules, because the shell asked `filepath.stem` -- which reads
+	// `.talk` as an empty name with a `talk` extension and answers nothing. A
+	// dotfile Recording was refused at one stage and accepted at the next, and
+	// the case that pins the acceptance had no production caller at all.
+	testing.expect_value(t, stem_of("C:\\clips\\talk.mp4"), "talk")
+	testing.expect_value(t, stem_of("talk.mkv"), "talk")
+	testing.expect_value(t, stem_of("D:\\recordings\\2026-08-02"), "2026-08-02")
+	testing.expect_value(t, stem_of("C:/clips/2026.08/talk"), "talk")
+	// The one the two rules disagreed about.
+	testing.expect_value(t, stem_of("C:\\clips\\.talk"), ".talk")
+
+	// And it refuses exactly what names_of refuses, which is the property that
+	// makes them one rule rather than two that happen to agree today.
+	for named in ([?]string {
+			"C:\\clips\\talk.mp4",
+			"C:\\clips\\.talk",
+			"C:\\clips\\",
+			"",
+			"/",
+			"D:/",
+		}) {
+		names, ok := names_of(named, context.allocator)
+		defer destroy_names(names, context.allocator)
+		testing.expectf(
+			t,
+			ok == (len(stem_of(named)) > 0),
+			"%q is a Recording to one half of this package and not to the other",
+			named,
+		)
+	}
+}
+
+@(test)
 a_path_that_names_no_file_makes_no_artifacts_and_allocates_nothing :: proc(t: ^testing.T) {
 	// A8: the Recording's path arrives from a command line or from discovery, so
 	// one that names a directory rather than a file is an operating error and

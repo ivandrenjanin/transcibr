@@ -128,11 +128,15 @@ run_one :: proc(
 	assert(group != nil, "a child started outside a job object outlives transcibr")
 	assert(len(o.source) > 0, "there is no Recording here to transcribe")
 
-	// The stem every artifact of this Recording is named from. `filepath.stem` and
-	// not a scan written here: ADR-0008's rule is that the extension is replaced,
-	// and the check that the mapping is injective is planning's -- over one
-	// Recording there is no pair for it to be about.
-	name := filepath.stem(o.source)
+	// The stem every artifact of this Recording is named from, out of the package
+	// that decides what artifacts are called and NOT out of `filepath`. The two
+	// disagree: `filepath.stem` reads `.talk` as an empty name with a `talk`
+	// extension and answers nothing, so this shell refused a dotfile Recording
+	// that `transcibr:artifact` deliberately accepts -- two answers to ADR-0008's
+	// "what is a stem", and the tested one had no caller. The check that the
+	// mapping is injective is still planning's: over one Recording there is no
+	// pair for it to be about.
+	name := artifact.stem_of(o.source)
 	if len(name) == 0 {
 		fmt.eprintfln("%q: names no file to make artifacts from.", o.source)
 		return OPERATING_ERROR
