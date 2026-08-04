@@ -1404,8 +1404,8 @@ Test-Case 'no procedure the format check covers hands back an unrequired answer'
 	# for the direction `@(require_results)` cannot cover on its own: the attribute
 	# fails a call site that DROPS an answer, and the compiler refuses it on a
 	# procedure with no results -- so the procedure declared tomorrow that returns
-	# a fault and never carries it is a rule nothing checks. That is how 221 of
-	# them came to be here (issue #43).
+	# a fault and never carries it is a rule nothing checks. That is the direction
+	# every bare one here arrived from (issue #43).
 	$sources = @(Get-OdinSource)
 	if ($sources.Count -eq 0) {
 		throw "no .odin files under $RepoRoot, so this case would pass having read nothing."
@@ -1575,9 +1575,14 @@ Test-Case 'the result rule the build enforces is written down' {
 	}
 
 	$text = [System.IO.File]::ReadAllText($policy)
+	# The discard spelling is pinned twice over, because the attribute changes what
+	# a `defer` has to look like and nothing else in the tree would say so: no site
+	# hits it today, so the first person to write `defer f()` over an annotated
+	# procedure meets a compiler error with no rule behind it.
 	$claims = @(
 		'### F2. `@(require_results)` on every procedure that returns anything'
 		'spells it `_ = f(...)`'
+		'`defer _ = f()`'
 	)
 	foreach ($claim in $claims) {
 		if (-not $text.Contains($claim)) {

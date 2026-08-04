@@ -152,8 +152,7 @@ checkable by machine and has no exceptions without a maintainer decision recorde
 ### F2. `@(require_results)` on every procedure that returns anything
 
 If it hands something back, the attribute goes above the declaration. No judgement per procedure
-about whether *this* answer matters: a fault, an `ok`, a count, a rendered line — all of it. A
-caller that means to throw an answer away spells it `_ = f(...)`, which is a discard review can see.
+about whether *this* answer matters: a fault, an `ok`, a count, a rendered line — all of it.
 
 ```odin
 // GOOD: a call site that drops the answer does not build.
@@ -168,27 +167,25 @@ quarantine :: proc(path: string, allocator: mem.Allocator) -> bool {
 }
 ```
 
-**The rule is total because a narrower one cannot be applied without asking somebody.** "Faults
-only" leaves whoever writes the next `-> (value, ok)` deciding what counts as a fault, and
-case-by-case review already produced its answer here: `disposition_of` was left bare *because a
-sibling lacked it* — consistency with a gap, which is how a gap spreads. Measured against this tree
-the total rule costs nothing it should not. All 304 returning procedures carry it, and what that
-found was four dropped answers — one of them the production defect ADR-0024 now records — and not
-one call site that wanted a `_ =`.
+A caller that means to throw an answer away spells it `_ = f(...)`, which is a discard review can
+see. `defer` is inside that: `defer f()` stops compiling once `f` carries the attribute, and the
+form is `defer _ = f()`.
 
-**Test files are inside the rule**, and the boundary does not fall between them and production code
-because the failure does not. A helper answering whether a temporary was left behind is a verdict; a
-case that drops it checks nothing and still reports green.
+**Total, because a narrower rule cannot be applied without asking somebody.** "Faults only" leaves
+whoever writes the next `-> (value, ok)` deciding what counts as a fault, and case-by-case review
+already produced its answer here — `disposition_of` was left bare *because a sibling lacked it*.
+**Test files are inside it**, because the failure does not stop at them: a case that drops a
+helper's verdict checks nothing and still reports green.
 
-Two halves enforce it and neither is enough alone. The **compiler** refuses a dropped result at the
-call site, and refuses the attribute on a procedure with no results — so it cannot be sprayed wider
-than the rule says, and deleting a procedure's return values fails the build until the attribute
-goes too. What the compiler says nothing about is a procedure declared *without* it, which is how
-221 of them came to be here; `Assert-OdinResultPolicy` in `scripts\common.ps1` fails the build on
-one, reading the same procedure ranges section 0's comment ban reads.
+Two halves enforce it. The **compiler** refuses a dropped result at the call site, and refuses the
+attribute on a procedure with no results — so it cannot be sprayed wider than the rule says, and
+deleting a procedure's return values fails the build until the attribute goes too. What it says
+nothing about is a procedure declared *without* it, which is the direction every bare one here
+arrived from; `Assert-OdinResultPolicy` in `scripts\common.ps1` fails the build on one, reading the
+same procedure ranges rule F1 and section 0 read.
 
-`#optional_ok` is not a lighter version of this and points the other way: it makes dropping an `ok`
-easier, which is the failure the rule exists to stop.
+`#optional_ok` points the other way: it makes dropping an `ok` easier, which is the failure the rule
+exists to stop.
 
 ## 3. Types
 
