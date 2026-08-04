@@ -138,6 +138,43 @@ nothing_transcibr_writes_is_ever_taken_for_a_recording :: proc(t: ^testing.T) {
 	}
 }
 
+// What the reparse rule must NOT reach. A file is a candidate whatever type the
+// listing gave it: `.Symlink` is a file symbolic link, and `.Undetermined` is
+// both what a file another process holds open reads as and what a non-directory
+// reparse point falls through to (ADR-0023) -- which is every OneDrive
+// Files-On-Demand placeholder. A machine with no reparse point to make still
+// holds this rule.
+@(test)
+a_file_is_a_candidate_recording_whatever_type_the_listing_gave_it :: proc(t: ^testing.T) {
+	Case :: struct {
+		type: os.File_Type,
+		path: string,
+		yes:  bool,
+	}
+
+	for c in ([?]Case {
+			{.Regular, "C:\\clips\\talk.mp4", true},
+			{.Undetermined, "C:\\clips\\talk.mp4", true},
+			{.Symlink, "C:\\clips\\talk.mp4", true},
+			{.Regular, "C:\\clips\\notes.txt", false},
+			{.Symlink, "C:\\clips\\talk.md", false},
+			{.Directory, "C:\\clips\\talk.mp4", false},
+			{.Named_Pipe, "C:\\clips\\talk.mp4", false},
+			{.Socket, "C:\\clips\\talk.mp4", false},
+			{.Block_Device, "C:\\clips\\talk.mp4", false},
+			{.Character_Device, "C:\\clips\\talk.mp4", false},
+		}) {
+		testing.expectf(
+			t,
+			a_candidate(c.type, c.path) == c.yes,
+			"a %v entry at %q was %v, which is not what this walk considers",
+			c.type,
+			c.path,
+			a_candidate(c.type, c.path) ? "taken" : "dropped",
+		)
+	}
+}
+
 // A Recording nothing looked at is indistinguishable from one that is not
 // there, and only the walk knows which happened. Anything that leaves the
 // inventory short of the tree has to be answerable AFTER the walk, or a caller
@@ -433,32 +470,58 @@ CMD :: "cmd.exe"
 @(private)
 CMD_BOUND_MS :: u32(20_000)
 
-// The one thing no Odin call in `core` will do: make a reparse point. A junction
-// needs no elevation, which a symbolic link does.
+// One bounded child, started and stopped the one way. The two things no Odin
+// call in `core` will do -- make a reparse point, set an ACL -- are the same
+// five steps of child lifecycle, so they are the same procedure.
+//
+// Whether the tool DID anything is the caller's to check: `mklink` refused for
+// want of a privilege exits non-zero having started and finished perfectly well.
 @(private)
-junction :: proc(t: ^testing.T, link: string, target: string) -> bool {
+ran :: proc(t: ^testing.T, program: string, arguments: []string) -> bool {
 	group, opening := child.job_object_open()
 	defer child.job_object_close(&group)
 	if !testing.expectf(t, opening.fault == .None, "no job object: %v", opening.fault) {
 		return false
 	}
 
-	c, refusal := child.start(
-		&group,
-		CMD,
-		[]string{"/c", "mklink", "/J", link, target},
-		context.allocator,
-	)
-	if !testing.expectf(t, refusal.fault == .None, "mklink would not start: %v", refusal.fault) {
+	c, refusal := child.start(&group, program, arguments, context.allocator)
+	if !testing.expectf(
+		t,
+		refusal.fault == .None,
+		"%s would not start: %v",
+		program,
+		refusal.fault,
+	) {
 		return false
 	}
 	defer child.close(&c)
 
-	if !testing.expect(t, child.wait(&c, CMD_BOUND_MS), "mklink did not finish in time") {
+	if !testing.expect(t, child.wait(&c, CMD_BOUND_MS), "a child did not finish in time") {
 		child.stop(&c)
 		return false
 	}
+	return true
+}
+
+// A DIRECTORY reparse point, which needs no elevation.
+@(private)
+junction :: proc(t: ^testing.T, link: string, target: string) -> bool {
+	if !ran(t, CMD, []string{"/c", "mklink", "/J", link, target}) {
+		return false
+	}
 	return testing.expect(t, os.exists(link), "mklink reported success and made no junction")
+}
+
+// A FILE reparse point, which needs Developer Mode or elevation where a junction
+// needs neither. A machine that will not make one is not a failing case, so this
+// answers false and the case stops -- what holds the rule everywhere is
+// `taken_for`, which needs no privilege at all.
+@(private)
+file_symlink :: proc(t: ^testing.T, link: string, target: string) -> bool {
+	if !ran(t, CMD, []string{"/c", "mklink", link, target}) {
+		return false
+	}
+	return os.exists(link)
 }
 
 // Criterion six's last clause. `core:os` calls a directory carrying any reparse
@@ -562,4 +625,79 @@ a_walk_told_to_follow_reparse_points_walks_through_one :: proc(t: ^testing.T) {
 
 	testing.expect_value(t, len(inventory.found), 1)
 	testing.expect_value(t, len(inventory.notes), 0)
+}
+
+// The path a user actually hits. A junction passed as a ROOT never reaches
+// `took` at all -- `enumerable` asks `os.is_dir`, which resolves it -- so the
+// case above proves the flag and not the walk. Turning following ON must never
+// be less safe than leaving it off, and a junction dropped in silence is exactly
+// that: the default at least reports the skip.
+@(test)
+a_junction_inside_the_tree_is_walked_through_when_following_is_turned_on :: proc(t: ^testing.T) {
+	tree := scratch_tree(t, "followedinside")
+	defer delete(tree, context.allocator)
+	defer remove_tree(tree)
+
+	real := a_directory(t, tree, "real")
+	defer delete(real, context.allocator)
+	behind := in_tree(t, tree, "real\\behind.mp4", "video")
+	defer delete(behind, context.allocator)
+	under := a_directory(t, tree, "sub")
+	defer delete(under, context.allocator)
+
+	link := fmt.aprintf("%s\\link", under, allocator = context.allocator)
+	defer delete(link, context.allocator)
+	if !junction(t, link, real) {
+		return
+	}
+	defer os.remove(link)
+
+	inventory := discover([]string{tree}, Walk{follow_reparse_points = true}, context.allocator)
+	defer destroy_inventory(inventory, context.allocator)
+
+	testing.expectf(
+		t,
+		len(inventory.found) == 2,
+		"a walk told to follow reparse points found %d Recordings through a junction it was given",
+		len(inventory.found),
+	)
+	testing.expectf(
+		t,
+		len(inventory.notes) == 0,
+		"a walk told to follow reparse points reported %d note(s) anyway",
+		len(inventory.notes),
+	)
+}
+
+// A reparse point is not TRAVERSED; that rule says nothing about a file, where
+// there is nothing to traverse. Every OneDrive Files-On-Demand placeholder
+// carries FILE_ATTRIBUTE_REPARSE_POINT, so a walk that skipped one planned a
+// corpus in OneDrive as empty and exited zero -- ADR-0009's silently short file
+// list, reached through this program's own opt-out.
+@(test)
+a_recording_that_is_itself_a_reparse_point_is_planned_and_never_skipped :: proc(t: ^testing.T) {
+	tree := scratch_tree(t, "reparsefile")
+	defer delete(tree, context.allocator)
+	defer remove_tree(tree)
+
+	real := in_tree(t, tree, "real.mp4", "video")
+	defer delete(real, context.allocator)
+
+	link := fmt.aprintf("%s\\link.mp4", tree, allocator = context.allocator)
+	defer delete(link, context.allocator)
+	if !file_symlink(t, link, real) {
+		return
+	}
+	defer os.remove(link)
+
+	inventory := discover([]string{tree}, Walk{}, context.allocator)
+	defer destroy_inventory(inventory, context.allocator)
+
+	_, took := found_at(inventory, link)
+	testing.expect(t, took, "a Recording that is itself a reparse point was dropped from the plan")
+	testing.expectf(
+		t,
+		len(inventory.notes) == 0,
+		"a Recording that is itself a reparse point was reported as a skipped directory",
+	)
 }

@@ -266,7 +266,10 @@ walk_one :: proc(state: ^Walking, pending: Pending, frontier: ^[dynamic]Pending)
 	defer os.file_info_slice_delete(listing, state.allocator)
 
 	state.directories += 1
-	writable := directory_writable(pending.path, state.allocator)
+	writable := false
+	if holds_a_recording(listing) {
+		writable = directory_writable(pending.path, state.allocator)
+	}
 	report(state, pending.path)
 
 	for info in listing {
@@ -277,6 +280,27 @@ walk_one :: proc(state: ^Walking, pending: Pending, frontier: ^[dynamic]Pending)
 	}
 }
 
+// Whether this listing is worth a writability probe at all. The probe creates and
+// removes a file, and most directories in an archive hold no Recording -- the
+// same test `took` will apply, so the answer is read exactly where it was paid
+// for.
+@(private)
+holds_a_recording :: proc(listing: []os.File_Info) -> bool {
+	for info in listing {
+		if info.type == .Directory {
+			continue
+		}
+		if is_a_recording(info.fullpath) {
+			return true
+		}
+	}
+	return false
+}
+
+// The reparse rule is about TRAVERSAL and about nothing else: a directory this
+// walk will not go through is reported, and a file is a file -- there is nothing
+// to go through, and every OneDrive Files-On-Demand placeholder carries the
+// attribute (ADR-0026).
 @(private)
 took :: proc(
 	state: ^Walking,
@@ -290,29 +314,81 @@ took :: proc(
 	assert(frontier != nil, "there is nowhere here to put a sub-directory")
 	assert(pending.depth >= 0, "a directory entry found at a negative depth")
 
-	if !state.w.follow_reparse_points && is_a_reparse_point(info.fullpath, state.allocator) {
-		note(state, .Reparse_Point_Not_Followed, info.fullpath)
+	directory, reparse := shaped(info, state.allocator)
+	if directory {
+		crossed(state, info.fullpath, pending.depth, frontier, reparse)
 		return
 	}
-	if info.type == .Directory {
-		descend(state, info.fullpath, pending.depth, frontier)
-		return
-	}
-	if info.type != .Regular && info.type != .Undetermined {
-		return
-	}
-	if !is_a_recording(info.fullpath) {
+	if !a_candidate(info.type, info.fullpath) {
 		return
 	}
 	append(&state.found, looked_at(state, info, writable))
 }
 
+// Whether an entry that is not a directory is a Recording this Batch will
+// consider. The reparse tag is deliberately NOT asked here: there is nothing to
+// follow through a file, and every OneDrive Files-On-Demand placeholder carries
+// FILE_ATTRIBUTE_REPARSE_POINT -- so refusing one would plan a corpus in OneDrive
+// as empty. `.Undetermined` is admitted for ADR-0023's reason: it is what a file
+// another process holds open reads as, and a Recording still being written by a
+// camera is exactly that file.
 @(private)
-descend :: proc(state: ^Walking, path: string, depth: int, frontier: ^[dynamic]Pending) {
+a_candidate :: proc(type: os.File_Type, path: string) -> bool {
+	assert(len(path) > 0, "a directory entry with no path at all")
+
+	switch type {
+	case .Regular, .Undetermined, .Symlink:
+		return is_a_recording(path)
+	case .Directory, .Named_Pipe, .Socket, .Block_Device, .Character_Device:
+		return false
+	}
+	return false
+}
+
+// Whether an entry stands for a directory, and whether it is a reparse point.
+// `File_Type` answers neither on its own -- a junction reads `.Symlink` whether
+// it stands for a directory or a file, and a directory carrying any other tag
+// reads a plain `.Directory` -- but it does rule the question OUT: a directory
+// is never `.Regular` or `.Undetermined`, because `_file_type_mode_from_file_-`
+// `attributes` tests FILE_ATTRIBUTE_DIRECTORY before it ever opens a handle. So
+// the files that make up most of a tree cost no Win32 call at all.
+@(private)
+shaped :: proc(info: os.File_Info, allocator: mem.Allocator) -> (directory: bool, reparse: bool) {
+	assert(len(info.fullpath) > 0, "a directory entry with no path at all")
+	assert(allocator.procedure != nil, "a path crossing into Win32 needs an allocator to widen it")
+
+	if info.type != .Directory {
+		if info.type != .Symlink {
+			return false, false
+		}
+	}
+	attributes, known := attributes_of(info.fullpath, allocator)
+	if !known {
+		return info.type == .Directory, false
+	}
+	return attributes.directory, attributes.reparse
+}
+
+// A directory not descended into is REPORTED and never merely skipped: what a
+// walk left out is the one thing a caller cannot see for itself (ADR-0009).
+@(private)
+crossed :: proc(
+	state: ^Walking,
+	path: string,
+	depth: int,
+	frontier: ^[dynamic]Pending,
+	reparse: bool,
+) {
 	assert(state != nil, "there is no walk here to run")
 	assert(depth >= 0, "a directory at a negative depth")
 	assert(len(path) > 0, "there is no sub-directory here to descend into")
 
+	if reparse {
+		if !state.w.follow_reparse_points {
+			note(state, .Reparse_Point_Not_Followed, path)
+			return
+		}
+	}
 	if depth + 1 > MAX_WALK_DEPTH {
 		note(state, .Too_Deep, path)
 		return
@@ -474,25 +550,56 @@ enumerable :: proc(w: Walk, path: string, allocator: mem.Allocator) -> bool {
 	return os.is_dir(path)
 }
 
-// `core:os` cannot answer this: `_file_type_mode_from_file_attributes` calls a
-// directory carrying ANY reparse tag but SYMLINK or MOUNT_POINT a plain
-// `.Directory`, so a walk that trusted `File_Type` would follow a cloud-files
-// placeholder or an AppExecLink straight through. Measured, and why the attribute
-// is read directly: ADR-0026.
+// What Windows itself says a path is. `core:os` cannot answer either half:
+// `_file_type_mode_from_file_attributes` calls a directory carrying ANY reparse
+// tag but SYMLINK or MOUNT_POINT a plain `.Directory`, and calls a junction a
+// `.Symlink` without saying whether it stands for a directory. Measured, and why
+// the attributes are read directly: ADR-0026.
 @(private)
-is_a_reparse_point :: proc(path: string, allocator: mem.Allocator) -> bool {
+Attributes :: struct {
+	directory: bool,
+	reparse:   bool,
+}
+
+// A path that will not widen is reported as a reparse point rather than as an
+// ordinary directory: it is refused either way, and refusing it as something the
+// walk declined to enter is the answer that carries a note.
+@(private)
+attributes_of :: proc(
+	path: string,
+	allocator: mem.Allocator,
+) -> (
+	attributes: Attributes,
+	known: bool,
+) {
 	assert(len(path) > 0, "there is nothing here to ask about")
 	assert(allocator.procedure != nil, "a path crossing into Win32 needs an allocator to widen it")
 
 	wide := win32.utf8_to_utf16(path, allocator)
 	defer delete(wide, allocator)
 	if wide == nil {
-		return true
+		return Attributes{reparse = true}, true
 	}
 
-	attributes := win32.GetFileAttributesW(win32.wstring(raw_data(wide)))
-	if attributes == win32.INVALID_FILE_ATTRIBUTES {
+	flags := win32.GetFileAttributesW(win32.wstring(raw_data(wide)))
+	if flags == win32.INVALID_FILE_ATTRIBUTES {
+		return {}, false
+	}
+	return Attributes {
+			directory = flags & win32.FILE_ATTRIBUTE_DIRECTORY != 0,
+			reparse = flags & win32.FILE_ATTRIBUTE_REPARSE_POINT != 0,
+		},
+		true
+}
+
+@(private)
+is_a_reparse_point :: proc(path: string, allocator: mem.Allocator) -> bool {
+	assert(len(path) > 0, "there is nothing here to ask about")
+	assert(allocator.procedure != nil, "a path crossing into Win32 needs an allocator to widen it")
+
+	attributes, known := attributes_of(path, allocator)
+	if !known {
 		return false
 	}
-	return attributes & win32.FILE_ATTRIBUTE_REPARSE_POINT != 0
+	return attributes.reparse
 }
