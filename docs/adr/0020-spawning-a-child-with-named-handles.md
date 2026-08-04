@@ -35,9 +35,9 @@ that passes by luck.
 A handle list that cannot be built is a refusal (`Fault.No_Handle_List`), not a fallback. The only
 fallback available is unlisted inheritance, which is the defect above.
 
-## What this retires in ADR-0006
+## What this retired in ADR-0006
 
-ADR-0006's last consequence still reads:
+ADR-0006's last consequence used to read:
 
 > Concurrent spawns leak each other's inheritable pipe handles unless handled (see ADR-0004), and
 > the mitigation partially re-serialises the very path this pipeline exists to parallelise. That is
@@ -45,11 +45,11 @@ ADR-0006's last consequence still reads:
 
 **The mitigation serialises nothing.** It is a per-spawn attribute list, built and destroyed inside
 `create_hidden`, and two spawns may run at once with no relationship to each other. The
-cross-reference is wrong as well: ADR-0004 does not mention handle inheritance, the attribute list,
+cross-reference was wrong as well: ADR-0004 does not mention handle inheritance, the attribute list,
 or this measurement anywhere.
 
-That sentence must be corrected where it stands, or the argument for one extract worker keeps
-resting on a cost that no longer exists. Nothing else in ADR-0006 is affected — the one-GPU-worker
+That sentence has been corrected where it stood, so the argument for one extract worker no longer
+rests on a cost that does not exist. Nothing else in ADR-0006 was affected — the one-GPU-worker
 invariant and the bounded queue are argued from throughput and disk, and stand on their own.
 
 ## The list stores an address, not a copy, and that dictates the procedure's shape
