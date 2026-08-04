@@ -1,5 +1,6 @@
 package process
 
+import "core:strconv"
 import "core:strings"
 import "core:testing"
 
@@ -186,32 +187,32 @@ the_extraction_asks_for_mono_16_khz_signed_16_bit_pcm :: proc(t: ^testing.T) {
 }
 
 @(test)
-what_the_extraction_asks_for_is_what_the_produced_audio_is_checked_against :: proc(t: ^testing.T) {
-	// The write side of a claim `transcibr:audio` checks on the read side
-	// (A4). Spelled twice they drift, and the drift is silent: ffmpeg is asked
-	// for 16 kHz, the check demands 44.1, and every Recording fails for a
-	// reason nobody can find.
-	arguments := extract_arguments("in.mp4", "out.wav", context.allocator)
-	defer delete(arguments, context.allocator)
+each_number_ffmpeg_is_asked_for_is_the_number_the_check_demands :: proc(t: ^testing.T) {
+	// The write side of a claim `transcibr:audio` checks on the read side (A4),
+	// and the ONE part of it a machine can hold: each number is spelled twice
+	// here, once as an integer for the check to compare against and once as the
+	// text ffmpeg is handed, and nothing but this reads one against the other.
+	//
+	// This case used to scan the argument list for `-ar` and compare what
+	// followed against the constant that had just been copied into that slot,
+	// then restate two `#assert`s. It could not disagree with the code by
+	// construction, and the list against literals is already pinned above.
+	// Parsing the spelling is a different mechanism from writing it, so this
+	// one can.
+	rate, rate_readable := strconv.parse_int(AUDIO_SAMPLE_RATE_ARGUMENT)
+	testing.expect(t, rate_readable, "the rate ffmpeg is asked for is not a number")
+	testing.expect_value(t, rate, AUDIO_SAMPLE_RATE)
 
-	rate := false
-	channels := false
-	for argument, at in arguments {
-		if argument == "-ar" {
-			rate = arguments[at + 1] == AUDIO_SAMPLE_RATE_ARGUMENT
-		}
-		if argument == "-ac" {
-			channels = arguments[at + 1] == AUDIO_CHANNELS_ARGUMENT
-		}
-	}
-	testing.expect(t, rate, "the extraction does not ask for the rate the constant names")
-	testing.expect(
-		t,
-		channels,
-		"the extraction does not ask for the channel count the constant names",
-	)
-	testing.expect_value(t, AUDIO_SAMPLE_RATE, 16000)
-	testing.expect_value(t, AUDIO_CHANNELS, 1)
+	channels, channels_readable := strconv.parse_int(AUDIO_CHANNELS_ARGUMENT)
+	testing.expect(t, channels_readable, "the channel count ffmpeg is asked for is not a number")
+	testing.expect_value(t, channels, AUDIO_CHANNELS)
+
+	// The bit depth is a CODEC NAME and not a number, so nothing can parse it
+	// back. What is checked instead is that the name and the number still name
+	// the same depth, which is the whole of the link between them: `s16` is the
+	// sixteen, and `le` is the byte order the WAV walk decodes with.
+	testing.expect_value(t, AUDIO_SAMPLE_FORMAT_ARGUMENT, "pcm_s16le")
+	testing.expect_value(t, AUDIO_BITS_PER_SAMPLE, 16)
 }
 
 @(test)

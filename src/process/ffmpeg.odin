@@ -232,6 +232,8 @@ probe_arguments :: proc(
 	arguments: []string,
 ) {
 	assert(allocator.procedure != nil, "an argument list needs an allocator to be built in")
+	assert(len(source) > 0, "there is no Recording here to probe")
+	assert(len(answer) > 0, "a probe with nowhere to write its answer says nothing")
 
 	arguments = make([]string, 10, allocator)
 	arguments[0] = "-v"
@@ -262,6 +264,8 @@ extract_arguments :: proc(
 	arguments: []string,
 ) {
 	assert(allocator.procedure != nil, "an argument list needs an allocator to be built in")
+	assert(len(source) > 0, "there is no Recording here to extract from")
+	assert(len(destination) > 0, "an extraction with nowhere to write produces nothing")
 
 	arguments = make([]string, 21, allocator)
 	// Standard input is the null device already (ADR-0004), so this is belt
@@ -280,6 +284,15 @@ extract_arguments :: proc(
 	arguments[6] = source
 	copy(arguments[7:], OUTPUT_ARGUMENTS[:])
 	arguments[20] = destination
+
+	// The postcondition that catches an index nobody filled. OUTPUT_ARGUMENTS is
+	// copied in at an OFFSET and the destination written past it by hand, so an
+	// off-by-one between the three leaves an empty string in the middle of a
+	// command line -- which builds, spells, and makes ffmpeg refuse a Recording
+	// for a reason that appears nowhere.
+	for argument in arguments {
+		assert(len(argument) > 0, "the argument list left a slot empty")
+	}
 	return arguments
 }
 

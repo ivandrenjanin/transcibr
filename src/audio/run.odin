@@ -26,11 +26,21 @@ Extracted :: struct {
 	// The scratch WAV. OWNED by the caller and freed with `delete` and the
 	// allocator that was handed in.
 	audio:        string,
-	// The container's own duration, which is what "carried with the job" means:
-	// the Sidecar records it, the progress estimate keys on it, and the check
-	// below measured the produced audio against it.
+	// The container's own duration, and THE ONLY DURATION HERE. It is what
+	// "carried with the job" means: the Sidecar records it and the progress
+	// estimate keys on it.
 	container_ms: i64,
-	audio_ms:     i64,
+	// What the produced WAV's own header works out to -- the MEASUREMENT the
+	// check made, and never a duration for anything downstream to use. The spec
+	// is explicit: "Duration comes from the Engine's startup banner or from a
+	// container probe, never from the scratch audio file's header." It is named
+	// for what it is so a consumer reaching for a duration reaches past it.
+	//
+	// That it has come through durations_agree is exactly what makes it
+	// dangerous rather than safe: it is within a second of right, so a Sidecar
+	// written from it is wrong by too little for anyone to notice, and wrong
+	// permanently.
+	measured_ms:  i64,
 }
 
 // How long ffprobe is given, in milliseconds. Generous against a Recording on a
@@ -48,10 +58,15 @@ PROBE_BOUND_MS :: i64(60_000)
 EXTRACTION_BOUND_MS :: i64(30 * 60 * 1000)
 
 // How long each poll of a running child waits before it drains the child's
-// diagnostic output again. Long enough not to spin, short enough that a bound is
-// honoured to a fraction of a second.
+// diagnostic output again.
+//
+// A QUARTER OF A SECOND, against bounds of sixty seconds and half an hour. At 25
+// milliseconds this was eighty kernel calls a second per running child to honour
+// a bound to a fiftieth of a percent of itself; a quarter of a second loses
+// nothing either bound can measure. What it must stay well under is the pipe
+// filling, and the pipe is 64 KiB against a child at `-loglevel error`.
 @(private)
-POLL_MS :: u32(25)
+POLL_MS :: u32(250)
 
 // How much of the produced audio is read back to find its chunks.
 //
@@ -104,51 +119,74 @@ settle :: proc(
 	reading: Reading,
 	err: Error,
 ) {
-	assert(planned.taken_ns > 0, "a Recording was settled against a reading nobody took")
 	assert(gap_ns > 0, "a gap of no time at all says nothing about anything")
+	assert(len(source) > 0, "there is no Recording here to settle")
+	assert(allocator.procedure != nil, "a stat needs an allocator for the path it hands back")
 
-	now, unreadable := read_source(source, allocator)
-	if unreadable.fault != .None {
-		return {}, unreadable
-	}
-	switch settling(planned, now, gap_ns) {
-	case .Still_Being_Written:
-		return {}, Error{fault = .Still_Being_Written}
-	case .Settled:
-		return now, Error{}
-	case .Too_Soon_To_Tell:
-	// Waited out below.
+	// A REFUSAL AND NOT AN ASSERTION (A8). This was an assertion, and a Reading
+	// carries a wall clock precisely so a Batch can resume across a reboot
+	// (ADR-0003) -- so the day one is read back off a disk rather than passed
+	// along in memory, a reading with no timestamp on it is external input, and
+	// asserting on it crashes the Batch that resume exists for.
+	if planned.taken_ns <= 0 {
+		return {}, Error{fault = .Planned_Reading_Unusable}
 	}
 
-	// Clamped to the whole gap, never more. `now` and `planned` carry a wall
-	// clock, and a clock that stepped backwards between them makes the
-	// arithmetic ask for a longer wait than the gap ever was.
-	time.sleep(time.Duration(min(gap_ns, gap_ns - (now.taken_ns - planned.taken_ns))))
-	again, vanished := read_source(source, allocator)
-	if vanished.fault != .None {
-		return {}, vanished
+	// TWICE AT MOST, and the second time only where the first pair of readings
+	// were too close together to mean anything. Read-and-decide is one thing, so
+	// it is spelled once: both passes compare against the PLANNED reading and
+	// never against the last one, because the gap that has to be long enough is
+	// the whole of it and comparing the last two would answer "too soon" for
+	// ever.
+	ATTEMPTS :: 2
+	for attempt in 0 ..< ATTEMPTS {
+		now, unreadable := read_source(source, allocator)
+		if unreadable.fault != .None {
+			return {}, unreadable
+		}
+		switch settling(planned, now, gap_ns) {
+		case .Still_Being_Written:
+			return {}, Error{fault = .Still_Being_Written}
+		case .Settled:
+			return now, Error{}
+		case .Too_Soon_To_Tell:
+		// Waited out below, once.
+		}
+		if attempt + 1 == ATTEMPTS {
+			break
+		}
+		time.sleep(time.Duration(remaining_gap_ns(planned, now, gap_ns)))
 	}
-	// Against the PLANNED reading and not against `now`: the gap that has to
-	// be long enough is the whole of it, and comparing the last two readings
-	// would answer "too soon" for ever.
-	switch settling(planned, again, gap_ns) {
-	case .Still_Being_Written:
-		return {}, Error{fault = .Still_Being_Written}
-	case .Settled:
-		return again, Error{}
-	case .Too_Soon_To_Tell:
-		return {}, Error{fault = .Still_Unsettled}
-	}
+
+	// Nothing was seen to move, and the readings were never far enough apart to
+	// make anything of that. The caller is told so rather than told the file is
+	// fine.
 	return {}, Error{fault = .Still_Unsettled}
+}
+
+// How one bounded run of a child ended.
+//
+// THE EXIT CODE IS NOT IN HERE, and its absence is the decision: ADR-0002
+// measured that exit code zero means nothing, so what each caller checks is what
+// the child actually produced. It used to be returned, and both callers computed
+// it and threw it away -- twenty lines of comment explaining a value nothing
+// read, and a fabricated `0` on the path where no child had exited at all.
+@(private)
+Run :: enum u8 {
+	// It never started. `err` says why.
+	Not_Started = 0,
+	// It exited by itself, inside its bound.
+	Finished,
+	// It had to be stopped, and it stopped.
+	Stopped,
+	// It had to be stopped and WOULD NOT. It may still be running, and it may
+	// still hold its output file open -- which is why nothing may delete that
+	// file (CLAUDE.md's rule on stopping a child).
+	Unstoppable,
 }
 
 // Runs one child to completion under a wall-clock bound, draining its diagnostic
 // output so the pipe cannot fill and wedge it.
-//
-// `finished` false means the bound ran out and the child was stopped. The exit
-// code is returned and DELIBERATELY not interpreted here: ADR-0002 measured that
-// exit code zero means nothing, so what each caller checks is what the child
-// actually produced.
 @(private)
 run_bounded :: proc(
 	group: ^child.Job_Object,
@@ -157,42 +195,75 @@ run_bounded :: proc(
 	bound_ms: i64,
 	allocator: mem.Allocator,
 ) -> (
-	code: u32,
-	finished: bool,
+	ending: Run,
 	err: child.Error,
 ) {
 	assert(group != nil, "a child started outside a job object outlives transcibr")
 	assert(bound_ms > 0, "a child given no time at all cannot do anything")
+	assert(len(executable) > 0, "there is no executable here to start")
+	assert(allocator.procedure != nil, "starting a child needs an allocator for its command line")
 
 	c, refusal := child.start(group, executable, arguments, allocator)
 	if refusal.fault != .None {
-		return 0, false, refusal
+		return .Not_Started, refusal
 	}
 	defer child.close(&c)
 
 	started := time.tick_now()
-	discarded: [4096]u8
 	for {
-		// Drained and thrown away. The pipe is 64 KiB and ffmpeg at
-		// `-loglevel error` says almost nothing, but a Recording that fails to
-		// decode says a line per frame -- and an undrained pipe stops the child
-		// dead with no error anywhere (ADR-0004).
-		for {
-			read, at_end, reading := child.read_diagnostics(&c, discarded[:])
-			if reading.fault != .None || at_end || read == 0 {
-				break
-			}
+		if !drain(&c) {
+			// A pipe that cannot be read is not something to wait out. An
+			// undrained pipe stops the child dead with no error anywhere
+			// (ADR-0004), so a read that fails IS that wedge, arriving early --
+			// and polling to the bound turns a failure detectable in
+			// milliseconds into half an hour of nothing happening.
+			return stop(&c), child.Error{}
 		}
 		if child.wait(&c, POLL_MS) {
-			break
+			return .Finished, child.Error{}
 		}
 		if i64(time.duration_milliseconds(time.tick_since(started))) > bound_ms {
-			child.stop(&c)
-			return 0, false, child.Error{}
+			return stop(&c), child.Error{}
 		}
 	}
-	code, _ = child.exit_code(&c)
-	return code, true, child.Error{}
+}
+
+// Everything the child has said so far, read and thrown away. False means the
+// pipe could not be read.
+//
+// The pipe is 64 KiB and ffmpeg at `-loglevel error` says almost nothing, but a
+// Recording that fails to decode says a line per frame.
+@(private)
+drain :: proc(c: ^child.Child) -> (readable: bool) {
+	assert(c != nil, "there is no child here to read")
+
+	discarded: [4096]u8 = ---
+	for {
+		read, at_end, reading := child.read_diagnostics(c, discarded[:])
+		if reading.fault != .None {
+			return false
+		}
+		if at_end || read == 0 {
+			return true
+		}
+		assert(read <= len(discarded), "the child said more than there was room for")
+	}
+}
+
+// Stops a child that has to go, and says whether it went.
+//
+// The answer was DISCARDED, and it is the one thing the caller has to know:
+// CLAUDE.md's rule for stopping a child is "do not touch any file the child had
+// open until the wait completes", and `stop` returning false is exactly the
+// report that it did not.
+@(private)
+stop :: proc(c: ^child.Child) -> Run {
+	assert(c != nil, "there is no child here to stop")
+
+	if child.stop(c) {
+		return .Stopped
+	}
+	return .Unstoppable
 }
 
 // Asks ffprobe how long a Recording is and what streams it carries.
@@ -212,18 +283,28 @@ probe :: proc(
 ) {
 	assert(group != nil, "a child started outside a job object outlives transcibr")
 	assert(len(answer) > 0, "a probe with nowhere to write its answer says nothing")
+	assert(len(source) > 0, "there is no Recording here to probe")
 
 	arguments := process.probe_arguments(source, answer, allocator)
 	defer delete(arguments, allocator)
 
-	_, finished, refusal := run_bounded(group, tools.ffprobe, arguments, PROBE_BOUND_MS, allocator)
-	defer os.remove(answer)
-	if refusal.fault != .None {
+	ending, refusal := run_bounded(group, tools.ffprobe, arguments, PROBE_BOUND_MS, allocator)
+	if ending == .Not_Started {
 		return {}, Error{fault = .Probe_Not_Started, child = refusal}
 	}
-	if !finished {
+	if ending == .Unstoppable {
+		// The answer file is NOT removed. ffprobe may still be running and may
+		// still hold it open, and CLAUDE.md's rule for stopping a child is not
+		// to touch a file it had open until the wait completes. The sweep takes
+		// it on age instead.
+		return {}, Error{fault = .Probe_Not_Stopped}
+	}
+	// Past here the child is gone, and its answer file is transcibr's to delete.
+	defer os.remove(answer)
+	if ending == .Stopped {
 		return {}, Error{fault = .Probe_Did_Not_Finish}
 	}
+	assert(ending == .Finished, "a bounded run ended in a way nothing here handles")
 
 	// The exit code is not consulted, which is ADR-0002's rule applied to the
 	// other child: what settles it is whether there is a readable answer.
@@ -250,7 +331,6 @@ check_audio :: proc(
 	part: string,
 	container_ms: i64,
 	tolerance: Tolerance,
-	allocator: mem.Allocator,
 ) -> (
 	produced_ms: i64,
 	err: Error,
@@ -258,11 +338,16 @@ check_audio :: proc(
 	assert(len(part) > 0, "there is no audio here to check")
 	assert(container_ms > 0, "a container with no duration was never accepted by the probe")
 
-	head, bytes, unreadable := read_head(part, allocator)
+	// ON THE STACK, and never allocated. The head is read and finished with
+	// inside this procedure, so an allocation for it would be one whose whole
+	// life is these twenty lines -- and it was freed at the length that was
+	// READ rather than the length that was reserved, which Odin's heap
+	// allocator forgives and a size-classed one (ADR-0010) would not.
+	buffer: [AUDIO_HEAD_BYTES]u8 = ---
+	head, bytes, unreadable := read_head(part, buffer[:])
 	if unreadable.fault != .None {
 		return 0, unreadable
 	}
-	defer delete(head, allocator)
 
 	facts, malformed := read_wav_facts(head, bytes)
 	if malformed != .None {
@@ -284,7 +369,10 @@ check_audio :: proc(
 // One open for both, so the length belongs to the same file the bytes came from:
 // a stat taken separately can name a file something has replaced in between.
 @(private)
-read_head :: proc(path: string, allocator: mem.Allocator) -> (head: []u8, bytes: i64, err: Error) {
+read_head :: proc(path: string, into: []u8) -> (head: []u8, bytes: i64, err: Error) {
+	assert(len(path) > 0, "there is no audio here to read")
+	assert(len(into) > 0, "a head with nowhere to be read into reads nothing")
+
 	handle, refused := os.open(path)
 	if refused != nil {
 		return nil, 0, Error{fault = .Audio_Unreadable}
@@ -296,13 +384,13 @@ read_head :: proc(path: string, allocator: mem.Allocator) -> (head: []u8, bytes:
 		return nil, 0, Error{fault = .Audio_Unreadable}
 	}
 
-	buffer := make([]u8, min(int(length), AUDIO_HEAD_BYTES), allocator)
-	read, unreadable := os.read_at(handle, buffer, 0)
+	wanted := into[:min(int(length), len(into))]
+	read, unreadable := os.read_at(handle, wanted, 0)
 	if unreadable != nil && read == 0 {
-		delete(buffer, allocator)
 		return nil, 0, Error{fault = .Audio_Unreadable}
 	}
-	return buffer[:read], length, Error{}
+	assert(read <= len(wanted), "more of the head came back than there was room for it")
+	return wanted[:read], length, Error{}
 }
 
 // One Recording's extraction, as everything it needs to be started.
@@ -311,6 +399,16 @@ read_head :: proc(path: string, allocator: mem.Allocator) -> (head: []u8, bytes:
 // wrong way round -- and so `name` is visibly the artifact stem (ADR-0008) that
 // the audio, the Engine's output and the Sidecar all share, rather than a
 // filename someone invents here.
+//
+// THE TWO INTERMEDIATES ARE NAMED FOR THIS PROCESS AS WELL AS THE RECORDING, and
+// the finished audio is not. `<name>.probe` and `<name>.wav.part` are the same
+// two names in every transcibr on the machine, and the scratch cache is shared,
+// so two windows over one Recording had one worker's `defer os.remove(answer)`
+// deleting the other's probe answer and one worker's rename moving the file the
+// other's ffmpeg was still writing. Every outcome of that is an operating error
+// against one Recording, and it is still two runs colliding over a name neither
+// agreed to share. `<name>.wav` stays plain: it is the artifact stem, and two
+// workers that both produced it produced the same bytes.
 Job :: struct {
 	source:  string,
 	// The scratch cache, ASCII-only (ADR-0002).
@@ -353,7 +451,13 @@ extract :: proc(
 		return {}, unsettled
 	}
 
-	answer := fmt.aprintf("%s\\%s.probe", job.cache, job.name, allocator = allocator)
+	answer := fmt.aprintf(
+		"%s\\%s.%d.probe",
+		job.cache,
+		job.name,
+		os.get_pid(),
+		allocator = allocator,
+	)
 	defer delete(answer, allocator)
 	probed, unprobed := probe(group, tools, job.source, answer, allocator)
 	if unprobed.fault != .None {
@@ -382,43 +486,46 @@ produce :: proc(
 	err: Error,
 ) {
 	assert(container_ms > 0, "a container with no duration was never accepted by the probe")
+	assert(len(job.name) > 0, "a Recording with no artifact stem has nowhere to put its audio")
 
 	audio := fmt.aprintf("%s\\%s.wav", job.cache, job.name, allocator = allocator)
-	part := fmt.aprintf("%s.part", audio, allocator = allocator)
+	part := fmt.aprintf("%s.%d.part", audio, os.get_pid(), allocator = allocator)
 	defer delete(part, allocator)
 	defer if err.fault != .None {
 		// Nothing half-written is left where the next run could find it and
-		// take it for finished work.
-		os.remove(part)
+		// take it for finished work -- unless ffmpeg would not stop, in which
+		// case it may still hold this file open and deleting it is the one
+		// thing CLAUDE.md says not to do. The sweep takes it on age instead.
+		if err.fault != .Extraction_Not_Stopped {
+			os.remove(part)
+		}
 		delete(audio, allocator)
 	}
 
 	arguments := process.extract_arguments(job.source, part, allocator)
 	defer delete(arguments, allocator)
-	_, finished, refusal := run_bounded(
-		group,
-		tools.ffmpeg,
-		arguments,
-		EXTRACTION_BOUND_MS,
-		allocator,
-	)
-	if refusal.fault != .None {
+	ending, refusal := run_bounded(group, tools.ffmpeg, arguments, EXTRACTION_BOUND_MS, allocator)
+	if ending == .Not_Started {
 		return {}, Error{fault = .Extraction_Not_Started, child = refusal}
 	}
-	if !finished {
+	if ending == .Stopped {
 		return {}, Error{fault = .Extraction_Did_Not_Finish}
 	}
+	if ending == .Unstoppable {
+		return {}, Error{fault = .Extraction_Not_Stopped}
+	}
+	assert(ending == .Finished, "a bounded run ended in a way nothing here handles")
 
 	// The exit code is deliberately not consulted (ADR-0002): what settles it
 	// is what is on the disk.
-	audio_ms, unusable := check_audio(part, container_ms, tolerance, allocator)
+	measured, unusable := check_audio(part, container_ms, tolerance)
 	if unusable.fault != .None {
 		return {}, unusable
 	}
 	if os.rename(part, audio) != nil {
 		return {}, Error{fault = .Audio_Not_Published}
 	}
-	return Extracted{audio = audio, container_ms = container_ms, audio_ms = audio_ms}, Error{}
+	return Extracted{audio = audio, container_ms = container_ms, measured_ms = measured}, Error{}
 }
 
 // The scratch cache, checked and created. ONCE PER BATCH and never per

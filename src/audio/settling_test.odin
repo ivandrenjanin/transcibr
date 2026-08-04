@@ -205,6 +205,63 @@ a_clock_that_stepped_forward_makes_a_gap_look_satisfied_and_the_proof_still_hold
 	)
 }
 
+// ------------------------------------------- how long there is left to wait --
+//
+// The clamp that decides the one wait this package ever takes. It lived inline
+// in run.odin, where nothing could reach it, and it is the same clock-step class
+// every case above is about.
+
+@(test)
+the_wait_is_what_is_left_of_the_gap :: proc(t: ^testing.T) {
+	first := first_reading()
+	second := first
+	second.taken_ns += SECOND_NS
+
+	testing.expect_value(
+		t,
+		remaining_gap_ns(first, second, MINIMUM_SETTLING_GAP_NS),
+		2 * SECOND_NS,
+	)
+}
+
+@(test)
+a_gap_already_outlasted_is_no_wait_at_all_rather_than_a_negative_one :: proc(t: ^testing.T) {
+	// Every Recording but the first in a Batch: its planning reading is minutes
+	// or hours old by the time its extraction starts, so there is nothing left
+	// to wait for. A negative duration handed to a sleep is the shape this
+	// stops.
+	first := first_reading()
+	long_after := first
+	long_after.taken_ns += 60 * SECOND_NS
+	testing.expect_value(t, remaining_gap_ns(first, long_after, MINIMUM_SETTLING_GAP_NS), 0)
+
+	// The boundary itself: the gap exactly reached leaves nothing.
+	exactly := first
+	exactly.taken_ns += MINIMUM_SETTLING_GAP_NS
+	testing.expect_value(t, remaining_gap_ns(first, exactly, MINIMUM_SETTLING_GAP_NS), 0)
+
+	// And one nanosecond short of it leaves one nanosecond.
+	one_short := first
+	one_short.taken_ns += MINIMUM_SETTLING_GAP_NS - 1
+	testing.expect_value(t, remaining_gap_ns(first, one_short, MINIMUM_SETTLING_GAP_NS), 1)
+}
+
+@(test)
+a_clock_that_went_backwards_does_not_ask_for_a_longer_wait_than_the_gap :: proc(t: ^testing.T) {
+	// The whole reason the clamp exists. `waited` reads negative, and
+	// subtracting it would ask for the gap PLUS however far the clock jumped --
+	// a minute of NTP correction turning a three-second wait into sixty-three.
+	first := first_reading()
+	backwards := first
+	backwards.taken_ns -= 60 * SECOND_NS
+
+	testing.expect_value(
+		t,
+		remaining_gap_ns(first, backwards, MINIMUM_SETTLING_GAP_NS),
+		MINIMUM_SETTLING_GAP_NS,
+	)
+}
+
 @(test)
 the_minimum_gap_outlasts_the_coarsest_timestamp_a_recording_can_carry :: proc(t: ^testing.T) {
 	// FAT and exFAT store a modification time to a two-second granularity, and

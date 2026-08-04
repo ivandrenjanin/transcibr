@@ -67,6 +67,31 @@ Settling :: enum u8 {
 // pays it.
 MINIMUM_SETTLING_GAP_NS :: i64(3_000_000_000)
 
+// How long is left of the gap before a Recording is worth reading again, in
+// nanoseconds.
+//
+// The other side of the same clock-step guard `settling` carries, and it is HERE
+// rather than inline in run.odin for the reason ADR-0018 gives: a decision that
+// turns up in run.odin belongs in one of the files beside it, because nothing in
+// run.odin can be reached by a case. This is the exact class settling_test.odin
+// already exercises nine ways, and it had no case at all.
+//
+// Never more than the whole gap: a clock that stepped BACKWARDS between the two
+// readings makes `waited` negative, and subtracting it would ask for a longer
+// wait than the gap ever was. Never less than nothing: a gap already outlasted
+// is a wait of zero and not a negative duration to hand to a sleep.
+remaining_gap_ns :: proc(first: Reading, second: Reading, minimum_gap_ns: i64) -> i64 {
+	assert(minimum_gap_ns > 0, "a gap of no time at all says nothing about anything")
+
+	waited := second.taken_ns - first.taken_ns
+	if waited < 0 {
+		return minimum_gap_ns
+	}
+	left := max(0, minimum_gap_ns - waited)
+	assert(left <= minimum_gap_ns, "more of the gap is left than the gap ever was")
+	return left
+}
+
 // What two readings of one Recording say.
 //
 // A8: both readings are of a file another program may be writing, so nothing

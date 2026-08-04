@@ -146,6 +146,11 @@ Fault :: enum u8 {
 	None = 0,
 	// The Recording is not there, or will not answer a stat.
 	Source_Unreadable,
+	// The reading the Batch took when it planned this Recording carries no
+	// timestamp, so there is no gap to measure anything against. A Reading
+	// holds a wall clock so a Batch can resume across a reboot (ADR-0003), and
+	// one read back off a disk is external input like any other.
+	Planned_Reading_Unusable,
 	// Something is still writing it (spec story 52).
 	Still_Being_Written,
 	// Two readings too close together to say, after the wait. Distinct from
@@ -153,8 +158,14 @@ Fault :: enum u8 {
 	// than told the file is fine.
 	Still_Unsettled,
 	Probe_Not_Started,
-	// The probe did not finish inside its bound (issue #27).
+	// The probe had to be stopped before it finished -- its bound ran out
+	// (issue #27), or its diagnostic pipe stopped answering, which is the same
+	// wedge arriving earlier.
 	Probe_Did_Not_Finish,
+	// It had to be stopped and WOULD NOT stop. Distinct because of what it
+	// forbids: ffprobe may still be running and may still hold its answer file
+	// open, so nothing here deletes it.
+	Probe_Not_Stopped,
 	// The probe finished and left nothing readable behind.
 	Probe_Answer_Unreadable,
 	// The probe's answer would not read as a duration. The reason travels in
@@ -165,6 +176,10 @@ Fault :: enum u8 {
 	No_Audio_Stream,
 	Extraction_Not_Started,
 	Extraction_Did_Not_Finish,
+	// The same as `.Probe_Not_Stopped`, and it forbids the same thing: ffmpeg
+	// may still hold the `.part` open, so the `.part` is left where it is and
+	// the sweep takes it on age.
+	Extraction_Not_Stopped,
 	// ffmpeg finished and left nothing that can be read back. ADR-0002's "exit
 	// code 0 means nothing" is why this is not conditioned on the exit code.
 	Audio_Unreadable,
@@ -216,14 +231,17 @@ FAULT := [Fault]string {
 	.Probe_Unreadable          = "its container could not be timed",
 	.Audio_Malformed           = "the audio produced from it would not read",
 	.Source_Unreadable         = "the Recording could not be read",
+	.Planned_Reading_Unusable  = "the reading taken when the Batch planned this Recording carries no timestamp",
 	.Still_Being_Written       = "the Recording is still being written to",
 	.Still_Unsettled           = "the Recording could not be shown to have stopped changing",
 	.Probe_Not_Started         = "ffprobe could not be started",
-	.Probe_Did_Not_Finish      = "ffprobe did not finish inside the time it was given",
+	.Probe_Did_Not_Finish      = "ffprobe was stopped before it finished",
+	.Probe_Not_Stopped         = "ffprobe would not finish and would not stop",
 	.Probe_Answer_Unreadable   = "ffprobe left nothing readable behind",
 	.No_Audio_Stream           = "the Recording carries no audio stream at all",
 	.Extraction_Not_Started    = "ffmpeg could not be started",
-	.Extraction_Did_Not_Finish = "ffmpeg did not finish inside the time it was given",
+	.Extraction_Did_Not_Finish = "ffmpeg was stopped before it finished",
+	.Extraction_Not_Stopped    = "ffmpeg would not finish and would not stop",
 	.Audio_Unreadable          = "the audio ffmpeg was asked for is not there to read",
 	.Audio_Not_As_Asked_For    = "the audio ffmpeg produced is not the mono 16 kHz it was asked for",
 	.Durations_Disagree        = "the audio is not the length the Recording's container says it is",
@@ -238,6 +256,41 @@ fault_says :: proc(fault: Fault) -> string {
 	says := FAULT[fault]
 	assert(len(says) > 0, "a fault was added to Fault without a row in FAULT")
 	return says
+}
+
+// The two refusals whose REASON belongs to the package that produced it, with
+// that reason on the end.
+//
+// Split out rather than spelled inline for rule F1's sake: error_message is one
+// arm per shape of line and there are four shapes, and these two are the same
+// shape reached by two different payloads.
+@(private)
+borrowed_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> string {
+	assert(
+		err.fault == .Probe_Unreadable || err.fault == .Audio_Malformed,
+		"a fault that borrows nobody's reason was rendered as one that does",
+	)
+
+	message: string
+	if err.fault == .Probe_Unreadable {
+		message = fmt.aprintf(
+			"%q: %s (%v)",
+			source,
+			fault_says(err.fault),
+			err.probe,
+			allocator = allocator,
+		)
+	} else {
+		message = fmt.aprintf(
+			"%q: %s (%v)",
+			source,
+			fault_says(err.fault),
+			err.riff,
+			allocator = allocator,
+		)
+	}
+	assert(len(message) > 0, "a borrowed reason rendered as nothing at all")
+	return message
 }
 
 // Renders one refusal as a line a Recording's failure row can carry, NAMING THE
@@ -266,22 +319,8 @@ error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> s
 	// the table does not have a row for.
 	message: string
 	switch err.fault {
-	case .Probe_Unreadable:
-		message = fmt.aprintf(
-			"%q: %s (%v)",
-			source,
-			fault_says(err.fault),
-			err.probe,
-			allocator = allocator,
-		)
-	case .Audio_Malformed:
-		message = fmt.aprintf(
-			"%q: %s (%v)",
-			source,
-			fault_says(err.fault),
-			err.riff,
-			allocator = allocator,
-		)
+	case .Probe_Unreadable, .Audio_Malformed:
+		message = borrowed_message(err, source, allocator)
 	case .Durations_Disagree:
 		message = fmt.aprintf(
 			"%q: %s -- %d ms against %d ms",
@@ -303,12 +342,15 @@ error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> s
 		)
 	case .None,
 	     .Source_Unreadable,
+	     .Planned_Reading_Unusable,
 	     .Still_Being_Written,
 	     .Still_Unsettled,
 	     .Probe_Did_Not_Finish,
+	     .Probe_Not_Stopped,
 	     .Probe_Answer_Unreadable,
 	     .No_Audio_Stream,
 	     .Extraction_Did_Not_Finish,
+	     .Extraction_Not_Stopped,
 	     .Audio_Unreadable,
 	     .Audio_Not_As_Asked_For,
 	     .Audio_Not_Published:
