@@ -18,6 +18,19 @@ import "core:strings"
 // reading refuses anything, nothing reaches an assertion, and a line this reader
 // does not understand answers `.Nothing` and degrades the progress bar instead
 // of failing the run (ADR-0012).
+//
+// WHICH PUTS THIS FILE UNDER A1's AVERAGE, at 19 assertions across 10
+// procedures, and the carve-out is recorded here rather than left for a reader
+// to work out. Four of those procedures -- read_progress, read_banner,
+// samples_ms, seconds_ms -- carry NONE, and every one of them takes a string the
+// Engine wrote. A8 forbids asserting on it, so an assertion in any of them would
+// be a line the Engine can crash this program with, which is the one thing this
+// whole file exists to prevent. A1's own wording is the licence: "pure leaf math
+// may carry fewer when its callers carry more", and the callers do -- `checked`
+// holds seven over what these four hand back, and `transcribe_bound_ms` and
+// `shown` next door hold the rest of the way in. Raising the count here would
+// mean putting assertions where A8 forbids them, which is a worse file that
+// counts better.
 
 // What the Engine is told to do with one Recording's audio.
 //

@@ -22,10 +22,17 @@ disagrees, reproducibly:
 10%  21%  27%  33%  42%  52%  64%  75%  85%  94%  100%
 ```
 
-Eleven lines, none of them a multiple of five. The step is a *threshold* rather than a grid: the
-callback fires when a decoded segment carries progress past the previous reading plus the step, and
-it then reports where the crossing actually landed. A recording whose segments are long crosses
-several steps at once, so the count is **at most** twenty and the values are arbitrary.
+Eleven lines, none of them a multiple of five. The step is a *threshold* rather than a grid, and the
+counter it is measured from advances by the **step** rather than to the reading: the callback fires
+once decoded progress passes that counter plus the step, reports where the crossing actually landed,
+and moves the counter on by exactly one step — so after printing `10%` the counter sits at 5, not 10.
+A recording whose segments are long passes several steps inside one segment and still reports once.
+
+This paragraph first said "past the previous *reading* plus the step", which describes a counter that
+advances to what it printed. Both readings of the mechanism reproduce the capture above and both give
+the same bound, so nothing downstream changes — but this is a document whose whole purpose is being an
+accurate measurement, so it says the one that is true. The count is **at most** twenty either way, and
+the values are arbitrary.
 
 Nothing downstream may assume otherwise. A reader that expected multiples of five would reject every
 line in that capture; one that expected twenty would treat a healthy run as a stalled one. The two

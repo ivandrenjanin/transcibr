@@ -389,19 +389,34 @@ an_engine_that_says_nothing_at_all_is_stopped_before_its_bound_runs_out :: proc(
 	testing.expect_value(t, err.fault, Fault.Went_Silent)
 }
 
+// Whether the display was ever told a number that came from there.
+@(private)
+was_shown :: proc(watched: Watched, from: process.Progress_Source) -> bool {
+	for shown in watched.seen {
+		if shown.from == from {
+			return true
+		}
+	}
+	return false
+}
+
+// ACCEPTANCE CRITERION 3, end to end. The decision has a case next door, and a
+// decision nothing ever calls with reachable bounds is a decision no run
+// exercises: this is the one that puts `Progress_Source.Estimate` in front of a
+// display over a real child.
+//
+// A release that renames the progress callback. The lines keep arriving, so
+// there is nothing wrong with the child; what has gone is this package's reading
+// of them, and ADR-0012 is explicit that the run degrades to an estimate rather
+// than failing.
+//
+// Four seconds of audio at four times realtime is an expected second, so the
+// estimate has something to key on and reaches half way while the stand-in is
+// still on its first wait.
 @(test)
 an_engine_whose_progress_format_this_reader_cannot_read_still_drives_the_display :: proc(
 	t: ^testing.T,
 ) {
-	// ACCEPTANCE CRITERION 3, end to end. The decision has a case next door, and a
-	// decision nothing ever calls with reachable bounds is a decision no run
-	// exercises: this is the one that puts `Progress_Source.Estimate` in front of
-	// the display over a real child.
-	//
-	// A release that renames the progress callback. The lines keep arriving, so
-	// there is nothing wrong with the child; what has gone is this package's
-	// reading of them, and ADR-0012 is explicit that the run degrades to an
-	// estimate rather than failing.
 	group, ok := open_group(t)
 	defer child.job_object_close(&group)
 	if !ok {
@@ -435,9 +450,6 @@ an_engine_whose_progress_format_this_reader_cannot_read_still_drives_the_display
 	}
 	defer delete(watched.seen)
 
-	// Four seconds of audio at four times realtime is an expected second, so the
-	// estimate has something to key on and reaches half way while the stand-in is
-	// still on its first wait.
 	tools, job := job_in(cache, executable, 4_000)
 	produced, err := transcribe(
 		&group,
@@ -457,13 +469,11 @@ an_engine_whose_progress_format_this_reader_cannot_read_still_drives_the_display
 		return
 	}
 
-	estimated := false
-	for shown in watched.seen {
-		if shown.from == .Estimate {
-			estimated = true
-		}
-	}
-	testing.expect(t, estimated, "the estimate never stood in for an Engine nobody could read")
+	testing.expect(
+		t,
+		was_shown(watched, .Estimate),
+		"the estimate never stood in for an Engine nobody could read",
+	)
 	// And it MOVED. The Engine said nothing this reader understands, so a bar still
 	// reading zero is one the estimate never supplied a number for.
 	testing.expect(t, watched.highest > 0, "the estimate stood in and reported nothing at all")

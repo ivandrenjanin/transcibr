@@ -142,8 +142,8 @@ transcribe :: proc(
 	}
 	// Past here the Engine is gone and what it left is transcibr's to read back.
 	// The exit code is deliberately not consulted (ADR-0002).
-	if landed := landed(output); landed != .None {
-		return {}, Error{fault = landed}
+	if missing := landed(output); missing != .None {
+		return {}, Error{fault = missing}
 	}
 	return Transcribed{output = output, duration_ms = ending.duration_ms}, Error{}
 }
@@ -186,8 +186,8 @@ refused :: proc(ending: Ending) -> Error {
 landed :: proc(output: string) -> Fault {
 	assert(len(output) > 0, "there is nowhere here to look for the Engine's output")
 
-	handle, refused := os.open(output)
-	if refused != nil {
+	handle, unopenable := os.open(output)
+	if unopenable != nil {
 		return .No_Output
 	}
 	defer os.close(handle)
@@ -240,6 +240,11 @@ run_engine :: proc(
 	started := time.tick_now()
 	tracker := process.tracker_start(job.container_ms, elapsed_ns(started))
 	reader: process.Line_Reader
+	// What the display was last told, and a reading no `shown` can answer, so the
+	// first poll always paints. See `tell`.
+	painted := process.Progress {
+		percent = UNPAINTED,
+	}
 	for {
 		if !drain(&c, &tracker, &reader, started) {
 			// A pipe that cannot be read IS the wedge ADR-0004 measured,
@@ -248,15 +253,22 @@ run_engine :: proc(
 			// detectable in milliseconds into hours of nothing happening.
 			return stopped(&c, false, tracker.duration_ms)
 		}
-		now := process.shown(tracker, elapsed_ns(started), limits.watch)
-		tell(report, now)
+		// ONE CLOCK READING, and both bounds keyed on it. The watchdog and the run
+		// bound read two different instants either side of a console write, so a
+		// display that took a moment to paint moved one of them and not the other
+		// and the two were answering about different runs. The cost of reading it
+		// before the wait below is that the bound is honoured to within one poll,
+		// which is already this loop's whole resolution.
+		now_ns := elapsed_ns(started)
+		now := process.shown(tracker, now_ns, limits.watch)
+		tell(report, now, &painted)
 		if now.silent {
 			return stopped(&c, true, tracker.duration_ms)
 		}
 		if child.wait(&c, POLL_MS) {
-			return finished(&c, &tracker, &reader, started, report, limits.watch)
+			return finished(&c, &tracker, &reader, started, report, limits.watch, &painted)
 		}
-		if i64(time.duration_milliseconds(time.tick_since(started))) > bound_ms {
+		if now_ns / 1_000_000 > bound_ms {
 			return stopped(&c, false, tracker.duration_ms)
 		}
 	}
@@ -276,6 +288,7 @@ finished :: proc(
 	started: time.Tick,
 	report: Report,
 	watch: process.Watch,
+	painted: ^process.Progress,
 ) -> Ending {
 	assert(c != nil, "there is no child here to read out")
 	assert(tracker != nil, "there is no Recording here to track")
@@ -283,7 +296,7 @@ finished :: proc(
 	// The answer is not read: whatever is left is a bonus, and an Engine that has
 	// already exited cannot be wedged by a pipe nobody drained.
 	_ = drain(c, tracker, reader, started)
-	tell(report, process.shown(tracker^, elapsed_ns(started), watch))
+	tell(report, process.shown(tracker^, elapsed_ns(started), watch), painted)
 	return Ending{run = .Finished, duration_ms = tracker.duration_ms}
 }
 
@@ -383,12 +396,32 @@ took :: proc(tracker: ^process.Tracker, reader: ^process.Line_Reader, chunk: str
 	}
 }
 
-// Tells whoever is watching, where anybody is.
+// A percentage no `shown` can ever answer, so the first poll of a run always
+// paints. Below zero, which `tell` refuses on the way in.
 @(private)
-tell :: proc(report: Report, shown: process.Progress) {
+UNPAINTED :: -1
+
+#assert(UNPAINTED < 0)
+
+// Tells whoever is watching, where anybody is AND anything has changed.
+//
+// ONLY ON A CHANGE. This is called four times a second for the whole of a
+// Recording, and the display it drives repaints one line: a three-hour Recording
+// is 43,200 console writes to show the forty-odd distinct frames a bar with a
+// hundred positions and three annotations can have. The reading is compared
+// whole -- the percentage, where the number came from, and whether the run has
+// gone silent -- so a bar that stopped moving but started saying `(waiting)` is
+// still a change and is still painted.
+@(private)
+tell :: proc(report: Report, shown: process.Progress, painted: ^process.Progress) {
+	assert(painted != nil, "there is nowhere to remember what the display was last told")
 	assert(shown.percent >= 0, "a display was handed a negative percentage")
 	assert(shown.percent <= 100, "a display was handed a percentage past a hundred")
 
+	if shown == painted^ {
+		return
+	}
+	painted^ = shown
 	if report.on_progress == nil {
 		return
 	}

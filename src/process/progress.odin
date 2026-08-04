@@ -94,13 +94,19 @@ last_line :: proc(r: ^Line_Reader) -> (line: string, ok: bool) {
 	assert(r != nil, "there is nothing here to read a last line out of")
 	assert(r.count <= len(r.held), "the reader is holding more than it has room for")
 
+	// A line being SKIPPED holds nothing -- next_line sets `count` to zero at the
+	// moment it starts skipping and never writes to `held` again until a newline
+	// clears both -- so the answer above is also the negative space (A3), and the
+	// tail of an oversized line has no path out of here.
+	//
+	// That fact used to be spelled as `assert(!r.skipping)` below this return, and
+	// an assertion no path can reach is not documentation that cannot rot: it is a
+	// claim nothing checks, dressed as one that does. A6 asks for a true assertion
+	// over a comment where a condition is CRITICAL AND SURPRISING; this one is
+	// neither reachable nor surprising two lines under the return that implies it.
 	if r.count == 0 {
 		return "", false
 	}
-	// The negative space of the same case (A3): a line that was being SKIPPED
-	// leaves nothing held, so there is no path where the tail of an oversized
-	// line escapes here.
-	assert(!r.skipping, "a line being walked past was held on to anyway")
 
 	held := trimmed(r.held[:r.count])
 	r.count = 0

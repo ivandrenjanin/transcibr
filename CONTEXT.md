@@ -29,6 +29,14 @@ One timestamped fragment of speech as the engine emits it — a start, an end, a
 Typically a few seconds long and cut mid-sentence.
 _Avoid_: segment, subtitle, line
 
+**Engine output**:
+The JSON one engine invocation leaves in the scratch cache, named from the artifact stem. Distinct
+from Transcript, which is a whole stage later: nothing here has been collapsed, merged or rendered,
+and it is retained so a transcript can be re-rendered without spending GPU time again. Named in full
+and never as bare "output" — that word is the one the Transcript entry avoids, and the two are one
+word apart in a sentence and a stage apart in the pipeline.
+_Avoid_: transcript, result, transcription, json
+
 ## Driving the engine
 
 **Process contract**:
@@ -48,6 +56,46 @@ One running ffmpeg or Engine process, with the handles that hold it and the job 
 Distinct from Executable, which is only the path — and it is a tree rather than a process, because a
 child that starts something of its own leaves a process no handle reaches (ADR-0004).
 _Avoid_: spawner, subprocess, runner, process
+
+## Watching the engine run
+
+**Reading**:
+One progress percentage the engine has actually reported. Arbitrary values rather than a grid, and
+at most twenty per recording — eleven in the one real capture (ADR-0012). The gap between two of
+them is therefore the longest silence a healthy run produces, which is what every silence bound in
+transcibr is sized against.
+_Avoid_: progress line, tick, sample, update, step
+
+**Startup banner**:
+The line the engine writes before inference, naming the audio it is about to process and how long it
+is. One of the two places a duration may come from; the container probe is the other and the scratch
+audio's own header is neither (ADR-0012).
+_Avoid_: header, preamble, first line, prologue
+
+**Estimate**:
+The percentage transcibr works out from elapsed time and the recording's length when the engine has
+not supplied a reading recently. Floored at the last reading and never allowed to reach a hundred —
+only the engine or a finished engine output can say a recording is done.
+_Avoid_: fallback, guess, projection, extrapolation
+
+**Frozen**:
+What a progress display becomes when nothing has arrived on any stream transcibr can see: the number
+stops moving and says it is waiting. A display state and never a verdict — a bar that keeps climbing
+over a child that has stopped is the failure ADR-0012 exists to prevent, and one that has stopped
+climbing is not yet a failed recording.
+_Avoid_: stalled, stuck, hung, dead
+
+**Watchdog**:
+What decides that silence has gone on long enough to be an operating error rather than a display
+state. Keyed on bytes arriving, never on readings — the engine is silent on progress for the whole
+of model load — and bounded by the recording's own length rather than by a fixed number of minutes.
+_Avoid_: timeout, heartbeat, monitor, keepalive
+
+**Bound**:
+The wall-clock ceiling on one child, so that nothing in a batch blocks forever (issue #27). Distinct
+from the watchdog: a bound is about a child still working that has had long enough, a watchdog about
+one that has stopped saying anything at all.
+_Avoid_: timeout, deadline, limit, budget
 
 ## Turning a recording into audio
 
