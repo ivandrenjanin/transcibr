@@ -4,35 +4,18 @@ import "core:strings"
 import "core:testing"
 import "transcibr:child"
 
-// The two fault vocabularies this package refuses in, and the one pure decision
-// that lives in the shell file beside them.
+// The two fault vocabularies this package refuses in.
+//
+// ADR-0002's ASCII rule USED TO BE HERE, as this package's one pure decision,
+// and it is `process.ascii_only` now: it gained a third caller -- the Model,
+// checked once per Batch by `transcibr:artifact` -- and a question with three
+// answers in three packages is how two of them end up disagreeing. What checks
+// it about the scratch cache is still open_cache, and run_test.odin still pins
+// that a cache under such a path is refused before it is created.
 //
 // The shell half's own cases -- real children under a bound, a real cache swept
 // -- are in run_test.odin. What is left to hand verification there is what needs
 // ffmpeg and ffprobe themselves.
-
-@(test)
-a_cache_path_transcibr_can_direct_the_engine_at_is_accepted :: proc(t: ^testing.T) {
-	testing.expect(t, ascii_only("C:\\Users\\drenj\\AppData\\Local\\transcibr\\cache"))
-	testing.expect(t, ascii_only(""))
-}
-
-@(test)
-a_cache_path_the_engine_could_not_open_is_refused :: proc(t: ^testing.T) {
-	// ADR-0002, measured: `whisper-cli` is `int main(int, char**)` under MSVC,
-	// so argv arrives in the system ANSI code page and a path carrying a
-	// non-ASCII byte fails to open with no output at all. A non-ASCII Windows
-	// ACCOUNT NAME is enough, since the cache sits under %LOCALAPPDATA%.
-	//
-	// ffmpeg does not have this bug -- it re-reads GetCommandLineW -- which is
-	// why the check belongs at the front of the whole cache and not beside the
-	// Engine: testing the extraction step alone looks perfectly clean while
-	// only the transcription step fails.
-	testing.expect(t, !ascii_only("C:\\Users\\Bj\u00f6rn\\AppData\\Local\\transcibr\\cache"))
-	// The property is CHOSEN and not sanitised for: 8.3 short-name generation
-	// looks like the escape and is a per-volume policy that can be off.
-	testing.expect(t, !ascii_only("D:\\\u5f55\u97f3\\cache"))
-}
 
 // Every fault renders a line naming the Recording and saying what happened.
 //

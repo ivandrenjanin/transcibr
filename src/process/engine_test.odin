@@ -433,3 +433,37 @@ the_lines_the_engine_writes_around_its_progress_read_as_nothing :: proc(t: ^test
 		testing.expectf(t, said.says == .Nothing, "%q read as something", line)
 	}
 }
+
+// --------------------------------------------- what the Engine can be given --
+//
+// ADR-0002's ASCII rule. It lived in `transcibr:audio` while the scratch cache
+// was its only subject; it has three now -- the cache, the Model and the three
+// paths one invocation is handed -- so it is here, next to the argument list it
+// is about.
+
+@(test)
+a_path_transcibr_can_direct_the_engine_at_is_accepted :: proc(t: ^testing.T) {
+	testing.expect(t, ascii_only("C:\\Users\\drenj\\AppData\\Local\\transcibr\\cache"))
+	testing.expect(t, ascii_only("C:\\models\\ggml-large-v3.bin"))
+	// The honest answer and never the useful one: a caller with nothing in hand
+	// has a different complaint, and each of the three states it separately.
+	testing.expect(t, ascii_only(""))
+}
+
+@(test)
+a_path_the_engine_could_not_open_is_refused :: proc(t: ^testing.T) {
+	// MEASURED: `whisper-cli` is `int main(int, char**)` under MSVC, so argv
+	// arrives in the system ANSI code page and a path carrying a non-ASCII byte
+	// fails to open with no output at all, at exit code zero. A non-ASCII Windows
+	// ACCOUNT NAME is enough, since the scratch cache sits under %LOCALAPPDATA%.
+	//
+	// ffmpeg does NOT have this bug -- it re-reads GetCommandLineW -- which is
+	// why this sits beside engine_arguments rather than beside the other two
+	// argument lists: probing and extraction look perfectly clean while only
+	// transcription fails.
+	testing.expect(t, !ascii_only("C:\\Users\\Bj\u00f6rn\\AppData\\Local\\transcibr\\cache"))
+	// The property is CHOSEN and not sanitised for: 8.3 short-name generation
+	// looks like the escape and is a per-volume policy that can be off.
+	testing.expect(t, !ascii_only("D:\\\u5f55\u97f3\\cache"))
+	testing.expect(t, !ascii_only("C:\\models\\ggml-large-v3-t\u00fcrkce.bin"))
+}

@@ -374,21 +374,3 @@ error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> s
 	assert(len(message) > 0, "a refusal rendered as nothing at all")
 	return message
 }
-
-// Whether every byte of a path is ASCII.
-//
-// ADR-0002's rule, and the only pure decision in this file. The Engine is
-// `int main(int, char**)` under MSVC, so argv reaches it in the system ANSI code
-// page and a path carrying anything else fails to open with no output at all --
-// and a non-ASCII Windows ACCOUNT NAME is enough, since the cache sits under
-// %LOCALAPPDATA%. ffmpeg does not have the bug, which is exactly why the check
-// is on the whole cache here rather than beside the Engine: extraction looks
-// clean while only transcription fails.
-ascii_only :: proc(path: string) -> bool {
-	for at in 0 ..< len(path) {
-		if path[at] >= 0x80 {
-			return false
-		}
-	}
-	return true
-}

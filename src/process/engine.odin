@@ -118,6 +118,42 @@ engine_arguments :: proc(job: Engine_Job, allocator: mem.Allocator) -> (argument
 	return arguments
 }
 
+// Whether every byte of a path is ASCII, which is whether the Engine can be
+// given it at all.
+//
+// ADR-0002's rule, MEASURED: `whisper-cli` is `int main(int, char**)` under
+// MSVC, so argv reaches it in the system ANSI code page and a path carrying a
+// byte outside ASCII fails to open with no output at all -- at exit code zero,
+// which is the fourth of that decision's four measurements and the reason none
+// of this can be left to the child to report. A non-ASCII Windows ACCOUNT NAME
+// is enough on its own, since the scratch cache sits under %LOCALAPPDATA%.
+//
+// IT IS ABOUT THE ENGINE AND NOT ABOUT CHILDREN IN GENERAL, which is why it sits
+// in this file beside engine_arguments rather than in ffmpeg.odin next door.
+// ffmpeg does NOT have the bug -- it re-reads `GetCommandLineW()` -- so probing
+// and extraction look perfectly clean while only transcription fails, and a
+// reader who found this rule beside the other two argument lists would draw
+// exactly the wrong conclusion about which children it constrains.
+//
+// It lives here rather than in either caller because it now has three: the
+// scratch cache is checked once per Batch by `transcibr:audio`, the Model once
+// per Batch by `transcibr:artifact`, and the three paths one invocation is about
+// to be handed are checked by `transcibr:engine` before the child starts. One
+// question, one answer -- and this is the package whose whole subject is what a
+// child is started with.
+//
+// The empty path is ASCII, which is the honest answer and never the useful one:
+// a caller with nothing in hand has a different complaint, and every one of the
+// three above states it separately.
+ascii_only :: proc(path: string) -> bool {
+	for at in 0 ..< len(path) {
+		if path[at] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
 // Where the Engine will have written its output, given the prefix it was handed.
 //
 // The caller owns the answer and frees it with `delete` and the same allocator.
