@@ -1,4 +1,4 @@
-﻿# Self-test for the build and test commands.
+# Self-test for the build and test commands.
 #
 #   .\scripts\selftest.ps1
 #
