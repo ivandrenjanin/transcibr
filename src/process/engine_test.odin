@@ -6,6 +6,54 @@ import "core:testing"
 // The Engine's own half of the Process contract: the one command line it is
 // started with, and the diagnostic lines it writes back read as progress and as
 // a duration.
+//
+// THE FIXTURE IS ONE REAL RUN, captured byte for byte off the standard error of
+// whisper.cpp v1.9.1 cuBLAS transcribing a 253.9-second Recording with
+// `ggml-large-v3-turbo`, and committed under `**/fixtures/** -text` so a
+// checkout cannot rewrite its CRLF endings. It pins this coupling the way
+// ADR-0001's Engine JSON pins the schema: a release that renames the progress
+// callback or reshapes the startup banner fails HERE, in a test, rather than
+// as a bar that mysteriously never moves.
+@(private)
+ENGINE_STDERR :: #load("fixtures/engine-stderr.txt", string)
+
+@(test)
+the_real_engine_output_reads_as_the_progress_it_reported :: proc(t: ^testing.T) {
+	// Fed through the same assembler the spawner uses, in SEVEN-BYTE chunks:
+	// nothing about a pipe read aligns to a line, and a case that handed whole
+	// lines in would be testing the case rather than the reader.
+	r: Line_Reader
+	readings := make([dynamic]int, context.allocator)
+	defer delete(readings)
+
+	remaining := ENGINE_STDERR
+	for len(remaining) > 0 {
+		chunk := remaining[:min(7, len(remaining))]
+		remaining = remaining[len(chunk):]
+		for {
+			line, ok := next_line(&r, &chunk)
+			if !ok {
+				break
+			}
+			if said := read_engine_line(line); said.says == .Progress {
+				append(&readings, said.percent)
+			}
+		}
+	}
+
+	// ELEVEN READINGS AND NOT TWENTY, and they are not 5% apart. ADR-0012 said
+	// "hardcoded 5% steps, so any recording produces exactly twenty of them";
+	// this fixture is that claim measured, and it says otherwise -- the callback
+	// fires when a decoded segment CROSSES the next step, and reports where the
+	// crossing landed. See the correction recorded in that ADR.
+	expected := [?]int{10, 21, 27, 33, 42, 52, 64, 75, 85, 94, 100}
+	if !testing.expect_value(t, len(readings), len(expected)) {
+		return
+	}
+	for want, at in expected {
+		testing.expect_value(t, readings[at], want)
+	}
+}
 
 @(test)
 the_engine_is_handed_exactly_one_input_file :: proc(t: ^testing.T) {

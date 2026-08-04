@@ -10,8 +10,31 @@ The format, verified against the binary: lines of the exact shape
 whisper_print_progress_callback: progress =   6%
 ```
 
-on **stderr**, in hardcoded 5% steps, so any recording produces exactly twenty of them. The engine's
-"no prints" flag does not suppress them.
+on **stderr**. The engine's "no prints" flag does not suppress them.
+
+## The 5% steps are not steps, and there are not twenty of them
+
+This ADR first said the lines came "in hardcoded 5% steps, so any recording produces exactly twenty
+of them", and issue #9 committed a real capture as a fixture rather than restating it. The fixture
+disagrees, reproducibly:
+
+```
+10%  21%  27%  33%  42%  52%  64%  75%  85%  94%  100%
+```
+
+Eleven lines, none of them a multiple of five. The step is a *threshold* rather than a grid: the
+callback fires when a decoded segment carries progress past the previous reading plus the step, and
+it then reports where the crossing actually landed. A recording whose segments are long crosses
+several steps at once, so the count is **at most** twenty and the values are arbitrary.
+
+Nothing downstream may assume otherwise. A reader that expected multiples of five would reject every
+line in that capture; one that expected twenty would treat a healthy run as a stalled one. The two
+properties that do hold are the ones the code relies on: the readings are non-decreasing, and the
+last is 100 — and even those are read as external input rather than asserted, because a release is
+free to change both.
+
+The measurement: whisper.cpp v1.9.1 cuBLAS, `ggml-large-v3-turbo`, one 253.9-second recording,
+`-pp -oj`. Captured to `src/process/fixtures/engine-stderr.txt`.
 
 This is a deliberate coupling to another program's human-readable output, which is not a contract and
 can change between releases without warning. That is why the fallback exists: a format change
