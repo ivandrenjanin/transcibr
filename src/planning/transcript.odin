@@ -12,6 +12,13 @@ import "core:strings"
 @(private)
 TRANSCRIPT_MARKER :: "---\ngenerator: \"transcibr "
 
+// How much of a Markdown file the walk reads to answer the question. What is
+// being asked is who wrote the file and never what it says, so the read stops
+// just past the answer -- a Transcript is megabytes and a Batch holds hundreds.
+TRANSCRIPT_HEAD_BYTES :: 128
+
+#assert(TRANSCRIPT_HEAD_BYTES > len(TRANSCRIPT_MARKER))
+
 // A prefix and never a search: a hand-authored note that quotes a Transcript
 // somewhere in its body carries these bytes too, and only a file that OPENS with
 // them was written by this program (ADR-0008).
