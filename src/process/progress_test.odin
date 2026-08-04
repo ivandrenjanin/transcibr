@@ -408,6 +408,28 @@ an_estimate_with_no_duration_to_key_on_does_not_move :: proc(t: ^testing.T) {
 }
 
 @(test)
+a_display_says_where_its_number_came_from_except_when_the_engine_did :: proc(t: ^testing.T) {
+	// The annotation beside the percentage. Here rather than in the shell that
+	// prints it, because ADR-0009 keeps the decisions where a test can reach them
+	// and `src/cli` is required to collect none.
+	//
+	// Both halves (A3). The Engine's own reading is the ordinary case and says
+	// NOTHING -- a bar annotated on every line teaches a reader to stop reading
+	// the annotation -- and the two that are not the ordinary case must each say
+	// something, or the display is confidently wrong in exactly the way ADR-0012
+	// exists to prevent.
+	testing.expect_value(t, progress_says(.Engine), "")
+	for from in ([?]Progress_Source{.Estimate, .Frozen}) {
+		testing.expectf(t, len(progress_says(from)) > 0, "%v says nothing at all", from)
+	}
+	testing.expect(
+		t,
+		progress_says(.Estimate) != progress_says(.Frozen),
+		"an estimate that is still moving reads the same as one that has stopped",
+	)
+}
+
+@(test)
 the_bound_one_engine_invocation_is_given_grows_with_the_recording :: proc(t: ^testing.T) {
 	// A bound is what stops a wedged Engine holding a Batch for ever (issue #27),
 	// and a FIXED one is either too short for a three-hour Recording or useless

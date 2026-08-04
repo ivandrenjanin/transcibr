@@ -291,6 +291,30 @@ Progress :: struct {
 	silent:  bool,
 }
 
+// What a display says beside the percentage about where the number came from.
+//
+// HERE AND NOT IN THE SHELL THAT PRINTS IT. ADR-0009 puts every decision worth
+// testing in the core, and `scripts\test.ps1` requires `src/cli` to collect zero
+// tests -- so a three-arm table living there would be one nothing could hold to
+// account, including its own emptiness.
+//
+// The Engine's own reading says NOTHING, which is the decision rather than an
+// oversight: it is the ordinary case, and a bar annotated on every line teaches
+// a reader to stop reading the annotation. What has to be visible is the two
+// that are not ordinary.
+progress_says :: proc(from: Progress_Source) -> string {
+	switch from {
+	case .Estimate:
+		return "(estimated)"
+	case .Frozen:
+		return "(no output)"
+	case .Engine:
+	// The ordinary case, and the one that says nothing. Stated rather than left
+	// as a fallthrough, so a fourth source is a build failure here.
+	}
+	return ""
+}
+
 // Starts tracking one Recording's progress.
 //
 // `duration_ms` is the container probe's answer, or zero where the container

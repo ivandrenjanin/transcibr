@@ -56,6 +56,12 @@ USAGE ::
       render the transcript for one piece of retained engine output and
       write it to standard output.
 
+  transcibr-cli --transcribe <recording> --model-file <path>
+                --engine-exe <path> --cache <directory>
+                [--ffmpeg <path>] [--ffprobe <path>]
+      transcribe one recording and print the path of the engine output it
+      left in the cache. Spends GPU time.
+
   transcibr-cli --help
       print this and exit.
 
@@ -87,6 +93,12 @@ main :: proc() {
 	if len(os.args) == 1 {
 		print_version()
 		return
+	}
+	// Answered on the FIRST argument and not by scanning, because the two
+	// commands read different option lists and a scan would have to know both to
+	// tell them apart. See transcribe.odin for what that command is and is not.
+	if os.args[1] == TRANSCRIBE {
+		os.exit(transcribe_one(os.args[1:]))
 	}
 	os.exit(re_render(os.args[1:]))
 }
