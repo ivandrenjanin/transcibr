@@ -1,5 +1,6 @@
 package process
 
+import "core:strings"
 import "core:testing"
 
 // The Engine's own half of the Process contract: the one command line it is
@@ -93,4 +94,130 @@ the_engine_is_pointed_at_a_prefix_and_appends_the_extension_itself :: proc(t: ^t
 	produced := engine_output_path("C:\\cache\\lecture", context.allocator)
 	defer delete(produced, context.allocator)
 	testing.expect_value(t, produced, "C:\\cache\\lecture.json")
+}
+
+// -------------------------------------------------------- one progress line --
+//
+// Every case below hands in a LINE, which is what the assembler next door
+// produces and what the Engine writes one of per reading. The bytes in the
+// first are copied out of the fixture, padding included: the Engine prints the
+// number in a three-wide field, so `  10%` and ` 100%` are the same line with
+// different amounts of space in the middle of it.
+
+@(test)
+a_real_progress_line_reads_as_a_percentage :: proc(t: ^testing.T) {
+	said := read_engine_line("whisper_print_progress_callback: progress =  42%")
+	testing.expect_value(t, said.says, Engine_Says.Progress)
+	testing.expect_value(t, said.percent, 42)
+}
+
+@(test)
+the_engines_last_progress_line_reads_as_a_hundred :: proc(t: ^testing.T) {
+	// The one line whose number fills the field, so the space in front of it is
+	// one byte rather than two. A reader that split on a fixed column would read
+	// this as 10.
+	said := read_engine_line("whisper_print_progress_callback: progress = 100%")
+	testing.expect_value(t, said.says, Engine_Says.Progress)
+	testing.expect_value(t, said.percent, 100)
+}
+
+@(test)
+a_progress_line_that_still_carries_its_carriage_return_reads :: proc(t: ^testing.T) {
+	// The fixture is CRLF, which is what the Engine writes on Windows. The
+	// assembler strips the carriage return, and this reader does not depend on
+	// its having done so -- a reading that vanished on one stray byte is exactly
+	// the coupling ADR-0012 warns this whole file is.
+	said := read_engine_line("whisper_print_progress_callback: progress =  21%\r")
+	testing.expect_value(t, said.says, Engine_Says.Progress)
+	testing.expect_value(t, said.percent, 21)
+}
+
+@(test)
+a_progress_line_behind_a_colour_code_still_reads :: proc(t: ^testing.T) {
+	// The Engine has a `-pc` flag and nothing promises what a later release
+	// colours. An escape sequence in front of the reading is a byte sequence this
+	// reader has no business understanding, so it is walked past rather than
+	// matched: the mark is looked for ANYWHERE in the line and not at its start.
+	said := read_engine_line("\x1b[32mwhisper_print_progress_callback: progress =  75%")
+	testing.expect_value(t, said.says, Engine_Says.Progress)
+	testing.expect_value(t, said.percent, 75)
+}
+
+@(test)
+a_percentage_past_a_hundred_is_refused :: proc(t: ^testing.T) {
+	// REFUSED AND NOT CLAMPED (A8). Clamped to 100 it would say the Recording is
+	// finished, which is the one thing a progress display must not be wrong
+	// about; refused, the fallback takes over and the bar keeps moving.
+	said := read_engine_line("whisper_print_progress_callback: progress = 101%")
+	testing.expect_value(t, said.says, Engine_Says.Nothing)
+	testing.expect_value(t, said.percent, 0)
+}
+
+@(test)
+a_negative_percentage_is_refused :: proc(t: ^testing.T) {
+	said := read_engine_line("whisper_print_progress_callback: progress =  -5%")
+	testing.expect_value(t, said.says, Engine_Says.Nothing)
+}
+
+@(test)
+a_percentage_that_is_not_a_number_is_refused :: proc(t: ^testing.T) {
+	// Eight shapes of not-a-number, and they are not one case repeated: `nan` is
+	// what a C program prints when it divides by zero, `1_0` and `+7` are the two
+	// spellings `strconv.parse_int` would have ACCEPTED and read as ten and seven,
+	// `0x10` is the prefix its base inference would have taken, and a float is
+	// what a release that stopped rounding the reading would write.
+	for reading in ([?]string{"nan", "12.5", "lots", "", "1e3", "0x10", "1_0", "+7"}) {
+		line := strings.concatenate(
+			{"whisper_print_progress_callback: progress = ", reading, "%"},
+			context.allocator,
+		)
+		defer delete(line, context.allocator)
+
+		said := read_engine_line(line)
+		testing.expectf(t, said.says == .Nothing, "%q read as a percentage", reading)
+	}
+}
+
+@(test)
+a_progress_line_the_pipe_cut_in_half_is_refused :: proc(t: ^testing.T) {
+	// A read off the pipe ends wherever the kernel had bytes, so half a line is
+	// ordinary rather than exotic -- the assembler holds the rest until the next
+	// chunk, and until then what it has is this.
+	for cut in ([?]string {
+			"whisper_print_progress_callback: progr",
+			"whisper_print_progress_callback: progress =",
+			"whisper_print_progress_callback: progress =  4",
+		}) {
+		said := read_engine_line(cut)
+		testing.expectf(t, said.says == .Nothing, "%q read as a percentage", cut)
+	}
+}
+
+@(test)
+two_progress_lines_interleaved_read_as_nothing :: proc(t: ^testing.T) {
+	// Two threads writing one stream, which is what the Engine's own logging
+	// callback and its progress callback are. The reading in front is truncated
+	// by the line that landed on top of it, so what this must not do is answer 4.
+	said := read_engine_line(
+		"whisper_print_progress_callback: progress =  4whisper_print_progress_callback: progress =  50%",
+	)
+	testing.expect_value(t, said.says, Engine_Says.Nothing)
+}
+
+@(test)
+the_lines_the_engine_writes_around_its_progress_read_as_nothing :: proc(t: ^testing.T) {
+	// Most of what arrives on this stream is the model-load log, and none of it
+	// is a reading. Copied out of the fixture rather than invented, because a
+	// reader loose enough to find a number in one of these is a bar that jumps
+	// about during model load.
+	for line in ([?]string {
+			"whisper_model_load: n_vocab       = 51866",
+			"whisper_init_state: kv self size  =   10.49 MB",
+			"whisper_print_timings:     load time =  1073.75 ms",
+			"whisper_model_load:        CUDA0 total size =  1623.92 MB",
+			"",
+		}) {
+		said := read_engine_line(line)
+		testing.expectf(t, said.says == .Nothing, "%q read as something", line)
+	}
 }
