@@ -1,3 +1,4 @@
+#+vet explicit-allocators
 // REFERENCE PROTOTYPE - not part of the build.
 //
 // A minimal WinHTTP ranged GET, compiled and run against Odin

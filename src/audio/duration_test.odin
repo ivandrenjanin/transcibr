@@ -1,3 +1,4 @@
+#+vet explicit-allocators
 package audio
 
 import "core:testing"

@@ -1,3 +1,4 @@
+#+vet explicit-allocators
 // Fixtures more than one suite in this package needs.
 package transcript
 

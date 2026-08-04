@@ -1,3 +1,4 @@
+#+vet explicit-allocators
 package audio
 
 // Carries its own timestamp rather than the decision reading a clock: a gap

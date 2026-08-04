@@ -1,3 +1,4 @@
+#+vet explicit-allocators
 // Package child starts the child processes transcibr drives, reads what they say
 // while they run, and stops them without leaving anything behind. One spawner,
 // used by both binaries (ADR-0004).

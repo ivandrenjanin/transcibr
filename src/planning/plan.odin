@@ -1,3 +1,4 @@
+#+vet explicit-allocators
 package planning
 
 import "transcibr:artifact"

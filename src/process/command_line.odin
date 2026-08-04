@@ -1,3 +1,4 @@
+#+vet explicit-allocators
 // Package process is the pure core of driving a child process. Every result is
 // UTF-8 and the caller owns it; converting to UTF-16 for Win32 is the shell's job.
 package process

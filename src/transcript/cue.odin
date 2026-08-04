@@ -1,3 +1,4 @@
+#+vet explicit-allocators
 // Package transcript parses Engine JSON into Cues, collapses repetition runs,
 // merges Cues into Paragraphs under a Merge Profile, and renders Markdown.
 package transcript

@@ -47,7 +47,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 52
+$ExpectedCaseCount = 53
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -1717,6 +1717,75 @@ Test-Case 'the result rule the build enforces is written down' {
 		if (-not $text.Contains($claim)) {
 			throw "CLAUDE.md does not carry '$claim', but scripts\common.ps1 fails the build over it."
 		}
+	}
+}
+
+Test-Case 'every .odin file the checks cover declares the vet tags' {
+	# CLAUDE.md rule M2, over the same scope rule F1, section 0 and rule F2 read.
+	# The tag is what turns ADR-0010 from a review finding into a compile error,
+	# and it is PER FILE -- measured: a package with one tagged file and one
+	# untagged sibling builds clean, with the sibling's implicit allocators
+	# unchecked. So a file that never gets the tag is not a rule broken loudly, it
+	# is a file nothing checks.
+	$sources = @(Get-CaseSource -Having 'read')
+
+	$missing = @()
+	foreach ($source in $sources) {
+		$declared = @(Get-OdinFileVetTag -Text ([System.IO.File]::ReadAllText($source.Path)))
+		foreach ($tag in $OdinFileVetTags) {
+			if ($declared -cnotcontains $tag) {
+				$missing += "  - $($source.Name) does not declare $tag"
+			}
+		}
+	}
+	if ($missing.Count -gt 0) {
+		throw "$($missing.Count) file(s) do not declare a tag every .odin file carries (CLAUDE.md rule M2):`n$($missing -join "`n")"
+	}
+
+	# The negative space (rule A3). Every line above is satisfied by a reader that
+	# finds a name in everything it is shown, so both answers are checked against
+	# text built to a known one.
+	$tagged = "#+vet explicit-allocators`npackage probe`n"
+	$read = @(Get-OdinFileVetTag -Text $tagged)
+	if (($read.Count -ne 1) -or ($read[0] -ne 'explicit-allocators')) {
+		throw "a tag on line 1 read as: $($read.Count) name(s) $($read -join ', ')"
+	}
+
+	$bare = @(Get-OdinFileVetTag -Text "package probe`n")
+	if ($bare.Count -ne 0) {
+		throw "a file with no tag at all read as $($bare.Count) name(s)."
+	}
+
+	# Several names on one line, which the compiler accepts and fires all of --
+	# and which is the shape this line takes the moment a second name is declared.
+	$several = @(Get-OdinFileVetTag -Text "#+vet explicit-allocators unused-imports`npackage probe`n")
+	if (($several.Count -ne 2) -or ($several -join ' ') -ne 'explicit-allocators unused-imports') {
+		throw "two names on one tag line read as: $($several.Count) name(s) $($several -join ', ')"
+	}
+
+	# Stacked with a tag of ANOTHER kind, which is the shape issue #48 puts on
+	# these files, and below the doc comment docs\reference\ opens with -- both
+	# placements compile, and a reader that only looked at line 1 would refuse one
+	# of them.
+	$stacked = "// why this file exists`n#+vet explicit-allocators`n#+private`npackage probe`n"
+	$alongside = @(Get-OdinFileVetTag -Text $stacked)
+	if (($alongside.Count -ne 1) -or ($alongside[0] -ne 'explicit-allocators')) {
+		throw "a tag under a comment and above #+private read as: $($alongside.Count) name(s) $($alongside -join ', ')"
+	}
+
+	# BELOW the package clause is not a tag the compiler reads -- it is
+	# `Lines starting with #+ (file tags) are only allowed before the package
+	# line`. Crediting one would report a tag for a file that does not build.
+	$late = @(Get-OdinFileVetTag -Text "package probe`n`n#+vet explicit-allocators`n")
+	if ($late.Count -ne 0) {
+		throw "a tag below the package clause read as $($late.Count) name(s), for a file the compiler refuses."
+	}
+
+	# And one QUOTED in the doc comment above the clause, which is what every file
+	# explaining this rule to a reader would carry.
+	$quoted = @(Get-OdinFileVetTag -Text "/*`n#+vet explicit-allocators`n*/`npackage probe`n")
+	if ($quoted.Count -ne 0) {
+		throw "a tag inside a block comment read as $($quoted.Count) name(s)."
 	}
 }
 

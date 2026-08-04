@@ -1,3 +1,4 @@
+#+vet explicit-allocators
 package child
 
 import win32 "core:sys/windows"

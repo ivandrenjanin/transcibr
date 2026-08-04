@@ -1,3 +1,4 @@
+#+vet explicit-allocators
 package engine
 
 import "core:fmt"

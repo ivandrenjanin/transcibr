@@ -32,6 +32,42 @@ $OdinVetFlags = @(
 	'-disallow-do'
 )
 
+# The vet set's other half: the names every .odin file declares for itself, on a
+# `#+vet` line above its own `package` clause.
+#
+# Here rather than in $OdinVetFlags because there is nowhere else to put them. At
+# the pin these are FILE TAGS and nothing else -- `odin build
+# -vet-explicit-allocators` answers `Unknown flag` -- so a name that is to apply
+# to the whole repository has to be written into every file, and this is the one
+# declaration saying which names those are.
+#
+# `explicit-allocators` is ADR-0010 made mechanical. That ADR's rule is that
+# nothing crossing a thread boundary comes from `context.temp_allocator` and that
+# every procedure which allocates takes its allocator explicitly; the tag turns a
+# call that lets Odin fill an `allocator` parameter from the context into
+# `Parameter 'allocator' of type 'Allocator' must be explicitly provided in
+# procedure call`, at the call site, on every build.
+#
+# Measured against the pin, dev-2026-07-nightly:819fdc7:
+#
+#   - the tag ADDS to the command-line set rather than replacing it, so a tagged
+#     file still fails -vet-tabs and -vet-unused-variables;
+#   - several names on one `#+vet` line all fire, and a `#+vet` line stacks with
+#     a file tag of another kind on the line below it -- which is what makes this
+#     a list rather than a string;
+#   - and the tag is PER FILE. A package holding one tagged file and one untagged
+#     sibling builds clean, with the sibling's implicit allocators unchecked.
+#
+# That last one is why Assert-OdinVetTagPolicy exists. The two ways a tag can be
+# WRONG are already loud and need nothing from this repository -- a misspelled
+# name is `Syntax Error: Invalid vet flag name`, and a tag below the package
+# clause is `Lines starting with #+ (file tags) are only allowed before the
+# package line`. ABSENCE is the silent one, and it is silent per file: the
+# repository goes on building, and the file added tomorrow is simply not checked.
+$OdinFileVetTags = @(
+	'explicit-allocators'
+)
+
 # Packages import each other as `transcibr:<package>`.
 $OdinCollection = "-collection:transcibr=$SrcRoot"
 
@@ -1462,6 +1498,45 @@ function Get-OdinResultProcedure {
 			})
 	}
 	return $found.ToArray()
+}
+
+# The `#+vet` names one file declares for itself, read off the file tags above
+# its `package` clause.
+#
+# ABOVE the clause and not merely anywhere in the file, because above it is the
+# only place the compiler reads one: a `#+vet` line below the clause is a syntax
+# error, so a reader that credited it would report a name for a file that does
+# not build at all.
+#
+# Through Get-OdinLineFact like every other reader here, and not over the raw
+# lines. What sits above `package` is the file's doc comment --
+# docs\reference\winhttp-download.odin's runs to twenty lines -- and a comment
+# QUOTING a tag line is exactly what a file explaining this rule would carry.
+#
+# WHERE among the tags it sits is not read, deliberately. Issue #48 puts
+# `#+private` on the first line of every test file and issue #45 adds a second
+# vet name; a rule pinning this one to line 1 would have to be re-litigated by
+# both, and would be enforcing a habit rather than the property. What makes the
+# tag do anything is that it is above the clause, which is what this reads.
+function Get-OdinFileVetTag {
+	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
+
+	$names = [System.Collections.Generic.List[string]]::new()
+	foreach ($fact in @(Get-OdinLineFact -Text $Text)) {
+		$code = $fact.Code.Trim()
+		if ($code -match '^package\b') {
+			break
+		}
+		if ($code -notmatch '^#\+vet\b') {
+			continue
+		}
+		foreach ($name in @(($code -replace '^#\+vet\b', '') -split '\s+')) {
+			if ($name -ne '') {
+				$names.Add($name)
+			}
+		}
+	}
+	return $names.ToArray()
 }
 
 # Every .odin file the checks cover, refused when discovery finds none.

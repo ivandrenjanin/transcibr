@@ -1,6 +1,8 @@
+#+vet explicit-allocators
 package child
 
 import "core:fmt"
+import "core:mem"
 import "core:os"
 import "core:strings"
 import win32 "core:sys/windows"
@@ -81,7 +83,9 @@ read_until :: proc(t: ^testing.T, c: ^Child, marker: string, into: ^strings.Buil
 
 @(private)
 @(require_results)
-scratch_path :: proc(t: ^testing.T, name: string, allocator := context.allocator) -> string {
+scratch_path :: proc(t: ^testing.T, name: string, allocator: mem.Allocator) -> string {
+	assert(allocator.procedure != nil, "the path outlives this procedure and needs an allocator")
+
 	directory := os.get_env("TEMP", allocator)
 	defer delete(directory, allocator)
 	testing.expect(t, len(directory) > 0, "TEMP names nowhere to put a scratch file")
@@ -113,8 +117,9 @@ open_group :: proc(t: ^testing.T) -> (group: Job_Object, ok: bool) {
 // sharing one name turned a different case red on each concurrent run.
 @(private)
 @(require_results)
-lonely_signal :: proc(tag: string, allocator := context.allocator) -> string {
+lonely_signal :: proc(tag: string, allocator: mem.Allocator) -> string {
 	assert(len(tag) > 0, "a signal name shared by two cases is a signal one of them cannot have")
+	assert(allocator.procedure != nil, "the name outlives this procedure and needs an allocator")
 
 	return fmt.aprintf(
 		"transcibrNoSignal%d%s",
@@ -128,7 +133,12 @@ lonely_signal :: proc(tag: string, allocator := context.allocator) -> string {
 // signals anything.
 @(private)
 @(require_results)
-stays_alive :: proc(seconds: int, tag: string, allocator := context.allocator) -> string {
+stays_alive :: proc(seconds: int, tag: string, allocator: mem.Allocator) -> string {
+	assert(
+		allocator.procedure != nil,
+		"the command line outlives this procedure and needs an allocator",
+	)
+
 	name := lonely_signal(tag, allocator)
 	defer delete(name, allocator)
 
@@ -254,7 +264,7 @@ diagnostic_output_is_readable_while_the_child_is_still_running :: proc(t: ^testi
 		return
 	}
 
-	alive := stays_alive(ALIVE_SECONDS, "readwhilerunning")
+	alive := stays_alive(ALIVE_SECONDS, "readwhilerunning", context.allocator)
 	defer delete(alive, context.allocator)
 	command := fmt.aprintf(
 		"echo first 1>&2 & %s & echo second 1>&2",
@@ -322,7 +332,7 @@ the_diagnostic_pipe_reaches_end_of_stream_once_the_child_is_gone :: proc(t: ^tes
 // Why standard output goes to the null device: ADR-0004.
 @(test)
 standard_output_goes_to_the_null_device :: proc(t: ^testing.T) {
-	path := scratch_path(t, "stdout-volume")
+	path := scratch_path(t, "stdout-volume", context.allocator)
 	defer delete(path, context.allocator)
 	bulk := strings.repeat(
 		"transcibr writes a great deal to standard output.\r\n",
@@ -381,7 +391,7 @@ a_child_inherits_nothing_but_the_streams_it_was_given :: proc(t: ^testing.T) {
 	}
 	defer close(&listener)
 
-	alive := stays_alive(ALIVE_SECONDS, "inheritance")
+	alive := stays_alive(ALIVE_SECONDS, "inheritance", context.allocator)
 	defer delete(alive, context.allocator)
 	c, err := start(&group, CMD, {"/c", alive}, context.allocator)
 	defer close(&c)
@@ -416,7 +426,7 @@ one_childs_pipe_ends_while_another_child_is_still_running :: proc(t: ^testing.T)
 
 	brief, brief_err := start(&group, CMD, {"/c", "echo brief 1>&2"}, context.allocator)
 	defer close(&brief)
-	alive := stays_alive(ALIVE_SECONDS, "twoatonce")
+	alive := stays_alive(ALIVE_SECONDS, "twoatonce", context.allocator)
 	defer delete(alive, context.allocator)
 	lasting, lasting_err := start(&group, CMD, {"/c", alive}, context.allocator)
 	defer close(&lasting)
@@ -479,7 +489,7 @@ a_child_is_put_in_a_job_object_that_ends_its_members_when_it_closes :: proc(t: ^
 		"the job object does not end its members when it closes, so it contains nothing",
 	)
 
-	alive := stays_alive(ALIVE_SECONDS, "jobmembership")
+	alive := stays_alive(ALIVE_SECONDS, "jobmembership", context.allocator)
 	defer delete(alive, context.allocator)
 	c, err := start(&group, CMD, {"/c", alive}, context.allocator)
 	defer close(&c)
@@ -501,7 +511,7 @@ closing_the_job_object_ends_a_child_that_is_still_running :: proc(t: ^testing.T)
 		return
 	}
 
-	alive := stays_alive(LONGER_SECONDS, "jobclose")
+	alive := stays_alive(LONGER_SECONDS, "jobclose", context.allocator)
 	defer delete(alive, context.allocator)
 	c, err := start(&group, CMD, {"/c", alive}, context.allocator)
 	defer close(&c)
@@ -612,7 +622,7 @@ held_by_the_child :: proc(c: ^Child, path: string) -> bool {
 // Why the path goes in as its own argument: ADR-0019.
 @(test)
 a_stopped_child_has_let_go_of_the_file_it_held :: proc(t: ^testing.T) {
-	path := scratch_path(t, "held-open")
+	path := scratch_path(t, "held-open", context.allocator)
 	defer delete(path, context.allocator)
 	defer os.remove(path)
 

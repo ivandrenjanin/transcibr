@@ -1,3 +1,4 @@
+#+vet explicit-allocators
 package child
 
 import "core:mem"
