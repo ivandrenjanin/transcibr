@@ -33,6 +33,7 @@ UNSETTLED_GAP_NS :: i64(50_000_000)
 // Names a place and does not create it -- the procedures under test do that.
 // The caller frees the path and removes the directory.
 @(private)
+@(require_results)
 scratch_cache :: proc(t: ^testing.T, tag: string) -> string {
 	directory := os.get_env("TEMP", context.allocator)
 	defer delete(directory, context.allocator)
@@ -65,6 +66,7 @@ remove_cache :: proc(cache: string) {
 // makes any of this a case at all: the sweep's ceilings are days and its floor
 // is an hour.
 @(private)
+@(require_results)
 aged_file :: proc(
 	t: ^testing.T,
 	cache: string,
@@ -88,6 +90,7 @@ aged_file :: proc(
 // make a different one red on each run. The process id keeps two sweeps apart;
 // the tag keeps two cases apart.
 @(private)
+@(require_results)
 lonely_signal :: proc(tag: string) -> string {
 	assert(len(tag) > 0, "a signal name shared by two cases is a signal one of them cannot have")
 
@@ -100,6 +103,7 @@ lonely_signal :: proc(tag: string) -> string {
 }
 
 @(private)
+@(require_results)
 open_group :: proc(t: ^testing.T) -> (group: child.Job_Object, ok: bool) {
 	err: child.Error
 	group, err = child.job_object_open()

@@ -56,6 +56,7 @@ LONGER_SECONDS :: 25
 // `waitfor` names are machine-wide, so a name carries the process id and no two
 // runs can release each other's children.
 @(private)
+@(require_results)
 lonely_signal :: proc(tag: string) -> string {
 	assert(len(tag) > 0, "a signal name shared by two cases is a signal one of them cannot have")
 
@@ -69,6 +70,7 @@ lonely_signal :: proc(tag: string) -> string {
 
 // The caller frees the path and removes the directory.
 @(private)
+@(require_results)
 scratch_cache :: proc(t: ^testing.T, tag: string) -> string {
 	directory := os.get_env("TEMP", context.allocator)
 	defer delete(directory, context.allocator)
@@ -101,6 +103,7 @@ remove_cache :: proc(cache: string) {
 // file transcibr goes back to afterwards must be the one the Engine was told to
 // write.
 @(private)
+@(require_results)
 stand_in :: proc(t: ^testing.T, cache: string, tag: string, body: string) -> string {
 	assert(len(body) > 0, "a stand-in Engine that does nothing at all says nothing")
 
@@ -122,6 +125,7 @@ stand_in :: proc(t: ^testing.T, cache: string, tag: string, body: string) -> str
 
 // The caller frees the path; remove_cache takes the file.
 @(private)
+@(require_results)
 flood_file :: proc(t: ^testing.T, cache: string, tag: string, bytes: int) -> string {
 	assert(bytes > 0, "a flood of nothing at all floods nothing")
 
@@ -144,6 +148,7 @@ flood_file :: proc(t: ^testing.T, cache: string, tag: string, bytes: int) -> str
 // Recording's own length once that is longer than the floor
 // (process.silent_after_ms), so a longer one is a case that waits that long.
 @(private)
+@(require_results)
 job_in :: proc(
 	cache: string,
 	engine: string,
@@ -168,6 +173,7 @@ job_in :: proc(
 }
 
 @(private)
+@(require_results)
 open_group :: proc(t: ^testing.T) -> (group: child.Job_Object, ok: bool) {
 	opened, err := child.job_object_open()
 	if !testing.expectf(t, err.fault == .None, "no job object: %v", err.fault) {
@@ -318,6 +324,7 @@ an_engine_that_says_nothing_at_all_is_stopped_before_its_bound_runs_out :: proc(
 }
 
 @(private)
+@(require_results)
 was_shown :: proc(watched: Watched, from: process.Progress_Source) -> bool {
 	for shown in watched.seen {
 		if shown.from == from {
@@ -521,6 +528,7 @@ every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testin
 }
 
 @(private)
+@(require_results)
 marker_in :: proc(cache: string) -> string {
 	return fmt.aprintf("%s\\started.txt", cache, allocator = context.allocator)
 }

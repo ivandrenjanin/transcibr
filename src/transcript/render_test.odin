@@ -22,6 +22,7 @@ SAMPLE_CONTEXT :: Render_Context {
 }
 
 @(private)
+@(require_results)
 front_matter_of :: proc(markdown: string) -> string {
 	assert(len(markdown) > 0, "an empty document is not a transcript to read the header out of")
 
@@ -114,6 +115,7 @@ the_document_ends_with_exactly_one_newline :: proc(t: ^testing.T) {
 }
 
 @(private)
+@(require_results)
 anchors_in :: proc(markdown: string) -> (found: int) {
 	assert(len(markdown) > 0, "an empty document is not a transcript to count anchors in")
 
@@ -121,6 +123,7 @@ anchors_in :: proc(markdown: string) -> (found: int) {
 }
 
 @(private)
+@(require_results)
 first_anchor_of :: proc(markdown: string) -> (reads: string) {
 	assert(len(markdown) > 0, "an empty document is not a transcript to read an anchor out of")
 	defer assert(strings.index_byte(reads, '\n') == -1, "read more than one line as an anchor")
@@ -277,6 +280,7 @@ an_anchor_past_the_end_of_the_recording_is_written_as_it_stands :: proc(t: ^test
 }
 
 @(private)
+@(require_results)
 body_of :: proc(markdown: string) -> string {
 	assert(len(markdown) > 0, "an empty document has no body to read")
 

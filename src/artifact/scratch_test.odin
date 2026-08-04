@@ -6,6 +6,7 @@ import "core:testing"
 
 // The caller frees the path and removes the directory.
 @(private)
+@(require_results)
 scratch :: proc(t: ^testing.T, tag: string) -> string {
 	directory := os.get_env("TEMP", context.allocator)
 	defer delete(directory, context.allocator)
@@ -38,6 +39,7 @@ remove_scratch :: proc(directory: string) {
 
 // The caller frees the path; remove_scratch takes the file.
 @(private)
+@(require_results)
 file_in :: proc(t: ^testing.T, directory: string, name: string, content: string) -> string {
 	path := fmt.aprintf("%s\\%s", directory, name, allocator = context.allocator)
 	testing.expectf(

@@ -89,6 +89,7 @@ FAULT := [Build_Fault]Fault_Facts {
 }
 
 @(private)
+@(require_results)
 fault_facts :: proc(fault: Build_Fault) -> (facts: Fault_Facts) {
 	assert(fault != .None, "the success value is not a fault and carries no facts")
 
@@ -98,6 +99,7 @@ fault_facts :: proc(fault: Build_Fault) -> (facts: Fault_Facts) {
 	return
 }
 
+@(require_results)
 disposition_of :: proc(fault: Build_Fault) -> Disposition {
 	assert(fault != .None, "a build that did not fail has nothing to dispose of")
 	return fault_facts(fault).disposition
@@ -106,6 +108,7 @@ disposition_of :: proc(fault: Build_Fault) -> Disposition {
 // Free the result with `delete` and the same allocator: the line outlives this
 // procedure and may be written by a worker other than the one that reads it
 // (ADR-0010).
+@(require_results)
 error_message :: proc(err: Build_Error, allocator: mem.Allocator) -> string {
 	assert(err.fault != .None, "there is no message for a build that did not fail")
 	assert(
@@ -135,6 +138,7 @@ error_message :: proc(err: Build_Error, allocator: mem.Allocator) -> string {
 }
 
 @(private)
+@(require_results)
 deliverable :: proc(message: string) -> string {
 	assert(len(message) > 0, "a refusal rendered as nothing at all")
 	assert(
@@ -146,6 +150,7 @@ deliverable :: proc(message: string) -> string {
 }
 
 @(private)
+@(require_results)
 fault_at :: proc(fault: Build_Fault, culprit: string, argument: int) -> Build_Error {
 	assert(fault != .None, "a fault of .None is the success value and reports nothing")
 
@@ -176,6 +181,7 @@ MAX_ESCAPED_OVERHEAD :: 3
 // (ADR-0010). `.Too_Long` is decided on the finished line, so that path allocates
 // in proportion to its inputs before destroying the builder: nothing leaks, but a
 // caller on a nearly-exhausted arena will feel it. Measured; see ADR-0019.
+@(require_results)
 build_command_line :: proc(
 	executable: string,
 	arguments: []string,
@@ -218,6 +224,7 @@ build_command_line :: proc(
 }
 
 @(private)
+@(require_results)
 check_inputs :: proc(executable: string, arguments: []string) -> (reserve: int, err: Build_Error) {
 	if len(executable) == 0 {
 		return 0, fault_at(.Empty_Executable, "", 0)
@@ -247,6 +254,7 @@ check_inputs :: proc(executable: string, arguments: []string) -> (reserve: int, 
 
 // Why the bound is `len(s)` and not `len(s) * 2`: ADR-0019.
 @(private)
+@(require_results)
 utf16_units :: proc(s: string) -> int {
 	units := 0
 	for r in s {
@@ -276,6 +284,7 @@ write_executable :: proc(b: ^strings.Builder, executable: string) {
 }
 
 @(private)
+@(require_results)
 needs_quoting :: proc(argument: string) -> bool {
 	if len(argument) == 0 {
 		return true

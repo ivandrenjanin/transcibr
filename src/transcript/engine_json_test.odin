@@ -147,6 +147,7 @@ reports_truncated_input_against_its_name :: proc(t: ^testing.T) {
 // The nesting sits under a key this parser ignores, so an accepted document is
 // accepted with its Cue and depth is the only thing these cases vary.
 @(private)
+@(require_results)
 nested_engine_json :: proc(inner_depth: int, allocator: mem.Allocator) -> string {
 	assert(inner_depth > 0, "a document nested no levels deep tests nothing")
 	assert(allocator.procedure != nil, "the document outlives this procedure")

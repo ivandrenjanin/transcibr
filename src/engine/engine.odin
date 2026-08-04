@@ -67,6 +67,7 @@ Error :: struct {
 }
 
 @(private)
+@(require_results)
 fault_says :: proc(fault: Fault) -> string {
 	switch fault {
 	case .Path_Not_Ascii:
@@ -93,6 +94,7 @@ fault_says :: proc(fault: Fault) -> string {
 // The path is printed with %q and not %s: a refusal reaches a user through a
 // UTF-16 Win32 call, and a byte that is not UTF-8 -- which NTFS permits in a
 // filename -- makes the whole line convert to nil.
+@(require_results)
 error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> string {
 	assert(err.fault != .None, "there is no message for a Recording that came through")
 	assert(

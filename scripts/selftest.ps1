@@ -47,7 +47,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 46
+$ExpectedCaseCount = 52
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -451,6 +451,23 @@ function Get-OdinProcedureLength {
 	return @(Get-OdinProcedureRange -Text $Text | ForEach-Object {
 			[pscustomobject]@{ Name = $_.Name; Lines = ($_.End - $_.Start + 1) }
 		})
+}
+
+# The .odin files a case reads, refused when discovery finds none.
+#
+# Five cases below open by asking for them, and every one of them is worthless
+# against an empty answer -- which is this suite's whole subject: a sweep exiting
+# 0 having run nothing, a suite announcing all zero cases passed. Written out per
+# case, the guard was five chances to leave it out of the sixth. The verb is the
+# only part that differed.
+function Get-CaseSource {
+	param([Parameter(Mandatory)] [string] $Having)
+
+	$sources = @(Get-OdinSource)
+	if ($sources.Count -eq 0) {
+		throw "no .odin files under $RepoRoot, so this case would pass having $Having nothing."
+	}
+	return $sources
 }
 
 # The <package>.<test> names a document hands a reader to run, in every spelling
@@ -1044,10 +1061,7 @@ Test-Case 'no procedure the format check covers is over the line limit' {
 	# there from 62 lines to 107 and nothing noticed, because nothing was looking
 	# outside src\. The two scopes are the same scope now, by construction --
 	# Get-OdinSource is what both of them ask.
-	$sources = @(Get-OdinSource)
-	if ($sources.Count -eq 0) {
-		throw "no .odin files under $RepoRoot, so this case would pass having measured nothing."
-	}
+	$sources = @(Get-CaseSource -Having 'measured')
 
 	$measured = @()
 	foreach ($source in $sources) {
@@ -1104,10 +1118,7 @@ Test-Case 'no procedure the format check covers carries a comment in its body' {
 	# learned the hard way: the audit behind the ban was scoped to src\, and
 	# docs\reference\ kept two body comments nobody was looking at. Get-OdinSource
 	# is what both checks ask, so the two scopes are the same scope by construction.
-	$sources = @(Get-OdinSource)
-	if ($sources.Count -eq 0) {
-		throw "no .odin files under $RepoRoot, so this case would pass having read nothing."
-	}
+	$sources = @(Get-CaseSource -Having 'read')
 
 	$found = @()
 	foreach ($source in $sources) {
@@ -1217,10 +1228,7 @@ Test-Case 'every procedure in the tree is declared where the two scans can see i
 	# scan cannot look. The tree has no such declaration today and this case finds
 	# none, which is exactly when a limitation goes unrecorded and turns into a
 	# silent false negative later. Hoist it to column zero, or teach both scans.
-	$sources = @(Get-OdinSource)
-	if ($sources.Count -eq 0) {
-		throw "no .odin files under $RepoRoot, so this case would pass having read nothing."
-	}
+	$sources = @(Get-CaseSource -Having 'read')
 
 	$hidden = @()
 	foreach ($source in $sources) {
@@ -1261,6 +1269,107 @@ Test-Case 'every procedure in the tree is declared where the two scans can see i
 	}
 }
 
+Test-Case 'a procedure TYPE is not read as a procedure with a body' {
+	# A procedure TYPE has no body, so every question the three checks ask about a
+	# body is unanswerable about one: it has no length for rule F1 to measure, no
+	# lines for section 0 to find comments in, and no call site for rule F2's
+	# attribute to fail -- the compiler REFUSES @(require_results) on a type,
+	# `Unknown attribute element name`, so a demand for it is a build that cannot
+	# be made to pass without deleting code.
+	#
+	# The fixture is the shape issue #36's shared fault report produces and that
+	# src\process\command_line.odin and src\transcript\engine_json.odin carry
+	# today: a fault-facts signature above a `:=` table. What made the reader
+	# misread it is that the table's `FAULT :=` is not a `::` declaration, so the
+	# hunt for the closing brace walked straight past it and stopped at the
+	# table's -- handing all three checks a procedure eight lines long that does
+	# not exist.
+	$shape = @(
+		'Fault_Says :: proc(fault: Build_Fault) -> string'
+		''
+		'// See CLAUDE.md, Odin notes: enumerated arrays and switches.'
+		'FAULT := [Build_Fault]Fault_Facts {'
+		"`t// the success value, which the renderer refuses by name"
+		"`t.None = {},"
+		'}'
+	) -join "`n"
+
+	$measured = @(Get-OdinProcedureRange -Text $shape)
+	if ($measured.Count -ne 0) {
+		throw "a procedure type read as $($measured.Count) procedure(s) with a body, spanning $(($measured | ForEach-Object { $_.End - $_.Start + 1 }) -join ', ') line(s)."
+	}
+	$inTable = @(Get-OdinBodyComment -Text $shape)
+	if ($inTable.Count -ne 0) {
+		throw "$($inTable.Count) comment(s) in a top-level table read as comments inside a procedure body."
+	}
+	$demanded = @(Get-OdinResultProcedure -Text $shape)
+	if ($demanded.Count -ne 0) {
+		throw "a procedure type was asked to carry an attribute the compiler refuses on one: $(($demanded | ForEach-Object { $_.Name }) -join ', ')."
+	}
+
+	# The same signature above a top-level `when` block, which is the other thing
+	# that follows one at column 0 without being a `::` declaration.
+	$aboveWhen = @(
+		'Fault_Says :: proc(fault: Build_Fault) -> string'
+		''
+		'when ODIN_OS == .Windows {'
+		"`tSEPARATOR :: `"\\`""
+		'}'
+	) -join "`n"
+	$overreach = @(Get-OdinResultProcedure -Text $aboveWhen)
+	if ($overreach.Count -ne 0) {
+		throw "a procedure type above a when block read as $($overreach.Count) returning procedure(s)."
+	}
+
+	# The negative space (rule A3). Every line above is satisfied by a reader that
+	# has stopped finding procedures at all, so the body it must still find is
+	# checked beside the type it must not: same name, same signature, one brace of
+	# difference, and only the second is a procedure.
+	$body = @(
+		'Fault_Says :: proc(fault: Build_Fault) -> string {'
+		"`treturn `"broken`""
+		'}'
+	) -join "`n"
+	$found = @(Get-OdinProcedureRange -Text $body)
+	if (($found.Count -ne 1) -or ($found[0].Name -ne 'Fault_Says') -or ($found[0].End -ne 2)) {
+		throw "the same signature WITH a body read as: $($found.Count) procedure(s) $(($found | ForEach-Object { "$($_.Name)[$($_.Start)..$($_.End)]" }) -join ', ')"
+	}
+	$still = @(Get-OdinResultProcedure -Text $body)
+	if (($still.Count -ne 1) -or $still[0].Required) {
+		throw "the same signature WITH a body read as: $($still.Count) returning procedure(s), Required=$($still.Required)"
+	}
+
+	# A `where` clause is the one thing that may sit between a complete signature
+	# and the brace, so it is the one continuation the header reader looks for --
+	# and it fails in the SILENT direction: a clause on its own line would end the
+	# header early, the procedure would read as a type, and all three checks would
+	# stop seeing it without any of them reporting anything. The tree carries no
+	# `where` clause today, which is exactly when a rule goes untested and the
+	# first one somebody writes disappears from the build.
+	$clause = @(
+		'adds :: proc(a: $T, b: T) -> T'
+		"`twhere intrinsics.type_is_numeric(T) {"
+		"`treturn a + b"
+		'}'
+	) -join "`n"
+	$constrained = @(Get-OdinResultProcedure -Text $clause)
+	if (($constrained.Count -ne 1) -or ($constrained[0].Name -ne 'adds')) {
+		throw "a where clause on its own line read as: $($constrained.Count) returning procedure(s) $(($constrained | ForEach-Object { $_.Name }) -join ', ')"
+	}
+
+	$listed = @(
+		'adds :: proc(a: $T, b: T) -> T'
+		"`twhere intrinsics.type_is_numeric(T),"
+		"`t`tintrinsics.type_is_ordered(T) {"
+		"`treturn a + b"
+		'}'
+	) -join "`n"
+	$multi = @(Get-OdinResultProcedure -Text $listed)
+	if (($multi.Count -ne 1) -or ($multi[0].Name -ne 'adds')) {
+		throw "a where clause over two lines read as: $($multi.Count) returning procedure(s) $(($multi | ForEach-Object { $_.Name }) -join ', ')"
+	}
+}
+
 Test-Case 'a comment inside a procedure body fails the build' {
 	# Rule S1's formatting check fails the BUILD rather than a step somebody
 	# remembers to run, and section 0 is enforced the same way for the same reason.
@@ -1298,6 +1407,319 @@ Test-Case 'the comment ban the build enforces is written down' {
 	}
 }
 
+Test-Case 'no procedure the format check covers hands back an unrequired answer' {
+	# CLAUDE.md rule F2, over the same scope rule F1 and section 0 read, and here
+	# for the direction `@(require_results)` cannot cover on its own: the attribute
+	# fails a call site that DROPS an answer, and the compiler refuses it on a
+	# procedure with no results -- so the procedure declared tomorrow that returns
+	# a fault and never carries it is a rule nothing checks. That is the direction
+	# every bare one here arrived from (issue #43).
+	$sources = @(Get-CaseSource -Having 'read')
+
+	$read = 0
+	$annotated = 0
+	$bare = @()
+	foreach ($source in $sources) {
+		$text = [System.IO.File]::ReadAllText($source.Path)
+		foreach ($procedure in @(Get-OdinResultProcedure -Text $text)) {
+			$read += 1
+			if (-not $procedure.Required) {
+				$bare += "  - $($source.Name):$($procedure.Line) $($procedure.Name)"
+			}
+		}
+		# Counted off the LINES, by a reader that knows nothing about procedures --
+		# so it cannot agree with the one above by sharing its mistake.
+		foreach ($fact in @(Get-OdinLineFact -Text $text)) {
+			if (($fact.Code -match '^@') -and ($fact.Code -match '\brequire_results\b')) {
+				$annotated += 1
+			}
+		}
+	}
+
+	# The vacuous-pass guard lives HERE and not in Assert-OdinResultPolicy, which
+	# runs against whatever repository it is pointed at: a program whose every
+	# procedure returns nothing is ordinary, and every build fixture below is one.
+	#
+	# Against the ATTRIBUTE COUNT and not against zero. `$read -eq 0` is the guard
+	# for a reader that broke completely, and a reader that breaks completely is
+	# the one failure nothing needed a guard to notice. What it let through is a
+	# reader that finds five procedures out of hundreds -- still non-zero, still
+	# green, and blind to everything it did not reach. Every attribute in the tree
+	# sits above a procedure this must have found returning, so the two numbers
+	# have to meet; the count is not written down here, so adding a procedure does
+	# not edit this case.
+	if ($annotated -eq 0) {
+		throw "no @(require_results) anywhere in $($sources.Count) file(s), so this case has no independent count to check the reader against."
+	}
+	if ($read -lt $annotated) {
+		throw "read $read returning procedure(s) against $annotated @(require_results) attribute(s) in the same files, so the reader is not seeing every procedure an attribute was written for."
+	}
+	if ($bare.Count -gt 0) {
+		throw "$($bare.Count) procedure(s) return without @(require_results) (CLAUDE.md rule F2):`n$($bare -join "`n")"
+	}
+
+	# The negative space (rule A3). Every line above is satisfied by a reader that
+	# finds nothing anywhere, so both answers are checked against text built to a
+	# known one.
+	$plain = "answers :: proc(x: int) -> bool {`n`treturn x > 0`n}`n"
+	$caught = @(Get-OdinResultProcedure -Text $plain)
+	if (($caught.Count -ne 1) -or ($caught[0].Name -ne 'answers') -or $caught[0].Required) {
+		throw "a bare returning procedure read as: $($caught.Count) finding(s), Required=$($caught.Required)"
+	}
+
+	# Stacked above @(private), which is the shape most of this tree carries.
+	$stacked = "@(private)`n@(require_results)`nanswers :: proc(x: int) -> bool {`n`treturn x > 0`n}`n"
+	$satisfied = @(Get-OdinResultProcedure -Text $stacked)
+	if (($satisfied.Count -ne 1) -or (-not $satisfied[0].Required)) {
+		throw "an annotated procedure read as: $($satisfied.Count) finding(s), Required=$($satisfied.Required)"
+	}
+
+	# The comment a procedure is ALLOWED, sitting where the rest of this file puts
+	# it: between the attribute and the declaration. Reading the raw line rather
+	# than its code reported this as bare, in a message telling somebody to put the
+	# attribute above the declaration where it already was -- a refusal with no
+	# action behind it, which is worse than no refusal.
+	$explained = "@(require_results)`n// why this exists`nanswers :: proc(x: int) -> bool {`n`treturn x > 0`n}`n"
+	$read = @(Get-OdinResultProcedure -Text $explained)
+	if (($read.Count -ne 1) -or (-not $read[0].Required)) {
+		throw "an attribute above a comment above the declaration read as: $($read.Count) finding(s), Required=$($read.Required)"
+	}
+
+	# The block form of the same, which runs on past the line it opens on.
+	$blockExplained = "@(require_results)`n/* why this exists`n   over two lines */`nanswers :: proc(x: int) -> bool {`n`treturn x > 0`n}`n"
+	$readBlock = @(Get-OdinResultProcedure -Text $blockExplained)
+	if (($readBlock.Count -ne 1) -or (-not $readBlock[0].Required)) {
+		throw "an attribute above a block comment above the declaration read as: $($readBlock.Count) finding(s), Required=$($readBlock.Required)"
+	}
+
+	# And the spelling the compiler's own core\odin\parser\file_tags.odin uses.
+	# odinfmt rewrites it to the parenthesised form and runs first, so a reader
+	# that knew only one spelling would be right only about formatted files.
+	$bareSpelling = "@require_results`nanswers :: proc(x: int) -> bool {`n`treturn x > 0`n}`n"
+	$readBare = @(Get-OdinResultProcedure -Text $bareSpelling)
+	if (($readBare.Count -ne 1) -or (-not $readBare[0].Required)) {
+		throw "the bare @require_results spelling read as: $($readBare.Count) finding(s), Required=$($readBare.Required)"
+	}
+
+	# The negative space for all three (rule A3): a comment above a declaration
+	# with NO attribute anywhere is still bare, and an attribute that is really
+	# text inside a raw string is not one.
+	$commentOnly = "// why this exists`nanswers :: proc(x: int) -> bool {`n`treturn x > 0`n}`n"
+	$stillBare = @(Get-OdinResultProcedure -Text $commentOnly)
+	if (($stillBare.Count -ne 1) -or $stillBare[0].Required) {
+		throw "a comment with no attribute above it read as: $($stillBare.Count) finding(s), Required=$($stillBare.Required)"
+	}
+
+	$quoted = @(
+		"TEXT :: $Backtick"
+		'@(require_results)'
+		"$Backtick"
+		'answers :: proc(x: int) -> bool {'
+		"`treturn x > 0"
+		'}'
+	) -join "`n"
+	$fooledByRaw = @(Get-OdinResultProcedure -Text $quoted)
+	if (($fooledByRaw.Count -ne 1) -or $fooledByRaw[0].Required) {
+		throw "an attribute inside a raw string read as: $($fooledByRaw.Count) finding(s), Required=$($fooledByRaw.Required)"
+	}
+
+	# A procedure with NO results, which this must never name: the compiler refuses
+	# the attribute there outright, so a false positive here is a demand the
+	# toolchain will not let anybody satisfy.
+	$silent = "shouts :: proc(x: int) {`n`t_ = x`n}`n"
+	$overreach = @(Get-OdinResultProcedure -Text $silent)
+	if ($overreach.Count -ne 0) {
+		throw "a procedure returning nothing read as $($overreach.Count) returning procedure(s)."
+	}
+
+	# And the case that separates this reader from a search for two characters: the
+	# only `->` here belongs to a PARAMETER that is itself a procedure, one level
+	# in, and the procedure declared returns nothing at all.
+	$callback = "takes :: proc(cb: proc(x: int) -> int) {`n`t_ = cb`n}`n"
+	$fooled = @(Get-OdinResultProcedure -Text $callback)
+	if ($fooled.Count -ne 0) {
+		throw "a procedure-typed parameter's own `-> read as $($fooled.Count) returning procedure(s)."
+	}
+
+	# A header broken over lines, which is what odinfmt writes for anything wide --
+	# and most of this tree's returning procedures are wide.
+	$wrapped = "wide :: proc(`n`ta: int,`n`tb: int,`n) -> (`n`tsum: int,`n`tok: bool,`n) {`n`treturn a + b, true`n}`n"
+	$long = @(Get-OdinResultProcedure -Text $wrapped)
+	if (($long.Count -ne 1) -or ($long[0].Name -ne 'wide') -or $long[0].Required) {
+		throw "a wrapped header read as: $($long.Count) finding(s) $(($long | ForEach-Object { $_.Name }) -join ', ')"
+	}
+}
+
+Test-Case 'a procedure that returns without the attribute fails the build' {
+	# Rule S1's formatting check and section 0's comment ban both fail the BUILD
+	# rather than a step somebody remembers to run, and rule F2 is enforced the
+	# same way for the same reason. The fixture still prints the banner and still
+	# exits zero: what fails here is the missing attribute and nothing the
+	# compiler would have caught anyway -- it never gets as far as the compiler.
+	$repo = New-FixtureRepo 'build-unrequired-result'
+	$returning = "import `"core:fmt`"`n`nbanner :: proc() -> string {`n`treturn `"$SmokeBanner`"`n}`n`nmain :: proc() {`n`tfmt.println(banner())`n}`n"
+	Add-FixtureBinary -RepoRoot $repo -Body $returning | Out-Null
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Fails -Matching 'CLAUDE\.md rule F2'
+	# The LINE and the NAME, not merely the file, for the reason the comment ban
+	# names both: a checker somebody has to go and search for is a checker nobody
+	# runs. Line 5 is where Add-FixtureBinary's `package main` preamble and the
+	# import above put the declaration.
+	Assert-Result -Result $result -Fails -Matching 'main\.odin:5 banner'
+}
+
+Test-Case 'the result policy refuses a procedure it cannot see, on its own' {
+	# Rule F2's verdict is a claim about EVERY procedure in the tree, and a
+	# procedure declared indented is one no column-zero scan can see.
+	# Assert-OdinVisibleProcedure is what keeps that claim true, and it used to sit
+	# inside the comment policy alone -- so rule F2 was complete only because
+	# build.ps1 happened to call that one first, an ordering nothing stated.
+	#
+	# ON ITS OWN is the whole case. Both policies call the guard now, and nothing
+	# else in this suite can tell that version from the one where only the comment
+	# policy does: that policy still refuses the same declaration, build.ps1 still
+	# runs it first, and every other case here stays green with the call deleted
+	# from Assert-OdinResultPolicy. It costs nothing today and it is the next edit
+	# to build.ps1 that collects.
+	#
+	# The procedure carries the attribute, so nothing about rule F2's own reading
+	# can refuse it: what is left to refuse it is the guard, and only the guard.
+	$repo = New-FixtureRepo 'result-policy-hidden'
+	$package = Join-Path (Join-Path $repo 'src') 'hidden'
+	New-Item -ItemType Directory -Path $package -Force | Out-Null
+	$indented = @(
+		'package hidden'
+		''
+		'when ODIN_OS == .Windows {'
+		"`t@(require_results)"
+		"`thelper :: proc() -> bool {"
+		"`t`treturn true"
+		"`t}"
+		'}'
+	) -join "`n"
+	Write-FixtureSource -Path (Join-Path $package 'hidden.odin') -Text "$indented`n"
+
+	# The policy takes no arguments and reads the tree through Get-OdinSource, so
+	# the root it reads is the seam. Rebound in a scope of its own rather than over
+	# this case, and it fails SAFE: a rebinding that stopped reaching the function
+	# would point it at the real repository, which carries no indented procedure,
+	# and this case would fail rather than quietly pass.
+	$refused = & {
+		$RepoRoot = $repo
+		try {
+			Assert-OdinResultPolicy
+			''
+		}
+		catch {
+			$_.Exception.Message
+		}
+	}
+	if ($refused -eq '') {
+		throw 'Assert-OdinResultPolicy accepted a repository whose only returning procedure is declared where it cannot see it, so its verdict is a claim about procedures it never read.'
+	}
+	foreach ($claim in @('declared indented', 'src/hidden/hidden\.odin:5 declares helper')) {
+		if ($refused -notmatch $claim) {
+			throw "the refusal did not name /$claim/: $refused"
+		}
+	}
+
+	# The negative space (rule A3). Every line above is satisfied by a policy that
+	# refuses whatever it is pointed at, so the same procedure is checked hoisted
+	# to column 0 -- same attribute, same body, one indentation of difference --
+	# and there it has to pass.
+	$hoisted = @(
+		'package hidden'
+		''
+		'@(require_results)'
+		'helper :: proc() -> bool {'
+		"`treturn true"
+		'}'
+	) -join "`n"
+	Write-FixtureSource -Path (Join-Path $package 'hidden.odin') -Text "$hoisted`n"
+	$accepted = & {
+		$RepoRoot = $repo
+		try {
+			Assert-OdinResultPolicy
+			''
+		}
+		catch {
+			$_.Exception.Message
+		}
+	}
+	if ($accepted -ne '') {
+		throw "the same procedure at column 0, carrying the attribute, was refused: $accepted"
+	}
+}
+
+Test-Case 'a procedure TYPE above a table builds, because nothing can annotate one' {
+	# The other direction of the case above, at the level that matters: a false
+	# positive here is not a wrong message, it is a repository that cannot be
+	# built. The attribute rule F2 would demand is one the compiler refuses on a
+	# procedure type -- `Unknown attribute element name 'require_results'` -- so
+	# there is no edit to the source that makes such a build pass.
+	#
+	# The fixture is issue #36's shared fault report in miniature, and the shape
+	# src\process\command_line.odin and src\transcript\engine_json.odin already
+	# carry: a fault-facts signature above a `:=` table. What kept those two from
+	# tripping it was the `@(private, rodata)` above their tables, which the old
+	# scan stopped at by luck rather than by rule -- so the table here carries no
+	# attribute, which is the shape that actually failed.
+	$repo = New-FixtureRepo 'build-procedure-type'
+	$shape = @(
+		'import "core:fmt"'
+		''
+		'@(private)'
+		'Probe_Fault :: enum u8 {'
+		"`tNone = 0,"
+		"`tBroken,"
+		'}'
+		''
+		'@(private)'
+		'Probe_Says :: proc(fault: Probe_Fault) -> string'
+		''
+		'PROBE := [Probe_Fault]string {'
+		"`t.None   = `"`","
+		"`t.Broken = `"broken`","
+		'}'
+		''
+		'main :: proc() {'
+		"`t_ = PROBE[.Broken]"
+		"`tfmt.println(`"$SmokeBanner`")"
+		'}'
+	) -join "`n"
+	Add-FixtureBinary -RepoRoot $repo -Body "$shape`n" | Out-Null
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Matching 'every \.odin procedure that returns carries'
+}
+
+Test-Case 'the result rule the build enforces is written down' {
+	# The rule and its enforcement, pinned to each other, exactly as the comment
+	# ban above is and for the defect that produced that case: a tree shaped by a
+	# rule written down nowhere is a tree whose next contributor cannot learn the
+	# rule exists, and a check with no policy behind it is a check somebody deletes
+	# as unexplained.
+	$policy = Join-Path $RepoRoot 'CLAUDE.md'
+	if (-not (Test-Path -LiteralPath $policy)) {
+		throw "no $policy, so the rule Assert-OdinResultPolicy enforces is stated nowhere."
+	}
+
+	$text = [System.IO.File]::ReadAllText($policy)
+	# The discard spelling is pinned twice over, because the attribute changes what
+	# a `defer` has to look like and nothing else in the tree would say so: no site
+	# hits it today, so the first person to write `defer f()` over an annotated
+	# procedure meets a compiler error with no rule behind it.
+	$claims = @(
+		'### F2. `@(require_results)` on every procedure that returns anything'
+		'spells it `_ = f(...)`'
+		'`defer _ = f()`'
+	)
+	foreach ($claim in $claims) {
+		if (-not $text.Contains($claim)) {
+			throw "CLAUDE.md does not carry '$claim', but scripts\common.ps1 fails the build over it."
+		}
+	}
+}
+
 Test-Case 'git checks out every .odin file with the endings the check demands' -MaySkip {
 	# The formatting check compares BYTES, and odinfmt.json pins newline_style to
 	# CRLF -- so what puts CRLF in a working tree decides whether this repository
@@ -1322,10 +1744,7 @@ Test-Case 'git checks out every .odin file with the endings the check demands' -
 		Skip-Case -Reason "$RepoRoot is not a git work tree, so there are no checkout rules to ask about"
 	}
 
-	$sources = @(Get-OdinSource)
-	if ($sources.Count -eq 0) {
-		throw "no .odin files under $RepoRoot, so this case would pass having asked about nothing."
-	}
+	$sources = @(Get-CaseSource -Having 'asked about')
 
 	$asked = Read-NativeOutput -Command 'git' -TimeoutSeconds $FixtureTimeoutSeconds `
 		-Arguments (@('-C', $RepoRoot, 'check-attr', 'eol', '--') + @($sources | ForEach-Object { $_.Name }))

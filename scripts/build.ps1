@@ -61,6 +61,16 @@ else {
 Assert-OdinCommentPolicy
 Write-Host '-> no .odin procedure body carries a comment' -ForegroundColor Green
 
+# CLAUDE.md rule F2, in the same place and for the same reason. The attribute
+# itself is what fails the compile at a call site that drops an answer; what
+# nothing else covers is the procedure declared tomorrow without it, and a rule
+# nothing checks is the direction every bare one arrived from (issue #43).
+#
+# Order does not carry anything here. Both checks refuse an indented procedure
+# themselves, so neither is complete only because the other ran first.
+Assert-OdinResultPolicy
+Write-Host '-> every .odin procedure that returns carries @(require_results)' -ForegroundColor Green
+
 New-Item -ItemType Directory -Path $BuildRoot -Force | Out-Null
 
 # Counted as each target is finished, not taken from $OdinTargets afterwards:

@@ -63,6 +63,7 @@ Wav_Facts :: struct {
 // `head` is the front of the file and need not be all of it, which is what lets
 // a caller read a few kilobytes off a huge file and still check its lengths
 // against `file_bytes`.
+@(require_results)
 read_wav_facts :: proc(head: []u8, file_bytes: i64) -> (facts: Wav_Facts, fault: Riff_Fault) {
 	assert(file_bytes >= 0, "a file cannot hold a negative number of bytes")
 	assert(i64(len(head)) <= file_bytes, "more head was read than the file was said to hold")
@@ -85,6 +86,7 @@ read_wav_facts :: proc(head: []u8, file_bytes: i64) -> (facts: Wav_Facts, fault:
 }
 
 @(private)
+@(require_results)
 walk_chunks :: proc(head: []u8, file_bytes: i64) -> (facts: Wav_Facts, fault: Riff_Fault) {
 	found_format := false
 	at := FIRST_CHUNK
@@ -133,6 +135,7 @@ walk_chunks :: proc(head: []u8, file_bytes: i64) -> (facts: Wav_Facts, fault: Ri
 }
 
 @(private)
+@(require_results)
 chunk_at :: proc(head: []u8, at: int) -> (header: Riff_Chunk_Header, present: bool) {
 	assert(at >= 0, "a chunk cannot sit at a negative offset")
 
@@ -143,6 +146,7 @@ chunk_at :: proc(head: []u8, at: int) -> (header: Riff_Chunk_Header, present: bo
 }
 
 @(private)
+@(require_results)
 read_fmt :: proc(head: []u8, payload: int, length: i64) -> (facts: Wav_Facts, fault: Riff_Fault) {
 	assert(payload >= FIRST_CHUNK, "a fmt chunk payload landed inside the RIFF header")
 	assert(length >= 0, "a chunk cannot be a negative number of bytes long")
@@ -171,6 +175,7 @@ read_fmt :: proc(head: []u8, payload: int, length: i64) -> (facts: Wav_Facts, fa
 		.None
 }
 
+@(require_results)
 as_asked_for :: proc(facts: Wav_Facts) -> bool {
 	assert(facts.channels > 0, "audio with no channels never came out of the walk")
 	assert(facts.samples_per_second > 0, "audio with no sample rate never came out of the walk")
@@ -184,6 +189,7 @@ as_asked_for :: proc(facts: Wav_Facts) -> bool {
 	return facts.bits_per_sample == process.AUDIO_BITS_PER_SAMPLE
 }
 
+@(require_results)
 audio_ms :: proc(facts: Wav_Facts) -> i64 {
 	assert(facts.bytes_per_second > 0, "audio with no byte rate has no length to work out")
 	assert(facts.data_bytes >= 0, "audio cannot hold a negative number of bytes")

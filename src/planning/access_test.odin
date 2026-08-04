@@ -3,7 +3,6 @@ package planning
 import "core:fmt"
 import "core:os"
 import "core:testing"
-import "transcibr:child"
 
 // A directory this account may not list, and one it may not write into. Neither
 // state can be reached from `core:os`, and both are what the two criteria about
@@ -12,6 +11,7 @@ import "transcibr:child"
 ICACLS :: "icacls.exe"
 
 @(private)
+@(require_results)
 denied :: proc(t: ^testing.T, path: string, rights: string) -> bool {
 	who := os.get_env("USERNAME", context.allocator)
 	defer delete(who, context.allocator)
@@ -21,9 +21,18 @@ denied :: proc(t: ^testing.T, path: string, rights: string) -> bool {
 
 	rule := fmt.aprintf("%s:%s", who, rights, allocator = context.allocator)
 	defer delete(rule, context.allocator)
-	return icacls(t, []string{path, "/deny", rule})
+	return ran(t, ICACLS, []string{path, "/deny", rule})
 }
 
+// What `ran` answers is that the child started, finished and did so inside the
+// bound -- never that icacls removed anything, which is why the message says
+// the deny MAY still be there. icacls refusing a rule it cannot find exits
+// non-zero having run perfectly well, and nothing here reads an exit code.
+//
+// Every false from `ran` has already failed an expectation naming its own step,
+// so what this adds is not detection but the consequence: the next case to use
+// this tree is the one that will be confused, and no message about a job object
+// says so.
 @(private)
 undenied :: proc(t: ^testing.T, path: string) {
 	who := os.get_env("USERNAME", context.allocator)
@@ -32,28 +41,11 @@ undenied :: proc(t: ^testing.T, path: string) {
 		return
 	}
 
-	icacls(t, []string{path, "/remove:d", who})
-}
-
-@(private)
-icacls :: proc(t: ^testing.T, arguments: []string) -> bool {
-	group, opening := child.job_object_open()
-	defer child.job_object_close(&group)
-	if !testing.expectf(t, opening.fault == .None, "no job object: %v", opening.fault) {
-		return false
-	}
-
-	c, refusal := child.start(&group, ICACLS, arguments, context.allocator)
-	if !testing.expectf(t, refusal.fault == .None, "icacls would not start: %v", refusal.fault) {
-		return false
-	}
-	defer child.close(&c)
-
-	if !testing.expect(t, child.wait(&c, CMD_BOUND_MS), "icacls did not finish in time") {
-		child.stop(&c)
-		return false
-	}
-	return true
+	testing.expect(
+		t,
+		ran(t, ICACLS, []string{path, "/remove:d", who}),
+		"icacls did not run to completion, so a deny this case set may still be on the tree",
+	)
 }
 
 // ADR-0009 names this one exactly: a silently short file list is the one

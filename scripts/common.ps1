@@ -934,10 +934,7 @@ function Get-OdinFormatReport {
 
 	Confirm-OdinFormatConfig
 
-	$sources = @(Get-OdinSource)
-	if ($sources.Count -eq 0) {
-		throw "no .odin files found under $RepoRoot, so this check would pass having compared nothing."
-	}
+	$sources = @(Get-OdinCheckedSource)
 
 	# What a killed -Fix stranded beside a source, reclaimed the way every other
 	# artefact this repository leaks is. Write-FileAtomically removes its staged
@@ -1037,8 +1034,33 @@ function Write-FileAtomically {
 	}
 }
 
+# The lex of each file, kept for the run rather than redone per reader.
+#
+# Three checks read six answers out of these facts, and the walk below is the
+# only expensive thing any of them does: it was running four times per file per
+# build and taking the static phase from 749ms to 1067ms. Keyed on the exact
+# text, which is sound because every reader here is a pure function of it -- and
+# the whole sweep reads each file once, so the key is never a stale copy of a
+# file that has since changed on disk.
+$script:OdinLineFactMemo = @{}
+
+# The only four characters that can open a comment or a literal, and therefore
+# the only four that can make a line's code differ from the line. A line already
+# in ordinary code and holding none of them needs no walk at all, which is most
+# lines in most files -- and the walk is the whole cost of the scan.
+$script:OdinLexTriggers = [char[]]@('/', '"', "'", '`')
+
 # One fact per line of an Odin file: whether the line BEGINS in ordinary code,
-# and whether a comment OPENS anywhere on it.
+# whether a comment OPENS anywhere on it, and the line's ORDINARY CODE with
+# every comment, string and rune literal blanked to spaces.
+#
+# Code is what makes this the only lexer in the file. The readers below all need
+# to count brackets or match a keyword without being fooled by one inside a
+# string, and each of them used to walk the characters again to get it -- the
+# result reader was 31 lines of this loop with the variables renamed. Blanking
+# rather than deleting keeps every column where it was, so a position in Code is
+# a position in Text, and two tokens either side of a deleted literal cannot
+# fuse into one that was never written.
 #
 # ANYWHERE, and not at the first token. The reader asked the narrower question
 # once, and `x := 1 // why` passed a check whose refusal reads "N comment(s)
@@ -1068,6 +1090,11 @@ function Write-FileAtomically {
 function Get-OdinLineFact {
 	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
 
+	$memo = $script:OdinLineFactMemo[$Text]
+	if ($null -ne $memo) {
+		return $memo
+	}
+
 	$facts = [System.Collections.Generic.List[object]]::new()
 	$raw = $false
 	$depth = 0
@@ -1075,11 +1102,22 @@ function Get-OdinLineFact {
 	foreach ($line in ($Text -split "`r?`n")) {
 		$live = (-not $raw) -and ($depth -eq 0)
 
+		if ($live -and ($line.IndexOfAny($script:OdinLexTriggers) -lt 0)) {
+			$facts.Add([pscustomobject]@{
+					Text    = $line
+					Live    = $true
+					Comment = $false
+					Code    = $line
+				})
+			continue
+		}
+
 		# Set by the scan below, so the fact is added after it rather than before.
 		# A comment that OPENS on a line the file was already inside a comment on
 		# counts too -- `b */ // c` closes one and opens another, and the second is
 		# a comment nothing else reports.
 		$opens = $false
+		$code = $line.ToCharArray()
 
 		$i = 0
 		while ($i -lt $line.Length) {
@@ -1090,26 +1128,45 @@ function Get-OdinLineFact {
 			}
 
 			if ($depth -gt 0) {
-				if (($char -eq '*') -and ($next -eq '/')) { $depth -= 1; $i += 2; continue }
-				if (($char -eq '/') -and ($next -eq '*')) { $depth += 1; $i += 2; continue }
+				$code[$i] = ' '
+				if (($char -eq '*') -and ($next -eq '/')) { $code[$i + 1] = ' '; $depth -= 1; $i += 2; continue }
+				if (($char -eq '/') -and ($next -eq '*')) { $code[$i + 1] = ' '; $depth += 1; $i += 2; continue }
 				$i += 1
 				continue
 			}
 			if ($raw) {
+				$code[$i] = ' '
 				if ($char -eq '`') { $raw = $false }
 				$i += 1
 				continue
 			}
 			# Everything after `//` on this line is comment, including any quote or
 			# backtick in it, so the scan stops rather than reading them as literals.
-			if (($char -eq '/') -and ($next -eq '/')) { $opens = $true; break }
-			if (($char -eq '/') -and ($next -eq '*')) { $opens = $true; $depth += 1; $i += 2; continue }
-			if ($char -eq '`') { $raw = $true; $i += 1; continue }
+			if (($char -eq '/') -and ($next -eq '/')) {
+				$opens = $true
+				for ($b = $i; $b -lt $line.Length; $b++) { $code[$b] = ' ' }
+				break
+			}
+			if (($char -eq '/') -and ($next -eq '*')) {
+				$opens = $true
+				$code[$i] = ' '
+				$code[$i + 1] = ' '
+				$depth += 1
+				$i += 2
+				continue
+			}
+			if ($char -eq '`') { $code[$i] = ' '; $raw = $true; $i += 1; continue }
 			if (($char -eq '"') -or ($char -eq "'")) {
 				$quote = $char
+				$code[$i] = ' '
 				$i += 1
 				while ($i -lt $line.Length) {
-					if ($line[$i] -eq '\') { $i += 2; continue }
+					$code[$i] = ' '
+					if ($line[$i] -eq '\') {
+						if (($i + 1) -lt $line.Length) { $code[$i + 1] = ' ' }
+						$i += 2
+						continue
+					}
 					if ($line[$i] -eq $quote) { $i += 1; break }
 					$i += 1
 				}
@@ -1122,9 +1179,78 @@ function Get-OdinLineFact {
 				Text    = $line
 				Live    = $live
 				Comment = $opens
+				Code    = (-join $code)
 			})
 	}
-	return $facts.ToArray()
+
+	$script:OdinLineFactMemo[$Text] = $facts.ToArray()
+	return $script:OdinLineFactMemo[$Text]
+}
+
+# The header of one top-level procedure declaration, read once for the two
+# questions that used to be two walks: does a BODY open after it, and does it
+# hand anything back.
+#
+# The body is the load-bearing one, and the reason is that a procedure TYPE is a
+# legal top-level declaration with the same first line and no body at all:
+#
+#   Fault_Says :: proc(fault: Build_Fault) -> string
+#
+# Every question the three checks ask is a question about a body. A type has no
+# length for rule F1, no lines for section 0 to find a comment in, and no call
+# site for rule F2's attribute to fail -- and the compiler REFUSES
+# @(require_results) on one, so a demand for it there is a build nobody can make
+# pass. Recognising a type by "the next column-0 `::` declaration arrives first"
+# missed the shape this repository actually writes, a fault-facts signature above
+# a `:=` table, because `FAULT :=` is not a `::` declaration; the walk ran on to
+# the TABLE's closing brace and handed all three checks a procedure that does not
+# exist.
+#
+# What separates the two is the brace, at DEPTH ZERO: a `{` there opens the body,
+# and a `{` inside a parameter default sits inside the parameter list and is
+# never at depth zero. The same depth answers the results question, and it has to
+# be depth and not a search for two characters -- a parameter that is itself a
+# procedure carries its own `->` one level in, so `f :: proc(cb: proc(x: int) ->
+# int)` returns nothing at all.
+#
+# A `where` clause is the one thing that may follow a complete signature before
+# the brace, so it is the one continuation this looks for. Without that, a clause
+# odinfmt put on its own line would end the header early and the procedure would
+# vanish from all three checks -- the silent direction, and the one no build
+# failure would ever report.
+function Read-OdinProcedureHeader {
+	param(
+		[Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Facts,
+		[Parameter(Mandatory)] [int] $Start
+	)
+
+	$depth = 0
+	$returns = $false
+	$clause = $false
+
+	for ($i = $Start; $i -lt $Facts.Count; $i++) {
+		$code = $Facts[$i].Code
+		for ($j = 0; $j -lt $code.Length; $j++) {
+			$char = $code[$j]
+			if ($char -eq '(') { $depth += 1; continue }
+			if ($char -eq ')') { $depth -= 1; continue }
+			if ($depth -ne 0) { continue }
+			if ($char -eq '{') {
+				return [pscustomobject]@{ Body = $true; Returns = $returns; End = $i }
+			}
+			if (($char -eq '-') -and ((($j + 1) -lt $code.Length) -and ($code[$j + 1] -eq '>'))) {
+				$returns = $true
+				$j += 1
+			}
+		}
+
+		if ($code -match '\bwhere\b') { $clause = $true }
+		if ($depth -gt 0) { continue }
+		if ($clause) { continue }
+		if ((($i + 1) -lt $Facts.Count) -and ($Facts[$i + 1].Code -match '^\s*where\b')) { continue }
+		return [pscustomobject]@{ Body = $false; Returns = $returns; End = $i }
+	}
+	return [pscustomobject]@{ Body = $false; Returns = $returns; End = $Facts.Count - 1 }
 }
 
 # Every top-level procedure in one file, as the half-open span of lines its body
@@ -1135,19 +1261,44 @@ function Get-OdinLineFact {
 # column 0 and its closing brace is a bare `}` there -- which is exactly what
 # separates a procedure from the `proc(...) ---` entries inside a foreign block,
 # indented one level in. A header with no body (a procedure TYPE) is recognised
-# by the next column-0 declaration arriving before any closing brace does.
+# by Read-OdinProcedureHeader above and reported as nothing at all.
+#
+# Whether it RETURNS comes back on the same range, because it comes off the same
+# walk: the brace that ends the header and the arrow before it are two answers to
+# one question about where the signature stops. Rule F2 used to ask separately,
+# in 31 lines that were this file's lexer with the variables renamed, and the two
+# readers duly disagreed -- about the procedure type above, which one of them
+# demanded an attribute for and the other measured the length of.
 #
 # Lines that do not BEGIN in ordinary code are skipped, so a `}` at column 0
-# inside a raw string does not end a procedure early. ONE scan, because two
-# checks read these boundaries -- rule F1's line limit and section 0's comment
-# ban -- and a second copy is two readers that disagree about where a procedure
-# ends the first time either is fixed.
+# inside a raw string does not end a procedure early. ONE scan, because three
+# checks read these boundaries -- rule F1's line limit, section 0's comment ban
+# and rule F2's attribute -- and a second copy is two readers that disagree about
+# where a procedure ends the first time either is fixed.
 #
 # What column zero costs is a procedure declared INDENTED -- inside a `when`
 # block, or nested in another body. This does not see one at all: not its
 # length, and not its comments. Get-OdinHiddenProcedure below closes that from
 # the other end by refusing the declaration, so the two checks keep saying
 # something true rather than something narrower than they claim.
+#
+# What is NOT closed is a body that opens and whose column-0 `}` never arrives:
+# the walk below breaks with nothing recorded, so the procedure is DROPPED
+# rather than refused, and a dropped procedure is the same green as a file that
+# never had one. Issue #52 is the refusal, written the way the indented
+# declaration is refused above.
+#
+# The formatter is not what stands between the tree and that shape. It does not
+# have to produce it -- it ACCEPTS it. This is an odinfmt fixed point, and
+# `odin check` exits 0 over it under the full vet set:
+#
+#   escapes :: proc() -> bool {
+#   	// a comment section 0 bans
+#   	return true}
+#
+# so `escapes` breaks section 0 and rule F2 at once and is invisible to both,
+# silently. Long-standing rather than new here: the same shape drops the same
+# way on main.
 function Get-OdinProcedureRange {
 	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
 
@@ -1162,15 +1313,20 @@ function Get-OdinProcedureRange {
 		}
 		# Read before the inner loop's own matches overwrite $Matches.
 		$name = $Matches[1]
-		for ($j = $i + 1; $j -lt $facts.Count; $j++) {
+		$header = Read-OdinProcedureHeader -Facts $facts -Start $i
+		if (-not $header.Body) {
+			continue
+		}
+
+		for ($j = $header.End + 1; $j -lt $facts.Count; $j++) {
 			if (-not $facts[$j].Live) {
 				continue
 			}
 			if ($facts[$j].Text -eq '}') {
-				$found.Add([pscustomobject]@{ Name = $name; Start = $i; End = $j })
+				$found.Add([pscustomobject]@{ Name = $name; Start = $i; End = $j; Returns = $header.Returns })
 				break
 			}
-			if (($facts[$j].Text -match '^[A-Za-z_][A-Za-z0-9_]*\s*::') -or ($facts[$j].Text -match '^@\(')) {
+			if (($facts[$j].Text -match '^[A-Za-z_][A-Za-z0-9_]*\s*::') -or ($facts[$j].Text -match '^@')) {
 				break
 			}
 		}
@@ -1244,49 +1400,167 @@ function Get-OdinBodyComment {
 	return $found.ToArray()
 }
 
-# CLAUDE.md section 0 as a single verdict, for the same caller and the same
-# reason Assert-OdinFormatting has one: a rule enforced only at review is a rule
-# that reaches main.
+# Every top-level procedure in one file that hands something back, with whether
+# the attribute that makes a dropped answer a build failure sits above it.
 #
-# Repository-wide through Get-OdinSource, which is the scope rule F1 already
-# learned the hard way -- an audit scoped to src\ left docs\reference\ carrying
-# body comments nobody was looking at, exactly as it once left a spike there at
-# 107 lines. The two checks and the formatter now ask one question about scope
-# and get one answer.
+# The THIRD reader of Get-OdinProcedureRange, after rule F1's line limit and
+# section 0's comment ban, and here for the direction the attribute cannot cover
+# by itself. `@(require_results)` catches a call site that drops a result, and
+# the compiler refuses the attribute on a procedure with no results -- so neither
+# of them says anything about the procedure written tomorrow that returns a fault
+# and never carries it. That is how the bare ones came to be here (issue #43),
+# and it is the same lesson $OdinPackagesWithoutTests records: a rule applied
+# once is a snapshot.
 #
-# The sweep FAILS when it finds nothing to read, for the third time in this file
-# and for the same reason: a check that covers zero files reports the same green
-# as one that checked everything.
+# Which procedures return is decided by the range reader, on the walk it takes
+# anyway. All that is left here is where the attribute sits.
 #
-# The hidden-procedure refusal comes first because it is what makes the verdict
-# after it mean what it says. A message reading "N comment(s) inside a procedure
-# body" is a claim about EVERY procedure; a procedure the scan cannot see makes
-# that claim false without ever making it look false.
-function Assert-OdinCommentPolicy {
+# Attributes sit above the declaration, and what may sit BETWEEN them and it is
+# the comment a procedure is allowed -- the one saying why it exists. Skipping
+# that costs nothing because Code has already blanked it: a comment-only line and
+# a blank line are the same empty string here, and neither is an attribute or a
+# declaration. Reading Text instead is how this came to report
+#
+#   @(require_results)
+#   // why this exists
+#   f :: proc() -> bool { ... }
+#
+# as bare, in a message telling somebody to put the attribute where it already
+# was. Both spellings are accepted for the same reason -- odinfmt rewrites
+# `@require_results` to the parenthesised form, but the compiler's own sources
+# write the bare one, so a reader that knew only one would be right only about
+# files that had been formatted.
+function Get-OdinResultProcedure {
+	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
+
+	$facts = @(Get-OdinLineFact -Text $Text)
+	$found = [System.Collections.Generic.List[object]]::new()
+	foreach ($range in @(Get-OdinProcedureRange -Text $Text)) {
+		if (-not $range.Returns) {
+			continue
+		}
+
+		$required = $false
+		for ($k = $range.Start - 1; $k -ge 0; $k--) {
+			$code = $facts[$k].Code
+			if ($code -match '^@') {
+				if ($code -match '\brequire_results\b') {
+					$required = $true
+					break
+				}
+				continue
+			}
+			if ($code.Trim() -ne '') {
+				break
+			}
+		}
+
+		$found.Add([pscustomobject]@{
+				Name     = $range.Name
+				Line     = $range.Start + 1
+				Required = $required
+			})
+	}
+	return $found.ToArray()
+}
+
+# Every .odin file the checks cover, refused when discovery finds none.
+#
+# The refusal is the whole reason this is a procedure. A check that covers zero
+# files reports the same green as one that checked everything, and this file had
+# written that guard out three times before somebody counted -- once per caller,
+# which is once per chance to leave it out of the fourth.
+#
+# Repository-wide through Get-OdinSource, which is the scope all three checks and
+# the formatter ask. Rule F1 learned it the hard way: an audit scoped to src\
+# left a spike in docs\reference\ growing to 107 lines with nothing looking
+# outside src\, and left body comments there that section 0's ban never saw.
+function Get-OdinCheckedSource {
 	$sources = @(Get-OdinSource)
 	if ($sources.Count -eq 0) {
 		throw "no .odin files found under $RepoRoot, so this check would pass having read nothing."
 	}
+	return $sources
+}
+
+# Nothing may be declared where the column-zero scans cannot look.
+#
+# This is what makes the two verdicts below mean what they say. A message reading
+# "N comment(s) inside a procedure body" is a claim about EVERY procedure, and a
+# procedure the scan cannot see makes that claim false without ever making it
+# look false. Rule F2's verdict is the same claim about the same procedures.
+#
+# BOTH policies call it, and that is the fix rather than the belt and braces it
+# looks like. It used to sit inside the comment policy alone, so rule F2 was
+# complete only because build.ps1 happened to call that one first -- an ordering
+# nothing stated and nothing checked, which the next edit to build.ps1 would have
+# reversed silently. A guarantee that depends on the order of two calls is a
+# guarantee held by whoever reads build.ps1 most recently.
+function Assert-OdinVisibleProcedure {
+	param([Parameter(Mandatory)] [object[]] $Sources)
 
 	$hidden = @()
-	$found = @()
-	foreach ($source in $sources) {
-		$text = [System.IO.File]::ReadAllText($source.Path)
-		foreach ($procedure in @(Get-OdinHiddenProcedure -Text $text)) {
+	foreach ($source in $Sources) {
+		foreach ($procedure in @(Get-OdinHiddenProcedure -Text ([System.IO.File]::ReadAllText($source.Path)))) {
 			$hidden += "  - $($source.Name):$($procedure.Line) declares $($procedure.Name)"
 		}
-		foreach ($comment in @(Get-OdinBodyComment -Text $text)) {
+	}
+	if ($hidden.Count -eq 0) {
+		return
+	}
+
+	throw "$($hidden.Count) procedure(s) declared indented, where none of the three column-zero checks can see them:`n$($hidden -join "`n")`nDeclare it at column 0, or teach Get-OdinProcedureRange to find it."
+}
+
+# CLAUDE.md section 0 as a single verdict, for the same caller and the same
+# reason Assert-OdinFormatting has one: a rule enforced only at review is a rule
+# that reaches main.
+function Assert-OdinCommentPolicy {
+	$sources = @(Get-OdinCheckedSource)
+	Assert-OdinVisibleProcedure -Sources $sources
+
+	$found = @()
+	foreach ($source in $sources) {
+		foreach ($comment in @(Get-OdinBodyComment -Text ([System.IO.File]::ReadAllText($source.Path)))) {
 			$found += "  - $($source.Name):$($comment.Line) in $($comment.Name): $($comment.Text)"
 		}
-	}
-	if ($hidden.Count -gt 0) {
-		throw "$($hidden.Count) procedure(s) declared indented, where neither this check nor rule F1's line limit can see them:`n$($hidden -join "`n")`nDeclare it at column 0, or teach Get-OdinProcedureRange to find it."
 	}
 	if ($found.Count -eq 0) {
 		return
 	}
 
 	throw "$($found.Count) comment(s) inside a procedure body (CLAUDE.md section 0):`n$($found -join "`n")`nSay it in the code, or say why above the procedure."
+}
+
+# CLAUDE.md rule F2 as a single verdict, beside section 0's and for the reason
+# that one is here at all.
+#
+# It does NOT fail when it finds no RETURNING procedure, and that is where the
+# deny-by-default habit stops. Zero files means discovery is broken; zero
+# returning procedures is an ordinary small program -- `main :: proc()` prints a
+# line and hands nothing back, and every build fixture in scripts\selftest.ps1 is
+# exactly that. Written as a "measured nothing" guard first, this refused six of
+# them, and the refusal was correct about the arithmetic and wrong about the
+# claim. The guard against a vacuous pass belongs where the tree being read is
+# known to carry hundreds, which is the selftest case and not here.
+function Assert-OdinResultPolicy {
+	$sources = @(Get-OdinCheckedSource)
+	Assert-OdinVisibleProcedure -Sources $sources
+
+	$bare = @()
+	foreach ($source in $sources) {
+		$text = [System.IO.File]::ReadAllText($source.Path)
+		foreach ($procedure in @(Get-OdinResultProcedure -Text $text)) {
+			if (-not $procedure.Required) {
+				$bare += "  - $($source.Name):$($procedure.Line) $($procedure.Name)"
+			}
+		}
+	}
+	if ($bare.Count -eq 0) {
+		return
+	}
+
+	throw "$($bare.Count) procedure(s) hand back an answer nothing obliges the caller to read (CLAUDE.md rule F2):`n$($bare -join "`n")`nPut @(require_results) above the declaration. A caller that means to throw the answer away writes `_ = f(...)`."
 }
 
 # The sweep as a single verdict, for callers that only want it to pass -- which

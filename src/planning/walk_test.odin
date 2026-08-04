@@ -11,6 +11,7 @@ import "transcibr:child"
 // Names a place and does not create it. The caller frees the path and removes
 // the tree.
 @(private)
+@(require_results)
 scratch_tree :: proc(t: ^testing.T, tag: string) -> string {
 	directory := os.get_env("TEMP", context.allocator)
 	defer delete(directory, context.allocator)
@@ -28,6 +29,7 @@ scratch_tree :: proc(t: ^testing.T, tag: string) -> string {
 }
 
 @(private)
+@(require_results)
 in_tree :: proc(t: ^testing.T, tree: string, relative: string, content: string) -> string {
 	path := fmt.aprintf("%s\\%s", tree, relative, allocator = context.allocator)
 
@@ -50,6 +52,7 @@ in_tree :: proc(t: ^testing.T, tree: string, relative: string, content: string) 
 }
 
 @(private)
+@(require_results)
 a_directory :: proc(t: ^testing.T, tree: string, relative: string) -> string {
 	path := fmt.aprintf("%s\\%s", tree, relative, allocator = context.allocator)
 	testing.expectf(t, os.make_directory_all(path) == nil, "could not make %s", path)
@@ -75,6 +78,7 @@ remove_tree :: proc(path: string) {
 }
 
 @(private)
+@(require_results)
 sources_of :: proc(inventory: Inventory) -> []string {
 	names := make([]string, len(inventory.found), context.allocator)
 	for entry, at in inventory.found {
@@ -85,6 +89,7 @@ sources_of :: proc(inventory: Inventory) -> []string {
 }
 
 @(private)
+@(require_results)
 found_at :: proc(inventory: Inventory, path: string) -> (found: Found, yes: bool) {
 	for entry in inventory.found {
 		if strings.equal_fold(entry.source, path) {
@@ -95,6 +100,7 @@ found_at :: proc(inventory: Inventory, path: string) -> (found: Found, yes: bool
 }
 
 @(private)
+@(require_results)
 noted :: proc(inventory: Inventory, what: Note) -> (path: string, yes: bool) {
 	for note in inventory.notes {
 		if note.note == what {
@@ -404,6 +410,7 @@ watch :: proc(progress: Progress, user: rawptr) {
 }
 
 @(private)
+@(require_results)
 a_spread_tree :: proc(t: ^testing.T, tag: string) -> string {
 	tree := scratch_tree(t, tag)
 	for relative in ([?]string {
@@ -512,6 +519,7 @@ CMD_BOUND_MS :: u32(20_000)
 // Whether the tool DID anything is the caller's to check: `mklink` refused for
 // want of a privilege exits non-zero having started and finished perfectly well.
 @(private)
+@(require_results)
 ran :: proc(t: ^testing.T, program: string, arguments: []string) -> bool {
 	group, opening := child.job_object_open()
 	defer child.job_object_close(&group)
@@ -532,7 +540,7 @@ ran :: proc(t: ^testing.T, program: string, arguments: []string) -> bool {
 	defer child.close(&c)
 
 	if !testing.expect(t, child.wait(&c, CMD_BOUND_MS), "a child did not finish in time") {
-		child.stop(&c)
+		testing.expect(t, child.stop(&c), "a child overran and may still hold this tree open")
 		return false
 	}
 	return true
@@ -540,6 +548,7 @@ ran :: proc(t: ^testing.T, program: string, arguments: []string) -> bool {
 
 // A DIRECTORY reparse point, which needs no elevation.
 @(private)
+@(require_results)
 junction :: proc(t: ^testing.T, link: string, target: string) -> bool {
 	if !ran(t, CMD, []string{"/c", "mklink", "/J", link, target}) {
 		return false
@@ -552,6 +561,7 @@ junction :: proc(t: ^testing.T, link: string, target: string) -> bool {
 // answers false and the case stops -- what holds the rule everywhere is
 // `taken_for`, which needs no privilege at all.
 @(private)
+@(require_results)
 file_symlink :: proc(t: ^testing.T, link: string, target: string) -> bool {
 	if !ran(t, CMD, []string{"/c", "mklink", link, target}) {
 		return false

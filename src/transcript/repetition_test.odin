@@ -115,6 +115,7 @@ REAL_REPETITIONS := []Real_Repetition {
 // back the right LENGTH with the wrong Cues in it is the same silent deletion by
 // another route.
 @(private)
+@(require_results)
 real_repetitions_truncated :: proc(
 	t: ^testing.T,
 	p: Collapse_Params,

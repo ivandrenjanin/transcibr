@@ -10,6 +10,7 @@ import "core:testing"
 // caller owns the slice and every string in it; `free_argv` returns both.
 // Why the suite uses shell32's own parser rather than one written here: ADR-0019.
 @(private)
+@(require_results)
 argv_of :: proc(t: ^testing.T, command_line: string, allocator: mem.Allocator) -> []string {
 	wide := win32.utf8_to_utf16(command_line, allocator)
 	defer delete(wide, allocator)
@@ -107,11 +108,13 @@ expect_each_and_all :: proc(t: ^testing.T, group: string, cases: []string) {
 EXE :: `C:\tools\ffmpeg.exe`
 
 @(private)
+@(require_results)
 tprint_case :: proc(group: string, index: int, how: string) -> string {
 	return fmt.tprintf("%s[%d] %s", group, index, how)
 }
 
 @(private)
+@(require_results)
 tprint_group :: proc(group: string, how: string) -> string {
 	return fmt.tprintf("%s %s", group, how)
 }

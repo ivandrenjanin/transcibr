@@ -15,6 +15,7 @@ Line_Reader :: struct {
 	skipping: bool,
 }
 
+@(require_results)
 next_line :: proc(r: ^Line_Reader, remaining: ^string) -> (line: string, ok: bool) {
 	assert(r != nil, "there is nothing here to read a line into")
 	assert(remaining != nil, "there is no chunk here to read a line out of")
@@ -48,6 +49,7 @@ next_line :: proc(r: ^Line_Reader, remaining: ^string) -> (line: string, ok: boo
 	return "", false
 }
 
+@(require_results)
 last_line :: proc(r: ^Line_Reader) -> (line: string, ok: bool) {
 	assert(r != nil, "there is nothing here to read a last line out of")
 	assert(r.count <= len(r.held), "the reader is holding more than it has room for")
@@ -64,6 +66,7 @@ last_line :: proc(r: ^Line_Reader) -> (line: string, ok: bool) {
 // The Engine writes CRLF on Windows, and the carriage return is framing rather
 // than content; it is taken off once, here, rather than by every reader.
 @(private)
+@(require_results)
 trimmed :: proc(held: []u8) -> string {
 	if len(held) > 0 && held[len(held) - 1] == '\r' {
 		return string(held[:len(held) - 1])
@@ -87,6 +90,7 @@ SILENT_AFTER_MS :: i64(5 * 60 * 1000)
 
 // Why the silence bound scales with the Recording: ADR-0012.
 @(private)
+@(require_results)
 silent_after_ms :: proc(duration_ms: i64, floor_ms: i64) -> i64 {
 	assert(floor_ms > 0, "a run given no time at all to break its silence")
 	assert(duration_ms >= 0, "a Recording of negative length")
@@ -148,6 +152,7 @@ Progress :: struct {
 	silent:  bool,
 }
 
+@(require_results)
 progress_says :: proc(from: Progress_Source) -> string {
 	switch from {
 	case .Estimate:
@@ -159,6 +164,7 @@ progress_says :: proc(from: Progress_Source) -> string {
 	return ""
 }
 
+@(require_results)
 tracker_start :: proc(duration_ms: i64, now_ns: i64) -> Tracker {
 	assert(duration_ms >= 0, "a Recording of negative length")
 	assert(now_ns > 0, "a monotonic counter that has not started")
@@ -195,6 +201,7 @@ tracker_said :: proc(tr: ^Tracker, said: Engine_Line, now_ns: i64) {
 	}
 }
 
+@(require_results)
 shown :: proc(tr: Tracker, now_ns: i64, watch := DEFAULT_WATCH) -> Progress {
 	assert(now_ns >= tr.started_ns, "the monotonic counter went backwards over one Recording")
 	assert(watch.factor > 0, "an Engine that runs at no speed at all finishes nothing")
@@ -224,6 +231,7 @@ shown :: proc(tr: Tracker, now_ns: i64, watch := DEFAULT_WATCH) -> Progress {
 }
 
 @(private)
+@(require_results)
 estimated :: proc(tr: Tracker, now_ns: i64, factor: f64) -> int {
 	assert(factor > 0, "an Engine that runs at no speed at all finishes nothing")
 	assert(now_ns >= tr.started_ns, "the monotonic counter went backwards over one Recording")
@@ -249,6 +257,7 @@ estimated :: proc(tr: Tracker, now_ns: i64, factor: f64) -> int {
 ENGINE_BOUND_FLOOR_MS :: i64(10 * 60 * 1000)
 ENGINE_BOUND_MULTIPLE :: i64(4)
 
+@(require_results)
 transcribe_bound_ms :: proc(duration_ms: i64) -> i64 {
 	assert(duration_ms >= 0, "a Recording of negative length")
 	assert(

@@ -44,6 +44,7 @@ FAULT := [Fault]string {
 }
 
 @(private)
+@(require_results)
 fault_says :: proc(fault: Fault) -> string {
 	assert(fault != .None, "the success value is not a fault and says nothing")
 	assert(
@@ -58,6 +59,7 @@ fault_says :: proc(fault: Fault) -> string {
 
 // The line outlives this procedure and may be read by a worker other than the one
 // that produced it (ADR-0010); free it with `delete` and the same allocator.
+@(require_results)
 error_message :: proc(err: Error, allocator: mem.Allocator) -> string {
 	assert(err.fault != .None, "there is no message for a child that started")
 	assert(
@@ -80,6 +82,7 @@ error_message :: proc(err: Error, allocator: mem.Allocator) -> string {
 	return message
 }
 
+@(require_results)
 disposition_of :: proc(err: Error) -> process.Disposition {
 	assert(err.fault != .None, "a child that started has nothing to dispose of")
 
@@ -93,6 +96,7 @@ Job_Object :: struct {
 	handle: win32.HANDLE,
 }
 
+@(require_results)
 job_object_open :: proc() -> (group: Job_Object, err: Error) {
 	handle := CreateJobObjectW(nil, nil)
 	if handle == nil {
@@ -150,6 +154,7 @@ CREATION_FLAGS ::
 
 // The allocator is spent inside here. The returned Child points at nothing the
 // caller passed in, so there is nothing to give back but its handles (close).
+@(require_results)
 start :: proc(
 	group: ^Job_Object,
 	executable: string,
@@ -189,6 +194,7 @@ start :: proc(
 }
 
 @(private)
+@(require_results)
 start_into :: proc(
 	group: ^Job_Object,
 	command_line: []u16,
@@ -229,6 +235,7 @@ start_into :: proc(
 
 // Why lpApplicationName is nil: ADR-0019.
 @(private)
+@(require_results)
 create_hidden :: proc(
 	command_line: []u16,
 	s: ^Streams,
@@ -279,6 +286,7 @@ create_hidden :: proc(
 }
 
 @(private)
+@(require_results)
 abandon :: proc(pi: ^win32.PROCESS_INFORMATION, fault: Fault) -> Error {
 	assert(pi != nil, "there is nothing here to abandon")
 	assert(pi.hProcess != nil, "a child abandoned before it was created")
@@ -304,6 +312,7 @@ ABANDON_BOUND_MS :: u32(2_000)
 // The clock is handed in rather than read here, so a deadline already gone and
 // one exactly reached are reachable in a test.
 @(private)
+@(require_results)
 remaining_ms :: proc(deadline: win32.ULONGLONG, now: win32.ULONGLONG) -> u32 {
 	if now >= deadline {
 		return 0
@@ -319,6 +328,7 @@ remaining_ms :: proc(deadline: win32.ULONGLONG, now: win32.ULONGLONG) -> u32 {
 // budget for the whole of this rather than for each wait inside it.
 // Why the tree and not the process alone: ADR-0004.
 // Why never the cooperative request: see CLAUDE.md, Odin notes.
+@(require_results)
 stop :: proc(c: ^Child, milliseconds: u32 = STOP_BOUND_MS) -> (stopped: bool) {
 	assert(c != nil, "there is no child here to stop")
 	assert(c.handle != nil, "a child that was never started cannot be stopped")
@@ -338,6 +348,7 @@ stop :: proc(c: ^Child, milliseconds: u32 = STOP_BOUND_MS) -> (stopped: bool) {
 // Polled because there is nothing to wait on: a job object signals when its
 // end-of-job time limit is exceeded and never when its last process leaves.
 @(private)
+@(require_results)
 job_emptied :: proc(job: win32.HANDLE, deadline: win32.ULONGLONG) -> bool {
 	assert(job != nil, "there is no job object here to wait on")
 
@@ -368,6 +379,7 @@ job_emptied :: proc(job: win32.HANDLE, deadline: win32.ULONGLONG) -> bool {
 // reading an exit code can tell "we killed it" from "it failed".
 TERMINATED_EXIT_CODE :: 0xC0000015
 
+@(require_results)
 wait :: proc(c: ^Child, milliseconds: u32) -> bool {
 	assert(c != nil, "there is no child here to wait for")
 	assert(c.handle != nil, "a child that was never started cannot be waited for")
@@ -378,6 +390,7 @@ wait :: proc(c: ^Child, milliseconds: u32) -> bool {
 // `exited` comes from the process object's signal state and never from the code:
 // GetExitCodeProcess answers STILL_ACTIVE for a running one, which is 259 and a
 // legal thing to exit with.
+@(require_results)
 exit_code :: proc(c: ^Child) -> (code: u32, exited: bool) {
 	assert(c != nil, "there is no child here to ask")
 	assert(c.handle != nil, "a child that was never started has no exit code")

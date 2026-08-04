@@ -65,6 +65,7 @@ Probe_Fault :: enum u8 {
 @(private)
 LONGEST_CONTAINER_MS :: i64(1000 * 60 * 60 * 1000)
 
+@(require_results)
 read_probe :: proc(output: string) -> (probe: Probe, fault: Probe_Fault) {
 	if len(strings.trim_space(output)) == 0 {
 		return {}, .Said_Nothing
@@ -95,6 +96,7 @@ read_probe :: proc(output: string) -> (probe: Probe, fault: Probe_Fault) {
 }
 
 @(private)
+@(require_results)
 read_duration :: proc(value: string) -> (duration_ms: i64, fault: Probe_Fault) {
 	if value == "N/A" {
 		return 0, .Duration_Unknown
@@ -118,6 +120,7 @@ read_duration :: proc(value: string) -> (duration_ms: i64, fault: Probe_Fault) {
 // the Engine's startup banner -- so a rounding or a ceiling cannot hold in one and
 // not the other. NaN and infinity are refused by each caller before this.
 @(private)
+@(require_results)
 milliseconds_of :: proc(seconds: f64) -> (duration_ms: i64, ok: bool) {
 	if seconds < 0 || seconds > f64(LONGEST_CONTAINER_MS) / 1000 {
 		return 0, false
@@ -134,6 +137,7 @@ milliseconds_of :: proc(seconds: f64) -> (duration_ms: i64, ok: bool) {
 // the null device, and ffprobe prints its answer there like everything else. The
 // caller owns the returned slice; the strings in it are borrowed and outlive nothing
 // the caller does not already hold.
+@(require_results)
 probe_arguments :: proc(
 	source: string,
 	answer: string,
@@ -161,6 +165,7 @@ probe_arguments :: proc(
 
 // The same borrowing rule as probe_arguments: the caller frees the slice and nothing
 // in it.
+@(require_results)
 extract_arguments :: proc(
 	source: string,
 	destination: string,

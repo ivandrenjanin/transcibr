@@ -7,6 +7,7 @@ SECOND_NS :: i64(1_000_000_000)
 @(private)
 MILLISECOND_NS :: SECOND_NS / 1000
 @(private)
+@(require_results)
 first_reading :: proc() -> Reading {
 	return Reading{bytes = 104_857_600, modified_ns = 500 * SECOND_NS, taken_ns = 900 * SECOND_NS}
 }

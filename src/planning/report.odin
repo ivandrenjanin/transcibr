@@ -20,6 +20,7 @@ import "core:strings"
 // is a whole LINE, so nothing outside can assemble one of its own out of the
 // pieces and have it drift from the one the suite holds.
 @(private)
+@(require_results)
 decision_says :: proc(decision: Decision) -> string {
 	switch decision {
 	case .Transcribe:
@@ -35,6 +36,7 @@ decision_says :: proc(decision: Decision) -> string {
 }
 
 @(private)
+@(require_results)
 reason_says :: proc(reason: Reason) -> string {
 	switch reason {
 	case .Nothing_Recorded:
@@ -60,6 +62,7 @@ reason_says :: proc(reason: Reason) -> string {
 }
 
 @(private)
+@(require_results)
 note_says :: proc(what: Note) -> string {
 	switch what {
 	case .Root_Unreadable:
@@ -75,6 +78,7 @@ note_says :: proc(what: Note) -> string {
 }
 
 // One Recording's row in a dry run. Free it with `delete` and this allocator.
+@(require_results)
 plan_line :: proc(entry: Entry, allocator: mem.Allocator) -> (line: string) {
 	assert(len(entry.found.source) > 0, "a plan row for a Recording with no path at all")
 	assert(allocator.procedure != nil, "the line outlives this procedure and needs an allocator")
@@ -99,6 +103,7 @@ plan_line :: proc(entry: Entry, allocator: mem.Allocator) -> (line: string) {
 }
 
 // Free it with `delete` and this allocator.
+@(require_results)
 note_line :: proc(note: Walk_Note, allocator: mem.Allocator) -> (line: string) {
 	assert(allocator.procedure != nil, "the line outlives this procedure and needs an allocator")
 	defer assert(len(line) > 0, "a note rendered as nothing at all")
@@ -122,6 +127,7 @@ STOPPED_PART_WAY :: "this walk was stopped before it finished; the plan above is
 // printed the enumeration member, so a cancelled walk read
 // "this walk did not see the whole tree (Root_Unreadable)" over a root it had
 // read perfectly well, and no reader of that line could tell those two apart.
+@(require_results)
 incomplete_line :: proc(inventory: Inventory, allocator: mem.Allocator) -> string {
 	assert(allocator.procedure != nil, "the line outlives this procedure and needs an allocator")
 
@@ -146,6 +152,7 @@ incomplete_line :: proc(inventory: Inventory, allocator: mem.Allocator) -> strin
 
 // Empty for a plan that came through, so a caller prints it or does not without
 // asking a second question. Free it with `delete` and this allocator.
+@(require_results)
 collision_line :: proc(plan: Plan, allocator: mem.Allocator) -> string {
 	assert(allocator.procedure != nil, "the line outlives this procedure and needs an allocator")
 

@@ -190,6 +190,7 @@ MATERIALS := []Material {
 }
 
 @(private)
+@(require_results)
 material_cues :: proc(m: Material, allocator: mem.Allocator) -> []Cue {
 	assert(len(m.gaps) > 0, "material with no gaps in it describes no cue set")
 	assert(
@@ -217,6 +218,7 @@ material_cues :: proc(m: Material, allocator: mem.Allocator) -> []Cue {
 }
 
 @(private)
+@(require_results)
 share_at_least :: proc(gaps: []Millis, at_least: Millis) -> f64 {
 	assert(len(gaps) > 0, "no gaps to take a share of")
 
@@ -231,6 +233,7 @@ share_at_least :: proc(gaps: []Millis, at_least: Millis) -> f64 {
 }
 
 @(private)
+@(require_results)
 percentile :: proc(sorted: []Millis, pct: int) -> Millis {
 	assert(len(sorted) > 0, "no gaps to take a percentile of")
 	assert(pct > 0, "the zeroth percentile is the minimum, which is not what this is for")

@@ -44,6 +44,7 @@ SAY_BOUND :: 20 * time.Second
 CMD :: "cmd.exe"
 
 @(private)
+@(require_results)
 drain :: proc(t: ^testing.T, c: ^Child, into: ^strings.Builder) -> (at_end: bool) {
 	buffer: [4096]u8
 	for {
@@ -62,6 +63,7 @@ drain :: proc(t: ^testing.T, c: ^Child, into: ^strings.Builder) -> (at_end: bool
 }
 
 @(private)
+@(require_results)
 read_until :: proc(t: ^testing.T, c: ^Child, marker: string, into: ^strings.Builder) -> bool {
 	started := time.tick_now()
 	for time.tick_since(started) < SAY_BOUND {
@@ -78,6 +80,7 @@ read_until :: proc(t: ^testing.T, c: ^Child, marker: string, into: ^strings.Buil
 }
 
 @(private)
+@(require_results)
 scratch_path :: proc(t: ^testing.T, name: string, allocator := context.allocator) -> string {
 	directory := os.get_env("TEMP", allocator)
 	defer delete(directory, allocator)
@@ -95,6 +98,7 @@ scratch_path :: proc(t: ^testing.T, name: string, allocator := context.allocator
 // The caller still writes its own `defer job_object_close(&group)`: the object
 // has to outlive this procedure.
 @(private)
+@(require_results)
 open_group :: proc(t: ^testing.T) -> (group: Job_Object, ok: bool) {
 	err: Error
 	group, err = job_object_open()
@@ -108,6 +112,7 @@ open_group :: proc(t: ^testing.T) -> (group: Job_Object, ok: bool) {
 // instance asking for a name already registered fails at once. Five cases
 // sharing one name turned a different case red on each concurrent run.
 @(private)
+@(require_results)
 lonely_signal :: proc(tag: string, allocator := context.allocator) -> string {
 	assert(len(tag) > 0, "a signal name shared by two cases is a signal one of them cannot have")
 
@@ -122,6 +127,7 @@ lonely_signal :: proc(tag: string, allocator := context.allocator) -> string {
 // `waitfor /t` returns on its own when nobody signals it, and nothing here ever
 // signals anything.
 @(private)
+@(require_results)
 stays_alive :: proc(seconds: int, tag: string, allocator := context.allocator) -> string {
 	name := lonely_signal(tag, allocator)
 	defer delete(name, allocator)
@@ -518,6 +524,7 @@ closing_the_job_object_ends_a_child_that_is_still_running :: proc(t: ^testing.T)
 // A share mode of zero conflicts with every other open handle whatever sharing
 // that handle allowed. False also means the file is not there.
 @(private)
+@(require_results)
 taken_exclusively :: proc(path: string) -> bool {
 	wide := win32.utf8_to_utf16(path, context.allocator)
 	defer delete(wide, context.allocator)
@@ -547,6 +554,7 @@ STOP_BOUND :: u32(3_000)
 FREED_BOUND :: 3 * time.Second
 
 @(private)
+@(require_results)
 freed_within_bound :: proc(path: string) -> bool {
 	started := time.tick_now()
 	for {
@@ -565,6 +573,7 @@ freed_within_bound :: proc(path: string) -> bool {
 HOLDERS_OF_THE_FILE :: u32(3)
 
 @(private)
+@(require_results)
 job_holds :: proc(job: win32.HANDLE) -> u32 {
 	accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION
 	returned: win32.DWORD
@@ -582,6 +591,7 @@ job_holds :: proc(job: win32.HANDLE) -> u32 {
 }
 
 @(private)
+@(require_results)
 held_by_the_child :: proc(c: ^Child, path: string) -> bool {
 	assert(c != nil, "there is no child here to wait on")
 	assert(c.tree != nil, "a started child always has a job object of its own")
@@ -657,6 +667,7 @@ a_stopped_child_has_let_go_of_the_file_it_held :: proc(t: ^testing.T) {
 JOB_OBJECT_QUERY :: win32.DWORD(0x0004)
 
 @(private)
+@(require_results)
 query_only_view :: proc(job: win32.HANDLE) -> win32.HANDLE {
 	assert(job != nil, "there is no job object here to duplicate")
 

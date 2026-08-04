@@ -44,12 +44,14 @@ Ending :: struct {
 // Offset by one because the first tick since a start reads zero, and
 // `process.tracker_start` refuses that.
 @(private)
+@(require_results)
 elapsed_ns :: proc(started: time.Tick) -> i64 {
 	reading := 1 + i64(time.duration_nanoseconds(time.tick_since(started)))
 	assert(reading > 0, "a monotonic counter that went backwards or has not started")
 	return reading
 }
 
+@(require_results)
 transcribe :: proc(
 	group: ^child.Job_Object,
 	tools: Tools,
@@ -95,6 +97,7 @@ transcribe :: proc(
 
 // Why all three paths, and why this does not subsume `open_cache`: ADR-0025.
 @(private)
+@(require_results)
 openable_by_the_engine :: proc(job: Job, prefix: string) -> bool {
 	assert(len(prefix) > 0, "the Engine was given nowhere to write its output")
 
@@ -111,6 +114,7 @@ openable_by_the_engine :: proc(job: Job, prefix: string) -> bool {
 }
 
 @(private)
+@(require_results)
 refused :: proc(ending: Ending) -> Error {
 	switch ending.run {
 	case .Not_Started:
@@ -126,6 +130,7 @@ refused :: proc(ending: Ending) -> Error {
 
 // One open and no stat, so the length belongs to the same file the handle does.
 @(private)
+@(require_results)
 landed :: proc(output: string) -> Fault {
 	assert(len(output) > 0, "there is nowhere here to look for the Engine's output")
 
@@ -146,6 +151,7 @@ landed :: proc(output: string) -> Fault {
 }
 
 @(private)
+@(require_results)
 run_engine :: proc(
 	group: ^child.Job_Object,
 	executable: string,
@@ -200,6 +206,7 @@ run_engine :: proc(
 // The pipe outlives the child that wrote to it, and the readings worth having
 // most are the ones written just before exit.
 @(private)
+@(require_results)
 finished :: proc(
 	c: ^child.Child,
 	tracker: ^process.Tracker,
@@ -218,6 +225,7 @@ finished :: proc(
 }
 
 @(private)
+@(require_results)
 stopped :: proc(c: ^child.Child, silent: bool, duration_ms: i64) -> Ending {
 	assert(c != nil, "there is no child here to stop")
 
@@ -232,6 +240,7 @@ stopped :: proc(c: ^child.Child, silent: bool, duration_ms: i64) -> Ending {
 // of them read as a line: an Engine writing a log this reader has no reading for
 // is still alive (ADR-0012).
 @(private)
+@(require_results)
 drain :: proc(
 	c: ^child.Child,
 	tracker: ^process.Tracker,

@@ -150,6 +150,7 @@ FAULT := [Parse_Fault]Fault_Facts {
 }
 
 @(private)
+@(require_results)
 fault_facts :: proc(fault: Parse_Fault) -> (facts: Fault_Facts) {
 	assert(fault != .None, "the success value is not a fault and carries no facts")
 
@@ -159,6 +160,7 @@ fault_facts :: proc(fault: Parse_Fault) -> (facts: Fault_Facts) {
 	return
 }
 
+@(require_results)
 disposition_of :: proc(fault: Parse_Fault) -> Disposition {
 	assert(fault != .None, "a parse that did not fail has nothing to dispose of")
 	return fault_facts(fault).disposition
@@ -166,6 +168,7 @@ disposition_of :: proc(fault: Parse_Fault) -> Disposition {
 
 // The cue set outlives this procedure and crosses a worker boundary (ADR-0010):
 // free it with destroy_cues and the same allocator.
+@(require_results)
 parse_cues :: proc(
 	json_name: string,
 	json_text: string,
@@ -224,6 +227,7 @@ parse_cues :: proc(
 // `result.language` is what the Engine DETECTED; `params.language` is what it was
 // asked for and reads `auto` unless somebody chose. The answer always comes back
 // cloned, UNKNOWN included, and is always freed with `delete` (ADR-0010).
+@(require_results)
 parse_language :: proc(json_text: string, allocator: mem.Allocator) -> (language: string) {
 	assert(
 		allocator.procedure != nil,
@@ -262,6 +266,7 @@ parse_language :: proc(json_text: string, allocator: mem.Allocator) -> (language
 // error paths a truncated file takes. See CLAUDE.md, Odin notes:
 // core:encoding/json.
 @(private)
+@(require_results)
 decode_engine_json :: proc(
 	json_text: string,
 	scratch: mem.Allocator,
@@ -294,6 +299,7 @@ MAX_JSON_DEPTH :: 64
 // nothing. A hand-rolled byte scan would be a second answer to "where does this
 // string end", and would refuse a Recording for containing "[[[".
 @(private)
+@(require_results)
 json_nesting_is_bounded :: proc(json_text: string) -> bool {
 	assert(len(json_text) > 0, "an empty input is Empty_Input, settled before this point")
 
@@ -326,6 +332,7 @@ json_nesting_is_bounded :: proc(json_text: string) -> bool {
 // signature of an offset reader that matched nothing -- see read_millis. Every
 // Cue is well-formed and the set is monotonic, so nothing else here can tell.
 @(private)
+@(require_results)
 check_cue_set :: proc(cues: []Cue, recording_duration: Maybe(Millis)) -> (Parse_Fault, int) {
 	assert(len(cues) > 0, "an empty cue set is No_Cues, settled before this point")
 	disordered := first_disordered_cue(cues)
@@ -355,6 +362,7 @@ check_cue_set :: proc(cues: []Cue, recording_duration: Maybe(Millis)) -> (Parse_
 }
 
 @(private)
+@(require_results)
 read_transcription :: proc(root: json.Value) -> (json.Array, Parse_Fault) {
 	body, is_object := root.(json.Object)
 	if !is_object {
@@ -373,6 +381,7 @@ read_transcription :: proc(root: json.Value) -> (json.Array, Parse_Fault) {
 // One field of a json object, by name AND by type: a `text` that is a number and
 // a `text` that is missing are one fault, because the Engine wrote neither.
 @(private)
+@(require_results)
 field :: proc($T: typeid, object: json.Object, key: string) -> (value: T, present: bool) {
 	assert(len(key) > 0, "a field is read by name; the empty key is a caller defect")
 
@@ -385,6 +394,7 @@ field :: proc($T: typeid, object: json.Object, key: string) -> (value: T, presen
 }
 
 @(private)
+@(require_results)
 read_cues :: proc(
 	entries: json.Array,
 	allocator: mem.Allocator,
@@ -429,6 +439,7 @@ read_cues :: proc(
 }
 
 @(private)
+@(require_results)
 cue_follows :: proc(cue: Cue, built: []Cue) -> Parse_Fault {
 	if cue.start < 0 {
 		return .Negative_Offset
@@ -443,6 +454,7 @@ cue_follows :: proc(cue: Cue, built: []Cue) -> Parse_Fault {
 }
 
 @(private)
+@(require_results)
 read_cue :: proc(entry: json.Value, allocator: mem.Allocator) -> (cue: Cue, fault: Parse_Fault) {
 	assert(allocator.procedure != nil, "a cue's text outlives this procedure")
 
@@ -490,6 +502,7 @@ READABLE_MS :: (1 << 53) - 1
 // Why every offset is read as a float and range-checked: see CLAUDE.md, Odin
 // notes: core:encoding/json.
 @(private)
+@(require_results)
 read_millis :: proc(offsets: json.Object, key: string) -> (Millis, Parse_Fault) {
 	assert(len(key) > 0, "an offset is read by name; the empty key is a caller defect")
 
@@ -513,6 +526,7 @@ read_millis :: proc(offsets: json.Object, key: string) -> (Millis, Parse_Fault) 
 	return converted, .None
 }
 
+@(require_results)
 error_message :: proc(err: Parse_Error, allocator: mem.Allocator) -> string {
 	assert(err.fault != .None, "there is no message for a parse that did not fail")
 	assert(len(err.json_name) > 0, "an operating error must name the input it is reported against")
@@ -541,6 +555,7 @@ error_message :: proc(err: Parse_Error, allocator: mem.Allocator) -> string {
 }
 
 @(private)
+@(require_results)
 fault_at :: proc(fault: Parse_Fault, json_name: string, cue: int) -> Parse_Error {
 	assert(fault != .None, "a fault of .None is the success value and reports nothing")
 	assert(len(json_name) > 0, "an operating error must name the input it is reported against")

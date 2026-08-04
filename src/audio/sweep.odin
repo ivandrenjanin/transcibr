@@ -31,6 +31,7 @@ DEFAULT_SWEEP_LIMITS :: Sweep_Limits {
 // Indices into `entries`, ascending. The caller owns the returned slice and
 // frees it with `delete` and the same allocator; the names inside `entries` are
 // untouched.
+@(require_results)
 sweep_choice :: proc(
 	entries: []Cache_Entry,
 	limits: Sweep_Limits,
@@ -75,6 +76,7 @@ sweep_choice :: proc(
 // by reordering the caller's own listing, and the answer here is indices into
 // that listing.
 @(private)
+@(require_results)
 oldest_first :: proc(entries: []Cache_Entry, allocator: mem.Allocator) -> []int {
 	assert(allocator.procedure != nil, "the order outlives this procedure and needs an allocator")
 

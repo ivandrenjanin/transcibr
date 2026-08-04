@@ -150,6 +150,7 @@ silence_the_engine_covered_with_an_empty_cue_still_breaks_a_paragraph :: proc(t:
 }
 
 @(private)
+@(require_results)
 paragraph_prose :: proc(paragraphs: []Paragraph, sep: string, allocator: mem.Allocator) -> string {
 	assert(len(paragraphs) > 0, "no paragraphs to put back together")
 	assert(allocator.procedure != nil, "the joined prose outlives this procedure")
@@ -163,6 +164,7 @@ paragraph_prose :: proc(paragraphs: []Paragraph, sep: string, allocator: mem.All
 }
 
 @(private)
+@(require_results)
 cue_speech :: proc(cues: []Cue, allocator: mem.Allocator) -> string {
 	assert(len(cues) > 0, "no cues to put back together")
 	assert(allocator.procedure != nil, "the joined speech outlives this procedure")

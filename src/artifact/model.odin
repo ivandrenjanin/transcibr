@@ -34,6 +34,7 @@ Model_Fault :: enum u8 {
 // A path that is not valid UTF-8 answers `.Unreadable` and not
 // `.Path_Not_Ascii`, because get_absolute_path refuses it before the ASCII
 // check sees it; the trade is ADR-0025's.
+@(require_results)
 identify_model :: proc(
 	model: string,
 	allocator: mem.Allocator,
@@ -79,6 +80,7 @@ destroy_model :: proc(identified: Model, allocator: mem.Allocator) {
 }
 
 @(private)
+@(require_results)
 digest_of :: proc(
 	path: string,
 	allocator: mem.Allocator,
@@ -130,6 +132,7 @@ digest_of :: proc(
 #assert(DIGEST_CHARS == 2 * sha2.DIGEST_SIZE_256)
 
 @(private)
+@(require_results)
 hex_digest :: proc(context_256: ^sha2.Context_256, allocator: mem.Allocator) -> (digest: Digest) {
 	assert(context_256 != nil, "there is no hash here to finish")
 	assert(allocator.procedure != nil, "the digest outlives this procedure and needs an allocator")
@@ -144,6 +147,7 @@ hex_digest :: proc(context_256: ^sha2.Context_256, allocator: mem.Allocator) -> 
 }
 
 @(private)
+@(require_results)
 model_fault_says :: proc(fault: Model_Fault) -> string {
 	switch fault {
 	case .Path_Not_Ascii:
@@ -160,6 +164,7 @@ model_fault_says :: proc(fault: Model_Fault) -> string {
 // %q because a refusal reaches a user through a UTF-16 Win32 call: a raw NUL
 // cuts the line off, and a byte that is not UTF-8 converts the whole line to
 // nil. Free the answer with `delete` and the allocator handed in.
+@(require_results)
 model_error_message :: proc(
 	fault: Model_Fault,
 	model: string,

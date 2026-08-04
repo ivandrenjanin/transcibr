@@ -38,6 +38,7 @@ Plan :: struct {
 // thing that stops a Batch running over a short file list would live entirely in
 // caller discipline -- and the only caller that asks is `src/cli`, the package
 // nothing can turn red (ADR-0009).
+@(require_results)
 plan_batch :: proc(
 	inventory: Inventory,
 	settings: Settings,
@@ -91,6 +92,7 @@ destroy_plan :: proc(plan: Plan, allocator: mem.Allocator) {
 // same pair every time it is planned, and `left < right` holds by construction
 // rather than by a comparator that had to break a tie to make it so.
 @(private)
+@(require_results)
 collided :: proc(
 	inventory: []Found,
 	allocator: mem.Allocator,
@@ -126,6 +128,7 @@ collided :: proc(
 }
 
 @(private)
+@(require_results)
 paired :: proc(
 	inventory: []Found,
 	left, right: int,
@@ -151,6 +154,7 @@ paired :: proc(
 // refused on its own account, and two of them are not a pair (ADR-0008). The
 // answer is owned; free it with `delete` and the same allocator.
 @(private)
+@(require_results)
 artifact_key :: proc(source: string, allocator: mem.Allocator) -> (key: string, namable: bool) {
 	assert(len(source) > 0, "there is no Recording here to name an artifact for")
 	assert(allocator.procedure != nil, "the key outlives this procedure and needs an allocator")

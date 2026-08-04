@@ -54,6 +54,7 @@ Sidecar :: struct {
 // Odin fills a field a struct literal leaves out with a zero and says nothing,
 // and a call cannot leave a parameter out at all: a builder that dropped
 // `model_digest` would write an empty one that compares equal to the next.
+@(require_results)
 sidecar_of :: proc(
 	engine_version: string,
 	model: Model,
@@ -105,6 +106,7 @@ Change :: enum u8 {
 }
 
 // Why presence-only resume is not enough: ADR-0003.
+@(require_results)
 changed :: proc(recorded, current: Sidecar) -> (answer: Change) {
 	defer if answer == .None {
 		assert(recorded == current, "two Sidecars that differ somewhere were called unchanged")
@@ -149,6 +151,7 @@ changed :: proc(recorded, current: Sidecar) -> (answer: Change) {
 // does date real files before 1970. Why the whole record rather than the one
 // field that has an outside: ADR-0024. Planning asks it of the Sidecar a
 // Recording WOULD get, which is the only place it is cheap to answer (ADR-0026).
+@(require_results)
 recordable :: proc(s: Sidecar) -> bool {
 	if s.model_bytes < 0 {
 		return false
@@ -197,6 +200,7 @@ KEY := [Key]string {
 // The field order is FIXED and is the order of `Key`, because a reader that had
 // to cope with any order would also cope with a record missing half its fields.
 // The caller owns the answer and frees it with `delete` and the same allocator.
+@(require_results)
 sidecar_text :: proc(s: Sidecar, allocator: mem.Allocator) -> (written: string) {
 	assert(allocator.procedure != nil, "the record outlives this procedure and needs an allocator")
 	defer {
@@ -270,6 +274,7 @@ write_number :: proc(out: ^strings.Builder, key: Key, value: i64) {
 // Refused WHOLE and never half read: a record missing a field would compare
 // equal to any other record missing the same field. Every string in the answer
 // is CLONED -- free it with destroy_sidecar; a refusal frees its own.
+@(require_results)
 read_sidecar :: proc(text: string, allocator: mem.Allocator) -> (s: Sidecar, ok: bool) {
 	assert(allocator.procedure != nil, "the record outlives this procedure and needs an allocator")
 
@@ -300,6 +305,7 @@ read_sidecar :: proc(text: string, allocator: mem.Allocator) -> (s: Sidecar, ok:
 }
 
 @(private)
+@(require_results)
 not_a_sidecar :: proc(s: Sidecar, allocator: mem.Allocator) -> (Sidecar, bool) {
 	destroy_sidecar(s, allocator)
 	return Sidecar{}, false
@@ -321,6 +327,7 @@ EVERY_KEY :: ~bit_set[Key]{}
 // A trailing fragment with no newline behind it is left where it is, which is
 // how read_sidecar tells a truncated record from a complete one.
 @(private)
+@(require_results)
 next_line :: proc(rest: ^string) -> (line: string, present: bool) {
 	assert(rest != nil, "there is no record here to read a line out of")
 
@@ -336,6 +343,7 @@ next_line :: proc(rest: ^string) -> (line: string, present: bool) {
 // The separator is a colon AND the space after it, so a key carrying a colon
 // cannot be read as a shorter key with a longer value.
 @(private)
+@(require_results)
 read_field :: proc(line: string) -> (key: Key, value: string, ok: bool) {
 	at := strings.index(line, ": ")
 	if at <= 0 {
@@ -349,6 +357,7 @@ read_field :: proc(line: string) -> (key: Key, value: string, ok: bool) {
 }
 
 @(private)
+@(require_results)
 key_named :: proc(name: string) -> (key: Key, known: bool) {
 	if len(name) == 0 {
 		return {}, false
@@ -365,6 +374,7 @@ key_named :: proc(name: string) -> (key: Key, known: bool) {
 // would be stored as zero, and a zero compares equal to another zero -- so a
 // corrupt Sidecar would report a Recording as still matching its settings.
 @(private)
+@(require_results)
 store :: proc(s: ^Sidecar, key: Key, value: string, allocator: mem.Allocator) -> (ok: bool) {
 	assert(s != nil, "there is no record here to read a field into")
 
@@ -402,6 +412,7 @@ store :: proc(s: ^Sidecar, key: Key, value: string, allocator: mem.Allocator) ->
 // quotation mark inside the value is a record this package did not write, and
 // reading one leniently would accept a file whose fields have run into each other.
 @(private)
+@(require_results)
 unquoted :: proc(value: string, allocator: mem.Allocator) -> (text: string, ok: bool) {
 	assert(allocator.procedure != nil, "the value outlives this procedure and needs an allocator")
 	if len(value) < 2 || value[0] != '"' || value[len(value) - 1] != '"' {
@@ -429,6 +440,7 @@ unquoted :: proc(value: string, allocator: mem.Allocator) -> (text: string, ok: 
 }
 
 @(private)
+@(require_results)
 escape :: proc(from: string, out: ^strings.Builder) -> (taken: int) {
 	assert(out != nil, "there is nowhere here to write an unescaped byte")
 	assert(len(from) > 0, "an escape was read off the end of the value")
@@ -468,6 +480,7 @@ escape :: proc(from: string, out: ^strings.Builder) -> (taken: int) {
 // Lower case only, because that is what this package writes and a reader that
 // accepted both would accept a record it did not produce.
 @(private)
+@(require_results)
 hex :: proc(digit: u8) -> (value: u8, ok: bool) {
 	switch digit {
 	case '0' ..= '9':

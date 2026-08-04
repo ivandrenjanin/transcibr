@@ -4,6 +4,7 @@ import "core:strings"
 import "core:testing"
 
 @(private)
+@(require_results)
 recording_at :: proc(source: string) -> Found {
 	found := a_recording()
 	found.source = source
@@ -11,6 +12,7 @@ recording_at :: proc(source: string) -> Found {
 }
 
 @(private)
+@(require_results)
 planned :: proc(sources: []string) -> (plan: Plan, ok: bool) {
 	found := make([]Found, len(sources), context.allocator)
 	defer delete(found, context.allocator)

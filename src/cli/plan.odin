@@ -33,6 +33,7 @@ Plan_Options :: struct {
 	follow:         bool,
 }
 
+@(require_results)
 plan_batch :: proc(arguments: []string) -> int {
 	assert(len(arguments) > 0, "no arguments at all is the version banner, settled before this")
 	assert(arguments[0] == PLAN, "main dispatched a command line that does not open with --plan")
@@ -52,6 +53,7 @@ plan_batch :: proc(arguments: []string) -> int {
 }
 
 @(private)
+@(require_results)
 report_plan :: proc(o: Plan_Options, identified: artifact.Model) -> int {
 	assert(len(o.root) > 0, "there is no folder here to walk")
 	assert(len(identified.digest) > 0, "a Model nobody identified reached the plan")
@@ -105,6 +107,7 @@ print_plan :: proc(plan: planning.Plan, inventory: planning.Inventory) {
 // the silently short file list ADR-0009 names. Both come back as `runnable`
 // being false, and both sentences are `transcibr:planning`'s.
 @(private)
+@(require_results)
 plan_verdict :: proc(plan: planning.Plan, inventory: planning.Inventory, runnable: bool) -> int {
 	assert(len(plan.entries) == len(inventory.found), "a plan that lost a Recording")
 
@@ -142,6 +145,7 @@ walked :: proc(progress: planning.Progress, user: rawptr) {
 }
 
 @(private)
+@(require_results)
 read_plan_options :: proc(arguments: []string) -> (o: Plan_Options, ok: bool) {
 	defer if ok {
 		assert(len(o.root) > 0, "accepted a command line with no folder to walk")
@@ -174,6 +178,7 @@ read_plan_options :: proc(arguments: []string) -> (o: Plan_Options, ok: bool) {
 // the loop above pairs a name with the argument after it and a flag that took
 // none would swallow the option behind it.
 @(private)
+@(require_results)
 read_plan_option :: proc(o: ^Plan_Options, name, value: string) -> (ok: bool) {
 	assert(o != nil, "there is nothing here to read an option into")
 	assert(len(name) > 0, "an option with no name at all reached the reader")
