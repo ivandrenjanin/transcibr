@@ -121,6 +121,31 @@ aged_file :: proc(
 	return path
 }
 
+// The name of a signal nobody ever sends, unique to this run AND to the case
+// that asks for it.
+//
+// UNIQUE IS NOT TIDINESS, and the price of learning that was already paid next
+// door. `waitfor` registers its signal name MACHINE-WIDE, and a second instance
+// asking for a name already registered fails at once -- so the five cases in
+// `src/child` that shared one name made a different case red on each run, with
+// the children that were supposed to outlive a check exiting immediately
+// instead. The process identifier keeps two sweeps in one checkout apart; the
+// tag keeps two CASES apart.
+//
+// There is exactly one such case here, so nothing can collide today. The second
+// one will be written by copying these lines.
+@(private)
+lonely_signal :: proc(tag: string) -> string {
+	assert(len(tag) > 0, "a signal name shared by two cases is a signal one of them cannot have")
+
+	return fmt.aprintf(
+		"transcibrAudioNoSignal%d%s",
+		os.get_pid(),
+		tag,
+		allocator = context.allocator,
+	)
+}
+
 // A job object, or a case that gives up rather than starting a child outside
 // one.
 @(private)
@@ -436,11 +461,9 @@ a_child_that_exits_inside_its_bound_ran_to_completion :: proc(t: ^testing.T) {
 @(test)
 a_child_that_outlives_its_bound_is_stopped_rather_than_waited_for :: proc(t: ^testing.T) {
 	// `waitfor` on a signal nobody ever sends, with a timeout of its own so the
-	// child ends by itself even if this case never gets to it. The name carries
-	// the process id because waitfor registers it MACHINE-WIDE, and a second
-	// instance asking for a name already registered fails at once -- measured
-	// the hard way in `src/child`, where five cases shared one name.
-	signal := fmt.aprintf("transcibrAudioNoSignal%d", os.get_pid(), allocator = context.allocator)
+	// child ends by itself even if this case never gets to it. See lonely_signal
+	// for why the name carries both the process id and this case's own tag.
+	signal := lonely_signal("bound")
 	defer delete(signal, context.allocator)
 	command := fmt.aprintf(
 		"waitfor /t %d %s",

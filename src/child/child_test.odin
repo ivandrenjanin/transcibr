@@ -162,6 +162,24 @@ scratch_path :: proc(t: ^testing.T, name: string, allocator := context.allocator
 	)
 }
 
+// A job object, or a case that gives up rather than starting a child outside
+// one.
+//
+// The caller still writes its own `defer job_object_close(&group)`, and that is
+// deliberate: the object has to outlive this procedure, so the only place the
+// close can be deferred to is the case's own scope. What moves in here is the
+// part that was identical twelve times over -- the call, the fault check, and
+// the one line naming what went wrong.
+@(private)
+open_group :: proc(t: ^testing.T) -> (group: Job_Object, ok: bool) {
+	err: Error
+	group, err = job_object_open()
+	if !testing.expectf(t, err.fault == .None, "no job object: %v", err.fault) {
+		return group, false
+	}
+	return group, true
+}
+
 // The name of a signal nobody ever sends, unique to this run AND to the case that
 // asks for it.
 //
@@ -198,9 +216,9 @@ stays_alive :: proc(seconds: int, tag: string, allocator := context.allocator) -
 
 @(test)
 a_child_runs_and_reports_the_code_it_exited_with :: proc(t: ^testing.T) {
-	group, group_err := job_object_open()
+	group, ok := open_group(t)
 	defer job_object_close(&group)
-	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+	if !ok {
 		return
 	}
 
@@ -222,9 +240,9 @@ a_child_runs_and_reports_the_code_it_exited_with :: proc(t: ^testing.T) {
 // failure line can carry it.
 @(test)
 an_executable_that_is_not_there_is_refused_rather_than_asserted :: proc(t: ^testing.T) {
-	group, group_err := job_object_open()
+	group, ok := open_group(t)
 	defer job_object_close(&group)
-	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+	if !ok {
 		return
 	}
 
@@ -242,9 +260,9 @@ an_executable_that_is_not_there_is_refused_rather_than_asserted :: proc(t: ^test
 // was in, and that is the only handle anybody has on which setting to go and fix.
 @(test)
 a_command_line_that_cannot_be_spelled_is_refused_before_anything_starts :: proc(t: ^testing.T) {
-	group, group_err := job_object_open()
+	group, ok := open_group(t)
 	defer job_object_close(&group)
-	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+	if !ok {
 		return
 	}
 
@@ -370,9 +388,9 @@ what_is_left_of_a_budget_is_never_all_of_it_again :: proc(t: ^testing.T) {
 // alive.
 @(test)
 diagnostic_output_is_readable_while_the_child_is_still_running :: proc(t: ^testing.T) {
-	group, group_err := job_object_open()
+	group, ok := open_group(t)
 	defer job_object_close(&group)
-	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+	if !ok {
 		return
 	}
 
@@ -425,9 +443,9 @@ diagnostic_output_is_readable_while_the_child_is_still_running :: proc(t: ^testi
 // long the child has been gone.
 @(test)
 the_diagnostic_pipe_reaches_end_of_stream_once_the_child_is_gone :: proc(t: ^testing.T) {
-	group, group_err := job_object_open()
+	group, ok := open_group(t)
 	defer job_object_close(&group)
-	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+	if !ok {
 		return
 	}
 
@@ -479,9 +497,9 @@ standard_output_goes_to_the_null_device :: proc(t: ^testing.T) {
 	}
 	defer os.remove(path)
 
-	group, group_err := job_object_open()
+	group, ok := open_group(t)
 	defer job_object_close(&group)
-	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+	if !ok {
 		return
 	}
 
@@ -538,9 +556,9 @@ standard_output_goes_to_the_null_device :: proc(t: ^testing.T) {
 // mid-flight -- and the child must not come away with it.
 @(test)
 a_child_inherits_nothing_but_the_streams_it_was_given :: proc(t: ^testing.T) {
-	group, group_err := job_object_open()
+	group, ok := open_group(t)
 	defer job_object_close(&group)
-	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+	if !ok {
 		return
 	}
 
@@ -602,9 +620,9 @@ a_child_inherits_nothing_but_the_streams_it_was_given :: proc(t: ^testing.T) {
 // one another -- rather than for the inheritance rule itself.
 @(test)
 one_childs_pipe_ends_while_another_child_is_still_running :: proc(t: ^testing.T) {
-	group, group_err := job_object_open()
+	group, ok := open_group(t)
 	defer job_object_close(&group)
-	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+	if !ok {
 		return
 	}
 
@@ -656,9 +674,9 @@ one_childs_pipe_ends_while_another_child_is_still_running :: proc(t: ^testing.T)
 // running in.
 @(test)
 a_child_is_put_in_a_job_object_that_ends_its_members_when_it_closes :: proc(t: ^testing.T) {
-	group, group_err := job_object_open()
+	group, ok := open_group(t)
 	defer job_object_close(&group)
-	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+	if !ok {
 		return
 	}
 
@@ -699,12 +717,12 @@ a_child_is_put_in_a_job_object_that_ends_its_members_when_it_closes :: proc(t: ^
 // already finished.
 @(test)
 closing_the_job_object_ends_a_child_that_is_still_running :: proc(t: ^testing.T) {
-	group, group_err := job_object_open()
+	group, ok := open_group(t)
 	// Closed part-way through on purpose. The defer is still here and is still
 	// worth having: it is a no-op on a job object already given back, and it is
 	// what covers every early return above that point.
 	defer job_object_close(&group)
-	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+	if !ok {
 		return
 	}
 
@@ -913,9 +931,9 @@ a_stopped_child_has_let_go_of_the_file_it_held :: proc(t: ^testing.T) {
 	defer delete(path, context.allocator)
 	defer os.remove(path)
 
-	group, group_err := job_object_open()
+	group, ok := open_group(t)
 	defer job_object_close(&group)
-	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+	if !ok {
 		return
 	}
 
@@ -1029,9 +1047,9 @@ LINGER_BOUND_MS :: u32(500)
 // hard-wired to false survives both.
 @(test)
 stop_is_false_while_something_the_child_started_is_still_running :: proc(t: ^testing.T) {
-	group, group_err := job_object_open()
+	group, ok := open_group(t)
 	defer job_object_close(&group)
-	if !testing.expectf(t, group_err.fault == .None, "no job object: %v", group_err.fault) {
+	if !ok {
 		return
 	}
 

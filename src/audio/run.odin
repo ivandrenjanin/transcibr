@@ -309,22 +309,28 @@ probe :: proc(
 	defer delete(arguments, allocator)
 
 	ending, refusal := run_bounded(group, tools.ffprobe, arguments, PROBE_BOUND_MS, allocator)
-	if ending == .Not_Started {
+	// A SWITCH AND NOT THREE `if`s WITH AN ASSERT AFTER THEM. Both cover the four
+	// endings; only one of them makes a FIFTH ending a build failure rather than
+	// a crash on the Recording that met it, which is the guard this package's own
+	// FAULT tables are built on.
+	switch ending {
+	case .Not_Started:
 		return {}, Error{fault = .Probe_Not_Started, child = refusal}
-	}
-	if ending == .Unstoppable {
+	case .Unstoppable:
 		// The answer file is NOT removed. ffprobe may still be running and may
 		// still hold it open, and CLAUDE.md's rule for stopping a child is not
 		// to touch a file it had open until the wait completes. The sweep takes
 		// it on age instead.
 		return {}, Error{fault = .Probe_Not_Stopped}
+	case .Stopped, .Finished:
+	// The child is gone either way, which is what makes the answer file
+	// transcibr's to delete below. Which of the two it was is asked after.
 	}
 	// Past here the child is gone, and its answer file is transcibr's to delete.
 	defer os.remove(answer)
 	if ending == .Stopped {
 		return {}, Error{fault = .Probe_Did_Not_Finish}
 	}
-	assert(ending == .Finished, "a bounded run ended in a way nothing here handles")
 
 	// The exit code is not consulted, which is ADR-0002's rule applied to the
 	// other child: what settles it is whether there is a readable answer.
@@ -521,16 +527,18 @@ produce :: proc(
 	arguments := process.extract_arguments(job.source, part, allocator)
 	defer delete(arguments, allocator)
 	ending, refusal := run_bounded(group, tools.ffmpeg, arguments, EXTRACTION_BOUND_MS, allocator)
-	if ending == .Not_Started {
+	// A switch, for the reason `probe` gives: a fifth ending is a build failure
+	// here and was a crash on whichever Recording first met it.
+	switch ending {
+	case .Not_Started:
 		return {}, Error{fault = .Extraction_Not_Started, child = refusal}
-	}
-	if ending == .Stopped {
+	case .Stopped:
 		return {}, Error{fault = .Extraction_Did_Not_Finish}
-	}
-	if ending == .Unstoppable {
+	case .Unstoppable:
 		return {}, Error{fault = .Extraction_Not_Stopped}
+	case .Finished:
+	// Past here ffmpeg is gone, and what it left is transcibr's to read back.
 	}
-	assert(ending == .Finished, "a bounded run ended in a way nothing here handles")
 
 	// The exit code is deliberately not consulted (ADR-0002): what settles it
 	// is what is on the disk.

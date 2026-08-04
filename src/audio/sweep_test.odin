@@ -217,19 +217,9 @@ an_empty_cache_gives_the_sweep_nothing_to_do :: proc(t: ^testing.T) {
 the_sweep_ceilings_are_the_ones_that_were_reasoned_about :: proc(t: ^testing.T) {
 	// Pinned outright, because all three are the kind of number that gets
 	// nudged by whoever meets it next -- and two of them nudge towards deleting
-	// more.
-	//
-	// 20 GiB: the reference corpus is 75 hours, and mono 16 kHz signed 16-bit
-	// PCM is 32,000 bytes a second, so a whole Batch of it is 8.6 GB. The
-	// ceiling is a little over two such Batches.
-	//
-	// Seven days: long enough that a Batch interrupted over a weekend still
-	// resumes against its own extracted audio rather than re-extracting it.
-	//
-	// One hour: what nothing may be deleted inside. An extraction of the
-	// longest Recording in the corpus takes minutes and the Engine's output is
-	// written at the end of one transcription, so an in-use cache file is
-	// minutes old at the very most.
+	// more. WHY each is the number it is lives beside the constant in sweep.odin
+	// and is deliberately not restated here: two copies of a justification are
+	// two things to keep in step, and only one of them is next to the number.
 	//
 	// That the floor sits under the age ceiling is NOT checked here. It was, and
 	// the check could not report: the three lines above already fix all three

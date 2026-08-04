@@ -24,15 +24,6 @@ first_reading :: proc() -> Reading {
 }
 
 @(test)
-a_source_that_did_not_change_between_two_readings_has_settled :: proc(t: ^testing.T) {
-	first := first_reading()
-	second := first
-	second.taken_ns += 3 * SECOND_NS
-
-	testing.expect_value(t, settling(first, second, MINIMUM_SETTLING_GAP_NS), Settling.Settled)
-}
-
-@(test)
 a_source_that_grew_between_two_readings_is_still_being_written :: proc(t: ^testing.T) {
 	first := first_reading()
 	second := first
@@ -100,6 +91,12 @@ two_readings_taken_too_close_together_cannot_tell :: proc(t: ^testing.T) {
 the_gap_is_pinned_one_nanosecond_either_side :: proc(t: ^testing.T) {
 	// A bound nothing holds in the dangerous direction is a bound that gets
 	// shortened by whoever meets it next.
+	//
+	// AND THE ORDINARY SETTLED CASE with it: the gap is three seconds, so
+	// `just_enough` below is a Recording read three seconds later that did not
+	// move. There was a case of its own spelling exactly those inputs and
+	// expecting exactly this, which is one case that cannot disagree with the
+	// other.
 	first := first_reading()
 	just_enough := first
 	just_enough.taken_ns += MINIMUM_SETTLING_GAP_NS
@@ -368,14 +365,12 @@ too_soon_to_tell_with_no_look_left_is_refused_and_never_called_settled :: proc(t
 
 @(test)
 the_minimum_gap_outlasts_the_coarsest_timestamp_a_recording_can_carry :: proc(t: ^testing.T) {
-	// FAT and exFAT store a modification time to a two-second granularity, and
-	// SMB servers commonly round to the same. A gap shorter than that can fall
-	// entirely inside one bucket, so a file being appended to shows the same
-	// timestamp twice and only the size gives it away.
+	// Pinned outright, because it is the kind of number that gets shortened by
+	// whoever meets it next -- and shortening it is what makes a file being
+	// appended to look settled. Why three and not two is beside the constant.
+	//
+	// The line under this one used to be `MINIMUM_SETTLING_GAP_NS > 2 * SECOND_NS`,
+	// which the line above had just made true by construction. Same pattern,
+	// same removal, as the sweep's own ceilings.
 	testing.expect_value(t, MINIMUM_SETTLING_GAP_NS, 3 * SECOND_NS)
-	testing.expect(
-		t,
-		MINIMUM_SETTLING_GAP_NS > 2 * SECOND_NS,
-		"the gap does not outlast a FAT timestamp bucket",
-	)
 }

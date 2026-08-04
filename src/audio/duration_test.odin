@@ -82,11 +82,9 @@ the_two_terms_cross_over_at_one_thousand_seconds :: proc(t: ^testing.T) {
 @(test)
 the_default_tolerance_is_the_one_that_was_measured_for :: proc(t: ^testing.T) {
 	// The constants themselves, so that loosening either is an edit to a case
-	// rather than a number nobody is holding. The floor covers every
-	// quantisation effect there is with room to spare -- AAC encoder priming
-	// and padding is at most 2,112 samples, 48 ms at 44.1 kHz, and one video
-	// frame of container rounding at 23.976 fps is 42 ms -- and the measured
-	// worst case among well-formed containers was 6 ms.
+	// rather than a number nobody is holding. What every quantisation effect
+	// measures and why a second covers all of them lives beside the constant in
+	// duration.odin, where the number is -- not in a second copy here.
 	testing.expect_value(t, DEFAULT_TOLERANCE.floor_ms, i64(1000))
 	testing.expect_value(t, DEFAULT_TOLERANCE.per_mille, i64(1))
 }

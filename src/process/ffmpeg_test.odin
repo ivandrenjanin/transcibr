@@ -208,11 +208,11 @@ each_number_ffmpeg_is_asked_for_is_the_number_the_check_demands :: proc(t: ^test
 	testing.expect_value(t, channels, AUDIO_CHANNELS)
 
 	// The bit depth is a CODEC NAME and not a number, so nothing can parse it
-	// back. What is checked instead is that the name and the number still name
-	// the same depth, which is the whole of the link between them: `s16` is the
-	// sixteen, and `le` is the byte order the WAV walk decodes with.
+	// back. What is left to check is the spelling itself: `s16` is the sixteen,
+	// and `le` is the byte order the WAV walk decodes with. That the NUMBER is
+	// still sixteen is `#assert(AUDIO_BITS_PER_SAMPLE == 16)` beside the
+	// constant, and restating it here was a line that could not fail.
 	testing.expect_value(t, AUDIO_SAMPLE_FORMAT_ARGUMENT, "pcm_s16le")
-	testing.expect_value(t, AUDIO_BITS_PER_SAMPLE, 16)
 }
 
 @(test)
