@@ -404,6 +404,34 @@ a_source_nested_deeper_than_the_parser_survives_is_refused_unread :: proc(t: ^te
 	testing.expect_value(t, len(facts.procedures), 0)
 }
 
+// A closer with nothing open closes nothing, so the count has a floor at zero.
+//
+// Without one, a run of stray closers DEFLATES it: the shallowest overflow
+// measured, preceded by just enough of them to bring the peak back under the
+// bound, is counted as MAX_SOURCE_DEPTH and handed to the parser -- which is the
+// exact shape the bound exists to keep away from it, and this program does not
+// survive it. Any truncated or badly merged source is that file.
+@(test)
+stray_closing_brackets_do_not_deflate_the_count :: proc(t: ^testing.T) {
+	stray := strings.repeat(")", SHALLOWEST_OVERFLOW - MAX_SOURCE_DEPTH, context.allocator)
+	defer delete(stray, context.allocator)
+	opening := strings.repeat("(", SHALLOWEST_OVERFLOW, context.allocator)
+	defer delete(opening, context.allocator)
+	closing := strings.repeat(")", SHALLOWEST_OVERFLOW, context.allocator)
+	defer delete(closing, context.allocator)
+	built := strings.concatenate(
+		{PROBE, stray, "\nx := ", opening, "1", closing, "\n"},
+		context.allocator,
+	)
+	defer delete(built, context.allocator)
+
+	testing.expect_value(t, nesting_depth("probe.odin", built), SHALLOWEST_OVERFLOW)
+
+	facts := read_source("probe.odin", built, context.allocator)
+	defer facts_destroy(facts, context.allocator)
+	testing.expect_value(t, facts.fault, Fault.Nested_Too_Deep)
+}
+
 // The negative space of the bound (rule A3): ordinary Odin nests brackets, and a
 // reader that refused everything would satisfy the case above on its own.
 @(test)

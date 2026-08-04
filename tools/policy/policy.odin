@@ -189,6 +189,12 @@ fault_says :: proc(fault: Fault) -> string {
 // literals joined, one of them a double-quoted backtick and one a raw string
 // holding a bracket; a scan counting brackets by hand reads that bracket, and
 // every bracket in transcribed speech, as nesting.
+//
+// The count has a FLOOR at zero, because a closer with nothing open closes
+// nothing. Allowed to go negative it DEFLATES: a run of stray closers ahead of a
+// deep nest brings the peak back under the bound and hands the parser the one
+// shape the bound exists to keep away from it. Any truncated or badly merged
+// source is that file, and a source file is external input (rule A8).
 @(require_results)
 nesting_depth :: proc(name: string, src: string) -> (deepest: int) {
 	assert(len(name) > 0, "a source nobody can name is a source nothing can report")
@@ -208,11 +214,13 @@ nesting_depth :: proc(name: string, src: string) -> (deepest: int) {
 				deepest = depth
 			}
 		case .Close_Paren, .Close_Bracket, .Close_Brace:
-			depth -= 1
+			if depth > 0 {
+				depth -= 1
+			}
 		}
 	}
 
-	assert(deepest >= 0, "counted a negative depth, which is not a count of anything")
+	assert(deepest >= depth, "a run left open at the end is deeper than the deepest counted")
 	return
 }
 
