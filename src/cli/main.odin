@@ -58,9 +58,13 @@ USAGE ::
 
   transcibr-cli --transcribe <recording> --model-file <path>
                 --engine-exe <path> --cache <directory>
+                [--profile ` +
+	transcript.PROFILE_CHOICE +
+	`] [--engine-version <version>]
                 [--ffmpeg <path>] [--ffprobe <path>]
-      transcribe one recording and print the path of the engine output it
-      left in the cache. Spends GPU time.
+      transcribe one recording, write its transcript, its retained engine
+      output and its sidecar beside the recording, and print the transcript's
+      path. Spends GPU time.
 
   transcibr-cli --help
       print this and exit.
@@ -84,6 +88,29 @@ HELP :: "--help"
 USAGE_ERROR :: 2
 OPERATING_ERROR :: 1
 
+// THIS BINARY HAS ADR-0002's THIRD MEASUREMENT ITSELF, one layer up, and it is
+// recorded here because this is the line where the next person meets it.
+//
+// Odin's Windows entry point is `main :: proc "c" (argc: i32, argv: [^]cstring)`
+// -- `base/runtime/entry_windows.odin` -- so `os.args` is the C runtime's ANSI
+// argv, exactly like `whisper-cli`. A non-ASCII argument therefore reaches this
+// program already mangled: measured, `--model-file <temp>\<two CJK
+// characters>\model.bin` arrives as `<temp>\??\model.bin`, and the refusal that
+// fires is "the Model could not be read" rather than the ASCII rule, because
+// there is nothing left to see the non-ASCII byte in.
+//
+// It does NOT weaken the ASCII refusals this program makes. The scenario
+// ADR-0002 actually names is a non-ASCII Windows ACCOUNT name inside
+// %LOCALAPPDATA%, and that byte arrives from an ENVIRONMENT read rather than
+// from argv, so `open_cache` and `identify_model` see it intact and refuse it by
+// name; the window ADR-0004 promises will hand its paths over in process. What
+// it does mean is that a Recording named on this command line with a byte
+// outside ASCII is refused for the wrong reason.
+//
+// The fix is what ffmpeg does -- re-read `GetCommandLineW()` and
+// `CommandLineToArgvW` in place of `os.args` -- and it is a change to how this
+// binary starts rather than a change to any decision, so it is its own ticket
+// and not a pass on artifact placement.
 main :: proc() {
 	// Every process is started with its own name in front of whatever else it
 	// was given, so an empty argv is a broken loader rather than a bare command
