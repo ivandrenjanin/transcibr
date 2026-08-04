@@ -433,15 +433,23 @@ catches the integer default against real Engine output.
 **`core:odin/parser` carries the same unbounded recursion, and it runs out of stack an order of
 magnitude sooner.** The build reads Odin with it (ADR-0028), so this is not a hypothetical: measured
 at the pin, a debug build overflows on **62 nested parentheses** — `x := (((…1…)))` — where nested
-blocks survive 200 and nested calls 100. Parentheses are the worst case because the expression parser
-takes the most stack per level, so a single counter over `(`, `[` and `{` has to be bounded by that
-shape. The deepest file in this repository reaches 7, so `MAX_SOURCE_DEPTH :: 32` in
-`tools\policy\policy.odin` sits above everything real and below the crash — and that is all it is.
-Where the JSON limit above has a factor of ten between the bound and the crash, this one has a factor
-of two either side, so it is a guard against a pathological file rather than a proof; the residual is
-a loud crash that fails the build rather than a wrong answer. Bound the depth with the tokenizer, as
-the JSON reader does, and never with a byte scan: a scan counting brackets by hand reads the ones in
-transcribed speech.
+blocks survive 200 and nested calls 100. The deepest file in this repository reaches 7, so
+`MAX_SOURCE_DEPTH :: 32` in `tools\policy\policy.odin` sits above everything real and below the
+crash — and that is all it is. Where the JSON limit above has a factor of ten between the bound and
+the crash, this one has a factor of two either side, so it is a guard against a pathological file
+rather than a proof. Bound the depth with the tokenizer, as the JSON reader does, and never with a
+byte scan: a scan counting brackets by hand reads the ones in transcribed speech.
+
+**A bracket count bounds bracket shapes and nothing else, so the residual has to name its file.**
+62 parentheses is the shallowest *bracket* overflow, not the shallowest one. A chain of `^` in a type
+carries no bracket at all and overflows at about **eighty** carets with a counted depth of **one**;
+`+` chains and `if`/`else if` chains go at about 1600. A counter over `(`, `[` and `{` cannot be made
+to see any of them without becoming a second model of the grammar, which is the defect ADR-0028 is
+about. Nor does odinfmt cover the gap — it formats the eighty-caret file without complaint and
+survives 400 nested parentheses. So `tools\policy` writes each file's **name before it reads it**
+(`render_file`), and `Get-OdinSourceFact` reports the last name written when the tool exits non-zero.
+The residual is a crash that fails the build naming one file, rather than one that says only that
+something died somewhere in seventy-odd.
 
 **`core:odin/tokenizer` fills its keyword table behind a double-checked lock that never re-checks.**
 Two threads calling `tokenizer.init` for the first time both find `_global_keyword_lut_initialized`

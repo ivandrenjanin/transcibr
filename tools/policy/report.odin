@@ -31,13 +31,16 @@ flag :: proc(set: bool) -> string {
 	return "0"
 }
 
-// One file's facts, appended to the report being built.
+// One file's name, opening the block every record after it belongs to.
 //
-// A file with a fault renders its fault and nothing else, which is the shape
-// read_source hands back: a refused file has no facts, and a reader that saw a
-// `file` record with no `proc` records after it and no `fault` between them would
-// read a refusal as a file with no procedures in it.
-render_report :: proc(name: string, facts: Source_Facts, into: ^strings.Builder) {
+// Rendered apart from the facts because it is written BEFORE the file is read.
+// Reading one is what can still take this program down: `core:odin/parser`
+// recurses on shapes no bracket count bounds -- a chain of `^` in a type runs the
+// thread off its stack at about eighty of them, counted depth one -- and a stack
+// overflow has no error return to catch. A name already written is the whole of
+// what says which file that was. scripts\common.ps1's Get-OdinSourceFact reads
+// the last one when the tool exits non-zero.
+render_file :: proc(name: string, into: ^strings.Builder) {
 	assert(len(name) > 0, "asked to report on a file with no name")
 	assert(into != nil, "asked to render a report into nothing at all")
 	assert(
@@ -46,7 +49,19 @@ render_report :: proc(name: string, facts: Source_Facts, into: ^strings.Builder)
 	)
 
 	fmt.sbprintfln(into, "%s\t%s", RECORD_FILE, name)
+}
+
+// One file's facts, appended to the report being built.
+//
+// A file with a fault renders its fault and nothing else, which is the shape
+// read_source hands back: a refused file has no facts, and a reader that saw a
+// `file` record with no `proc` records after it and no `fault` between them would
+// read a refusal as a file with no procedures in it.
+render_facts :: proc(facts: Source_Facts, into: ^strings.Builder) {
+	assert(into != nil, "asked to render a report into nothing at all")
+
 	if facts.fault != Fault.None {
+		assert(len(facts.procedures) == 0, "a refused file was rendered with procedures in it")
 		fmt.sbprintfln(into, "%s\t%v\t%s", RECORD_FAULT, facts.fault, fault_says(facts.fault))
 		return
 	}

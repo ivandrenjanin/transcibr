@@ -1244,7 +1244,19 @@ function Get-OdinSourceFact {
 		throw "the policy tool did not finish reading $($Sources.Count) file(s) within $OdinCommandTimeoutSeconds seconds and was killed, so the source policies have nothing to check."
 	}
 	if ($run.ExitCode -ne 0) {
-		throw "the policy tool exited $($run.ExitCode) reading $($Sources.Count) file(s), so the source policies have nothing to check. Its diagnostic is on standard error, above."
+		# WHICH file it stopped on, read off the report it had already written.
+		# The tool names each file before it reads it, because reading one can
+		# still take it down: `core:odin/parser` recurses on shapes the depth
+		# bound does not count -- a chain of `^` in a type overflows the stack at
+		# about eighty of them -- and a stack overflow has no error return to
+		# catch. Without this the build said only that something died over
+		# seventy-four files, which is a bisection by hand.
+		$named = @(($run.Output -split "`r?`n") | Where-Object { $_ -like "file`t*" })
+		$reached = 'It named no file before it stopped.'
+		if ($named.Count -gt 0) {
+			$reached = "It stopped on $($named[-1].Substring('file'.Length + 1))."
+		}
+		throw "the policy tool exited $($run.ExitCode) reading $($Sources.Count) file(s), so the source policies have nothing to check. $reached Its diagnostic is on standard error, above."
 	}
 	return Read-OdinPolicyReport -Report $run.Output -Sources $Sources
 }

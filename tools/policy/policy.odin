@@ -101,10 +101,15 @@ ANONYMOUS :: "<literal>"
 // be reasonable.
 //
 // The overflow is 62 nested parentheses in a debug build -- `x := (((...1...)))`
-// -- which is the shallowest of the shapes measured: nested blocks survive 200
-// and nested calls 100. Parentheses are the worst case because the expression
-// parser takes the most stack per level, so a single counter over `(`, `[` and
-// `{` has to be bounded by that shape.
+// -- which is the shallowest BRACKET shape measured: nested blocks survive 200
+// and nested calls 100.
+//
+// It is not the worst shape the parser has, and this counter does not claim to
+// bound one. A chain of `^` in a type carries no bracket at all and overflows at
+// about eighty of them, counted depth ONE; `+` chains and `if`/`else if` chains
+// go at about 1600. What covers those is render_file, which names a file before
+// reading it: the residual is a crash that says which file, never a silent wrong
+// answer and never an anonymous death over a tree of seventy-odd.
 DEEPEST_IN_TREE :: 7
 SHALLOWEST_OVERFLOW :: 62
 
@@ -122,10 +127,13 @@ SHALLOWEST_OVERFLOW :: 62
 // a bound comfortably above every file in this repository and comfortably below
 // the overflow -- a guard against the pathological file, not a proof.
 //
-// The residual is loud rather than silent, which is what makes it acceptable: a
-// file that overflowed the stack anyway kills this program, and a policy tool
-// that died is a build that failed. odinfmt reads its input with this same parser
-// and would go down on the same file first.
+// The residual is loud rather than silent, and NAMED, which is what makes it
+// acceptable: a file that overflows the stack anyway kills this program, a policy
+// tool that died is a build that failed, and the file it was reading has already
+// been written out. What is NOT true of it is that odinfmt would go down on the
+// same file first -- measured at the pin, odinfmt formats the eighty-caret file
+// without complaint and survives 400 nested parentheses, where this overflows at
+// 62.
 MAX_SOURCE_DEPTH :: 32
 
 #assert(MAX_SOURCE_DEPTH > DEEPEST_IN_TREE)

@@ -13,7 +13,8 @@ import "core:testing"
 @(require_results)
 rendered :: proc(name: string, facts: Source_Facts, allocator: mem.Allocator) -> string {
 	into := strings.builder_make(allocator)
-	render_report(name, facts, &into)
+	render_file(name, &into)
+	render_facts(facts, &into)
 	return strings.to_string(into)
 }
 

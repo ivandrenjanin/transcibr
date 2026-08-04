@@ -40,25 +40,24 @@ main :: proc() {
 	}
 	defer delete(request, context.allocator)
 
-	report := strings.builder_make(context.allocator)
-	defer strings.builder_destroy(&report)
-
-	read := report_each(string(request), &report)
+	read := report_each(string(request), context.allocator)
 	if read == 0 {
 		fmt.eprintfln("the request file %s names no file at all", os.args[1])
 		os.exit(REQUEST_ERROR)
 	}
-
-	fmt.print(strings.to_string(report))
 }
 
-// Every path the request names, reported in the order it names them. How many
-// were read comes back so that a request naming nothing is refused rather than
+// Every path the request names, reported in the order it names them, and each
+// one WRITTEN as it is finished rather than accumulated for the end.
+//
+// Accumulated, a report is lost with the program that holds it, and reading a
+// file is what can still take this one down (see render_file). Written as it
+// goes, what arrived before the crash is what says how far it got. How many were
+// read comes back so that a request naming nothing is refused rather than
 // answered with an empty report, which reads as a tree with nothing in it.
 @(require_results)
-report_each :: proc(request: string, into: ^strings.Builder) -> (read: int) {
-	assert(into != nil, "asked to report into nothing at all")
-	assert(len(request) >= 0, "a request that is not even an empty string is not a request")
+report_each :: proc(request: string, allocator: mem.Allocator) -> (read: int) {
+	assert(allocator.procedure != nil, "a report is built per file and needs a chosen allocator")
 
 	rest := request
 	for line in strings.split_lines_iterator(&rest) {
@@ -66,29 +65,40 @@ report_each :: proc(request: string, into: ^strings.Builder) -> (read: int) {
 		if len(path) == 0 {
 			continue
 		}
-		report_one(path, into, context.allocator)
+		report_one(path, allocator)
 		read += 1
 	}
 
-	assert(read >= 0, "counted a negative number of files, which is not a count of anything")
 	return
 }
 
-// One file, read and reported. A file that cannot be read at all is reported as
-// that fault rather than skipped: a check that quietly covers one file fewer than
-// it was asked to reports the same green as one that covered them all.
-report_one :: proc(path: string, into: ^strings.Builder, allocator: mem.Allocator) {
+// One file, NAMED and then read. The name goes out first and on its own, so a
+// read this program does not survive still says which file it was reading.
+//
+// A file that cannot be read at all is reported as that fault rather than
+// skipped: a check that quietly covers one file fewer than it was asked to
+// reports the same green as one that covered them all.
+report_one :: proc(path: string, allocator: mem.Allocator) {
 	assert(len(path) > 0, "asked to read a file with no name")
-	assert(into != nil, "asked to report into nothing at all")
+	assert(allocator.procedure != nil, "a report is built here and needs a chosen allocator")
+
+	report := strings.builder_make(allocator)
+	defer strings.builder_destroy(&report)
+
+	render_file(path, &report)
+	fmt.print(strings.to_string(report))
+	strings.builder_reset(&report)
 
 	src, read_error := os.read_entire_file(path, allocator)
 	if read_error != nil {
-		render_report(path, Source_Facts{fault = .Unreadable}, into)
+		render_facts(Source_Facts{fault = .Unreadable}, &report)
+		fmt.print(strings.to_string(report))
 		return
 	}
 	defer delete(src, allocator)
 
 	facts := read_source(path, string(src), allocator)
 	defer facts_destroy(facts, allocator)
-	render_report(path, facts, into)
+	render_facts(facts, &report)
+	fmt.print(strings.to_string(report))
 }

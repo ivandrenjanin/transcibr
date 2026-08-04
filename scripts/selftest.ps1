@@ -74,7 +74,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 60
+$ExpectedCaseCount = 61
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -1215,6 +1215,47 @@ Test-Case 'a source the policy tool cannot read fails the check rather than pass
 	}
 	if ($accepted -ne '') {
 		throw "the same file, closed, was refused: $accepted"
+	}
+}
+
+Test-Case 'a source the reader does not survive is named, not counted' {
+	# The depth bound is a bound on BRACKETS, and `core:odin/parser` recurses on
+	# shapes that carry none. A chain of `^` in a type runs the thread off its
+	# stack at about eighty of them with a counted depth of ONE, and a stack
+	# overflow has no error return to catch: the tool dies where it stands.
+	#
+	# What must not happen is what did. The build said the tool "exited
+	# -1073741571 reading 74 file(s)" and named none of them, over a file 124
+	# bytes long that odinfmt formats without complaint. So the tool writes each
+	# file's NAME before it reads it, and the refusal here reports the last name
+	# it wrote -- the residual is a crash, but never an anonymous one.
+	#
+	# Asked of the policy rather than of the build command, for the reason the
+	# case above is: build.ps1 checks formatting first, and this fixture has no
+	# business depending on what odinfmt makes of two hundred carets.
+	$repo = New-FixtureRepo 'policy-fatal-source'
+	$package = Join-Path (Join-Path $repo 'src') 'deep'
+	New-Item -ItemType Directory -Path $package -Force | Out-Null
+	$carets = '^' * 200
+	Write-FixtureSource -Path (Join-Path $package 'deep.odin') -Text "$FixtureVetTags`npackage deep`n`nheld :: proc(a: $carets`int) {`n`t_ = a`n}`n"
+
+	$refused = & {
+		$RepoRoot = $repo
+		try {
+			Assert-OdinCommentPolicy
+			''
+		}
+		catch {
+			$_.Exception.Message
+		}
+	}
+	if ($refused -eq '') {
+		throw 'the reader survived two hundred carets, so this case measures nothing at the pin it was measured against. Re-measure the shape and the count.'
+	}
+	foreach ($claim in @('src.deep.deep\.odin', 'policy tool')) {
+		if ($refused -notmatch $claim) {
+			throw "the refusal did not name /$claim/: $refused"
+		}
 	}
 }
 
