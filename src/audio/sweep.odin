@@ -66,6 +66,11 @@ DEFAULT_SWEEP_LIMITS :: Sweep_Limits {
 	spare_age_ns = i64(60 * 60) * 1_000_000_000,
 }
 
+// The one relationship between the three that has to hold, held by the COMPILER
+// (A5). sweep_choice asserts it of whatever limits it is handed; this asserts it
+// of the shipped ones, at the definition, before a test runs.
+#assert(DEFAULT_SWEEP_LIMITS.spare_age_ns < DEFAULT_SWEEP_LIMITS.max_age_ns)
+
 // Which of the cache's contents the sweep may take, as indices into `entries`,
 // ascending.
 //
@@ -99,8 +104,8 @@ sweep_choice :: proc(
 	}
 
 	chosen := make([dynamic]int, 0, len(entries), allocator)
-	for aged in order {
-		entry := entries[aged.index]
+	for index in order {
+		entry := entries[index]
 		// THE FLOOR, checked before either ceiling and never after. Both
 		// ceilings below are reasons to delete; this is the one rule that says
 		// no, and a rule that only applies where nothing else already decided
@@ -109,7 +114,7 @@ sweep_choice :: proc(
 			continue
 		}
 		if entry.age_ns > limits.max_age_ns || total > limits.max_bytes {
-			append(&chosen, aged.index)
+			append(&chosen, index)
 			total -= entry.bytes
 		}
 	}
@@ -118,50 +123,51 @@ sweep_choice :: proc(
 	// happened to reach the entries in -- the caller deletes them, and a
 	// deletion order nobody chose is a deletion order nobody can reproduce.
 	slice.sort(chosen[:])
+	// Shrunk to what was actually chosen, so the slice handed back is the whole
+	// of its own allocation. `delete` frees `len` items, and this was made at
+	// `cap` -- harmless under Odin's heap allocator, and wrong the day ADR-0010
+	// gives a worker a size-classed allocator of its own.
+	shrink(&chosen)
 	assert(len(chosen) <= len(entries), "the sweep chose more files than the cache holds")
 	return chosen[:]
 }
 
-// One entry's age beside where it sits in the caller's listing.
-//
-// The age is carried rather than looked up because `slice.sort_by` takes a
-// CAPTURELESS comparator: a comparator over bare indices could not reach the
-// entries to compare them, and would silently sort by index instead -- which is
-// a sweep that takes files in the order the filesystem happened to list them.
-@(private)
-Aged :: struct {
-	index:  int,
-	age_ns: i64,
-}
-
 // The entries, oldest first, as indices into the caller's own listing.
 //
-// A separate array rather than sorting that listing: the answer is indices INTO
-// it, and reordering it underneath the caller would make every one of them name
-// a different file.
+// Indices and not a second array of ages: `slice.sort_by_with_data` takes the
+// `user_data: rawptr` that lets a captureless comparator reach the entries it is
+// ordering, so nothing has to be copied out beside the index to be compared.
+//
+// `slice.sort_by_with_indices` looks like the exact fit and is not: it finishes
+// by calling `sort_from_permutation_indices` on the data, which reorders the
+// caller's own listing -- and the answer here is indices INTO that listing, so
+// every one of them would then name a different file.
 @(private)
-oldest_first :: proc(entries: []Cache_Entry, allocator: mem.Allocator) -> []Aged {
+oldest_first :: proc(entries: []Cache_Entry, allocator: mem.Allocator) -> []int {
 	assert(allocator.procedure != nil, "the order outlives this procedure and needs an allocator")
 
-	order := make([]Aged, len(entries), allocator)
-	for &aged, at in order {
-		aged = Aged {
-			index  = at,
-			age_ns = entries[at].age_ns,
-		}
+	order := make([]int, len(entries), allocator)
+	for &index, at in order {
+		index = at
 	}
-	slice.sort_by(
+
+	// A local, because the comparator needs its address and a parameter is
+	// immutable.
+	listing := entries
+	slice.sort_by_with_data(
 		order,
-		proc(left: Aged, right: Aged) -> bool {
-			if left.age_ns != right.age_ns {
-				return left.age_ns > right.age_ns
+		proc(left: int, right: int, listing: rawptr) -> bool {
+			entries := (^[]Cache_Entry)(listing)^
+			if entries[left].age_ns != entries[right].age_ns {
+				return entries[left].age_ns > entries[right].age_ns
 			}
 			// The tie broken by position, so two files of the same age are always
-			// taken in the same order. slice.sort_by is not stable, and a sweep
-			// whose answer depends on where the sort happened to leave a tie is one
-			// nobody can reproduce.
-			return left.index < right.index
+			// taken in the same order. The sort is not stable, and a sweep whose
+			// answer depends on where it happened to leave a tie is one nobody can
+			// reproduce.
+			return left < right
 		},
+		&listing,
 	)
 	return order
 }
