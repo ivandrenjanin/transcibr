@@ -482,31 +482,6 @@ function Assert-Result {
 	}
 }
 
-# One .odin file planted where the policy tool can be pointed at it, and the facts
-# it reads back out of it.
-#
-# The cases that check what the READER makes of one shape or another are in
-# tools\policy's own test files now, where the fixture is a string literal and
-# there is no repository to plant. What is left here is what those cannot reach:
-# the tool as the build actually runs it, over a file on a disk.
-function Get-OdinFactFor {
-	param(
-		[Parameter(Mandatory)] [string] $RepoRoot,
-		[Parameter(Mandatory)] [AllowEmptyString()] [string] $Text
-	)
-
-	$package = Join-Path (Join-Path $RepoRoot 'src') 'probe'
-	New-Item -ItemType Directory -Path $package -Force | Out-Null
-	$path = Join-Path $package 'probe.odin'
-	Write-FixtureSource -Path $path -Text $Text
-
-	$facts = @(Get-OdinSourceFact -Sources @([pscustomobject]@{ Path = $path; Name = 'src/probe/probe.odin' }))
-	if ($facts.Count -ne 1) {
-		throw "the policy tool answered about $($facts.Count) file(s) when asked about one."
-	}
-	return $facts[0]
-}
-
 # The .odin files a case reads, refused when discovery finds none.
 #
 # Five cases below open by asking for them, and every one of them is worthless
