@@ -2,6 +2,7 @@ package engine
 
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import win32 "core:sys/windows"
 import "core:testing"
 import "transcibr:child"
@@ -160,6 +161,27 @@ stand_in :: proc(t: ^testing.T, cache: string, tag: string, body: string) -> str
 		t,
 		os.write_entire_file(path, transmute([]u8)script) == nil,
 		"could not write the stand-in Engine",
+	)
+	return path
+}
+
+// A file of many unreadable lines, for the case whose stand-in floods the
+// diagnostic stream. The caller frees the path; remove_cache takes the file.
+@(private)
+flood_file :: proc(t: ^testing.T, cache: string, tag: string, bytes: int) -> string {
+	assert(bytes > 0, "a flood of nothing at all floods nothing")
+
+	path := fmt.aprintf("%s\\flood-%s.txt", cache, tag, allocator = context.allocator)
+	written := strings.builder_make(context.allocator)
+	defer strings.builder_destroy(&written)
+	for strings.builder_len(written) < bytes {
+		strings.write_string(&written, "whisper: a line this reader has no reading for\r\n")
+	}
+
+	testing.expect(
+		t,
+		os.write_entire_file(path, written.buf[:]) == nil,
+		"could not write the flood the stand-in types",
 	)
 	return path
 }
@@ -488,6 +510,46 @@ an_engine_that_outlives_its_bound_is_stopped_and_told_apart_from_a_silent_one ::
 	// A tenth of a second of audio, so the bound handed in is above the
 	// Recording's own length -- which is what transcribe_bound_ms requires of any
 	// bound, and what silent_after_ms keys the watchdog's floor on.
+	tools, job := job_in(cache, executable, 100)
+	produced, err := transcribe(&group, tools, job, Report{}, context.allocator, EXPIRING_LIMITS)
+	defer delete(produced.output, context.allocator)
+
+	testing.expect_value(t, err.fault, Fault.Did_Not_Finish)
+}
+
+@(test)
+an_engine_that_floods_its_diagnostic_stream_is_still_stopped_at_its_bound :: proc(t: ^testing.T) {
+	// The drain is the one loop inside a bounded run that could refuse to end.
+	// While it runs, neither the watchdog nor the run bound is looked at -- so an
+	// Engine that entered a diagnostic loop was an Engine nothing stopped, which is
+	// the wedge issue #27 and the bound both exist to prevent, arriving on the one
+	// stream this program can see.
+	//
+	// A megabyte off the pipe, then a child that outlives its bound. What this
+	// requires is that the flood is drained AND the bound is still honoured, which
+	// is what the ceiling on one drain buys.
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	cache := scratch_cache(t, "flood")
+	defer delete(cache, context.allocator)
+	defer remove_cache(cache)
+
+	flood := flood_file(t, cache, "flood", 1 << 20)
+	defer delete(flood, context.allocator)
+	name := lonely_signal("flood")
+	defer delete(name, context.allocator)
+	executable := stand_in(
+		t,
+		cache,
+		"flood",
+		fmt.tprintf(">&2 type \"%s\"\r\nwaitfor /t %d %s", flood, LONGER_SECONDS, name),
+	)
+	defer delete(executable, context.allocator)
+
 	tools, job := job_in(cache, executable, 100)
 	produced, err := transcribe(&group, tools, job, Report{}, context.allocator, EXPIRING_LIMITS)
 	defer delete(produced.output, context.allocator)

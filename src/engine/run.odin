@@ -29,6 +29,23 @@ POLL_MS :: u32(250)
 @(private)
 DRAIN_BYTES :: 4096
 
+// And how much ONE DRAIN may take in total before its caller is let back in.
+//
+// The ceiling that keeps the poll loop's own two bounds reachable: while a drain
+// runs, neither the watchdog nor the run bound is checked, so a drain that never
+// returned would be an Engine nothing ever stops. See `drain`.
+//
+// A MEGABYTE, which is sixteen times the 64 KiB pipe and four megabytes a second
+// at four polls -- so a healthy Engine, which writes a few kilobytes over a whole
+// Recording (ADR-0004), never reaches it, and one flooding the stream is drained
+// far faster than it can be filled. A child that somehow writes faster than that
+// blocks on its own pipe, which is throttling and not the wedge ADR-0004
+// measured: the pipe is still being emptied every quarter of a second.
+@(private)
+MAX_DRAIN_BYTES :: 1 << 20
+
+#assert(MAX_DRAIN_BYTES > DRAIN_BYTES)
+
 // How one bounded run of the Engine ended.
 @(private)
 Run :: enum u8 {
@@ -293,6 +310,17 @@ stopped :: proc(c: ^child.Child, silent: bool, duration_ms: i64) -> Ending {
 // of them read as a line: the watchdog's question is whether the child is alive,
 // and an Engine writing its model-load log is alive whether or not this program
 // understands a word of it (ADR-0012).
+//
+// BOUNDED, and it was THE ONE UNBOUNDED LOOP IN A BOUNDED RUN. It used to stop
+// only on a pipe error, on end of stream, or on a pipe that happened to be empty
+// when it was asked -- and while it ran, neither the watchdog nor the run bound
+// in the poll loop above was reached. An Engine that entered a diagnostic loop
+// would therefore never be stopped at all: the wedge that holds a Batch for ever
+// (issue #27) and holds the one GPU worker with it (ADR-0006), arriving on the
+// one stream this program can actually see. What stops it is a ceiling on how
+// much one drain may take before its caller is let back in to look at its
+// bounds; whatever is left stays in the pipe for the next poll, a quarter of a
+// second later.
 @(private)
 drain :: proc(
 	c: ^child.Child,
@@ -307,7 +335,8 @@ drain :: proc(
 	assert(reader != nil, "there is nowhere to assemble the child's lines")
 
 	buffer: [DRAIN_BYTES]u8 = ---
-	for {
+	taken := 0
+	for taken < MAX_DRAIN_BYTES {
 		read, at_end, reading := child.read_diagnostics(c, buffer[:])
 		if reading.fault != .None {
 			return false
@@ -315,6 +344,7 @@ drain :: proc(
 		if read > 0 {
 			assert(read <= len(buffer), "the pipe wrote past the end of the buffer it was given")
 			took(tracker, reader, string(buffer[:read]), elapsed_ns(started))
+			taken += read
 		}
 		if at_end {
 			// Whatever the Engine wrote with no newline behind it is still what
@@ -328,6 +358,11 @@ drain :: proc(
 			return true
 		}
 	}
+	// The ceiling, and not end of stream: whatever is still in the pipe is read by
+	// the next poll. Nothing is dropped and nothing is at an end, so the caller is
+	// told the pipe is readable -- which it is.
+	assert(taken >= MAX_DRAIN_BYTES, "a drain left its loop with room to spare")
+	return true
 }
 
 // One chunk off the pipe, as bytes the watchdog counts and lines the display
