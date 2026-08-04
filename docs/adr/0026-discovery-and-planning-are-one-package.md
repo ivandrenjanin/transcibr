@@ -11,24 +11,39 @@ cancellation costs when there is no window yet.
 
 ## Why discovery is not a package of its own
 
-Discovery exists **for** planning and for nothing else, exactly as the probe exists for the
-extraction. It produces one value — a finished inventory — that one procedure consumes, and it
-carries the refusals that stop a Recording being planned at all: a directory that cannot be listed,
-a Markdown file transcibr did not write, an output directory nothing can be written into.
+**This argued itself out of ADR-0018 and that was the wrong argument.** ADR-0018 merged two *shell*
+modules the spec lists with a comma between them, neither of which has a named seam of its own. None
+of that is true here. The spec makes *Planning* a **core** module that "takes a finished inventory",
+and seam S2 is "**Inventory and settings in**, plan with reasons out" — so discovery is outside that
+seam by the seam's own wording, and the seam this ADR claimed would be split by a package boundary
+is one it invented for the occasion. The "third package that turns out to hold half of one of them"
+does not apply either: `Found` living in `src/planning` and being filled by `src/discovery` is the
+ordinary shell-imports-core direction ADR-0009 prescribes, not a third package. The outcome stands;
+the argument it stood on did not, and here is the one it actually stands on.
 
-Split into `src/discovery/` and `src/planning/`, the `Found` record would have to live in one and be
-built by the other, which is the "third package that turns out to hold half of one of them"
-ADR-0017 names. Odin also collects tests per package, so the one seam over "point transcibr at a
-folder and see what it will do" would become two sweeps that pass and fail independently.
+**A package for one procedure costs more than it separates.** Discovery is `walk.odin`: one exported
+procedure, one destroy, and the record it fills. It has exactly one consumer, produces exactly one
+value, and — unlike the probe in ADR-0018 — carries no decision a caller can vary. A directory, an
+import in every consumer, a row in `test.ps1`'s per-package accounting and a `$OdinPackagesWithoutTests`
+question, for a file.
 
-`src/audio` is the precedent and this is the same shape: the file split is what keeps the halves
-apart. `plan.odin`, `batch.odin`, `report.odin` and `transcript.odin` are pure and carry the suite;
-`walk.odin` touches the disk. A decision that turns up in `walk.odin` belongs in one of the four
-beside it — that is ADR-0018's rule, and nothing enforces it here either.
+**The cases that prove the criteria span both halves and cannot be split with them.** Criterion two
+is not `decide` in isolation: `access_test.odin` builds a real directory nothing may be written to,
+walks it, and asks `decide` what that Recording gets. The reparse-point cases do the same. Under a
+split those cases live in `src/discovery` — legally, importing `transcibr:planning` — and the sweep
+reports the criteria of the *Planning* module under the name of a package that is not it.
 
-The difference from `src/audio` is which way round the naming went. There, two shell modules were
-named for the pair. Here a **core** module's name hosts a shell one, because `Planning` is the name
-ADR-0017 already fixed and `discovery` is the thing that feeds it.
+**What the merge costs, and it is not nothing.** ADR-0018's own remedy for a package whose name
+describes half its contents is *name it for the pair*, and that is not applied here: `planning` is
+the core module's name, and it does not cover walking a tree. It is not applied because there is no
+pair to name — `CONTEXT.md` has no heading over discovery and planning the way *Turning a recording
+into audio* stands over Probe and Scratch cache, and inventing one to justify a directory layout is
+vocabulary driven by a build system. So the defect ADR-0017 names is accepted, knowingly, and the
+thing that reopens it is `CONTEXT.md` growing a heading that does cover both.
+
+What keeps the halves apart is the file split, exactly as in `src/audio`: `plan.odin`, `batch.odin`
+and `report.odin` are pure and carry the suite; `walk.odin` touches the disk. A decision that turns
+up in `walk.odin` belongs in one of the three beside it — and nothing enforces that here either.
 
 ## A Transcript is transcibr's because of its own bytes, and the Sidecar never says so
 
@@ -50,11 +65,22 @@ Transcript somewhere in its body carries the same bytes, and only a file that OP
 written by this program. The marker stops at the space `version.banner` writes before the number, so
 a Transcript an OLDER transcibr wrote is still transcibr's.
 
-The marker is a claim about what `transcibr:transcript` writes, and that is the part that could rot.
-What holds it is `what_the_renderer_actually_writes_is_what_this_package_recognises`, which renders a
-real Transcript through `transcript.render_markdown` and asks the predicate about it. A renderer that
-moved the generator field turns that case red rather than turning every Transcript on disk into a
-stranger — which would silently refuse every Recording in a corpus.
+**The predicate belongs to the package that WRITES the bytes**, and `src/planning` asks it rather
+than answering. It was spelled out here first, which re-typed five facts owned next door — the fence,
+the field key, the generator name, the space, and the order the fields are written in — three of them
+because `FENCE` and `GENERATOR` are private in `transcibr:transcript`. `TRANSCRIPT_PREFIX` is now
+built from those constants beside the writer that uses them, so the coupling is structural.
+
+What is left rotting is the field ORDER, which no constant can capture: a renderer that put `source`
+first would still compile against the same three constants and recognise nothing. That is what
+`what_the_renderer_actually_writes_is_what_this_package_recognises` holds — it renders a real
+Transcript through `render_markdown` and asks the predicate about it, and it lives beside the
+renderer it is about. Red there rather than every Transcript on disk becoming a stranger, which would
+silently refuse every Recording in a corpus.
+
+`src/planning` keeps only `TRANSCRIPT_HEAD_BYTES`, which is its own policy — how much of a megabyte
+file to read to answer a question about its first line — with a `#assert` across the two packages
+that the head is long enough to carry the answer.
 
 ## `core:os` cannot answer "is this a reparse point", and the type is the wrong question
 
@@ -68,27 +94,57 @@ if is_sym {
     type = .Directory
 ```
 
-A directory carrying **any other** reparse tag — a cloud-files placeholder, an AppExecLink, a WCI or
-DFS link — is not `.Symlink` and is not `.Undetermined`. It is a plain **`.Directory`**. A walk that
-refused `.Symlink` and descended into `.Directory` would follow every one of them, which is the
-narrowing ADR-0023 already recorded for the sweep, arriving a second time with the polarity reversed.
+A directory carrying **any other** reparse tag — a cloud-files placeholder, a WCI or DFS link — is
+not `.Symlink` and is not `.Undetermined`. It is a plain **`.Directory`**. A walk that refused
+`.Symlink` and descended into `.Directory` would follow every one of them, which is the narrowing
+ADR-0023 already recorded for the sweep, arriving a second time with the polarity reversed. (An
+AppExecLink is *not* an example of this: ADR-0023 measured 39 of them and they are non-directory
+reparse points, "neither symlink nor junction nor directory". This ADR listed them under directories
+and was wrong about it.)
 
-So the walk asks `GetFileAttributesW` for `FILE_ATTRIBUTE_REPARSE_POINT` directly, and the answer
-does not depend on `File_Type` at all. One rule, applied to directories and to files alike: a reparse
-point is not followed, it is **reported**, and `follow_reparse_points` is the whole of what turns it
-on.
+`File_Type` is equally unable to answer the question in the other direction: a junction reads
+`.Symlink` whether it stands for a directory or a file. So the walk asks `GetFileAttributesW` for
+`FILE_ATTRIBUTE_DIRECTORY` and `FILE_ATTRIBUTE_REPARSE_POINT` together, in one call, and does not
+depend on `File_Type` for either. What `File_Type` *is* trusted for is ruling the question **out**: a
+directory is never `.Regular` or `.Undetermined`, because `_file_type_mode_from_file_attributes`
+tests `FILE_ATTRIBUTE_DIRECTORY` before it ever opens a handle — so the files that make up most of a
+tree cost no Win32 call at all.
+
+**The rule is about TRAVERSAL and about nothing else.** This once said "one rule, applied to
+directories and to files alike", and that sentence produced two bugs.
+
+A reparse point is a directory this walk does not go **through**: it is reported, not descended into,
+and `follow_reparse_points` is the whole of what turns it on. A **file** has nothing to go through.
+Refusing one on the strength of its tag dropped it from the inventory — and because
+`Reparse_Point_Not_Followed` is the one note that leaves the inventory whole, the run reported
+success over a plan missing a Recording. Every OneDrive Files-On-Demand dehydrated file carries
+`FILE_ATTRIBUTE_REPARSE_POINT`, so a corpus in OneDrive planned as **empty** with exit zero: ADR-0009's
+silently short file list, reached through this program's own opt-out. `a_candidate` therefore never
+asks about the tag, and its table walks every `File_Type` a listing can produce.
+
+The other bug ran the opposite way. `follow_reparse_points = yes` skipped the attribute check
+entirely, so a junction — `.Symlink`, not `.Directory` — fell past the descend branch and out of the
+walk with **no note at all**. Turning the flag on was strictly less safe than leaving it off, because
+the default at least reports the skip. The check now always runs and only the *disposition* varies.
 
 `.Undetermined` goes the other way here than it does in the sweep, and for ADR-0023's own reason. A
 non-directory whose handle will not open reads `.Undetermined` — which is what an ordinary file
 another process holds open looks like from outside, and a Recording still being written by a camera
 is exactly that file. Its size and modification time come from the directory entry and are as good as
-a `.Regular` entry's, so it is still a candidate Recording. What it is never allowed to do is be
-**descended into**: only `.Directory` is, and only after the attribute says it is not a reparse point.
+a `.Regular` entry's, so it is still a candidate Recording.
 
 **What no case here reaches** is the exotic tag itself. A junction is `IO_REPARSE_TAG_MOUNT_POINT`,
-which `core:os` does classify, so `a_reparse_point_is_not_followed_by_default_and_is_reported` proves
-the criterion and not the measurement above it. Creating a cloud-files placeholder from a test is not
-possible; the code is written so the distinction cannot matter, and that is the whole of the defence.
+which `core:os` does classify; creating a cloud-files placeholder from a test is not possible, and a
+FILE symbolic link needs Developer Mode or elevation, so `a_recording_that_is_itself_a_reparse_point_-`
+`is_planned_and_never_skipped` stops rather than fails where machine policy refuses one. What holds
+the rule on every machine is the pure table over `a_candidate`, which needs no privilege at all —
+because the code is written so the tag cannot matter to a file, and that is the whole of the defence.
+
+**A junction as a ROOT proves nothing about a junction in a tree.** `a_walk_told_to_follow_reparse_-`
+`points_walks_through_one` passes the link as a root, where `enumerable` asks `os.is_dir`, which
+resolves it, and `took` never runs. That case read as proof of the criterion and exercised a
+different path from the one users hit; the one beside it now walks a junction found inside a
+sub-directory.
 
 ## The container's duration is copied out of the record, never probed to plan
 
@@ -128,7 +184,7 @@ can leave the inventory short of the tree, and only one of them is what the call
 
 | note | inventory whole? |
 |---|---|
-| `Reparse_Point_Not_Followed` | yes — this is the default the caller chose |
+| `Reparse_Point_Not_Followed` | yes — this is a DIRECTORY the caller chose not to enter |
 | `Root_Unreadable` | no |
 | `Directory_Unreadable` | no |
 | `Too_Deep` | no |
@@ -138,12 +194,40 @@ decides. The dry run exits non-zero for any of the three, and it was written bec
 **did not**: a root that could not be walked printed one report line and exited zero, which is the
 failure above with a message attached to it.
 
+The first row is why a reparse-point **file** must never leave a note (above): the exemption is
+correct for a directory nobody entered and wrong for a Recording, and the two were one code path.
+
+**It answers `Maybe(Walk_Note)` and not a bare `Note`.** A walk that was *cancelled* leaves no note
+behind — there is nothing to name — and an enumeration with no absent value answered its own zero
+member, so a stopped walk reported `Root_Unreadable` against a root it had been reading perfectly
+well. Latent only while nothing sets the flag, and reachable the moment issue #16 drives the seam
+this package exists to provide.
+
+**`plan_batch` takes the whole `Inventory` and not its `found` alone**, and refuses the plan itself
+when the walk did not finish. Handed the slice, it *structurally* could not see `cancelled` or the
+notes, so the one rule stopping a Batch running over a short file list lived entirely in caller
+discipline — and the only caller that asks is `src/cli`, the package nothing can turn red.
+
+The sentence a caller prints is `incomplete_line`, in `report.odin` with the others and for the
+reason that file gives. The CLI printed the note with `%v`, so a cancelled walk read
+"this walk did not see the whole tree (Root_Unreadable)" — an enumeration member, in front of a user,
+naming a fault that had not happened.
+
 ## The accepted costs
 
-**The walk writes a file into every directory it looks at.** Writability cannot be answered on
-Windows without trying, so `directory_writable` creates a pid-qualified probe, closes it and removes
-it. Once per DIRECTORY and never per Recording. A Batch pointed at a read-only tree therefore
-attempts one create per directory and fails them all, which is the answer it wanted.
+**The walk writes a file into every directory that holds a Recording.** Writability cannot be
+answered on Windows without trying, so `directory_writable` creates a pid-qualified probe, closes it
+and removes it. Once per DIRECTORY and never per Recording — and only where the listing in hand holds
+a Recording at all, which in an archive is a minority of the directories walked. The scan that
+answers that is the same pure extension test `took` will apply, so the probe is paid for exactly
+where the answer is read.
+
+**The answer is consulted against the DECISION and not ahead of it.** Checked first, a Recording with
+a matching Transcript and matching recorded settings in a read-only directory came back
+`Refuse (Directory_Not_Writable)` — so a read-only archive of finished work reported every Recording
+in it as refused. Criteria two and eight are in tension and this is the resolution: nothing is
+written for a Skip, so nothing needs to be writable for one. Criterion eight is about not spending
+GPU time producing output that cannot be published, and a Skip spends none.
 
 **Injectivity is folded ASCII-and-Unicode-lowercase, not the filesystem's own comparison.** NTFS
 compares case-insensitively against an internal uppercase table that moves with the Windows version;
@@ -164,13 +248,22 @@ name.
 
 **`MAX_WALK_DEPTH` is 64 and is a judgement.** Nothing was measured. The walk keeps its own frontier
 rather than recursing, so this is not standing between a tree and a stack overflow the way
-`MAX_JSON_DEPTH` is; it bounds a pathological tree, and a cycle would need a directory hard link NTFS
-does not permit plus a reparse point this walk does not follow.
+`MAX_JSON_DEPTH` is. By default it bounds a pathological tree and nothing else — a cycle would need a
+directory hard link NTFS does not permit plus a reparse point this walk does not follow. With
+`follow_reparse_points` turned **on** it is the only thing bounding a cycle at all: a junction may
+point back up its own tree, and the walk will go round it until the depth runs out. That is the cost
+of the flag and it is why the ceiling is not a candidate for removal.
 
 ## What reopens this
 
 A Recording arriving in a container not in `RECORDING_SUFFIXES` is the list being wrong, not the rule
 — the alternative, probing every file in the tree, is an ffprobe per README and was never on.
+
+**`.ts` was in that list and is not any more, and that is the rule bending once.** It is MPEG
+transport stream and it is also TypeScript, and an extension is all this test has: a dry run pointed
+at a source checkout planned a Transcript for every file in it. `.m2ts` and `.mts` are the same
+container under names nothing else uses, so a transport stream is still found under either. A user
+whose Recordings really are `.ts` is the case this costs, and it reopens the list.
 
 A second consumer of the inventory reopens whether `Found` should carry `audio.Reading` outright: it
 holds the size and modification time already, and only `taken_ns` is missing, which is the reading
