@@ -69,11 +69,17 @@ QUARANTINE_SUFFIX :: ".bad"
 // wrong way round -- and so that the one thing ADR-0008 requires of the set,
 // that they all come from one stem, is visible at the type rather than asserted
 // at three call sites.
-Names :: struct {
-	transcript:    string,
-	engine_output: string,
-	sidecar:       string,
-}
+//
+// AN ENUMERATED ARRAY OVER `Artifact` AND NOT A STRUCT OF THREE FIELDS, which is
+// the same argument the KEY table one file over makes about the Sidecar's own
+// fields. As a struct these were two parallel three-member vocabularies paired
+// by hand: a fourth artifact meant adding a member to `Artifact` and a field
+// here and remembering that both were needed, and `publish` was handed a path
+// and separately told which artifact that path was. As an array a member added
+// to `Artifact` makes this grow with it and makes names_of's literal a compile
+// error until it says what the new one is called, and `names[which]` is the
+// pairing rather than a convention.
+Names :: distinct [Artifact]string
 
 // What one Recording's artifacts are called, or nothing where its path names no
 // file to make artifacts from.
@@ -96,7 +102,7 @@ names_of :: proc(source: string, allocator: mem.Allocator) -> (names: Names, ok:
 	// all three are one stem plus a suffix, so it is a claim about the three
 	// SUFFIXES and the compiler settles it beside their definitions (A5).
 	defer if !ok {
-		assert(len(names.transcript) == 0, "refused a Recording and kept a name for it")
+		assert(len(names[.Transcript]) == 0, "refused a Recording and kept a name for it")
 	}
 
 	stem := path_stem_of(source)
@@ -104,18 +110,18 @@ names_of :: proc(source: string, allocator: mem.Allocator) -> (names: Names, ok:
 		return {}, false
 	}
 	return Names {
-			transcript = strings.concatenate({stem, TRANSCRIPT_SUFFIX}, allocator),
-			engine_output = strings.concatenate({stem, ENGINE_OUTPUT_SUFFIX}, allocator),
-			sidecar = strings.concatenate({stem, SIDECAR_SUFFIX}, allocator),
+			.Transcript = strings.concatenate({stem, TRANSCRIPT_SUFFIX}, allocator),
+			.Engine_Output = strings.concatenate({stem, ENGINE_OUTPUT_SUFFIX}, allocator),
+			.Sidecar = strings.concatenate({stem, SIDECAR_SUFFIX}, allocator),
 		},
 		true
 }
 
 // Frees what names_of handed back. Safe on a refusal, which allocated nothing.
 destroy_names :: proc(names: Names, allocator: mem.Allocator) {
-	delete(names.transcript, allocator)
-	delete(names.engine_output, allocator)
-	delete(names.sidecar, allocator)
+	for path in names {
+		delete(path, allocator)
+	}
 }
 
 // Where a Recording's own name begins in its path and where its extension

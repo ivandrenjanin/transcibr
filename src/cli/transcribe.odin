@@ -320,7 +320,7 @@ place_artifacts :: proc(
 
 	// The Transcript's path is this command's deliverable on standard output, and
 	// the Sidecar's presence beside it is what says the Recording is finished.
-	fmt.println(placed.transcript)
+	fmt.println(placed[.Transcript])
 	return 0
 }
 

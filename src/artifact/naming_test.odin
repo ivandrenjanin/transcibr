@@ -21,9 +21,9 @@ artifacts_replace_the_recordings_extension_and_share_its_stem :: proc(t: ^testin
 	defer destroy_names(names, context.allocator)
 
 	testing.expect(t, ok, "a Recording with a name of its own made no artifacts")
-	testing.expect_value(t, names.transcript, "C:\\clips\\talk.md")
-	testing.expect_value(t, names.engine_output, "C:\\clips\\talk.json")
-	testing.expect_value(t, names.sidecar, "C:\\clips\\talk.sidecar")
+	testing.expect_value(t, names[.Transcript], "C:\\clips\\talk.md")
+	testing.expect_value(t, names[.Engine_Output], "C:\\clips\\talk.json")
+	testing.expect_value(t, names[.Sidecar], "C:\\clips\\talk.sidecar")
 }
 
 @(test)
@@ -35,9 +35,9 @@ a_recording_beside_the_working_directory_keeps_its_bare_name :: proc(t: ^testing
 	defer destroy_names(names, context.allocator)
 
 	testing.expect(t, ok, "a Recording in the working directory made no artifacts")
-	testing.expect_value(t, names.transcript, "talk.md")
-	testing.expect_value(t, names.engine_output, "talk.json")
-	testing.expect_value(t, names.sidecar, "talk.sidecar")
+	testing.expect_value(t, names[.Transcript], "talk.md")
+	testing.expect_value(t, names[.Engine_Output], "talk.json")
+	testing.expect_value(t, names[.Sidecar], "talk.sidecar")
 }
 
 @(test)
@@ -48,7 +48,7 @@ a_recording_with_no_extension_at_all_still_names_its_artifacts :: proc(t: ^testi
 	defer destroy_names(names, context.allocator)
 
 	testing.expect(t, ok, "a Recording with no extension made no artifacts")
-	testing.expect_value(t, names.transcript, "D:\\recordings\\2026-08-02.md")
+	testing.expect_value(t, names[.Transcript], "D:\\recordings\\2026-08-02.md")
 }
 
 @(test)
@@ -62,7 +62,7 @@ a_leading_dot_is_a_name_and_not_an_extension :: proc(t: ^testing.T) {
 	defer destroy_names(names, context.allocator)
 
 	testing.expect(t, ok, "a Recording whose name begins with a dot made no artifacts")
-	testing.expect_value(t, names.transcript, "C:\\clips\\.talk.md")
+	testing.expect_value(t, names[.Transcript], "C:\\clips\\.talk.md")
 }
 
 @(test)
@@ -111,9 +111,14 @@ a_path_that_names_no_file_makes_no_artifacts_and_allocates_nothing :: proc(t: ^t
 	for named in ([?]string{"C:\\clips\\", "", "/", "D:/"}) {
 		names, ok := names_of(named, context.allocator)
 		testing.expectf(t, !ok, "%q names no file and was accepted anyway", named)
-		testing.expectf(t, len(names.transcript) == 0, "%q was refused and kept a name", named)
-		testing.expectf(t, len(names.engine_output) == 0, "%q was refused and kept a name", named)
-		testing.expectf(t, len(names.sidecar) == 0, "%q was refused and kept a name", named)
+		testing.expectf(t, len(names[.Transcript]) == 0, "%q was refused and kept a name", named)
+		testing.expectf(
+			t,
+			len(names[.Engine_Output]) == 0,
+			"%q was refused and kept a name",
+			named,
+		)
+		testing.expectf(t, len(names[.Sidecar]) == 0, "%q was refused and kept a name", named)
 	}
 }
 
@@ -128,7 +133,7 @@ a_forward_slash_separates_a_directory_from_a_name_like_a_backslash :: proc(t: ^t
 	defer destroy_names(names, context.allocator)
 
 	testing.expect(t, ok, "a Recording named with forward slashes made no artifacts")
-	testing.expect_value(t, names.transcript, "C:/clips/2026.08/talk.md")
+	testing.expect_value(t, names[.Transcript], "C:/clips/2026.08/talk.md")
 }
 
 @(test)

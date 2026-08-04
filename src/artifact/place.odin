@@ -284,12 +284,10 @@ placed_in_order :: proc(
 	// The Engine's own bytes, retained so a re-render costs seconds rather than
 	// GPU hours (ADR-0003) -- and byte for byte, because a re-render has to
 	// produce the Transcript the original run would have (spec story 44).
-	if err := publish(names.engine_output, json_bytes, .Engine_Output, allocator);
-	   err.fault != .None {
+	if err := publish(names, .Engine_Output, json_bytes, allocator); err.fault != .None {
 		return err
 	}
-	if err := publish(names.transcript, transmute([]u8)markdown, .Transcript, allocator);
-	   err.fault != .None {
+	if err := publish(names, .Transcript, transmute([]u8)markdown, allocator); err.fault != .None {
 		return err
 	}
 
@@ -297,7 +295,7 @@ placed_in_order :: proc(
 	// genuinely complete", so nothing may be outstanding when it lands.
 	text := sidecar_text(made, allocator)
 	defer delete(text, allocator)
-	return publish(names.sidecar, transmute([]u8)text, .Sidecar, allocator)
+	return publish(names, .Sidecar, transmute([]u8)text, allocator)
 }
 
 // Writes one artifact under a temporary name and moves it into place in one
@@ -312,15 +310,21 @@ placed_in_order :: proc(
 // the bytes reach the destination's volume before the artifact has a name, which
 // is why a scratch cache on another drive costs a copy and never an atomicity.
 //
+// THE NAME AND WHICH ARTIFACT IT IS ARRIVE TOGETHER, which is what the `Names`
+// enumerated array buys: this used to take a path and, separately, the word for
+// what that path was, and nothing but care kept the two in step. A refusal names
+// the artifact it is really about because it cannot name any other.
+//
 // Nothing half-written is left behind on any failing path.
 publish :: proc(
-	destination: string,
-	bytes: []u8,
+	names: Names,
 	which: Artifact,
+	bytes: []u8,
 	allocator: mem.Allocator,
 ) -> (
 	err: Error,
 ) {
+	destination := names[which]
 	assert(len(destination) > 0, "there is nowhere here to publish an artifact to")
 	assert(allocator.procedure != nil, "a temporary name needs an allocator to be built in")
 

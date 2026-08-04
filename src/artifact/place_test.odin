@@ -73,6 +73,67 @@ rendered_as :: proc(
 	}
 }
 
+// One Recording set out the way every case below wants it: a scratch cache with
+// the Engine's output in it, a separate directory for the Recording to live
+// beside, and the three names its artifacts would be published under.
+//
+// TWO DIRECTORIES AND NOT ONE, because that is the arrangement the
+// cross-volume question is really about. DECLARED ONCE, because the seven lines
+// that built them were repeated in ten cases and the nine-line `complete` call
+// in eight -- around a hundred and forty of this file's lines saying one thing,
+// and eight chances for one case to differ from the others by accident rather
+// than on purpose.
+@(private)
+Bench :: struct {
+	cache:  string,
+	beside: string,
+	source: string,
+	output: string,
+	names:  Names,
+}
+
+@(private)
+set_out :: proc(t: ^testing.T, tag: string, left := ENGINE_JSON) -> (b: Bench) {
+	for directory, at in ([?]^string{&b.cache, &b.beside}) {
+		named := fmt.aprintf("%s-%s", tag, "cache" if at == 0 else "beside")
+		defer delete(named, context.allocator)
+		directory^ = scratch(t, named)
+	}
+	b.output = file_in(t, b.cache, "talk.json", left)
+	b.source = fmt.aprintf("%s\\talk.mkv", b.beside, allocator = context.allocator)
+
+	namable: bool
+	b.names, namable = names_of(b.source, context.allocator)
+	testing.expect(t, namable, "a case could not name the artifacts of its own Recording")
+	return b
+}
+
+// Everything set_out made, freed and removed. Every case defers this.
+@(private)
+cleared :: proc(b: Bench) {
+	destroy_names(b.names, context.allocator)
+	remove_scratch(b.cache)
+	remove_scratch(b.beside)
+	delete(b.cache, context.allocator)
+	delete(b.beside, context.allocator)
+	delete(b.source, context.allocator)
+	delete(b.output, context.allocator)
+}
+
+// One Recording put through `complete` the way the shell puts it through.
+@(private)
+completed :: proc(b: Bench, made := Sidecar{}) -> (Names, Error) {
+	settings := made if len(made.model_digest) > 0 else made_by()
+	return complete(
+		b.source,
+		b.output,
+		FIXTURE_MS,
+		rendered_as(b.source),
+		settings,
+		context.allocator,
+	)
+}
+
 // Whether anything in a directory is a half-written artifact.
 @(private)
 holds_a_part :: proc(t: ^testing.T, directory: string) -> bool {
@@ -94,23 +155,19 @@ holds_a_part :: proc(t: ^testing.T, directory: string) -> bool {
 
 @(test)
 bytes_reach_their_final_name_and_leave_no_temporary_behind :: proc(t: ^testing.T) {
-	beside := scratch(t, "publish")
-	defer delete(beside, context.allocator)
-	defer remove_scratch(beside)
+	b := set_out(t, "publish")
+	defer cleared(b)
 
-	destination := fmt.aprintf("%s\\talk.md", beside, allocator = context.allocator)
-	defer delete(destination, context.allocator)
-
-	err := publish(destination, transmute([]u8)string("# talk\n"), .Transcript, context.allocator)
+	err := publish(b.names, .Transcript, transmute([]u8)string("# talk\n"), context.allocator)
 	testing.expect_value(t, err.fault, Fault.None)
 
-	written, unreadable := os.read_entire_file_from_path(destination, context.allocator)
+	written, unreadable := os.read_entire_file_from_path(b.names[.Transcript], context.allocator)
 	defer delete(written, context.allocator)
 	testing.expect(t, unreadable == nil, "the artifact is not under the name it was published to")
 	testing.expect_value(t, string(written), "# talk\n")
 	// The other half (A3), and the one a rename that silently became a copy would
 	// fail: the temporary name is gone.
-	testing.expect(t, !holds_a_part(t, beside), "a published artifact left its temporary behind")
+	testing.expect(t, !holds_a_part(t, b.beside), "a published artifact left its temporary behind")
 }
 
 @(test)
@@ -119,22 +176,17 @@ publishing_over_an_artifact_that_is_already_there_replaces_it :: proc(t: ^testin
 	// artifacts, so a rename that refused an existing name would make every
 	// re-run fail after the GPU time had already been spent. `core:os`'s rename
 	// passes MOVEFILE_REPLACE_EXISTING, and this is what holds that shut.
-	beside := scratch(t, "replace")
-	defer delete(beside, context.allocator)
-	defer remove_scratch(beside)
+	b := set_out(t, "replace")
+	defer cleared(b)
 
-	destination := file_in(t, beside, "talk.md", "the transcript from an older run\n")
-	defer delete(destination, context.allocator)
+	older := file_in(t, b.beside, "talk.md", "the transcript from an older run\n")
+	defer delete(older, context.allocator)
+	testing.expect_value(t, older, b.names[.Transcript])
 
-	err := publish(
-		destination,
-		transmute([]u8)string("the new one\n"),
-		.Transcript,
-		context.allocator,
-	)
+	err := publish(b.names, .Transcript, transmute([]u8)string("the new one\n"), context.allocator)
 	testing.expect_value(t, err.fault, Fault.None)
 
-	written, unreadable := os.read_entire_file_from_path(destination, context.allocator)
+	written, unreadable := os.read_entire_file_from_path(older, context.allocator)
 	defer delete(written, context.allocator)
 	testing.expect(t, unreadable == nil, "the artifact went missing while being replaced")
 	testing.expect_value(t, string(written), "the new one\n")
@@ -147,19 +199,17 @@ an_artifact_that_cannot_be_moved_into_place_leaves_no_half_written_file :: proc(
 	// which is a thing a user can really have -- is an operating error against
 	// this Recording, and the half-written file it was going to be must not be
 	// left for the next run to find and take for finished work.
-	beside := scratch(t, "blocked")
-	defer delete(beside, context.allocator)
-	defer remove_scratch(beside)
+	b := set_out(t, "blocked")
+	defer cleared(b)
 
-	destination := fmt.aprintf("%s\\talk.md", beside, allocator = context.allocator)
-	defer delete(destination, context.allocator)
-	defer os.remove(destination)
-	testing.expect(t, os.make_directory_all(destination) == nil, "could not block the destination")
+	blocked := b.names[.Transcript]
+	defer os.remove(blocked)
+	testing.expect(t, os.make_directory_all(blocked) == nil, "could not block the destination")
 
-	err := publish(destination, transmute([]u8)string("# talk\n"), .Transcript, context.allocator)
+	err := publish(b.names, .Transcript, transmute([]u8)string("# talk\n"), context.allocator)
 	testing.expect_value(t, err.fault, Fault.Not_Placed)
 	testing.expect_value(t, err.which, Artifact.Transcript)
-	testing.expect(t, !holds_a_part(t, beside), "a failed publish left its temporary behind")
+	testing.expect(t, !holds_a_part(t, b.beside), "a failed publish left its temporary behind")
 }
 
 // ------------------------------------------------- one Recording, complete --
@@ -169,41 +219,25 @@ a_recording_that_came_through_has_all_three_artifacts_beside_it :: proc(t: ^test
 	// ACCEPTANCE, end to end and without a GPU: the Engine's output is validated,
 	// the Transcript is rendered from it, and all three land beside the Recording
 	// under one stem (ADR-0008) with nothing half-written left anywhere.
-	cache := scratch(t, "complete-cache")
-	defer delete(cache, context.allocator)
-	defer remove_scratch(cache)
-	beside := scratch(t, "complete-beside")
-	defer delete(beside, context.allocator)
-	defer remove_scratch(beside)
+	b := set_out(t, "complete")
+	defer cleared(b)
 
-	output := file_in(t, cache, "talk.json", ENGINE_JSON)
-	defer delete(output, context.allocator)
-	source := fmt.aprintf("%s\\talk.mkv", beside, allocator = context.allocator)
-	defer delete(source, context.allocator)
-
-	placed, err := complete(
-		source,
-		output,
-		FIXTURE_MS,
-		rendered_as(source),
-		made_by(),
-		context.allocator,
-	)
+	placed, err := completed(b)
 	defer destroy_names(placed, context.allocator)
 
 	if !testing.expectf(t, err.fault == .None, "a good Recording failed: %v", err.fault) {
 		return
 	}
-	testing.expect(t, os.exists(placed.transcript), "no Transcript was placed")
-	testing.expect(t, os.exists(placed.engine_output), "the Engine's output was not retained")
-	testing.expect(t, os.exists(placed.sidecar), "no Sidecar was written")
-	testing.expect(t, !holds_a_part(t, beside), "a completed Recording left a temporary behind")
+	testing.expect(t, os.exists(placed[.Transcript]), "no Transcript was placed")
+	testing.expect(t, os.exists(placed[.Engine_Output]), "the Engine's output was not retained")
+	testing.expect(t, os.exists(placed[.Sidecar]), "no Sidecar was written")
+	testing.expect(t, !holds_a_part(t, b.beside), "a completed Recording left a temporary behind")
 
 	// The Transcript really is one: the front matter ADR-0008 has planning look
 	// for is there, and so is the language the Engine detected -- which is the one
 	// front matter fact the Engine's own output can settle, and the one `complete`
 	// reads rather than being handed.
-	document, unreadable := os.read_entire_file_from_path(placed.transcript, context.allocator)
+	document, unreadable := os.read_entire_file_from_path(placed[.Transcript], context.allocator)
 	defer delete(document, context.allocator)
 	testing.expect(t, unreadable == nil, "the Transcript that was placed could not be read")
 	testing.expect(
@@ -220,7 +254,7 @@ a_recording_that_came_through_has_all_three_artifacts_beside_it :: proc(t: ^test
 	// The retained Engine output is the Engine's own bytes and not a re-rendering
 	// of them: ADR-0003's cheap re-render path reads this file, and a lossy copy
 	// would make that path produce a different Transcript from the original run.
-	retained, unread := os.read_entire_file_from_path(placed.engine_output, context.allocator)
+	retained, unread := os.read_entire_file_from_path(placed[.Engine_Output], context.allocator)
 	defer delete(retained, context.allocator)
 	testing.expect(t, unread == nil, "the retained Engine output could not be read")
 	testing.expect_value(t, len(retained), len(ENGINE_JSON))
@@ -234,32 +268,16 @@ the_sidecar_a_completed_recording_leaves_reads_back_as_the_settings_it_was_made_
 	// memory: the record written by `complete` is read off the disk and compared,
 	// and a Recording re-run under another Merge Profile is not the same
 	// Recording.
-	cache := scratch(t, "sidecar-cache")
-	defer delete(cache, context.allocator)
-	defer remove_scratch(cache)
-	beside := scratch(t, "sidecar-beside")
-	defer delete(beside, context.allocator)
-	defer remove_scratch(beside)
+	b := set_out(t, "sidecar")
+	defer cleared(b)
 
-	output := file_in(t, cache, "talk.json", ENGINE_JSON)
-	defer delete(output, context.allocator)
-	source := fmt.aprintf("%s\\talk.mkv", beside, allocator = context.allocator)
-	defer delete(source, context.allocator)
-
-	placed, err := complete(
-		source,
-		output,
-		FIXTURE_MS,
-		rendered_as(source),
-		made_by(),
-		context.allocator,
-	)
+	placed, err := completed(b)
 	defer destroy_names(placed, context.allocator)
 	if !testing.expectf(t, err.fault == .None, "a good Recording failed: %v", err.fault) {
 		return
 	}
 
-	written, unreadable := os.read_entire_file_from_path(placed.sidecar, context.allocator)
+	written, unreadable := os.read_entire_file_from_path(placed[.Sidecar], context.allocator)
 	defer delete(written, context.allocator)
 	testing.expect(t, unreadable == nil, "the Sidecar that was written could not be read")
 
@@ -281,37 +299,20 @@ the_sidecar_is_the_last_thing_written_so_its_presence_means_finished :: proc(t: 
 	// A directory under the Transcript's own name is what makes the placement
 	// fail after the Engine's output has already been retained, which is exactly
 	// the half-finished state the ordering has to survive.
-	cache := scratch(t, "order-cache")
-	defer delete(cache, context.allocator)
-	defer remove_scratch(cache)
-	beside := scratch(t, "order-beside")
-	defer delete(beside, context.allocator)
-	defer remove_scratch(beside)
+	b := set_out(t, "order")
+	defer cleared(b)
 
-	output := file_in(t, cache, "talk.json", ENGINE_JSON)
-	defer delete(output, context.allocator)
-	source := fmt.aprintf("%s\\talk.mkv", beside, allocator = context.allocator)
-	defer delete(source, context.allocator)
-
-	blocked := fmt.aprintf("%s\\talk.md", beside, allocator = context.allocator)
-	defer delete(blocked, context.allocator)
+	blocked := b.names[.Transcript]
 	defer os.remove(blocked)
 	testing.expect(t, os.make_directory_all(blocked) == nil, "could not block the Transcript")
 
-	placed, err := complete(
-		source,
-		output,
-		FIXTURE_MS,
-		rendered_as(source),
-		made_by(),
-		context.allocator,
-	)
+	placed, err := completed(b)
 	defer destroy_names(placed, context.allocator)
 
 	testing.expect_value(t, err.fault, Fault.Not_Placed)
 	testing.expect_value(t, err.which, Artifact.Transcript)
-	testing.expect(t, !os.exists(placed.sidecar), "a Recording that failed still looks finished")
-	testing.expect(t, !holds_a_part(t, beside), "a failed Recording left a temporary behind")
+	testing.expect(t, !os.exists(placed[.Sidecar]), "a Recording that failed still looks finished")
+	testing.expect(t, !holds_a_part(t, b.beside), "a failed Recording left a temporary behind")
 }
 
 // ------------------------------------- what the Engine left that is not usable --
@@ -324,46 +325,35 @@ engine_output_that_will_not_parse_is_quarantined_and_the_recording_re_run :: pro
 	// behind is what stops the next run finding a truncated `.json` in the cache
 	// and taking it for finished work -- which is the poisoning that made resume
 	// fail in exactly the case it exists for.
-	cache := scratch(t, "truncated-cache")
-	defer delete(cache, context.allocator)
-	defer remove_scratch(cache)
-	beside := scratch(t, "truncated-beside")
-	defer delete(beside, context.allocator)
-	defer remove_scratch(beside)
-
+	//
 	// Cut in half, which is what a Stop press or a full disk leaves: the Engine
 	// opens its output with a truncating stream, under its FINAL name.
-	output := file_in(t, cache, "talk.json", ENGINE_JSON[:len(ENGINE_JSON) / 2])
-	defer delete(output, context.allocator)
-	source := fmt.aprintf("%s\\talk.mkv", beside, allocator = context.allocator)
-	defer delete(source, context.allocator)
+	b := set_out(t, "truncated", ENGINE_JSON[:len(ENGINE_JSON) / 2])
+	defer cleared(b)
 
-	placed, err := complete(
-		source,
-		output,
-		FIXTURE_MS,
-		rendered_as(source),
-		made_by(),
-		context.allocator,
-	)
+	placed, err := completed(b)
 	defer destroy_names(placed, context.allocator)
 
 	testing.expect_value(t, err.fault, Fault.Output_Quarantined)
 	// Moved aside rather than left where the next run would find it, and not
 	// deleted either: a file a user can be pointed at is the difference between a
 	// bug report and a shrug.
-	aside := quarantined(output, context.allocator)
+	aside := quarantined(b.output, context.allocator)
 	defer delete(aside, context.allocator)
 	testing.expect(t, os.exists(aside), "output that will not parse was not quarantined")
-	testing.expect(t, !os.exists(output), "output that will not parse was left where it was")
+	testing.expect(t, !os.exists(b.output), "output that will not parse was left where it was")
 	// And NOTHING was placed. A Transcript beside a Recording whose Cues could
 	// not be read is worse than none at all.
 	testing.expect(
 		t,
-		!os.exists(placed.transcript),
+		!os.exists(placed[.Transcript]),
 		"a Transcript was placed from output nobody could read",
 	)
-	testing.expect(t, !os.exists(placed.sidecar), "a Sidecar vouched for a Recording that failed")
+	testing.expect(
+		t,
+		!os.exists(placed[.Sidecar]),
+		"a Sidecar vouched for a Recording that failed",
+	)
 }
 
 @(test)
@@ -373,28 +363,16 @@ a_second_run_over_output_that_will_not_parse_replaces_the_quarantined_file :: pr
 	// an existing `.json.bad` that refused would turn a re-runnable Recording into
 	// a permanent failure on the second attempt, which is the exact shape
 	// ADR-0002 exists to prevent.
-	cache := scratch(t, "twice-cache")
-	defer delete(cache, context.allocator)
-	defer remove_scratch(cache)
-	beside := scratch(t, "twice-beside")
-	defer delete(beside, context.allocator)
-	defer remove_scratch(beside)
-
-	source := fmt.aprintf("%s\\talk.mkv", beside, allocator = context.allocator)
-	defer delete(source, context.allocator)
+	b := set_out(t, "twice", ENGINE_JSON[:len(ENGINE_JSON) / 2])
+	defer cleared(b)
 
 	for attempt in 0 ..< 2 {
-		output := file_in(t, cache, "talk.json", ENGINE_JSON[:len(ENGINE_JSON) / 2])
-		defer delete(output, context.allocator)
+		// Written again each time round, because the attempt before it moved the
+		// file aside -- which is the whole thing being checked.
+		rewritten := file_in(t, b.cache, "talk.json", ENGINE_JSON[:len(ENGINE_JSON) / 2])
+		defer delete(rewritten, context.allocator)
 
-		placed, err := complete(
-			source,
-			output,
-			FIXTURE_MS,
-			rendered_as(source),
-			made_by(),
-			context.allocator,
-		)
+		placed, err := completed(b)
 		defer destroy_names(placed, context.allocator)
 		testing.expectf(
 			t,
@@ -413,35 +391,18 @@ engine_output_that_parsed_and_said_nothing_fails_the_recording :: proc(t: ^testi
 	// transcribed a Recording of silence, of music or of a dead audio track, and
 	// re-running it transcribes nothing again -- so quarantining this would spend
 	// the GPU time for ever.
-	cache := scratch(t, "silent-cache")
-	defer delete(cache, context.allocator)
-	defer remove_scratch(cache)
-	beside := scratch(t, "silent-beside")
-	defer delete(beside, context.allocator)
-	defer remove_scratch(beside)
-
-	output := file_in(
+	b := set_out(
 		t,
-		cache,
-		"talk.json",
+		"silent",
 		`{"transcription":[{"offsets":{"from":0,"to":253949},"text":"   "}]}`,
 	)
-	defer delete(output, context.allocator)
-	source := fmt.aprintf("%s\\talk.mkv", beside, allocator = context.allocator)
-	defer delete(source, context.allocator)
+	defer cleared(b)
 
-	placed, err := complete(
-		source,
-		output,
-		FIXTURE_MS,
-		rendered_as(source),
-		made_by(),
-		context.allocator,
-	)
+	placed, err := completed(b)
 	defer destroy_names(placed, context.allocator)
 
 	testing.expect_value(t, err.fault, Fault.Nothing_Transcribed)
-	aside := quarantined(output, context.allocator)
+	aside := quarantined(b.output, context.allocator)
 	defer delete(aside, context.allocator)
 	testing.expect(
 		t,
@@ -450,7 +411,7 @@ engine_output_that_parsed_and_said_nothing_fails_the_recording :: proc(t: ^testi
 	)
 	testing.expect(
 		t,
-		os.exists(output),
+		os.exists(b.output),
 		"the Engine's own output was moved for a fault that is not its shape",
 	)
 }
@@ -459,26 +420,11 @@ engine_output_that_parsed_and_said_nothing_fails_the_recording :: proc(t: ^testi
 engine_output_that_is_not_there_at_all_is_reported_rather_than_asserted :: proc(t: ^testing.T) {
 	// A8: what the Engine left is outside this program, and by the time this runs
 	// the cache sweep of another transcibr may have taken it.
-	cache := scratch(t, "absent-cache")
-	defer delete(cache, context.allocator)
-	defer remove_scratch(cache)
-	beside := scratch(t, "absent-beside")
-	defer delete(beside, context.allocator)
-	defer remove_scratch(beside)
+	b := set_out(t, "absent")
+	defer cleared(b)
+	testing.expect(t, os.remove(b.output) == nil, "a case could not take away its own fixture")
 
-	output := fmt.aprintf("%s\\talk.json", cache, allocator = context.allocator)
-	defer delete(output, context.allocator)
-	source := fmt.aprintf("%s\\talk.mkv", beside, allocator = context.allocator)
-	defer delete(source, context.allocator)
-
-	placed, err := complete(
-		source,
-		output,
-		FIXTURE_MS,
-		rendered_as(source),
-		made_by(),
-		context.allocator,
-	)
+	placed, err := completed(b)
 	defer destroy_names(placed, context.allocator)
 
 	testing.expect_value(t, err.fault, Fault.Output_Unreadable)
@@ -486,16 +432,14 @@ engine_output_that_is_not_there_at_all_is_reported_rather_than_asserted :: proc(
 
 @(test)
 a_recording_whose_path_names_no_file_is_refused_before_anything_is_read :: proc(t: ^testing.T) {
-	cache := scratch(t, "nameless-cache")
-	defer delete(cache, context.allocator)
-	defer remove_scratch(cache)
-
-	output := file_in(t, cache, "talk.json", ENGINE_JSON)
-	defer delete(output, context.allocator)
+	// The one case that does not use the bench's own Recording, because what it
+	// is about is a path that names none.
+	b := set_out(t, "nameless")
+	defer cleared(b)
 
 	placed, err := complete(
 		"C:\\clips\\",
-		output,
+		b.output,
 		FIXTURE_MS,
 		rendered_as("C:\\clips\\"),
 		made_by(),
@@ -522,48 +466,36 @@ a_recording_the_filesystem_dates_before_1970_is_refused_with_nothing_published :
 	// output and the Transcript already published -- a Recording that looks
 	// two-thirds finished, no Sidecar, and under a Batch the whole run dead with
 	// it. Refused here, nothing is published at all and the Batch carries on.
-	cache := scratch(t, "pre-epoch-cache")
-	defer delete(cache, context.allocator)
-	defer remove_scratch(cache)
-	beside := scratch(t, "pre-epoch-beside")
-	defer delete(beside, context.allocator)
-	defer remove_scratch(beside)
-
-	output := file_in(t, cache, "talk.json", ENGINE_JSON)
-	defer delete(output, context.allocator)
-	source := fmt.aprintf("%s\\talk.mkv", beside, allocator = context.allocator)
-	defer delete(source, context.allocator)
+	b := set_out(t, "pre-epoch")
+	defer cleared(b)
 
 	dated := made_by()
 	// 1969-12-31 21:00 UTC.
 	dated.source_modified_ns = -10_800_000_000_000
 
-	placed, err := complete(
-		source,
-		output,
-		FIXTURE_MS,
-		rendered_as(source),
-		dated,
-		context.allocator,
-	)
+	placed, err := completed(b, dated)
 	defer destroy_names(placed, context.allocator)
 
 	testing.expect_value(t, err.fault, Fault.Not_Recordable)
 	// NOTHING, and that is the whole of it (A3). The two artifacts that used to
 	// be on the disk by the time this failed are the reason the refusal is where
 	// it is rather than where the record is written.
-	testing.expect(t, !os.exists(placed.transcript), "a refused Recording got a Transcript")
+	testing.expect(t, !os.exists(placed[.Transcript]), "a refused Recording got a Transcript")
 	testing.expect(
 		t,
-		!os.exists(placed.engine_output),
+		!os.exists(placed[.Engine_Output]),
 		"a refused Recording had its Engine output retained",
 	)
-	testing.expect(t, !os.exists(placed.sidecar), "a refused Recording got a Sidecar")
-	testing.expect(t, !holds_a_part(t, beside), "a refused Recording left a temporary behind")
+	testing.expect(t, !os.exists(placed[.Sidecar]), "a refused Recording got a Sidecar")
+	testing.expect(t, !holds_a_part(t, b.beside), "a refused Recording left a temporary behind")
 	// And what the Engine left is where it was: this is not the shape of failure
 	// a quarantine answers, and moving it aside would set up a re-run that spends
 	// the GPU time again to reach the same refusal.
-	testing.expect(t, os.exists(output), "the Engine's own output was moved aside for a bad clock")
+	testing.expect(
+		t,
+		os.exists(b.output),
+		"the Engine's own output was moved aside for a bad clock",
+	)
 }
 
 @(test)
