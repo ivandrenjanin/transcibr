@@ -109,10 +109,16 @@ cannot run locally.
 
 ```powershell
 .\scripts\build.ps1     # -> build\transcibr-cli.exe   (add -Configuration release for -o:speed)
-.\scripts\test.ps1      # every package under src\
+.\scripts\test.ps1      # every package under src\ and tools\
 .\scripts\format.ps1    # every .odin file against odinfmt.json (add -Fix to rewrite them)
 .\scripts\selftest.ps1  # checks that the three above still fail when they should
 ```
+
+`build.ps1` also builds `tools\policy`, a small Odin program that reads the repository's own source
+with `core:odin/parser` and answers the four source rules the build enforces — the line limit, the
+comment ban, `@(require_results)`, and the `#+vet` tags. It is not part of transcibr and ships with
+nothing; ADR-0028 records why the build reads Odin with the compiler's parser rather than with a
+text scan of its own.
 
 The command-line binary re-renders a transcript from retained engine output, without touching the
 GPU — which is what makes tuning the paragraphing cost seconds instead of hours:
@@ -168,7 +174,8 @@ its returned slice pass with a warning (ADR-0010). The build reads the subsystem
 binary's PE header (ADR-0004) and runs the ones that can report their version.
 
 **`odin test` collects test procedures from one package only**, and on a package with none it prints
-`No tests to run.` and exits 0. `test.ps1` therefore discovers every package under `src\` rather than
+`No tests to run.` and exits 0. `test.ps1` therefore discovers every package under `src\` and
+`tools\` rather than
 naming one and reads the runner's own JSON report to see what each package actually collected. A
 package that collects nothing fails the run unless it is declared test-less in
 `$OdinPackagesWithoutTests`, and one declared there that grows tests fails too — a run that executes
