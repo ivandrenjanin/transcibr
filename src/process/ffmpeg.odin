@@ -204,10 +204,11 @@ read_duration :: proc(value: string) -> (duration_ms: i64, fault: Probe_Fault) {
 	if rounded <= 0 {
 		return 0, .Duration_Not_Positive
 	}
-	// The write side of read_probe's own assertion (A4): every duration that
-	// leaves here without a fault is one that comparison downstream can divide
-	// by and measure against.
-	assert(rounded > 0, "a duration came back from the refusal above still not positive")
+	// The write side of read_probe's own assertion (A4) is that refusal, and NOT
+	// a second `assert(rounded > 0)` after it. There was one, two lines below the
+	// `if` that makes it unreachable: an assertion a reader discharges by looking
+	// up is documentation with a runtime cost, and rule A6 asks for the opposite
+	// -- an assert where the condition is critical and SURPRISING.
 	return rounded, .None
 }
 

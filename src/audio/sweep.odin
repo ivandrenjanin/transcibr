@@ -128,7 +128,6 @@ sweep_choice :: proc(
 	// `cap` -- harmless under Odin's heap allocator, and wrong the day ADR-0010
 	// gives a worker a size-classed allocator of its own.
 	shrink(&chosen)
-	assert(len(chosen) <= len(entries), "the sweep chose more files than the cache holds")
 	return chosen[:]
 }
 

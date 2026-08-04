@@ -15,6 +15,12 @@ package audio
 // the one that stops an absence of evidence being reported as evidence of
 // absence.
 //
+// THIS FILE IS PURE LEAF MATH, which is CLAUDE.md rule A1's own exemption: it
+// carries fewer than two assertions a procedure because its caller carries more.
+// Every refusal that could be made about a Reading -- a source that will not
+// stat, a planning reading with no timestamp on it at all -- is `settle`'s, one
+// file over, where the reading is taken and where the value came from outside.
+//
 // WHAT IT COSTS. The second reading is one call to the filesystem and is free;
 // the GAP is the cost, and on a Batch of several hundred Recordings a gap taken
 // per Recording would be minutes of pure waiting. It is not paid that way: the
@@ -170,9 +176,14 @@ remaining_gap_ns :: proc(first: Reading, second: Reading, minimum_gap_ns: i64) -
 // What two readings of one Recording say.
 //
 // A8: both readings are of a file another program may be writing, so nothing
-// here is an assertion about the file. The assertions are about the readings
-// being this package's own -- taken in order, by the caller, from the same
-// path.
+// here is an assertion about the file. THE ONE ASSERTION is about the gap, which
+// is the caller's own choice and this package's own state.
+//
+// "Taken in order" is what it deliberately does NOT assert, and that is the
+// whole of the backwards-clock answer twenty lines down: the readings belong to
+// this package, but the CLOCK they carry belongs to the machine, and a second
+// reading timestamped before the first is an NTP step rather than corrupt
+// internal state.
 settling :: proc(first: Reading, second: Reading, minimum_gap_ns: i64) -> Settling {
 	assert(minimum_gap_ns > 0, "a gap of no time at all says nothing about anything")
 

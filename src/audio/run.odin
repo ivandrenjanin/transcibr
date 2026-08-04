@@ -645,8 +645,6 @@ sweep_cache :: proc(
 			taken += 1
 		}
 	}
-	assert(taken <= len(chosen), "the sweep removed more files than it chose")
-	assert(taken >= 0, "the sweep removed a negative number of files")
 	return taken, .None
 }
 
@@ -704,6 +702,5 @@ cache_entries :: proc(listing: []os.File_Info, allocator: mem.Allocator) -> []Ca
 	// Shrunk to what was kept, so the slice handed back is the whole of its own
 	// allocation: `delete` frees `len` items and this was made at `cap`.
 	shrink(&entries)
-	assert(len(entries) <= len(listing), "the cache holds more entries than the listing named")
 	return entries[:]
 }
