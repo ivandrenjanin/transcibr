@@ -53,6 +53,14 @@ else {
 	Write-Host '-> every .odin file is formatted as odinfmt.json says' -ForegroundColor Green
 }
 
+# CLAUDE.md section 0, checked whether or not a formatter was found: this reads
+# the files itself and needs no tool, so there is no configuration in which the
+# comment ban goes unenforced while the build still runs. Before the compiler,
+# like the check above and for the same reason -- the answer arrives in a second
+# rather than after every target has been linked.
+Assert-OdinCommentPolicy
+Write-Host '-> no .odin procedure body carries a comment' -ForegroundColor Green
+
 New-Item -ItemType Directory -Path $BuildRoot -Force | Out-Null
 
 # Counted as each target is finished, not taken from $OdinTargets afterwards:

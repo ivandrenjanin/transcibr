@@ -33,6 +33,11 @@ example and the linked original differ, the rule is the same and the linked docu
 
 The operative contract is self-documenting code with comments driven toward minimal. Comments are banned inside procedure bodies. IF a comment is needed, it must be a comment that explains why the code is doing what it is doing, not a comment that repeats the code's logic.
 
+Enforced mechanically, repository-wide, and it fails the build: `Assert-OdinCommentPolicy` in
+`scripts\common.ps1` reads every `.odin` file `Get-OdinSource` discovers — `docs\reference\`
+included — and names the file, line and procedure of anything it finds. It is a lexer rather than a
+search, so a `//` inside a raw string is text and not a comment.
+
 ## 1. Assertions
 
 Assertions detect programmer errors. Operating errors (a malformed SRT, a missing video, a
@@ -289,6 +294,24 @@ f64 has no wrap to exploit: rounding is monotonic, so a literal outside the rang
 range. Read the Float and range-check it strictly below 2^53, which is where f64 stops representing
 every integer and starts rounding one literal onto another.
 
+The same family's `strconv.parse_int` is worse in three further ways, and it is what a reader reaches
+for when the number arrives in a line rather than in a tree. At base 0 it is
+`parse_i64_maybe_prefixed`, which accepts `_` as a digit separator, so `1_0` reads as ten; accepts a
+leading sign, so `+7` reads as seven and a negative percentage arrives as a number rather than as a
+refusal; and runs `value *= base` with no check of any kind, so a forty-digit number answers
+something arbitrary and reports `ok`. Every one of those is a byte the Engine can write into its
+diagnostics and a corrupt Sidecar can carry. `read_natural` in `src\process\engine.odin` is what this
+repository reads a whole number with: digits only, no sign, no separator, and the overflow closed by
+a ceiling on the DIGIT COUNT tested BEFORE the first multiplication rather than by a range check
+after the wrap has already happened. The ceiling is `MAX_NATURAL_DIGITS :: 12`, with
+`#assert(MAX_NATURAL_DIGITS < 19)` holding it below the width at which i64 could wrap at all.
+
+The ceiling belongs to the CONSUMER and not to the reader, so expect it to become a parameter the
+moment a second consumer wants a different one — a nanosecond moment needs the full nineteen digits
+where a percentage needs two. Nineteen is the interesting bound, because that is where the digit-count
+check stops being slack over i64 and becomes the thing actually standing between a long literal and a
+wrap. Whatever the ceiling, the check goes before the multiplication.
+
 The parser leaks on several of its error paths: an object key parsed just before the value after it
 fails is never inserted into the object, so the cleanup that walks that object never frees it, and a
 truncated file takes exactly that path. Decode into an arena you destroy unconditionally rather than
@@ -299,8 +322,62 @@ stack and takes the process down — 0xC00000FD from 1694 bytes, 751 levels fine
 is no error return to catch, so the depth has to be bounded *before* the decode; A8 has no exception
 for input that is merely unusual.
 
+`MAX_JSON_DEPTH :: 64` is fixed by two bounds and not by taste. whisper.cpp writes five levels at its
+deepest — the root object, the `transcription` array, a Cue, its `tokens` array, a token — so 64
+leaves an order of magnitude over anything an Engine release could plausibly add. And the limit has
+to sit an order of magnitude BELOW the crash, because the depth the stack survives is not a constant:
+it moves with the build configuration and with the stack the calling thread happens to have. A limit
+set just under a measured 751 is a limit measured on one build.
+
+Count the depth with `core:encoding/json`'s OWN tokenizer, given the same specification and integer
+setting the decode is given. `json.make_tokenizer` is iterative and allocates nothing, so running it
+ahead of the decoder runs none of what makes the decoder unsafe, and `parse_value`'s recursion takes
+one level per open bracket in exactly that token stream. It costs about half again what a hand-rolled
+byte scan costs — 20.6 us against 13.8 us for a whole `parse_cues` over the committed 2335-byte
+fixture, across 200,000 of them — and that is paid because the tokenizer is the only thing that
+already knows where a JSON string ends. A hand-rolled scan would refuse a Recording for containing
+`[[[` in transcribed speech.
+
+`get_token` reports an illegal character WITH a token and walks on past it, so its error return is not
+a stop condition; only `.EOF` means there is nothing further to read. A loop that broke at the first
+error would measure none of the brackets after it — which the decoder still descends into before it
+reaches the error and gives up — so the bound would under-count exactly the region that can crash the
+process. Switch on `token.kind`, discard the error, and stop on `.EOF`.
+
 `.\scripts\test.ps1 -TestName transcript.parses_real_engine_output_into_cues` is the test that
 catches the integer default against real Engine output.
+
+**`core:fmt` pads an integer's width with ZEROS, not spaces.** `fmt_write_padding` picks `'0'` unless
+the verb carried the space flag, and `_pad` calls it on whichever side `-` selects, so `%3d` of 0
+prints `000` and `%-3d` of 7 prints `700`. A padded percentage does not read as a padded percentage;
+it reads as a different number. `src\cli\transcribe.odin` printed `transcribing 000%` at the start of
+a real run before the width verb came out of it. What a width would have bought is bought instead by
+the trailing run of spaces in the format string: the reading only ever grows, so the number cannot
+leave a digit behind, but the annotation beside it goes from eleven characters (`(estimated)`) to
+none, and without that padding the carriage return leaves the old annotation sitting after the new
+line. No test can catch a regression here — ADR-0009 names `src\cli` in `$OdinPackagesWithoutTests`
+and `test.ps1` requires it to collect zero tests — so this one line is held by review alone.
+
+**An enumerated array and an exhaustive `switch` give the same compiler guard.** Measured against the
+pinned compiler: add a member to an enum, leave its `[Key]Value{...}` table alone, and the build fails
+outright with `Unhandled enumerated array case`. It does *not* quietly grow a row made of the zero
+value — which is what this repository believed until somebody checked, and what run-time assertions on
+every read had been placed to catch. A `switch` left alone the same way fails the same way. So a
+missing entry is a build failure under either shape, and the choice between them is not a safety
+argument. Issue #33 is the ticket that stops it being re-litigated per package; four packages carry a
+fault vocabulary and they do not have to agree on shape.
+
+What neither shape refuses is an entry written present and EMPTY. The table makes that the shape of a
+hurried edit — `.New_Fault = {}` compiles — while a `switch` arm has to be spelled out before it will
+build at all, so an empty one there is deliberate. That is the whole of the difference, and it is why
+`src\engine` and `src\audio`'s `fault_says` are switches while `src\process` and `src\child` keep
+tables. `transcibr:audio` writes one deliberately empty row, for the success value its renderer
+refuses by name.
+
+Catch the empty entry by WALKING the enumeration in a test (`src\audio\fault_test.odin`) and never by
+asserting in the renderer. The assertion fires on the first report of that fault, which is a Recording
+already failing in front of somebody; and a test that trips an assertion takes the whole runner down
+rather than naming a case (issue #22), so the test reads the table directly instead.
 
 **`odin test` cannot write its test executable to a path containing a space.** It runs the binary
 it builds through a command line it does not quote, so a space is re-parsed as an argument
