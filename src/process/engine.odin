@@ -1,6 +1,8 @@
 package process
 
+import "core:math"
 import "core:mem"
+import "core:strconv"
 import "core:strings"
 
 // This file holds the Engine: the exact argument list it is started with, and
@@ -170,9 +172,48 @@ PROGRESS_MARK :: "whisper_print_progress_callback: progress ="
 // for a while, and the fallback keeps the bar moving (ADR-0012).
 read_engine_line :: proc(line: string) -> Engine_Line {
 	if said, ok := read_progress(line); ok {
-		return said
+		return checked(said)
+	}
+	if said, ok := read_banner(line); ok {
+		return checked(said)
 	}
 	return Engine_Line{}
+}
+
+// One reading, checked at the one place both readers leave through.
+//
+// The read side (A4) of what the two readers promise on the way out, and the
+// reason it is here rather than repeated in each of them. What it checks is that
+// `says` and the fields AGREE: a consumer switches on `says` and reads the field
+// that member names, so a `.Progress` carrying a duration or a `.Duration`
+// carrying a percentage is one reading being read as the other -- silently, and
+// with a plausible number in it.
+//
+// Not a check on the Engine (A8). Every refusal has already happened above; this
+// is a check on this package's own two readers, so a failure here is a bug in
+// one of them and never a line the Engine wrote.
+@(private)
+checked :: proc(said: Engine_Line) -> Engine_Line {
+	assert(said.says != .Nothing, "a line that said nothing was handed back as a reading")
+
+	switch said.says {
+	case .Progress:
+		assert(said.percent >= 0, "a progress reading below zero")
+		assert(said.percent <= 100, "a progress reading past a hundred")
+		assert(said.duration_ms == 0, "a progress reading carried a duration as well")
+	case .Duration:
+		assert(said.duration_ms > 0, "a duration reading of no time at all")
+		assert(
+			said.duration_ms <= LONGEST_CONTAINER_MS,
+			"a duration reading past the longest Recording this package will believe",
+		)
+		assert(said.percent == 0, "a duration reading carried a percentage as well")
+	case .Nothing:
+	// Refused by the assertion above, which names it. Stated here so the switch
+	// is exhaustive rather than #partial, which would let a fourth member go
+	// unchecked in silence.
+	}
+	return said
 }
 
 // The percentage out of one progress line.
@@ -243,3 +284,133 @@ read_natural :: proc(text: string) -> (value: i64, ok: bool) {
 MAX_NATURAL_DIGITS :: 12
 
 #assert(MAX_NATURAL_DIGITS < 19)
+
+// The Engine's startup banner names the audio it is about to process and says
+// how long it is, twice:
+//
+//	main: processing 'C:\tmp\transcibr\recording.wav' (4063182 samples, 253.9 sec), 4 threads, ...
+//
+// ONE OF THE TWO PLACES A DURATION MAY COME FROM (spec, ADR-0012). The other is
+// the container probe next door. The scratch audio's own header is neither, and
+// `transcibr:audio` gives that measurement a distinct type so that reaching for
+// it is a compile error rather than a rule to remember.
+//
+// The two markers, and NOT the `main: processing` prefix. What anchors this
+// reading is the pair of fixed fields; the prefix in front of them is a
+// procedure name that a release is free to change, and the path between them is
+// a Recording's name rather than anything this program chose.
+@(private)
+SAMPLES_MARK :: " samples, "
+@(private)
+SECONDS_MARK :: " sec)"
+
+// How far apart the banner's two numbers may be and still be one length, in
+// milliseconds.
+//
+// The Engine prints the seconds to ONE DECIMAL, so the two differ by up to fifty
+// milliseconds by construction -- 4,063,182 samples is 253.948875 seconds and
+// the banner says `253.9 sec`. A second is twenty times that, and what it is
+// really guarding is a banner this reader has stopped understanding: two numbers
+// that are not two spellings of one duration mean a field moved or a unit
+// changed, and a duration read out of a line that changed meaning is worse than
+// no duration at all, because the fallback estimate keys on it.
+@(private)
+BANNER_AGREEMENT_MS :: i64(1000)
+
+// The audio's length out of one startup banner.
+@(private)
+read_banner :: proc(line: string) -> (said: Engine_Line, ok: bool) {
+	// Found from the END of the line, because the path in front of the marker is
+	// a Recording's own name and may contain the marker itself --
+	// `C:\my samples, 2019\talk.wav` does. The real one is always the last: what
+	// follows it is the Engine's own fixed text.
+	mark := strings.last_index(line, SAMPLES_MARK)
+	if mark < 0 {
+		return {}, false
+	}
+	rest := line[mark + len(SAMPLES_MARK):]
+	close := strings.index(rest, SECONDS_MARK)
+	if close < 0 {
+		return {}, false
+	}
+
+	// BOTH, AND THEY MUST AGREE, and neither stands in for the other.
+	//
+	// This read one where the other was unreadable for the length of one test
+	// run, on the reasoning that a reformatted field should not cost the duration
+	// outright -- and it accepted a forty-digit sample count next to `1.0 sec` as
+	// one second of audio, which is the shape an interleaved line leaves behind.
+	// The redundancy that ADR-0012 actually asks for is not INSIDE this line: it
+	// is the banner OR the container probe, and the probe has already answered by
+	// the time the Engine starts. So a banner half of which this reader cannot
+	// read is a banner it has stopped understanding, and the probe's answer
+	// stands.
+	from_samples, counted := samples_ms(line[:mark])
+	from_seconds, timed := seconds_ms(rest[:close])
+	if !counted || !timed {
+		return {}, false
+	}
+	if !banner_agrees(from_samples, from_seconds) {
+		return {}, false
+	}
+	// The sample count is what is kept, and the precision runs that way round:
+	// the seconds are one decimal place and 49 ms short of the truth on the
+	// fixture's own Recording.
+	return Engine_Line{says = .Duration, duration_ms = from_samples}, true
+}
+
+// Whether the banner's two numbers are one length said twice.
+@(private)
+banner_agrees :: proc(from_samples, from_seconds: i64) -> bool {
+	assert(from_samples > 0, "a sample count that was refused was compared anyway")
+	assert(from_seconds > 0, "a seconds reading that was refused was compared anyway")
+
+	gap := from_samples - from_seconds
+	if gap < 0 {
+		gap = -gap
+	}
+	return gap <= BANNER_AGREEMENT_MS
+}
+
+// The run of digits at the end of the banner's first half, as milliseconds.
+//
+// AUDIO_SAMPLE_RATE and not a number spelled here, which is the third consumer
+// of that constant and the point of its being one: ffmpeg is asked for 16 kHz in
+// this same file, `transcibr:audio` requires the produced audio to carry it, and
+// this divides by it. Spelled again, a change to the rate would leave every
+// Recording's banner reporting a length nothing else agrees with.
+@(private)
+samples_ms :: proc(head: string) -> (duration_ms: i64, ok: bool) {
+	at := len(head)
+	for at > 0 && head[at - 1] >= '0' && head[at - 1] <= '9' {
+		at -= 1
+	}
+	samples, readable := read_natural(head[at:])
+	if !readable || samples <= 0 {
+		return 0, false
+	}
+
+	// Rounded rather than truncated, for read_duration's own reason next door: a
+	// sample count is exact and the millisecond it lands between is not.
+	rounded := (samples * 1000 + AUDIO_SAMPLE_RATE / 2) / AUDIO_SAMPLE_RATE
+	if rounded <= 0 || rounded > LONGEST_CONTAINER_MS {
+		return 0, false
+	}
+	return rounded, true
+}
+
+// The banner's printed seconds, as milliseconds.
+@(private)
+seconds_ms :: proc(text: string) -> (duration_ms: i64, ok: bool) {
+	seconds, readable := strconv.parse_f64(strings.trim_space(text))
+	if !readable {
+		return 0, false
+	}
+	// Refused before the arithmetic: an infinity multiplied by a thousand and
+	// cast to i64 is a number no standard defines, and a NaN compares false
+	// against every bound there is.
+	if math.is_nan(seconds) || math.is_inf(seconds) {
+		return 0, false
+	}
+	return milliseconds_of(seconds)
+}

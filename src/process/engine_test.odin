@@ -144,6 +144,170 @@ the_engine_is_pointed_at_a_prefix_and_appends_the_extension_itself :: proc(t: ^t
 	testing.expect_value(t, produced, "C:\\cache\\lecture.json")
 }
 
+@(test)
+the_real_engine_output_reports_one_duration_and_no_other :: proc(t: ^testing.T) {
+	// The negative space of the banner reader (A3), over a whole real run:
+	// forty-odd lines of model-load log, timings and system information go past
+	// it, and EXACTLY ONE of them is a duration. A reader loose enough to find a
+	// second would be finding it in `n_audio_ctx = 1500` or in the timings, and
+	// the fallback would then key on a number that is not a length.
+	r: Line_Reader
+	durations := make([dynamic]i64, context.allocator)
+	defer delete(durations)
+
+	remaining := ENGINE_STDERR
+	for {
+		line, ok := next_line(&r, &remaining)
+		if !ok {
+			break
+		}
+		if said := read_engine_line(line); said.says == .Duration {
+			append(&durations, said.duration_ms)
+		}
+	}
+
+	if !testing.expect_value(t, len(durations), 1) {
+		return
+	}
+	testing.expect_value(t, durations[0], i64(253_949))
+}
+
+// ------------------------------------------------------- the startup banner --
+//
+// The Engine names the audio it is about to process and says how long it is,
+// which is ONE OF THE TWO PLACES A DURATION MAY COME FROM (spec: "Duration comes
+// from the Engine's startup banner or from a container probe, never from the
+// scratch audio file's header"). The other is `read_probe` in the file next
+// door. The scratch WAV's own header is neither, and `transcibr:audio` makes
+// reaching for it a compile error rather than a rule anybody has to remember.
+//
+// The line, copied out of the fixture:
+//
+//	main: processing 'C:\tmp\transcibr\recording.wav' (4063182 samples, 253.9 sec), 4 threads, ...
+
+@(private)
+REAL_BANNER :: "main: processing 'C:\\tmp\\transcibr\\recording.wav' (4063182 samples, 253.9 sec), 4 threads, 1 processors, 5 beams + best of 5, lang = en, task = transcribe, timestamps = 1 ..."
+
+@(test)
+the_real_startup_banner_reads_as_the_audios_length :: proc(t: ^testing.T) {
+	said := read_engine_line(REAL_BANNER)
+	testing.expect_value(t, said.says, Engine_Says.Duration)
+
+	// 253,949 AND NOT 253,900, which is the whole reason the sample count is what
+	// is read: 4,063,182 samples at 16 kHz is 253,948.875 ms, and the banner's own
+	// `253.9 sec` is one decimal place and 49 ms short before anything else
+	// happens. The expected value is worked out from the sample count by hand and
+	// not by the arithmetic under test.
+	testing.expect_value(t, said.duration_ms, i64(253_949))
+}
+
+@(test)
+the_banner_and_the_container_probe_answer_the_same_length :: proc(t: ^testing.T) {
+	// The two independent sources the spec allows, over the SAME Recording,
+	// checked against each other (rule A4). ffprobe timed the container that this
+	// fixture's audio was extracted from at `duration=253.948844`; the Engine
+	// counted 4,063,182 samples. Neither number was derived from the other, and a
+	// reader that quietly started answering in seconds, or in samples, would part
+	// them.
+	banner := read_engine_line(REAL_BANNER)
+	probed, fault := read_probe("codec_type=audio\nduration=253.948844\n")
+	testing.expect_value(t, fault, Probe_Fault.None)
+
+	gap := banner.duration_ms - probed.duration_ms
+	testing.expectf(
+		t,
+		gap >= -1 && gap <= 1,
+		"the banner says %d ms and the container says %d ms",
+		banner.duration_ms,
+		probed.duration_ms,
+	)
+}
+
+@(test)
+a_banner_whose_path_carries_the_marker_still_reads :: proc(t: ^testing.T) {
+	// The banner QUOTES A PATH, and a path is a Recording's name rather than
+	// something this program chose. `C:\my samples, 2019\` contains the exact text
+	// the reader looks for, so the marker is found from the END of the line -- the
+	// real one always is the last, since what follows it is the Engine's own
+	// fixed text.
+	said := read_engine_line(
+		"main: processing 'C:\\my samples, 2019\\talk.wav' (32000 samples, 2.0 sec), 4 threads",
+	)
+	testing.expect_value(t, said.says, Engine_Says.Duration)
+	testing.expect_value(t, said.duration_ms, i64(2_000))
+}
+
+@(test)
+a_banner_only_half_of_which_reads_is_refused :: proc(t: ^testing.T) {
+	// NEITHER NUMBER STANDS IN FOR THE OTHER, and this case is why. The reader
+	// read one where the other was unreadable for the length of one run, on the
+	// reasoning that a reformatted field should not cost the duration outright --
+	// and it then took a forty-digit sample count beside `1.0 sec` for one second
+	// of audio, which is what an interleaved line leaves behind. The redundancy
+	// ADR-0012 asks for is the banner OR the container probe, and the probe has
+	// already answered by the time the Engine starts.
+	for line in ([?]string {
+			"main: processing 'a.wav' (many samples, 253.9 sec), 4 threads",
+			"main: processing 'a.wav' (9999999999999999999999999999999999999999 samples, 1.0 sec)",
+			"main: processing 'a.wav' (4063182 samples, about four minutes sec), 4 threads",
+		}) {
+		said := read_engine_line(line)
+		testing.expectf(t, said.says == .Nothing, "%q read as a duration", line)
+	}
+}
+
+@(test)
+a_banner_whose_two_numbers_disagree_is_refused :: proc(t: ^testing.T) {
+	// The two numbers are one length said twice, and a banner where they are not
+	// is a line this reader has stopped understanding -- a field moved, a unit
+	// changed, a sample rate that is no longer 16 kHz. A duration read out of a
+	// line that changed meaning is worse than no duration at all, because the
+	// fallback keys on it.
+	said := read_engine_line("main: processing 'a.wav' (16000 samples, 900.0 sec), 4 threads")
+	testing.expect_value(t, said.says, Engine_Says.Nothing)
+	testing.expect_value(t, said.duration_ms, i64(0))
+}
+
+@(test)
+a_banner_that_reports_no_audio_at_all_is_refused :: proc(t: ^testing.T) {
+	// Zero is the value that matters: it is what every downstream comparison
+	// would then agree with, and the fallback estimate divides by it.
+	for line in ([?]string {
+			"main: processing 'a.wav' (0 samples, 0.0 sec), 4 threads",
+			"main: processing 'a.wav' ( samples,  sec), 4 threads",
+			"main: processing 'a.wav' (7 samples, 0.0004 sec), 4 threads",
+		}) {
+		said := read_engine_line(line)
+		testing.expectf(t, said.says == .Nothing, "%q read as a duration", line)
+	}
+}
+
+@(test)
+a_banner_claiming_more_audio_than_there_can_be_is_refused :: proc(t: ^testing.T) {
+	// Twelve digits of samples with the seconds that really do match them:
+	// 999,999,999,999 samples at 16 kHz is 62,500,000 seconds, which is 17,361
+	// hours. The two AGREE, so what refuses this is the length ceiling and not
+	// the cross-check -- a Recording of seventeen thousand hours is a number
+	// nobody meant, and every piece of arithmetic downstream would take it.
+	said := read_engine_line(
+		"main: processing 'a.wav' (999999999999 samples, 62500000.0 sec), 4 threads",
+	)
+	testing.expect_value(t, said.says, Engine_Says.Nothing)
+}
+
+@(test)
+a_line_that_is_not_a_banner_reads_as_no_duration :: proc(t: ^testing.T) {
+	for line in ([?]string {
+			"main: processing 'a.wav' (4063182 samples), 4 threads",
+			"read_audio_data: reading audio data from 'C:\\tmp\\transcibr\\recording.wav' ...",
+			"whisper_print_timings:   sample time =  1038.30 ms /  3407 runs",
+			" samples,  sec)",
+		}) {
+		said := read_engine_line(line)
+		testing.expectf(t, said.says == .Nothing, "%q read as a duration", line)
+	}
+}
+
 // -------------------------------------------------------- one progress line --
 //
 // Every case below hands in a LINE, which is what the assembler next door
