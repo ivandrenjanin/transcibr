@@ -39,11 +39,20 @@ A **Batch** that names no Engine has said nothing about the Engine at all. It is
 Engine is unknown; it is the absence of a claim, and this is why the absence is now in the type
 rather than spelled as a magic value that compares unequal to every real one.
 
-The asymmetry is not a general principle about missing data — it rests on what this particular field
-is. `Settings` hashes the Model to identity precisely because a path cannot notice a file replaced
-under the same name. The Engine is the one setting taken on **faith**: a string a caller types.
-A string a user types cannot protect a user who did not type it, so treating its absence as a
-mismatch buys no safety and costs the hours of GPU time the resume rules exist to save.
+The asymmetry is not a general principle about missing data — it rests on how this particular field
+is **currently obtained**. `Settings` hashes the Model to identity precisely because a path cannot
+notice a file replaced under the same name. The Engine is the one setting this program does not
+measure at all: a string a caller types. A string a user types cannot protect a user who did not
+type it, so treating its absence as a mismatch buys no safety and costs the hours of GPU time the
+resume rules exist to save.
+
+That is a **deferral and not a permanent trade**, and it is worth being exact about which. Nothing
+about an Engine makes it unmeasurable, and the reopening clause below is reachable *today* with
+pieces already in this repository: `--engine-exe` already hands `--transcribe` the Engine binary's
+path, and `artifact.digest_of` — behind `identify_model` — already streams a SHA-256 of an arbitrary
+file, with nothing Model-specific in it. What is missing is only that `--plan` takes no
+`--engine-exe`. Issue #50 tracks the exit, so it is a ticket somebody holds rather than a sentence in
+a document.
 
 Where there is no record either, the Recording is transcribed anyway and the string is only what the
 Batch *would* record: `transcript.UNKNOWN`, which is what a `--transcribe` run given no
@@ -64,6 +73,19 @@ one got in. The CLI now forwards presence or absence and decides nothing;
 `a_transcript_recorded_without_an_engine_is_done_again_by_a_batch_that_names_one` hold both
 directions.
 
+**The Sidecar `current_of` builds is a comparison operand, never a record of work.** Where the Batch
+names no Engine it carries the *record's* version, and on the re-render path that is what makes this
+decision agree with ADR-0003 rather than strain against it: the danger ADR-0003 names for this field
+is that "re-rendering would stamp the *currently installed* engine version onto cues decoded by a
+different one", and carrying the record's own version forward is exactly what avoids it. Nothing
+persists that Sidecar here — `Plan` carries no Sidecar and `--plan` writes nothing — but a worker
+that reused it to **write** a Sidecar after a fresh transcribe would stamp the previous Engine's
+version onto new cues, which is that same wrong provenance arriving by the other door. A Sidecar
+recording work that was *done* carries what did it: `transcript.UNKNOWN` where the Batch named no
+Engine, and the duration the probe measured. Said again at `current_of` in
+`src/planning/plan.odin`, because that is where #12's pipeline will meet it first.
+
 **What reopens this** is the Engine becoming identifiable rather than merely nameable. If transcibr
 ever asks the Engine binary for its own version — or hashes it, the way the Model is hashed — then a
-Batch always names its Engine, the absent case stops existing, and this decision goes with it.
+Batch always names its Engine, the absent case stops existing, and this decision goes with it. That
+is issue #50, and both halves of it are already in the repository.
