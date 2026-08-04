@@ -40,9 +40,17 @@ Artifact :: enum u8 {
 // A BARE ENUMERATION WITH ONE RENDERER, the shape `transcibr:engine` settled on
 // and for the reasons recorded there: this repository has four full copies of
 // the fault-report apparatus already (issue #33), and what a small vocabulary
-// needs is a vocabulary and an exhaustive switch, which gives the identical
-// compiler guard without the one failure mode a table brings -- a row that is
-// present and EMPTY, which compiles and is found in front of a user.
+// needs is a vocabulary and an exhaustive switch.
+//
+// The compiler guard is IDENTICAL either way, and that is worth being exact
+// about, because the argument for a table next door was not. A member added and
+// left out of an exhaustive switch fails to compile; a member added and left out
+// of an enumerated array fails to compile too. What separates them is only what a
+// deliberate hand can write: a table takes a row spelled `= ""`, which compiles
+// and is then found by the renderer's own assertion in front of a user, and a
+// switch takes an arm that returns nothing, which does the same. Neither is
+// reachable by forgetting. This is a shape preference between two equals, and
+// the fewer moving parts win.
 Fault :: enum u8 {
 	None = 0,
 	// The Recording's own path names no file to make artifacts from (ADR-0008).

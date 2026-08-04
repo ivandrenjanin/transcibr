@@ -227,9 +227,20 @@ Key :: enum u8 {
 }
 
 // An enumerated array rather than a switch, for the reason the FAULT tables
-// elsewhere in this repository give: a Key added without a row here still HAS a
-// row, made of an empty string, and key_named's assertion is what catches it
-// before a Sidecar is written under a nameless field.
+// elsewhere in this repository give -- and it is the reason `transcibr:audio`
+// states rather than the one that used to be written here. Add a Key and leave
+// this table alone and the COMPILER refuses the build outright: `Unhandled
+// enumerated array case`. It does NOT quietly grow a row made of an empty
+// string, which is what this comment claimed, and what three assertions below
+// were placed to catch; measured against the pinned compiler, that row does not
+// exist and the build does not happen.
+//
+// What is left for an assertion is only a row written EMPTY ON PURPOSE, which
+// does compile -- `transcibr:audio` writes exactly one, for the success value its
+// renderer refuses by name. This table has no such member and wants none, so the
+// two assertions that remain say that, and the third, in key_named, is gone: an
+// empty row there could only ever match an empty NAME, and an empty name is
+// refused on the first line of that procedure.
 @(private, rodata)
 KEY := [Key]string {
 	.Engine             = "engine",
@@ -288,7 +299,7 @@ sidecar_text :: proc(s: Sidecar, allocator: mem.Allocator) -> (written: string) 
 @(private)
 write_text :: proc(out: ^strings.Builder, key: Key, value: string) {
 	assert(out != nil, "there is no record here to write a field into")
-	assert(len(KEY[key]) > 0, "a key was added to Key without a row in KEY")
+	assert(len(KEY[key]) > 0, "a key was given an empty name in KEY")
 
 	strings.write_string(out, KEY[key])
 	strings.write_string(out, ": \"")
@@ -324,7 +335,7 @@ write_text :: proc(out: ^strings.Builder, key: Key, value: string) {
 @(private)
 write_number :: proc(out: ^strings.Builder, key: Key, value: i64) {
 	assert(out != nil, "there is no record here to write a field into")
-	assert(len(KEY[key]) > 0, "a key was added to Key without a row in KEY")
+	assert(len(KEY[key]) > 0, "a key was given an empty name in KEY")
 	// The read side of what `recordable` refuses on the way in (A4). This comment
 	// used to say every number here was this program's own arithmetic and nothing
 	// external; that was FALSE and the falsehood was the bug. `source_modified_ns`
@@ -459,8 +470,11 @@ key_named :: proc(name: string) -> (key: Key, known: bool) {
 	if len(name) == 0 {
 		return {}, false
 	}
+	// NOTHING IS ASSERTED ABOUT KEY IN HERE, and there was an assertion per
+	// candidate -- around a hundred per Sidecar read. It could not fire: an empty
+	// row would only ever match an empty name, and the line above has already
+	// refused one. See KEY for what the two that remain are actually about.
 	for candidate in Key {
-		assert(len(KEY[candidate]) > 0, "a key was added to Key without a row in KEY")
 		if KEY[candidate] == name {
 			return candidate, true
 		}

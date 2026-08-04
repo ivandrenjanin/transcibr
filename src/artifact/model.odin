@@ -69,11 +69,14 @@ Model :: struct {
 //
 // Two members, so it carries an enumeration and one renderer and none of the
 // rest of the apparatus. An exhaustive `switch` gives the identical compiler
-// guard a table would and does not bring the one failure mode a table has, a row
-// that is present and EMPTY -- which compiles, passes every case, and is found
-// by the reader's own assertion in front of a user. This repository has four
-// full copies of the fault-report shape already (issue #33) and this is
-// deliberately not a fifth.
+// guard a table would -- a member added and left out of either one fails to
+// compile, which is measured rather than assumed, and is what the argument for a
+// table in sidecar.odin used to get backwards. What is left is what a deliberate
+// hand can write, and a row spelled `= ""` and an arm that returns nothing are
+// the same hazard caught the same way, by the renderer's own assertion. So this
+// is a shape preference between two equals: this repository has four full copies
+// of the fault-report shape already (issue #33) and this is deliberately not a
+// fifth.
 Model_Fault :: enum u8 {
 	None = 0,
 	// ADR-0002's own refusal, checked on the RESOLVED path and before the file
