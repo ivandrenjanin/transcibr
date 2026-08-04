@@ -38,6 +38,32 @@ matching_sidecar :: proc(found: Found) -> artifact.Sidecar {
 }
 
 @(private)
+expect_decided :: proc(
+	t: ^testing.T,
+	says: string,
+	outcome: Outcome,
+	decision: Decision,
+	reason: Reason,
+) {
+	testing.expectf(
+		t,
+		outcome.decision == decision,
+		"%s was %v rather than %v",
+		says,
+		outcome.decision,
+		decision,
+	)
+	testing.expectf(
+		t,
+		outcome.reason == reason,
+		"%s was decided for %v rather than for %v",
+		says,
+		outcome.reason,
+		reason,
+	)
+}
+
+@(private)
 a_recording :: proc() -> Found {
 	return Found {
 		source = "C:\\clips\\talk.mp4",
@@ -94,23 +120,7 @@ a_recording_a_batch_cannot_honour_is_refused_before_any_gpu_time :: proc(t: ^tes
 		found.recorded = matching_sidecar(found)
 		c.spoil(&found)
 
-		outcome := decide(found, settings())
-
-		testing.expectf(
-			t,
-			outcome.decision == .Refuse,
-			"%s was %v rather than refused",
-			c.says,
-			outcome.decision,
-		)
-		testing.expectf(
-			t,
-			outcome.reason == c.reason,
-			"%s was refused as %v rather than as %v",
-			c.says,
-			outcome.reason,
-			c.reason,
-		)
+		expect_decided(t, c.says, decide(found, settings()), .Refuse, c.reason)
 	}
 }
 
@@ -170,24 +180,7 @@ what_only_needs_rendering_again_is_rendered_from_the_retained_engine_output :: p
 		recorded.merge_profile = c.profile
 		found.recorded = recorded
 
-		outcome := decide(found, settings())
-
-		testing.expectf(
-			t,
-			outcome.decision == c.decision,
-			"%s was %v rather than %v",
-			c.says,
-			outcome.decision,
-			c.decision,
-		)
-		testing.expectf(
-			t,
-			outcome.reason == c.reason,
-			"%s was decided for %v rather than for %v",
-			c.says,
-			outcome.reason,
-			c.reason,
-		)
+		expect_decided(t, c.says, decide(found, settings()), c.decision, c.reason)
 	}
 }
 
@@ -260,20 +253,7 @@ a_transcript_whose_recorded_settings_differ_is_done_again :: proc(t: ^testing.T)
 
 		outcome := decide(found, settings())
 
-		testing.expectf(
-			t,
-			outcome.decision == .Transcribe,
-			"%s was not transcribed again, it was %v",
-			c.says,
-			outcome.decision,
-		)
-		testing.expectf(
-			t,
-			outcome.reason == .Settings_Changed,
-			"%s was re-done for %v rather than for its settings",
-			c.says,
-			outcome.reason,
-		)
+		expect_decided(t, c.says, outcome, .Transcribe, .Settings_Changed)
 		testing.expectf(
 			t,
 			outcome.change == c.change,

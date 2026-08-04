@@ -96,6 +96,18 @@ stem_of :: proc(source: string) -> string {
 	return source[from:to]
 }
 
+// The other half of the same cut, so a caller asking what kind of file this is
+// and a caller naming its artifacts agree about where the name ends. Empty where
+// there is no extension AND where the path names no file at all -- `.mp4` is a
+// name and not an extension, exactly as `stem_of` reads it.
+extension_of :: proc(source: string) -> string {
+	from, to := name_bounds(source)
+	if to <= from {
+		return ""
+	}
+	return source[to:]
+}
+
 // Why the temporary name appends to the destination, and why the process
 // identifier is in it: ADR-0024. The caller owns the answer and frees it with
 // `delete` and the same allocator.
