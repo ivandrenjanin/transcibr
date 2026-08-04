@@ -1639,9 +1639,15 @@ function Assert-OdinNetworkConfinement {
 		[object[]] $Sources = @(Get-OdinCheckedSource)
 	)
 
+	# The separator after $SrcRoot is not decoration: without it a sibling
+	# directory that merely starts with the same letters -- src-generated,
+	# srcfoo -- would read as "under src\" by raw string prefix. Get-RelativeName
+	# guards the identical seam for the identical reason.
+	$srcPrefix = $SrcRoot + [System.IO.Path]::DirectorySeparatorChar
+
 	$stray = [System.Collections.Generic.List[string]]::new()
 	foreach ($source in $Sources) {
-		if (-not $source.Path.StartsWith($SrcRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+		if (-not $source.Path.StartsWith($srcPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
 			continue
 		}
 		if ($source.Path.Equals($NetworkCodeFile, [System.StringComparison]::OrdinalIgnoreCase)) {
