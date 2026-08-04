@@ -53,7 +53,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 55
+$ExpectedCaseCount = 56
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -1823,6 +1823,52 @@ Test-Case 'a file without the vet tag fails the build' {
 	if ($result.Output -match 'src/cli/main\.odin') {
 		throw "the refusal named the tagged binary as well.`n$($result.Output)"
 	}
+}
+
+Test-Case 'a call that takes its allocator from the context fails the build' {
+	# The deliverable, end to end, and the one claim none of the cases above make.
+	# They check that the tag is WRITTEN -- and a tag that is written on every file
+	# and does nothing reads exactly the same green. What is between those two is
+	# the compiler, so the only way to tell them apart is to hand it a call that
+	# must not compile and watch it refuse.
+	#
+	# That is not a hypothetical seam. $OdinFileVetTags emptied leaves every case
+	# above passing vacuously, and a compiler pin that moved the flag's name or its
+	# behaviour would be reported by nothing else here.
+	#
+	# The fixture is the binary every other build case uses, one argument short:
+	# it prints the same banner and exits zero, so what fails is the allocator and
+	# nothing the compiler would have caught anyway.
+	$repo = New-FixtureRepo 'build-implicit-allocator'
+	$implicit = @(
+		'import "core:fmt"'
+		'import "core:strings"'
+		''
+		'main :: proc() {'
+		"`tsaid := strings.clone(`"$SmokeBanner`")"
+		"`tdefer delete(said, context.allocator)"
+		"`tfmt.println(said)"
+		'}'
+	) -join "`n"
+	Add-FixtureBinary -RepoRoot $repo -Body "$implicit`n" | Out-Null
+
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Fails -Matching "Parameter 'allocator' of type 'Allocator' must be explicitly provided"
+	# The LINE, so this cannot be satisfied by a build that failed somewhere else.
+	# Line 8 is where Add-FixtureBinary's file tag, `package main` preamble and the
+	# two imports put the clone.
+	Assert-Result -Result $result -Fails -Matching 'main\.odin\(8:'
+
+	# The negative space (rule A3), and here it is the whole measurement rather
+	# than a formality: a build that refuses everything satisfies every line above.
+	# Same file, same banner, one argument of difference.
+	$explicit = $implicit.Replace("strings.clone(`"$SmokeBanner`")", "strings.clone(`"$SmokeBanner`", context.allocator)")
+	if ($explicit -eq $implicit) {
+		throw 'the control fixture is the same text as the one under test, so it measures nothing.'
+	}
+	Add-FixtureBinary -RepoRoot $repo -Body "$explicit`n" | Out-Null
+	$passes = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $passes -Matching 'Built 1 target'
 }
 
 Test-Case 'the vet tag rule the build enforces is written down' {
