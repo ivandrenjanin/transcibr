@@ -82,9 +82,10 @@ a_recording_nothing_has_been_done_to_is_transcribed :: proc(t: ^testing.T) {
 	testing.expect_value(t, outcome.reason, Reason.Nothing_Recorded)
 }
 
-// Four ways a Recording is refused before a Batch spends anything on it. Each
-// is checked against a Recording that would otherwise be SKIPPED, so a refusal
-// that failed to fire would be visible as a skip rather than as a re-run.
+// Three ways a Recording is refused before a Batch looks at a resume rule at
+// all. Each is checked against a Recording that would otherwise be SKIPPED, so
+// a refusal that failed to fire would be visible as a skip rather than as a
+// re-run.
 @(test)
 a_recording_a_batch_cannot_honour_is_refused_before_any_gpu_time :: proc(t: ^testing.T) {
 	Case :: struct {
@@ -98,11 +99,6 @@ a_recording_a_batch_cannot_honour_is_refused_before_any_gpu_time :: proc(t: ^tes
 				"a hand-authored notes.md beside notes.mp4",
 				proc(f: ^Found) {f.transcript = .Foreign},
 				.Foreign_Transcript,
-			},
-			{
-				"a Recording in a directory nothing may be written to",
-				proc(f: ^Found) {f.directory_writable = false},
-				.Directory_Not_Writable,
 			},
 			{
 				"a path that names no file to make artifacts from",
@@ -123,6 +119,54 @@ a_recording_a_batch_cannot_honour_is_refused_before_any_gpu_time :: proc(t: ^tes
 
 		expect_decided(t, c.says, decide(found, settings()), .Refuse, c.reason)
 	}
+}
+
+// Criterion eight: a Recording whose artifacts cannot be written is refused
+// before any GPU time, whether the work is the whole transcription or the cheap
+// re-render.
+@(test)
+a_recording_needing_work_is_refused_where_nothing_may_be_written :: proc(t: ^testing.T) {
+	Case :: struct {
+		says:       string,
+		transcript: Transcript_State,
+		recorded:   bool,
+	}
+
+	for c in ([?]Case {
+			{"a Recording nothing has been done to", .Absent, false},
+			{"a Recording that only needs rendering again", .Absent, true},
+		}) {
+		found := a_recording()
+		found.transcript = c.transcript
+		found.engine_output = true
+		found.directory_writable = false
+		if c.recorded {
+			found.recorded = matching_sidecar(found)
+		}
+
+		expect_decided(t, c.says, decide(found, settings()), .Refuse, .Directory_Not_Writable)
+	}
+}
+
+// Criterion two and criterion eight meet here, and nothing needs writing for a
+// Skip. Checked ahead of every resume rule, a read-only archive of finished work
+// reported EVERY Recording in it as refused -- which is not what a user asking
+// what a Batch would do to it wants to be told about work already done.
+@(test)
+a_recording_already_done_is_skipped_even_where_nothing_may_be_written :: proc(t: ^testing.T) {
+	found := a_recording()
+	found.transcript = .Transcibrs
+	found.engine_output = true
+	found.recorded = matching_sidecar(found)
+	found.directory_writable = false
+
+	expect_decided(
+		t,
+		"a finished Recording in a directory nothing may be written to",
+		decide(found, settings()),
+		.Skip,
+		.Up_To_Date,
+	)
 }
 
 // The Engine's retained output is what makes re-rendering possible at all, so

@@ -79,15 +79,34 @@ decide :: proc(found: Found, settings: Settings) -> (outcome: Outcome) {
 		return refusal
 	}
 	if !known {
-		return unrecorded(found)
+		return writable(found, unrecorded(found))
 	}
-	return resumed(found, recorded, current, settings)
+	return writable(found, resumed(found, recorded, current, settings))
 }
 
-// Refused ahead of every resume rule, because a Recording nothing may be written
-// for is not made runnable by an artifact that happens to be beside it -- and a
-// foreign `notes.md` beside `notes.mp4` would otherwise read as a Transcript
-// already up to date (ADR-0008).
+// Checked AGAINST the decision and never ahead of it: nothing is written for a
+// Recording that is already done, so a read-only archive of finished work
+// reports itself finished rather than refusing every Recording in it. Criterion
+// two and criterion eight meet here, and this is the resolution.
+@(private)
+writable :: proc(found: Found, wanted: Outcome) -> Outcome {
+	assert(len(found.source) > 0, "there is no Recording here to decide anything about")
+	assert(wanted.decision != .Refuse, "a Recording refused twice, for two different reasons")
+
+	if wanted.decision == .Skip {
+		return wanted
+	}
+	if found.directory_writable {
+		return wanted
+	}
+	return Outcome{decision = .Refuse, reason = .Directory_Not_Writable}
+}
+
+// Refused ahead of every resume rule, because none of these is answered by an
+// artifact that happens to be beside the Recording: a foreign `notes.md` beside
+// `notes.mp4` would otherwise read as a Transcript already up to date
+// (ADR-0008). Whether the directory can be WRITTEN to is not here and cannot be
+// -- see `writable`.
 @(private)
 refused :: proc(found: Found, current: artifact.Sidecar) -> (outcome: Outcome, yes: bool) {
 	assert(len(found.source) > 0, "there is no Recording here to refuse")
@@ -95,9 +114,6 @@ refused :: proc(found: Found, current: artifact.Sidecar) -> (outcome: Outcome, y
 
 	if len(artifact.stem_of(found.source)) == 0 {
 		return Outcome{decision = .Refuse, reason = .Names_No_File}, true
-	}
-	if !found.directory_writable {
-		return Outcome{decision = .Refuse, reason = .Directory_Not_Writable}, true
 	}
 	if found.transcript == .Foreign {
 		return Outcome{decision = .Refuse, reason = .Foreign_Transcript}, true
