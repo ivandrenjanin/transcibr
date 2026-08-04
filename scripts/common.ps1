@@ -1237,10 +1237,17 @@ function Test-OdinPolicyToolStale {
 # file is one path per line with nothing to quote (see ConvertTo-NativeArgument
 # for what quoting one costs).
 #
-# Not memoised, deliberately. scripts\selftest.ps1 rewrites a fixture's source and
-# asks the same policy about the same paths again, so a cache keyed on the paths
-# would hand it the answer to the previous file. The read is one child process
-# over the whole tree and costs about a tenth of a second.
+# Not memoised, deliberately, and this is the read the four policies would each
+# pay for. scripts\selftest.ps1 rewrites a fixture's source and asks the same
+# policy about the same paths again, so a cache keyed on the paths would hand it
+# the answer to the previous file -- and one keyed on a timestamp would be worse
+# than useless: NTFS stamps move in about 4ms steps, and 119 of 200 back-to-back
+# rewrites of one file here shared one.
+#
+# What build.ps1 does instead is read ONCE and hand the same answer to all four
+# (see their -Facts parameter). That shares nothing a caller did not ask to share,
+# and there is nothing to invalidate -- a caller that passes nothing gets a fresh
+# child process, which is what every case in scripts\selftest.ps1 does.
 function Get-OdinSourceFact {
 	param([Parameter(Mandatory)] [object[]] $Sources)
 
@@ -1458,11 +1465,15 @@ function Get-OdinCheckedSource {
 $OdinProcedureLineLimit = 70
 
 function Assert-OdinProcedureLength {
-	$sources = @(Get-OdinCheckedSource)
+	param(
+		# Read for this verdict alone by default; build.ps1 reads once and hands
+		# the same answer to all four. See Get-OdinSourceFact.
+		[object[]] $Facts = @(Get-OdinSourceFact -Sources (Get-OdinCheckedSource))
+	)
 
 	$over = @()
 	$measured = 0
-	foreach ($fact in @(Get-OdinSourceFact -Sources $sources)) {
+	foreach ($fact in $Facts) {
 		foreach ($procedure in $fact.Procedures) {
 			if (-not $procedure.Attributable) {
 				continue
@@ -1475,7 +1486,7 @@ function Assert-OdinProcedureLength {
 		}
 	}
 	if ($measured -eq 0) {
-		throw "read no procedure at all out of $($sources.Count) file(s), so CLAUDE.md rule F1 would pass having measured nothing."
+		throw "read no procedure at all out of $($Facts.Count) file(s), so CLAUDE.md rule F1 would pass having measured nothing."
 	}
 	if ($over.Count -eq 0) {
 		return
@@ -1494,10 +1505,14 @@ function Assert-OdinProcedureLength {
 # declaration outright, which is a rule about where code may be written rather
 # than about what it may say. The parser has no column to be anchored to.
 function Assert-OdinCommentPolicy {
-	$sources = @(Get-OdinCheckedSource)
+	param(
+		# Read for this verdict alone by default; build.ps1 reads once and hands
+		# the same answer to all four. See Get-OdinSourceFact.
+		[object[]] $Facts = @(Get-OdinSourceFact -Sources (Get-OdinCheckedSource))
+	)
 
 	$found = @()
-	foreach ($fact in @(Get-OdinSourceFact -Sources $sources)) {
+	foreach ($fact in $Facts) {
 		foreach ($comment in $fact.Comments) {
 			$found += "  - $($fact.Name):$($comment.Line) in $($comment.Inside): $($comment.Text)"
 		}
@@ -1526,10 +1541,14 @@ function Assert-OdinCommentPolicy {
 # claim. The guard against a vacuous pass belongs where the tree being read is
 # known to carry hundreds, which is the selftest case and not here.
 function Assert-OdinResultPolicy {
-	$sources = @(Get-OdinCheckedSource)
+	param(
+		# Read for this verdict alone by default; build.ps1 reads once and hands
+		# the same answer to all four. See Get-OdinSourceFact.
+		[object[]] $Facts = @(Get-OdinSourceFact -Sources (Get-OdinCheckedSource))
+	)
 
 	$bare = @()
-	foreach ($fact in @(Get-OdinSourceFact -Sources $sources)) {
+	foreach ($fact in $Facts) {
 		foreach ($procedure in $fact.Procedures) {
 			if (-not $procedure.Attributable) {
 				continue
@@ -1566,10 +1585,14 @@ function Assert-OdinResultPolicy {
 # already obeys the rule; what it refuses is the file added tomorrow, which is
 # the one direction 65 hand-written lines rot in.
 function Assert-OdinVetTagPolicy {
-	$sources = @(Get-OdinCheckedSource)
+	param(
+		# Read for this verdict alone by default; build.ps1 reads once and hands
+		# the same answer to all four. See Get-OdinSourceFact.
+		[object[]] $Facts = @(Get-OdinSourceFact -Sources (Get-OdinCheckedSource))
+	)
 
 	$missing = @()
-	foreach ($fact in @(Get-OdinSourceFact -Sources $sources)) {
+	foreach ($fact in $Facts) {
 		foreach ($tag in @(Get-OdinRequiredVetTag -Name $fact.Name)) {
 			# Case-SENSITIVE, the way the compiler reads the name. A spelling it
 			# would refuse is not a spelling this may accept.
