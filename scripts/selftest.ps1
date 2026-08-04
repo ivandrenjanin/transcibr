@@ -99,7 +99,15 @@ function New-FixtureRepo {
 	$root = Join-Path $FixtureRoot $Name
 	$scripts = Join-Path $root 'scripts'
 	New-Item -ItemType Directory -Path $scripts -Force | Out-Null
-	New-Item -ItemType Directory -Path (Join-Path $root 'src') -Force | Out-Null
+	# Every root $OdinPackageRoots declares, because Get-OdinPackage refuses a
+	# declared root that is not there -- a sweep quietly covering one root fewer
+	# is the silence this suite exists to catch. Empty here: no fixture carries a
+	# build tool of its own, and every case that runs the build command inherits
+	# one already built (see $OdinPolicyOverride).
+	foreach ($declared in $OdinPackageRoots) {
+		$under = Get-RelativeName -Path $declared.Path -Root $RepoRoot
+		New-Item -ItemType Directory -Path (Join-Path $root $under) -Force | Out-Null
+	}
 	Copy-Item -Path (Join-Path $ScriptRoot 'common.ps1') -Destination $scripts -Force
 	Copy-Item -Path (Join-Path $ScriptRoot 'test.ps1') -Destination $scripts -Force
 	Copy-Item -Path (Join-Path $ScriptRoot 'build.ps1') -Destination $scripts -Force

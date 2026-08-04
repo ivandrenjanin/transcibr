@@ -80,6 +80,45 @@ $OdinFileVetTags = @(
 # Packages import each other as `transcibr:<package>`.
 $OdinCollection = "-collection:transcibr=$SrcRoot"
 
+# Where Odin packages live, and what a package found under each is called.
+#
+# src\ is the program: one package per spec module (ADR-0017), and the test sweep
+# holds every one of them to collecting tests. tools\ is what the BUILD is written
+# in -- tools\policy is the reader the four source policies below answer from, and
+# it is Odin rather than PowerShell for the reason ADR-0028 gives.
+#
+# Two declared roots and not a walk of the repository, because not all Odin here
+# is a package: docs\ holds spikes somebody reads and copies from, and `odin test`
+# pointed at one of those is a compile error rather than a sweep. A root declared
+# here and missing is REFUSED rather than skipped (see Get-OdinPackage): a sweep
+# that quietly covers one root fewer reports the same green as one that covered
+# them all, which is the failure this whole script is shaped around.
+$OdinPackageRoots = @(
+	[pscustomobject]@{ Path = $SrcRoot; Label = '' }
+	[pscustomobject]@{ Path = (Join-Path $RepoRoot 'tools'); Label = 'tools' }
+)
+
+# The package holding the policy tool, and the binary it is built to.
+#
+# Named here rather than at the one call site because two things have to agree
+# about it: Resolve-OdinPolicyTool, which builds it, and $OdinPackageRoots above,
+# which is what makes its own tests run.
+$OdinPolicyPackage = Join-Path (Join-Path $RepoRoot 'tools') 'policy'
+$OdinPolicyBinary = 'transcibr-policy.exe'
+
+# What names a policy tool that is already built, for a caller that has one.
+#
+# scripts\selftest.ps1 is that caller and the reason this exists: it plants around
+# thirty throwaway repositories and runs the real build command inside each, and
+# not one of them carries tools\. Without this, every one of those cases would
+# fail on a bootstrap that has nothing to build rather than on the thing it is
+# about -- and the suite would compile the same tool thirty times to say so.
+#
+# The same shape as $env:ODIN and $env:ODINFMT: an override that must exist if it
+# is set at all, so a stale path fails loudly instead of falling back to a build
+# the caller did not ask for.
+$OdinPolicyOverride = 'TRANSCIBR_POLICY'
+
 # The wall-clock ceiling on ONE child process this repository starts, in seconds.
 #
 # Nothing in the toolchain has one of its own. `odin test` builds a test
@@ -854,16 +893,29 @@ function Get-RelativeName {
 	return $full
 }
 
-# The src-relative name of a package directory: `version`, `cli`, `net/winhttp`.
-# Used as the sweep's label and as the key the test-less list is matched against.
+# The name a package directory is swept under: `version`, `cli`, `net/winhttp`
+# below src\, and `tools/policy` below tools\. Used as the sweep's label and as
+# the key $OdinPackagesWithoutTests is matched against.
+#
+# Relative to the ROOT the package was found under rather than to the repository,
+# so the names below src\ are the ones they have always been and a second root
+# does not rename every package in the list. The label is what keeps two roots
+# from both offering a package called `policy`.
 function Get-OdinPackageName {
-	param([Parameter(Mandatory)] [string] $Path)
+	param(
+		[Parameter(Mandatory)] [string] $Path,
+		[Parameter(Mandatory)] [string] $Root,
+		[Parameter(Mandatory)] [AllowEmptyString()] [string] $Label
+	)
 
-	$name = Get-RelativeName -Path $Path -Root $SrcRoot
+	$name = Get-RelativeName -Path $Path -Root $Root
 	if ($name -eq '') {
-		return 'src'
+		$name = Split-Path -Leaf $Root
 	}
-	return $name
+	if ($Label -eq '') {
+		return $name
+	}
+	return "$Label/$name"
 }
 
 # Every .odin file under a root, as FileInfo.
@@ -885,13 +937,16 @@ function Get-OdinFile {
 		Where-Object { $_.Extension -eq '.odin' }
 }
 
-# Every directory under src\ holding at least one .odin file is a package.
-# Discovered rather than listed, so a new package cannot be added without the
-# test sweep picking it up.
+# Every directory under one of $OdinPackageRoots holding at least one .odin file
+# is a package. Discovered rather than listed, so a new package cannot be added
+# without the test sweep picking it up.
 #
 # -Force walks hidden directories and -ErrorAction Stop turns an unreadable one
 # into a crash: discovery that silently returns a short list is the one failure
-# a user cannot detect (ADR-0009), and it reads as a clean pass.
+# a user cannot detect (ADR-0009), and it reads as a clean pass. A declared root
+# that is not there at all is the same failure one level up, and is refused here
+# rather than skipped -- so a checkout missing tools\ fails the sweep instead of
+# quietly running half of it.
 #
 # PowerShell unrolls a one-element result to a bare object on the way out, and
 # under Set-StrictMode `.Count` on that throws -- which once skipped the sweep's
@@ -899,14 +954,18 @@ function Get-OdinFile {
 # in @(); scripts\selftest.ps1 keeps a one-package repository in the suite so
 # that contract cannot rot again.
 function Get-OdinPackage {
-	$directories = @(Get-OdinFile -Root $SrcRoot | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique)
-
 	$packages = [System.Collections.Generic.List[object]]::new()
-	foreach ($directory in $directories) {
-		$packages.Add([pscustomobject]@{
-				Path = $directory
-				Name = Get-OdinPackageName -Path $directory
-			})
+	foreach ($root in $OdinPackageRoots) {
+		if (-not (Test-Path -LiteralPath $root.Path -PathType Container)) {
+			throw "$($root.Path) is declared in `$OdinPackageRoots but is not there, so every package under it would be swept by nothing and nothing would say so."
+		}
+		$directories = @(Get-OdinFile -Root $root.Path | ForEach-Object { $_.DirectoryName } | Sort-Object -Unique)
+		foreach ($directory in $directories) {
+			$packages.Add([pscustomobject]@{
+					Path = $directory
+					Name = Get-OdinPackageName -Path $directory -Root $root.Path -Label $root.Label
+				})
+		}
 	}
 	return $packages.ToArray()
 }
