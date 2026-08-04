@@ -3,23 +3,9 @@ package artifact
 import "core:strings"
 import "core:testing"
 
-// The Sidecar, checked as the two things it is: bytes a later run can read back,
-// and a comparison that says whether a Recording still matches the settings it
-// was made under (ADR-0003).
-//
-// Both halves are needed to hold the promise up. Presence-only resume "looks
-// simpler and is wrong": a user who transcribes a Batch on one Model, judges the
-// accuracy insufficient, selects another and re-runs gets every Recording
-// skipped in under a second, with every Transcript on disk still the first
-// Model's and the UI reporting success. That only fails to happen if what the
-// Sidecar records is enough to notice -- so the record is written, read back and
-// compared here, and none of the three is taken on trust from the other two.
-
-// One filled-in Sidecar, and the bytes it must be written as.
-//
-// The digest is the SHA-256 of the empty input, which is a constant published
-// far outside this repository -- an independent value rather than one this
-// package computed and then compared with itself.
+// The digest is the SHA-256 of the empty input, a constant published far outside
+// this repository -- an independent value rather than one this package computed
+// and then compared with itself.
 @(private)
 EXAMPLE :: Sidecar {
 	engine_version     = "whisper.cpp v1.9.1",
@@ -39,8 +25,7 @@ EMPTY_SHA256 :: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85
 
 // Spelled a line at a time with explicit newlines rather than as a raw string,
 // because `.gitattributes` checks every `.odin` file out with CRLF endings: a
-// raw literal spanning lines would carry a carriage return into the comparison
-// and pin a format nothing writes.
+// raw literal spanning lines would pin a format nothing writes.
 @(private)
 GOLDEN_SIDECAR ::
 	"transcibr-sidecar 1\n" +
@@ -59,11 +44,6 @@ GOLDEN_SIDECAR ::
 
 @(test)
 a_sidecar_is_written_in_one_fixed_order_a_later_run_can_read :: proc(t: ^testing.T) {
-	// The bytes, pinned. A Sidecar is read back by a build that is not the one
-	// that wrote it, so the format is a contract with the future and not an
-	// implementation detail -- and a field quietly renamed or reordered would
-	// make every Sidecar on disk unreadable, which reads to a user as every
-	// Recording needing the GPU again.
 	written := sidecar_text(EXAMPLE, context.allocator)
 	defer delete(written, context.allocator)
 
@@ -72,13 +52,6 @@ a_sidecar_is_written_in_one_fixed_order_a_later_run_can_read :: proc(t: ^testing
 
 @(test)
 the_one_constructor_carries_every_field_through_to_the_record :: proc(t: ^testing.T) {
-	// WHAT THE CALL GIVES AND A STRUCT LITERAL DOES NOT is that a field cannot be
-	// left out -- Odin fills what a literal omits with a zero and says nothing,
-	// and the Sidecar the program writes was built as a literal in a package
-	// ADR-0009 requires to collect no tests. What a case can still check is that
-	// nothing is dropped BETWEEN the parameters and the record: a constructor that
-	// failed to carry `model_digest` through would compile, and every Sidecar
-	// would then agree with every other one about which Model made it.
 	built := sidecar_of(
 		engine_version = EXAMPLE.engine_version,
 		model = Model {
@@ -93,8 +66,6 @@ the_one_constructor_carries_every_field_through_to_the_record :: proc(t: ^testin
 		source_modified_ns = EXAMPLE.source_modified_ns,
 		container_ms = EXAMPLE.container_ms,
 	)
-	// Against the record the golden bytes above pin, so what this agrees with is
-	// the format on disk rather than another copy of itself.
 	testing.expect_value(t, changed(built, EXAMPLE), Change.None)
 }
 
@@ -108,9 +79,6 @@ a_sidecar_reads_back_as_the_record_that_was_written :: proc(t: ^testing.T) {
 
 	testing.expect(t, ok, "a Sidecar this package wrote could not be read back")
 	testing.expect_value(t, changed(read, EXAMPLE), Change.None)
-	// Field by field as well as through `changed`, because `changed` is what is
-	// under test in the cases below and a comparison that ignored a field would
-	// agree with a reader that lost it.
 	testing.expect_value(t, read.engine_version, EXAMPLE.engine_version)
 	testing.expect_value(t, read.model, EXAMPLE.model)
 	testing.expect_value(t, read.model_digest, EXAMPLE.model_digest)
@@ -125,17 +93,11 @@ a_sidecar_reads_back_as_the_record_that_was_written :: proc(t: ^testing.T) {
 
 @(test)
 a_prompt_carrying_a_newline_survives_being_written_and_read_back :: proc(t: ^testing.T) {
-	// The vocabulary prompt is the one field a user types, so it is the one that
-	// can carry a byte that ends a line. Written raw it would close the record
-	// half way and every field after it would be lost -- which reads back as a
-	// Sidecar that will not parse, which re-runs a Recording that was finished.
 	awkward := EXAMPLE
 	awkward.prompt = "acronyms: RFC 3339\r\n\"quoted\" and a \\ backslash\ttabbed"
 
 	written := sidecar_text(awkward, context.allocator)
 	defer delete(written, context.allocator)
-	// One line per field, whatever a field contains: a reader splits on newlines
-	// and a value that added one would be read as a field of its own.
 	testing.expect_value(t, strings.count(written, "\n"), 11)
 
 	read, ok := read_sidecar(written, context.allocator)
@@ -148,12 +110,6 @@ a_prompt_carrying_a_newline_survives_being_written_and_read_back :: proc(t: ^tes
 a_sidecar_that_is_not_what_transcibr_writes_is_unknown_rather_than_half_read :: proc(
 	t: ^testing.T,
 ) {
-	// A8: a Sidecar is read back off a disk, so anything at all may be in it --
-	// a half-written file from a crash, somebody's notes, a record a later
-	// transcibr wrote. ADR-0003 disposes of every one of them the same way:
-	// "a missing or unparseable sidecar simply means unknown, re-do it". So
-	// there is no fault vocabulary here, and the answer is refused whole rather
-	// than handed back with the fields that happened to parse.
 	rejected := [?]string {
 		"",
 		"transcibr-sidecar 1\n",
@@ -175,14 +131,6 @@ a_sidecar_that_is_not_what_transcibr_writes_is_unknown_rather_than_half_read :: 
 
 @(test)
 a_sidecar_whose_numbers_are_not_numbers_is_unknown :: proc(t: ^testing.T) {
-	// The other half of the same claim, and the one a strict reader is FOR: a
-	// number this reader shrugged at would be read as zero, and a zero
-	// `source_bytes` compares equal to another zero -- so a corrupt Sidecar
-	// would report a Recording as still matching its settings.
-	// A local, because a constant cannot be sliced at an index worked out at run
-	// time -- and the indices are worked out rather than spelled so that a change
-	// to a field above this one does not silently move the cut into the middle of
-	// another line.
 	golden := GOLDEN_SIDECAR
 	for spoiled in ([?]string{"beam: four\n", "beam: -1\n", "beam: \"0\"\n", "beam: 0 \n"}) {
 		text := strings.concatenate(
@@ -207,9 +155,6 @@ a_recording_made_under_the_same_settings_is_not_stale :: proc(t: ^testing.T) {
 
 @(test)
 every_setting_a_sidecar_records_names_itself_when_it_changes :: proc(t: ^testing.T) {
-	// ADR-0003's whole purpose, one field at a time. A field recorded but never
-	// compared is a field that buys nothing, and a field compared under the
-	// wrong name sends a user to change the wrong setting.
 	moved := EXAMPLE
 	moved.source_bytes += 1
 	testing.expect_value(t, changed(moved, EXAMPLE), Change.Source)
@@ -249,10 +194,6 @@ every_setting_a_sidecar_records_names_itself_when_it_changes :: proc(t: ^testing
 
 @(test)
 a_model_swapped_for_one_of_the_same_name_and_size_is_still_a_changed_model :: proc(t: ^testing.T) {
-	// The case the PATH cannot catch and the hash exists for: a Model file
-	// replaced in place, under the same name. The Engine's own output cannot
-	// settle it either -- it reports every large Model as the bare string
-	// `large` (ADR-0003) -- so the content is what has to be recorded.
 	swapped := EXAMPLE
 	swapped.model_digest = Digest(
 		"0000000000000000000000000000000000000000000000000000000000000000",
@@ -262,11 +203,6 @@ a_model_swapped_for_one_of_the_same_name_and_size_is_still_a_changed_model :: pr
 
 @(test)
 a_changed_model_beats_a_changed_merge_profile :: proc(t: ^testing.T) {
-	// THE ORDER IS THE DECISION, not an accident of how the comparison is
-	// written. Every change but one means the GPU time has to be spent again;
-	// a Merge Profile change alone re-renders from the retained Engine output in
-	// seconds (ADR-0003). So the answer names the most expensive change there
-	// is, and a caller acting on `.Merge_Profile` can be sure nothing else moved.
 	both := EXAMPLE
 	both.model_digest = Digest("1111111111111111111111111111111111111111111111111111111111111111")
 	both.merge_profile = "conversation"

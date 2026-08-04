@@ -5,133 +5,35 @@ import "core:mem"
 import "core:os"
 import "transcibr:transcript"
 
-// This file is the impure half: it reads what the Engine left, writes bytes,
-// and renames files. It decides nothing -- what an artifact is called is in
-// naming.odin, what a Sidecar says is in sidecar.odin, and whether the Engine's
-// output is usable is `transcibr:transcript`'s parser, which already answers
-// ADR-0002's three questions (it parses, the Cue count is above zero, the
-// offsets are monotonic) and already says what to DO about each answer.
-//
-// THE DISPOSITIONS ARE NOT REINVENTED HERE. `transcript.disposition_of` is the
-// one table that knows which faults mean "quarantine it and re-run the whole
-// Recording" and which mean "the Engine transcribed nothing and re-running
-// transcribes nothing again". A second vocabulary in this package would be a
-// copy of that table that nothing keeps in step with the eighteen-member
-// enumeration it is about.
-//
-// A8 runs through all of it: the Engine's output, the Recording's own path and
-// every answer the filesystem gives are outside this program, so every one is
-// refused through a return value and reported against the Recording.
-//
-// WHICH PUTS THIS FILE UNDER A1's AVERAGE, at 18 assertions across 11
-// procedures, and the carve-out is recorded here rather than left for a reader
-// to work out. Three carry none. `rendered_and_placed` is the second half of
-// `complete`, which holds five on the way in and hands its own checked values
-// straight through -- re-asserting them would be A4's pairing spelled twice in
-// one call chain, which is noise rather than a second route. `fault_says` and
-// `artifact_says` are total over their enumerations and cannot be handed
-// anything else; the assertion that matters about them is that neither answered
-// with nothing, and it lives in `error_message`, where it can name the fault it
-// is about. A1's own wording is the licence -- fewer where the callers carry
-// more -- and `error_message` carries six.
-
-// Which of a Recording's three artifacts a refusal is about.
-//
-// An enumeration rather than the path itself, which is what this carried first:
-// a borrowed path in a record that outlives the procedure that built it is a
-// lifetime nobody can check, and what a caller actually needs is which of three
-// things went wrong. The path is in the Names the caller already holds.
 Artifact :: enum u8 {
 	Transcript = 0,
 	Engine_Output,
 	Sidecar,
 }
 
-// How one Recording's artifacts could not be placed.
-//
-// A BARE ENUMERATION WITH ONE RENDERER, the shape `transcibr:engine` settled on
-// and for the reasons recorded there: this repository has four full copies of
-// the fault-report apparatus already (issue #33), and what a small vocabulary
-// needs is a vocabulary and an exhaustive switch.
-//
-// The compiler guard is IDENTICAL either way, and that is worth being exact
-// about, because the argument for a table next door was not. A member added and
-// left out of an exhaustive switch fails to compile; a member added and left out
-// of an enumerated array fails to compile too. What separates them is only what a
-// deliberate hand can write: a table takes a row spelled `= ""`, which compiles
-// and is then found by the renderer's own assertion in front of a user, and a
-// switch takes an arm that returns nothing, which does the same. Neither is
-// reachable by forgetting. This is a shape preference between two equals, and
-// the fewer moving parts win.
 Fault :: enum u8 {
 	None = 0,
-	// The Recording's own path names no file to make artifacts from (ADR-0008).
 	Named_No_File,
-	// What the filesystem says about the Recording is not something a Sidecar can
-	// record: a modification time before 1970 is negative, and the record's format
-	// carries a run of decimal digits with no sign. A8, and the ONE filesystem
-	// answer that reaches the Sidecar unvalidated -- refused here, before any
-	// artifact is published, because the Sidecar is written last and a refusal at
-	// that point leaves a Recording two-thirds published with nothing vouching
-	// for it.
 	Not_Recordable,
-	// What the Engine left could not be read back out of the scratch cache. Not
-	// the same as output that is not what the Engine writes: this one never got
-	// as far as having a shape.
 	Output_Unreadable,
-	// It is not what the Engine writes -- truncated, or written by something
-	// else. It has been MOVED ASIDE and the Recording is to be re-run in full
-	// (ADR-0002); this is not a permanent failure and must not be reported as
-	// one. The reason travels in `Error.parse`.
 	Output_Quarantined,
-	// It parsed, and there is no Transcript to be made from it: the Engine
-	// transcribed nothing, or nothing in it is speech. A HARD per-Recording
-	// failure, because re-running transcribes nothing again -- which is why it is
-	// told apart from the fault above rather than sharing it. The reason travels
-	// in `Error.parse`.
 	Nothing_Transcribed,
-	// An artifact could not be written under its temporary name. `Error.which`
-	// says which.
 	Not_Written,
-	// It was written and could not be moved into place. `Error.which` says which.
 	Not_Placed,
 }
 
-// One refusal, with whatever the failing layer knew about it.
 Error :: struct {
 	fault: Fault,
-	// Only for `.Not_Written` and `.Not_Placed`.
 	which: Artifact,
-	// Only for `.Output_Quarantined` and `.Nothing_Transcribed`. The name inside
-	// it is BORROWED from the caller's own spelling of the Engine's output, so
-	// the message is rendered while that string is still alive.
+	// The name inside it is borrowed from the caller's own spelling of the Engine's
+	// output, so the message is rendered while that string is still alive.
 	parse: transcript.Parse_Error,
 }
 
-// Turns one Recording's Engine output into the three artifacts that stand for a
-// finished Recording, or says why it could not.
+// The Names come back whichever way this ends, except where the Recording's own
+// path names no file; free them with destroy_names and the same allocator.
 //
-// THE WHOLE OF ADR-0002 IN ONE PROCEDURE, and that is the point of its being
-// one: validate, then move. A caller that could move first has the discipline in
-// its own hands, and the discipline is what the decision is.
-//
-// The order is fixed and the Sidecar is LAST. Planning treats a Recording as
-// done only when its Sidecar says the settings still match (ADR-0003), so a
-// Sidecar written before the artifacts it vouches for would report a Recording
-// complete whose Transcript never landed -- and the next run would skip it, for
-// ever. Everything before the Sidecar is re-doable by construction: a retained
-// Engine output with no Sidecar beside it is a Recording nobody has finished,
-// and the next run overwrites it.
-//
-// THE NAMES COME BACK WHICHEVER WAY THIS ENDS, except where the Recording's own
-// path names no file at all, and they are always freed with destroy_names and
-// the same allocator. One rule, and a caller reporting a failure has the paths
-// to name in it.
-//
-// `rc.language` is filled in HERE and must be handed in empty: it is the one
-// front matter fact the Engine's own output can settle (ADR-0001), this
-// procedure is the one holding that output, and a caller that supplied it would
-// be a second answer that could disagree.
+// Why the whole record is validated before the first artifact lands: ADR-0024.
 complete :: proc(
 	source: string,
 	output: string,
@@ -153,10 +55,6 @@ complete :: proc(
 		len(rc.language) == 0,
 		"the language is read out of the Engine's own output here and is not the caller's to supply",
 	)
-	// The read side of what sidecar_of guarantees on the way out (A4), asked
-	// where a caller hands one over rather than where it is turned into bytes --
-	// the Sidecar is written LAST, so an assertion down there fires with two
-	// artifacts already published.
 	assert_filled_in(made)
 
 	names, namable := names_of(source, allocator)
@@ -164,11 +62,6 @@ complete :: proc(
 		return {}, Error{fault = .Named_No_File}
 	}
 
-	// BEFORE the Engine's output is read and long before anything is published.
-	// `made` carries what `os.stat` answered about the Recording, and the Sidecar
-	// is written LAST -- so a record this package cannot write has to be found
-	// here or not at all. Found where it is written, the Transcript and the
-	// retained output are already on the disk with nothing vouching for them.
 	if !recordable(made) {
 		return names, Error{fault = .Not_Recordable}
 	}
@@ -190,14 +83,6 @@ complete :: proc(
 	)
 }
 
-// The Transcript, rendered from the Engine's output and then placed with it.
-//
-// SPLIT FOR READING AND NOT FOR RULE F1, which is what this used to claim and
-// what measurement does not support: merged, the two came to about fifty-seven
-// lines when the split was made, comfortably inside the seventy-line limit, so
-// F1 decided nothing. What decides it is the line the split falls on --
-// everything above is about FINDING the bytes, and everything here is about what
-// they turn out to be -- and that argument never needed the other one.
 @(private)
 rendered_and_placed :: proc(
 	names: Names,
@@ -209,14 +94,9 @@ rendered_and_placed :: proc(
 	allocator: mem.Allocator,
 ) -> Error {
 	rendered := rc
-	// ALWAYS CLONED, including the word for nobody knowing, so there is one
-	// lifetime rule and no fold at the call site (see transcript.parse_language).
 	rendered.language = transcript.parse_language(json_text, allocator)
 	defer delete(rendered.language, allocator)
 
-	// The validation ADR-0002 asks for, and it is not a second implementation of
-	// one: rendering parses, which is where "it parses, the Cue count is above
-	// zero, the offsets are monotonic" is already checked and already named.
 	markdown, parse_err := transcript.render_transcript(
 		output,
 		json_text,
@@ -232,15 +112,8 @@ rendered_and_placed :: proc(
 	return placed_in_order(names, transmute([]u8)json_text, markdown, made, allocator)
 }
 
-// What ADR-0002 does with Engine output that is not usable, which is not one
-// thing.
-//
-// The two dispositions come from `transcript.disposition_of` and are not decided
-// here: "a validated JSON that fails to parse is treated as ABSENT -- quarantine
-// it to `.json.bad` and re-run the full pipeline, rather than reporting a
-// permanent failure", while "exit 0 but no or empty output is a hard
-// per-Recording failure". Nothing in a fault's NAME says which side it falls on,
-// which is exactly why that table exists.
+// Why output that will not parse is quarantined and re-run, while output that
+// parsed and said nothing fails the Recording: ADR-0002.
 @(private)
 disposed_of :: proc(
 	output: string,
@@ -251,26 +124,14 @@ disposed_of :: proc(
 
 	switch transcript.disposition_of(parse_err.fault) {
 	case .Quarantine_And_Rerun:
-		// BEST EFFORT, and the report is the same either way. What the move buys
-		// is that the next run does not find a `.json` in the cache and take it
-		// for finished work, and that a user has a file to be pointed at; a move
-		// that Windows refuses because something still holds the file leaves the
-		// Recording exactly as re-runnable as it already was, because the next
-		// run's Engine writes over that name.
 		quarantine(output, allocator)
 		return Error{fault = .Output_Quarantined, parse = parse_err}
 	case .Fail_The_Recording:
-		// NOT quarantined, and that is the decision rather than an omission: the
-		// Engine's output is exactly what the Engine produces from this Recording,
-		// and moving it aside would set up a re-run that spends the GPU time to
-		// produce it again.
 		return Error{fault = .Nothing_Transcribed, parse = parse_err}
 	}
 	unreachable()
 }
 
-// The three artifacts, in the one order that makes the Sidecar's presence mean
-// something.
 @(private)
 placed_in_order :: proc(
 	names: Names,
@@ -281,9 +142,6 @@ placed_in_order :: proc(
 ) -> Error {
 	assert(len(markdown) > 0, "a Transcript of nothing at all reached the placement")
 
-	// The Engine's own bytes, retained so a re-render costs seconds rather than
-	// GPU hours (ADR-0003) -- and byte for byte, because a re-render has to
-	// produce the Transcript the original run would have (spec story 44).
 	if err := publish(names, .Engine_Output, json_bytes, allocator); err.fault != .None {
 		return err
 	}
@@ -291,31 +149,13 @@ placed_in_order :: proc(
 		return err
 	}
 
-	// LAST. Its presence is what a later run reads as "this Recording is
-	// genuinely complete", so nothing may be outstanding when it lands.
 	text := sidecar_text(made, allocator)
 	defer delete(text, allocator)
 	return publish(names, .Sidecar, transmute([]u8)text, allocator)
 }
 
-// Writes one artifact under a temporary name and moves it into place in one
-// step.
-//
-// ATOMIC, and the whole of what makes it so is where the temporary name is:
-// part_of puts it in the artifact's OWN directory, so the rename is always
-// within one volume. `core:os`'s rename is `MoveFileExW` with
-// `MOVEFILE_REPLACE_EXISTING` and no `MOVEFILE_COPY_ALLOWED` -- within a volume
-// that is atomic and replaces whatever was there, and across one it FAILS rather
-// than quietly becoming a copy and a delete. This never asks it to cross one:
-// the bytes reach the destination's volume before the artifact has a name, which
-// is why a scratch cache on another drive costs a copy and never an atomicity.
-//
-// THE NAME AND WHICH ARTIFACT IT IS ARRIVE TOGETHER, which is what the `Names`
-// enumerated array buys: this used to take a path and, separately, the word for
-// what that path was, and nothing but care kept the two in step. A refusal names
-// the artifact it is really about because it cannot name any other.
-//
-// Nothing half-written is left behind on any failing path.
+// Why the temporary name sits beside the destination, and which MoveFileExW
+// flags `core:os` passes to make the rename atomic and replacing: ADR-0024.
 publish :: proc(
 	names: Names,
 	which: Artifact,
@@ -330,9 +170,6 @@ publish :: proc(
 
 	part := part_of(destination, os.get_pid(), allocator)
 	defer delete(part, allocator)
-	// The half-written file, removed on every failing path. Left where it is, the
-	// next run's sweep would take it on age eventually -- and until then a
-	// directory beside a Recording would carry a file nobody can explain.
 	defer if err.fault != .None {
 		os.remove(part)
 	}
@@ -346,21 +183,7 @@ publish :: proc(
 	return Error{}
 }
 
-// Every byte of an artifact, on the disk under the name it was given.
-//
-// WHO CLOSES WHAT: this procedure opens the handle and this procedure closes it,
-// on every path out, and the close is not deferred. Its answer matters -- a
-// write that only fails at close is a full disk, which is spec story 54 -- and a
-// `defer` would throw that answer away.
-//
-// The byte count is checked as well as the error, because a platform that
-// reported one without the other still wrote less than the artifact.
-//
-// FLUSHED BEFORE THE RENAME. The rename is atomic in the file SYSTEM, which is
-// not the same as the bytes being on the disk: without this, a power loss
-// between the two leaves the artifact under its final name with a hole in it,
-// and a Sidecar beside it saying the Recording is finished. Three flushes per
-// Recording, against a Recording that took minutes on a GPU.
+// Why the bytes are flushed before publish renames onto the final name: ADR-0024.
 @(private)
 wrote :: proc(path: string, bytes: []u8) -> bool {
 	assert(len(path) > 0, "there is nowhere here to write an artifact")
@@ -380,14 +203,6 @@ wrote :: proc(path: string, bytes: []u8) -> bool {
 	return os.close(handle) == nil
 }
 
-// Moves a piece of Engine output that is not what the Engine writes aside, and
-// says whether it went.
-//
-// `.json.bad`, which ADR-0002 names outright. The rename REPLACES an existing
-// one, which matters more than it looks: a Recording that fails the same way
-// twice must not fail on the quarantine the second time, because that would turn
-// a re-runnable Recording into a permanent failure -- the exact shape this whole
-// decision exists to prevent.
 quarantine :: proc(path: string, allocator: mem.Allocator) -> bool {
 	assert(len(path) > 0, "there is nothing here to move aside")
 	assert(allocator.procedure != nil, "a quarantine name needs an allocator to be built in")
@@ -397,8 +212,6 @@ quarantine :: proc(path: string, allocator: mem.Allocator) -> bool {
 	return os.rename(path, aside) == nil
 }
 
-// What each fault reads as, without the Recording's name -- error_message
-// supplies that, so no arm here can forget to.
 @(private)
 fault_says :: proc(fault: Fault) -> string {
 	switch fault {
@@ -419,14 +232,10 @@ fault_says :: proc(fault: Fault) -> string {
 	case .Not_Placed:
 		return "was written and could not be moved into place"
 	case .None:
-	// The success value and not a fault. It has no sentence, and error_message
-	// refuses it by name before ever asking for one.
 	}
 	return ""
 }
 
-// Which artifact a placement failure was about, as the words that go in front of
-// the sentence.
 @(private)
 artifact_says :: proc(which: Artifact) -> string {
 	switch which {
@@ -440,17 +249,10 @@ artifact_says :: proc(which: Artifact) -> string {
 	return ""
 }
 
-// Renders one refusal as a line a Recording's failure row can carry, NAMING THE
-// RECORDING.
+// %q on the path: a refusal reaches a user through a UTF-16 Win32 call, where a
+// raw NUL cuts the line off and a byte that is not UTF-8 converts it all to nil.
 //
-// The path is printed with %q for the reason the renderers in `transcibr:audio`
-// and `transcibr:engine` give: a refusal reaches a user through a UTF-16 Win32
-// call, a raw NUL cuts the line off where it is printed, and a byte that is not
-// UTF-8 makes the whole line convert to nil.
-//
-// The allocator is explicit and never defaulted: the line outlives this
-// procedure and may be read by a worker other than the one that produced it
-// (ADR-0010). Free it with `delete` and the same allocator.
+// The line outlives this procedure; free it with delete and the same allocator.
 error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> string {
 	assert(err.fault != .None, "there is no message for a Recording that came through")
 	assert(len(source) > 0, "a refusal must name the Recording it is reported against")
@@ -477,12 +279,6 @@ error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> s
 	return message
 }
 
-// The two refusals whose REASON belongs to the parser, with that reason on the
-// end.
-//
-// Split out for rule F1's sake, the shape `transcibr:audio`'s own renderer uses:
-// error_message is one arm per shape of line, and this is the shape that has to
-// borrow.
 @(private)
 borrowed_message :: proc(
 	err: Error,
@@ -490,10 +286,6 @@ borrowed_message :: proc(
 	says: string,
 	allocator: mem.Allocator,
 ) -> string {
-	// The one member pair that borrows, checked against the record that carries
-	// it (A4): `disposed_of` only ever answers these two with the parser's own
-	// report in hand, so an empty one here is this package losing it between the
-	// failure and the row.
 	assert(err.parse.fault != .None, "a Recording refused for its output named no reason")
 
 	reason := transcript.error_message(err.parse, allocator)
