@@ -22,6 +22,18 @@ import "transcibr:transcript"
 // A8 runs through all of it: the Engine's output, the Recording's own path and
 // every answer the filesystem gives are outside this program, so every one is
 // refused through a return value and reported against the Recording.
+//
+// WHICH PUTS THIS FILE UNDER A1's AVERAGE, at 18 assertions across 11
+// procedures, and the carve-out is recorded here rather than left for a reader
+// to work out. Three carry none. `rendered_and_placed` is the second half of
+// `complete`, which holds five on the way in and hands its own checked values
+// straight through -- re-asserting them would be A4's pairing spelled twice in
+// one call chain, which is noise rather than a second route. `fault_says` and
+// `artifact_says` are total over their enumerations and cannot be handed
+// anything else; the assertion that matters about them is that neither answered
+// with nothing, and it lives in `error_message`, where it can name the fault it
+// is about. A1's own wording is the licence -- fewer where the callers carry
+// more -- and `error_message` carries six.
 
 // Which of a Recording's three artifacts a refusal is about.
 //

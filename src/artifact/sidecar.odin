@@ -17,6 +17,19 @@ import "core:strings"
 // while this is read by transcibr and by nobody else, must round-trip exactly,
 // and is refused whole the moment a byte of it is not what transcibr writes.
 // `write_yaml_quoted` next door is a renderer for a document; this is a record.
+//
+// WHICH PUTS THIS FILE UNDER A1's AVERAGE, at 24 assertions across 19
+// procedures, and the carve-out is recorded here rather than left for a reader
+// to work out. Six carry none, and each is one of three shapes. `read_field` and
+// `key_named` take a line off a disk, which is A8's own prohibition -- an
+// assertion in either is a byte in a file crashing this program, and this whole
+// half exists to answer that byte with "unknown, re-do it". `not_a_sidecar` and
+// `destroy_sidecar` free what they were handed and claim nothing. `sidecar_of`
+// and `recordable` are the two the count misreads: the first defers every one of
+// its four to `assert_filled_in`, and the second IS the boundary check, so an
+// assertion inside it would be the crash it exists to prevent. Raising the
+// number would mean putting assertions where A8 forbids them, which is a worse
+// file that counts better.
 
 // What the first line of a Sidecar says, and the version of the format it
 // stands for.
@@ -635,7 +648,11 @@ unquoted :: proc(value: string, allocator: mem.Allocator) -> (text: string, ok: 
 @(private)
 escape :: proc(from: string, out: ^strings.Builder) -> (taken: int) {
 	assert(out != nil, "there is nowhere here to write an unescaped byte")
-	assert(len(from) > 0 && from[0] == '\\', "an escape was read where there is none")
+	// Two facts and not one conjunction (A2), so a failure names which of them
+	// went: an empty slice and a slice that does not start an escape are
+	// different bugs in the caller.
+	assert(len(from) > 0, "an escape was read off the end of the value")
+	assert(from[0] == '\\', "an escape was read where there is none")
 
 	if len(from) < 2 {
 		return 0

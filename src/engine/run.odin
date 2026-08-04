@@ -140,10 +140,16 @@ transcribe :: proc(
 
 	prefix := fmt.aprintf("%s\\%s", job.cache, job.name, allocator = allocator)
 	defer delete(prefix, allocator)
-	// BEFORE anything is started, because the Engine's own answer to a path it
-	// cannot open is to spend the GPU time, write nothing and exit zero
-	// (ADR-0002) -- so a Recording refused here costs nothing, and one refused by
-	// the Engine costs minutes and says nothing.
+	// BEFORE ANY GPU TIME, because the Engine's own answer to a path it cannot
+	// open is to spend that time, write nothing and exit zero (ADR-0002) -- so a
+	// Recording refused here costs minutes less than one refused by the Engine,
+	// and the Engine's refusal says nothing at all.
+	//
+	// It does NOT cost nothing, which is what this used to claim: the shell probes
+	// the container and runs a full ffmpeg extraction before it ever calls this,
+	// so what has already been spent by now is one pass over the Recording. The
+	// check that costs nothing is the Model's, which `transcibr:artifact` makes
+	// once at Batch start.
 	if !openable_by_the_engine(job, prefix) {
 		return {}, Error{fault = .Path_Not_Ascii}
 	}
@@ -183,10 +189,16 @@ transcribe :: proc(
 // to put it on.
 //
 // THE SCRATCH CACHE IS NOT CHECKED HERE, and its absence is deliberate rather
-// than an omission. It is one directory for the whole Batch, `open_cache`
-// answers about it once before any Recording starts, and the prefix below is
-// built from it -- so a cache the Engine cannot open is caught here too, by a
-// Recording, after the Batch should already have refused to start.
+// than an omission: it is one directory for the whole Batch, and `open_cache`
+// answers about it once before any Recording starts.
+//
+// The prefix below is built from it, and that is NOT a second route to the same
+// answer -- which is what this used to say. `open_cache` asks about the RESOLVED
+// cache, because ADR-0002's scenario is a path that is perfectly ASCII as
+// spelled and is not once resolved; the prefix here carries the cache as the
+// caller SPELLED it. The two disagree in both directions, so what this check
+// covers is the prefix a child is really handed, and the Batch-level question
+// stays where it is answered.
 @(private)
 openable_by_the_engine :: proc(job: Job, prefix: string) -> bool {
 	assert(len(prefix) > 0, "the Engine was given nowhere to write its output")
