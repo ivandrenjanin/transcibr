@@ -94,6 +94,25 @@ main :: proc() {
 		print_version()
 		return
 	}
+	// The usage block is answered BEFORE the two commands are told apart, and it
+	// was answered inside one of them. `--transcribe lecture.mkv --help` therefore
+	// never reached it: the dispatch below sent it to transcribe_one, whose pairing
+	// loop told a caller who had asked for help that `--help` stands at the end of
+	// the command line with no value after it. A flag that means the same thing to
+	// both commands belongs in front of both.
+	//
+	// A caller who ASKED for the usage block gets it on standard output at exit
+	// zero, which is where a script redirecting one expects it. A caller who typed
+	// something this binary cannot read gets it on standard error at exit two,
+	// through refuse, which is where a script checking one expects it.
+	//
+	// The same scan as before, across the positions a NAME can stand in (see
+	// asks_for_help) -- so `--from-json --help` still asks to render a file called
+	// `--help` and is still refused as one rather than reported as success.
+	if asks_for_help(os.args[1:]) {
+		write_usage(os.stdout)
+		return
+	}
 	// Answered on the FIRST argument and not by scanning, because the two
 	// commands read different option lists and a scan would have to know both to
 	// tell them apart. See transcribe.odin for what that command is and is not.
@@ -134,15 +153,9 @@ re_render :: proc(arguments: []string) -> int {
 		"no arguments at all is the version banner, settled before this point",
 	)
 
-	// A caller who ASKED for the usage block gets it on standard output at exit
-	// zero, which is where a script redirecting one expects it. A caller who
-	// typed something this binary cannot read gets it on standard error at exit
-	// two, which is where a script checking one expects it.
-	if asks_for_help(arguments) {
-		write_usage(os.stdout)
-		return 0
-	}
-
+	// `--help` is NOT answered here. It is answered in main, in front of both
+	// commands, because it meant the same thing to both and only one of them
+	// looked -- see main for what that cost `--transcribe <recording> --help`.
 	options, ok := read_options(arguments)
 	if !ok {
 		return USAGE_ERROR

@@ -385,7 +385,15 @@ progress_says :: proc(from: Progress_Source) -> string {
 	case .Estimate:
 		return "(estimated)"
 	case .Frozen:
-		return "(no output)"
+		// "(waiting)" AND NOT "(no output)", which is what this said and which is
+		// a claim about the Engine that is usually false. The bar freezes whenever
+		// nothing has arrived for a minute, and on a long Recording that is most of
+		// a perfectly healthy run: the Engine crosses a reading every several per
+		// cent, and between two of them it is writing every Cue to a stream ADR-0004
+		// sends to the null device. So "no output" is said about an Engine that is
+		// producing plenty of it, on the ordinary path -- and this display exists
+		// because a confident wrong number is worse than an honest still one.
+		return "(waiting)"
 	case .Engine:
 	// The ordinary case, and the one that says nothing. Stated rather than left
 	// as a fallthrough, so a fourth source is a build failure here.
