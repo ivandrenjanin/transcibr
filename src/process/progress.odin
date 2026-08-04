@@ -1,56 +1,20 @@
 package process
 
-// This file is the progress display's own half of the Process contract: the
-// chunks a child's diagnostic pipe hands back reassembled into lines, and -- in
-// the second half of the file -- what the display should show given what the
-// Engine has said and how long ago it last said anything.
-//
-// Pure like the rest of the package (ADR-0009). No clock is read here: every
-// reading is HANDED IN, which is the shape `remaining_ms` in `transcibr:child`
-// established and ADR-0018 wrote down, and it is what makes a child that has
-// gone quiet, one that has gone silent and a deadline exactly reached into
-// values a case can produce rather than states a test would have to wait for.
+// A child's diagnostic pipe reassembled into lines, and what a Recording's
+// progress display should show given what the Engine has said and when.
 
-// The longest diagnostic line this package will hold, in bytes.
-//
-// FIXED AND NEVER GROWN, which is the point rather than a limitation. Everything
-// on this stream is outside the program (A8), so a child that writes ten
-// megabytes with no newline in it must cost a bounded amount of memory and
-// degrade the progress bar -- not exhaust the machine, and not wedge the child
-// by making the drain slower than the write.
-//
-// Sized against a PATH and not against what was measured, because the longest
-// line the Engine writes is the startup banner and the banner quotes the audio's
-// own path. The longest line in the fixture is the system-information line at
-// 261 bytes; four kilobytes is fifteen times that and more than the extended
-// path limit Windows itself documents.
+// Sized against a Windows extended path rather than against the fixture's
+// longest line, 261 bytes: the Engine's banner quotes the audio's own path.
 MAX_DIAGNOSTIC_LINE :: 4096
 
-// Whatever a child has said that has not yet become a whole line.
-//
-// A fixed array and no allocator, so a caller can keep one per running child on
-// its own stack and there is nothing to free. The line it hands back is a VIEW
-// INTO THIS RECORD and is only good until the next call -- a caller that needs
-// to keep one clones it.
+// The line handed back is a view into this record and is only good until the
+// next call; a caller that needs to keep one clones it.
 Line_Reader :: struct {
 	held:     [MAX_DIAGNOSTIC_LINE]u8,
 	count:    int,
-	// True while the rest of a line too long to hold is being walked past.
-	//
-	// THE REST IS DROPPED AND THE FRONT IS NOT KEPT. A line this reader could not
-	// hold is a line it has already failed to read, and the first four kilobytes
-	// of one handed on as though whole is a reading nobody can trust -- the
-	// truncation is invisible by the time anything downstream sees it.
 	skipping: bool,
 }
 
-// Takes the next whole line out of `remaining`, holding whatever is left over
-// for the chunk after it.
-//
-// `remaining` is advanced past everything consumed, so a caller loops until this
-// answers false and then hands in the next chunk. False means the chunk ran out
-// mid-line, which is the ordinary outcome: a read off an anonymous pipe ends
-// wherever the kernel had bytes and nothing aligns that to a line.
 next_line :: proc(r: ^Line_Reader, remaining: ^string) -> (line: string, ok: bool) {
 	assert(r != nil, "there is nothing here to read a line into")
 	assert(remaining != nil, "there is no chunk here to read a line out of")
@@ -84,26 +48,10 @@ next_line :: proc(r: ^Line_Reader, remaining: ^string) -> (line: string, ok: boo
 	return "", false
 }
 
-// Whatever is held behind no newline at all, once the child is gone.
-//
-// A child that exits without a final newline still said what it said, and the
-// last thing a Recording's Engine says is the one most worth not dropping.
-// Answers false the second time, so a caller that asks again is not handed the
-// same line for ever.
 last_line :: proc(r: ^Line_Reader) -> (line: string, ok: bool) {
 	assert(r != nil, "there is nothing here to read a last line out of")
 	assert(r.count <= len(r.held), "the reader is holding more than it has room for")
 
-	// A line being SKIPPED holds nothing -- next_line sets `count` to zero at the
-	// moment it starts skipping and never writes to `held` again until a newline
-	// clears both -- so the answer above is also the negative space (A3), and the
-	// tail of an oversized line has no path out of here.
-	//
-	// That fact used to be spelled as `assert(!r.skipping)` below this return, and
-	// an assertion no path can reach is not documentation that cannot rot: it is a
-	// claim nothing checks, dressed as one that does. A6 asks for a true assertion
-	// over a comment where a condition is CRITICAL AND SURPRISING; this one is
-	// neither reachable nor surprising two lines under the return that implies it.
 	if r.count == 0 {
 		return "", false
 	}
@@ -113,12 +61,8 @@ last_line :: proc(r: ^Line_Reader) -> (line: string, ok: bool) {
 	return held, true
 }
 
-// One assembled line with its carriage return taken off.
-//
-// The carriage return is FRAMING and not content: the Engine writes CRLF on
-// Windows, so a reader downstream would otherwise be comparing against a byte
-// nobody meant. Taken off exactly once, here, rather than by every reader
-// remembering to.
+// The Engine writes CRLF on Windows, and the carriage return is framing rather
+// than content; it is taken off once, here, rather than by every reader.
 @(private)
 trimmed :: proc(held: []u8) -> string {
 	if len(held) > 0 && held[len(held) - 1] == '\r' {
@@ -127,152 +71,21 @@ trimmed :: proc(held: []u8) -> string {
 	return string(held)
 }
 
-// How long the Engine may go without a readable progress line before the
-// time-based estimate stands in, in milliseconds.
-//
-// KEYED ON THE ELAPSED TIME SINCE THE LAST LINE AND NEVER ON THEIR ABSENCE,
-// which is ADR-0012's own sentence and the trap this whole file is written
-// around: the Engine is silent on this subject for the whole of model load, and
-// a rule that read "nothing said yet" as a failure would abort every healthy
-// run. Nothing here fails on this bound. All it does is decide who supplies the
-// number on the bar.
-//
-// Half a minute, against a legitimate gap between readings that the fixture puts
-// at about a third of a second for a four-minute Recording and that scales with
-// the Recording: a three-hour Recording at seventeen times realtime crosses a
-// reading roughly every forty seconds, so the estimate does stand in between
-// readings on a long one. That costs nothing, because the estimate is floored at
-// whatever the Engine last said.
-//
-// The DEFAULT and not the number `shown` reads. It is a field of Watch, for the
-// reason the other three are: a bound no case can reach is a decision no run
-// exercises, and this one was left on the constant when the other three were
-// handed in -- so the estimate never once stood in front of a display in the
-// whole sweep.
 FALLBACK_AFTER_MS :: i64(30_000)
 
-// How long nothing may arrive on any stream this program can see before the
-// estimate stops moving, in milliseconds.
-//
-// "EITHER STREAM" IS ONE STREAM HERE, and that is ADR-0004 rather than a
-// shortcut. Standard output goes to the null device, because the Engine writes
-// every Cue to it during inference and an undrained pipe wedges the child --
-// measured at 14,468 bytes for twenty minutes of audio against a pipe buffer of
-// a few kilobytes. So the bytes on standard output are unobservable BY
-// CONSTRUCTION, and standard error is the whole of what a watchdog can key on.
-//
-// What that costs is the thing to be honest about: an Engine part-way through
-// inference is writing hard to a stream nobody can see while saying nothing on
-// the one that can, and it is indistinguishable from a wedged one over any short
-// window. What makes the window sound is the progress line -- the Engine crosses
-// one every few per cent -- so the bound is sized against the longest legitimate
-// gap between readings rather than against a byte trickle.
-//
-// AND THAT COST IS REAL RATHER THAN THEORETICAL. Draining standard output
-// instead was declined once on the reasoning that C stdio is fully buffered when
-// standard output is not a terminal, so those 14,468 bytes would reach a pipe in
-// 4 KB blocks -- about one flush per six minutes of audio, SPARSER than a
-// reading. The general property is true and the inference about this binary is
-// false, which is why it is written down here: whisper.cpp v1.9.1 calls
-// fflush(stdout) as the last statement of the per-segment loop in
-// whisper_print_segment_callback, and installs that callback for every
-// invocation whose `-of` is not `-` -- which is every invocation
-// engine_arguments builds. The Engine flushes standard output once per SEGMENT,
-// a few seconds of audio, which is DENSER than a progress line rather than
-// sparser. Issue #32 holds the trade, because taking it is a decision against
-// ADR-0004 and wants a measurement rather than an argument.
-//
-// A minute. The gap between readings is about forty seconds for a three-hour
-// Recording at seventeen times realtime, and the corpus's longest is 168
-// minutes. Beyond that the bar freezes between readings, which is cosmetic: a
-// frozen bar is what ADR-0012 asks for over a confident one, and the estimate is
-// floored at the Engine's last reading either way.
-//
-// FIXED WHERE THE FAILING BOUND BELOW IS SCALED, and the asymmetry is the point:
-// what a fixed bound costs here is a bar that stops moving, and what it costs
-// below is a Recording's whole run discarded.
+// Why standard output is not drained as a second stream: ADR-0012.
 QUIET_AFTER_MS :: i64(60_000)
 
-// ... and the FLOOR under how long before the run is an operating error, in
-// milliseconds. silent_after_ms below is what a Recording is actually given.
-//
-// Five minutes, which is what a cold Model load costs before any inference
-// happens at all: 1.6 GB, measured at 1.07 seconds warm and about thirty seconds
-// at fifty megabytes a second cold. That is the one legitimate silence which
-// does NOT scale with the Recording, so it is the one a floor is the right shape
-// for.
-//
-// A Recording that trips it is an operating error and not an assertion (A8): it
-// fails on its own and the Batch carries on (ADR-0002).
+// A cold Model load: 1.6 GB, about thirty seconds at fifty megabytes a second.
+// The one legitimate silence that does not scale with the Recording, and so the
+// one a floor is the right shape for.
 SILENT_AFTER_MS :: i64(5 * 60 * 1000)
 
-// The estimate must be able to stop moving BEFORE the run is failed, or the
-// frozen bar ADR-0012 asks for is a state nothing can ever be in: the display
-// would go straight from advancing confidently to a failed Recording, which is
-// exactly the "hides the failure" outcome that decision names. Held by the
-// compiler, because it is a relationship between two constants and not
-// something a test would notice going wrong (A5).
 #assert(QUIET_AFTER_MS < SILENT_AFTER_MS)
 
-// And the estimate must be able to STAND IN before the bar freezes, for the
-// mirror of the same reason: silence is read first, so a fallback bound that
-// reached its quiet bound would make `Progress_Source.Estimate` a state nothing
-// can ever be in and the display would go from the Engine's own last reading
-// straight to a frozen bar. This one was missing while the two above were held
-// twice over, and the watchdog every case handed in violated it.
 #assert(FALLBACK_AFTER_MS < QUIET_AFTER_MS)
 
-// How long nothing may arrive on any stream this program can see before THIS
-// Recording's run is an operating error, in milliseconds.
-//
-// SCALED WITH THE RECORDING, and it has to be, because the two documents this
-// program is built on decide the longest legitimate silence between them and
-// neither of them mentions a clock. ADR-0004: every Cue goes to the null device,
-// so between two progress lines there is nothing on any stream this program can
-// see. ADR-0012, from the one real capture: the largest jump between two
-// consecutive readings is TWELVE POINTS, 52 -> 64. So a run of wall time W has a
-// legitimate silence of 0.12*W in it, measured -- and W is the Recording's own
-// length divided by whatever the machine manages.
-//
-// A JUMP AND NOT A READING COUNT, because the count is a function of the
-// Recording's length rather than a constant: the callback fires at most once per
-// thirty-second decoder window, so the four-minute capture reports eleven times
-// in jumps of six to twelve points, and a 168-minute Recording reports about
-// twenty, finely spaced. The capture's is the COARSE pattern, which is the
-// pessimistic direction for a bound, so it is the one this is sized against.
-//
-// A FIXED FIVE MINUTES FAILED EVERY LONG RUN. The corpus's longest Recording is
-// 168 minutes; at realtime the capture's largest jump is worth twenty minutes of
-// it, and the run was discarded four times over while the Engine was working
-// perfectly. It could not be right: transcribe_bound_ms gives that same Recording
-// 730 minutes and ENGINE_BOUND_MULTIPLE's own comment says the four is sized
-// "against a CPU-only fallback", so the two bounds in this file contradict each
-// other for every Recording over about ten minutes -- at the quarter of realtime
-// the run bound is sized for, ten minutes of audio already carries a legitimate
-// silence of five.
-//
-// THE RECORDING'S OWN LENGTH, floored. That clears any machine at realtime or
-// faster outright -- W is then at most the Recording's length and the whole run
-// fits inside one bound, so no gap in it can reach one, a margin of 8.3 -- and it
-// clears the quarter-of-realtime CPU fallback the run bound is sized for with a
-// margin of 2.08 (0.12*W is 0.48 of the Recording's length there, against a bound
-// of 1.0).
-//
-// A QUARTER of the length -- one reading per five per cent, which is the most
-// ADR-0012 permits rather than what anybody measured -- was the first answer and
-// is wrong for the same reason the fixed one was: against the jump this
-// repository has actually captured, 0.48 is past 0.25, so a 168-minute Recording
-// on that machine has an 80.6-minute silence in it against a 42-minute bound.
-// Sizing this against the best case the amendment allows is how the first bound
-// got here.
-//
-// What it costs is honest: a wedged Engine on a 168-minute Recording is now
-// noticed after 168 minutes rather than five. That is still four times sooner
-// than the run bound would have noticed, and the alternative is not a faster
-// failure but a correct run thrown away. Issue #32 is the one thing that would
-// buy the difference back -- a drained standard output is a byte trickle
-// measured in seconds however long the Recording is, so this bound would not
-// have to scale at all. See QUIET_AFTER_MS for why that is not simply done.
+// Why the silence bound scales with the Recording: ADR-0012.
 @(private)
 silent_after_ms :: proc(duration_ms: i64, floor_ms: i64) -> i64 {
 	assert(floor_ms > 0, "a run given no time at all to break its silence")
@@ -283,53 +96,21 @@ silent_after_ms :: proc(duration_ms: i64, floor_ms: i64) -> i64 {
 	return given
 }
 
-// The highest the ESTIMATE may ever read.
-//
-// A hundred is a fact, and only the Engine's own last reading or a finished
-// output file supplies one. An estimate that reached it would announce a
-// Transcript that does not exist for however long the run has left, which is the
-// one thing a progress display must not be wrong about.
+// A hundred is a fact, and only the Engine's own reading or a finished output
+// file supplies one.
 ESTIMATE_CEILING :: 99
 
 #assert(ESTIMATE_CEILING < 100)
 
-// How much slower than realtime the Engine is assumed to run, for the estimate.
-//
-// CHOSEN TO LAG AND NEVER TO LEAD. The measurements are 58 times realtime for
-// this repository's fixture on an RTX 4070 Ti SUPER with `large-v3-turbo`, and
-// about 17 times on the machine ADR-0012 was written against; a CPU-only
-// fallback is far slower than either. An estimate that ran AHEAD would sit at
-// the ceiling for most of a run and say nothing, while one that lags shows
-// motion and is overtaken by the Engine's own next reading -- which is the floor
-// it can never fall below.
-//
-// A defaulted parameter rather than a constant at the call site, the shape
-// `Tolerance` has in `transcibr:audio`: a case hands in its own, and a caller
-// that one day measures a real factor per machine has somewhere to put it.
+// Why four, chosen to lag against two measured throughputs: ADR-0012.
 DEFAULT_REALTIME_FACTOR :: f64(4)
 
 #assert(DEFAULT_REALTIME_FACTOR > 0)
 
-// The four numbers `shown` decides with, as one value.
-//
-// A RECORD RATHER THAN FOUR DEFAULTED PARAMETERS, because three of them are an
-// ORDERED CHAIN -- fallback below quiet below silent -- and a caller that could
-// move one without the others would be able to spell a run in which the estimate
-// or the frozen bar is a state nothing can ever be in. Handed in, the shape
-// ADR-0018 records for `Tolerance` in `transcibr:audio`: the shipped program
-// takes DEFAULT_WATCH, and a case or a shell that needs a bound it can actually
-// reach hands in its own.
-//
-// `fallback_ms` WAS LEFT OUT and that is worth the sentence. The other three were
-// handed in and this one went on being read off the package constant, so no case
-// could reach it: every watchdog a case hands in has bounds far below thirty
-// seconds, and `Progress_Source.Estimate` never once reached a display in the
-// whole sweep -- the fallback being the entire reason ADR-0012 exists.
+// The three bounds are an ordered chain -- fallback below quiet below silent --
+// so they are handed in together or not at all.
 Watch :: struct {
 	factor:      f64,
-	// How long the Engine may go without a readable progress line before the
-	// estimate stands in. Must sit BELOW quiet_ms, or the bar has already frozen
-	// by the time the estimate would have supplied a number.
 	fallback_ms: i64,
 	quiet_ms:    i64,
 	silent_ms:   i64,
@@ -342,104 +123,42 @@ DEFAULT_WATCH :: Watch {
 	silent_ms   = SILENT_AFTER_MS,
 }
 
-// Everything one Recording's progress display keys on.
-//
-// NO CLOCK IS READ IN THIS FILE. Every reading is handed in, which is the shape
-// `remaining_ms` in `transcibr:child` established and ADR-0018 wrote down as the
-// rule -- and it is what makes a child part-way through model load, one that has
-// gone quiet and one that has gone silent into values a case produces rather
-// than states a suite would have to wait five minutes for.
-//
-// The readings must all come from a MONOTONIC counter, and from the same one. A
-// wall clock stepped backwards by a time service mid-Recording would make the
-// elapsed time negative, and this is one of the few places in the program where
-// that is a broken machine rather than external input: nothing outside transcibr
-// supplies these.
+// Every reading is handed in, and all of them must come from one monotonic
+// counter: a wall clock stepped backwards mid-Recording is a broken machine
+// here rather than external input.
 Tracker :: struct {
-	// How long the audio is, in milliseconds, or zero where nobody could say.
-	// From the container probe before the Engine starts and from the Engine's own
-	// startup banner once that arrives -- the spec's two sources, and NEVER the
-	// scratch audio's header, which `transcibr:audio` makes a compile error by
-	// giving that measurement a distinct type.
 	duration_ms:      i64,
-	// The highest percentage the Engine has said. Zero until it has said one,
-	// which is the ordinary state for the whole of model load.
 	said:             int,
 	started_ns:       i64,
-	// When a byte last arrived on a stream this program can see. The watchdog's
-	// only input -- see QUIET_AFTER_MS for what "either stream" means once
-	// standard output is the null device.
 	last_byte_ns:     i64,
-	// When a READABLE progress line last arrived, or when the run started if none
-	// has. What the fallback keys on, and never their absence (ADR-0012).
 	last_progress_ns: i64,
 }
 
-// Where the number on the bar came from.
 Progress_Source :: enum u8 {
-	// The Engine's own last reading stands. It is zero and unsaid until the
-	// Engine has said one, which is the ordinary state during model load.
 	Engine = 0,
-	// The Engine has said nothing readable for FALLBACK_AFTER_MS, so the
-	// time-based estimate is standing in (ADR-0012).
 	Estimate,
-	// Nothing has arrived on any stream this program can see for QUIET_AFTER_MS,
-	// so the estimate has stopped moving rather than animating over a child that
-	// may already be dead.
 	Frozen,
 }
 
-// What the display should show, and what the watchdog makes of the silence
-// behind it.
 Progress :: struct {
-	// 0..100.
 	percent: int,
 	from:    Progress_Source,
-	// Nothing on any stream this program can see for SILENT_AFTER_MS. AN
-	// OPERATING ERROR AND NOT A DISPLAY STATE, which is why it is a field of its
-	// own rather than a fourth source: the caller stops the child and fails the
-	// Recording, and the Batch carries on (ADR-0002).
+	// An operating error rather than a fourth display state: the caller stops the
+	// child and fails the Recording.
 	silent:  bool,
 }
 
-// What a display says beside the percentage about where the number came from.
-//
-// HERE AND NOT IN THE SHELL THAT PRINTS IT. ADR-0009 puts every decision worth
-// testing in the core, and `scripts\test.ps1` requires `src/cli` to collect zero
-// tests -- so a three-arm table living there would be one nothing could hold to
-// account, including its own emptiness.
-//
-// The Engine's own reading says NOTHING, which is the decision rather than an
-// oversight: it is the ordinary case, and a bar annotated on every line teaches
-// a reader to stop reading the annotation. What has to be visible is the two
-// that are not ordinary.
 progress_says :: proc(from: Progress_Source) -> string {
 	switch from {
 	case .Estimate:
 		return "(estimated)"
 	case .Frozen:
-		// "(waiting)" AND NOT "(no output)", which is what this said and which is
-		// a claim about the Engine that is usually false. The bar freezes whenever
-		// nothing has arrived for a minute, and on a long Recording that is most of
-		// a perfectly healthy run: the Engine crosses a reading every several per
-		// cent, and between two of them it is writing every Cue to a stream ADR-0004
-		// sends to the null device. So "no output" is said about an Engine that is
-		// producing plenty of it, on the ordinary path -- and this display exists
-		// because a confident wrong number is worse than an honest still one.
 		return "(waiting)"
 	case .Engine:
-	// The ordinary case, and the one that says nothing. Stated rather than left
-	// as a fallthrough, so a fourth source is a build failure here.
 	}
 	return ""
 }
 
-// Starts tracking one Recording's progress.
-//
-// `duration_ms` is the container probe's answer, or zero where the container
-// could not be timed -- which is not a refusal here: the Engine's banner may
-// still supply one, and until something does, the estimate has nothing to key on
-// and says so by not moving.
 tracker_start :: proc(duration_ms: i64, now_ns: i64) -> Tracker {
 	assert(duration_ms >= 0, "a Recording of negative length")
 	assert(now_ns > 0, "a monotonic counter that has not started")
@@ -452,12 +171,8 @@ tracker_start :: proc(duration_ms: i64, now_ns: i64) -> Tracker {
 	}
 }
 
-// Bytes arrived on a stream this program can see.
-//
-// Called for EVERY drain that produced anything, whether or not any of it read
-// as a line -- the watchdog's question is whether the child is alive, and a
-// child writing its model-load log is alive whether or not this package
-// understands a word of it.
+// Called for every drain that produced anything, whether or not any of it read
+// as a line: a child writing a log this package cannot parse is still alive.
 tracker_heard :: proc(tr: ^Tracker, bytes: int, now_ns: i64) {
 	assert(tr != nil, "there is no Recording here to track")
 	assert(bytes > 0, "a drain that read nothing was reported as the child talking")
@@ -466,46 +181,24 @@ tracker_heard :: proc(tr: ^Tracker, bytes: int, now_ns: i64) {
 	tr.last_byte_ns = now_ns
 }
 
-// One line, read back.
 tracker_said :: proc(tr: ^Tracker, said: Engine_Line, now_ns: i64) {
 	assert(tr != nil, "there is no Recording here to track")
 	assert(now_ns >= tr.started_ns, "the monotonic counter went backwards over one Recording")
 
 	switch said.says {
 	case .Progress:
-		// The HIGHEST reading stands, and a reading that went backwards is not
-		// refused and not asserted against (A8): the fixture's readings do rise
-		// and nothing promises a release will not restart the count part-way, and
-		// a bar that dropped from 52 to 40 reads as a Recording being done again.
-		// The line still counted as a line, which is what stops the fallback
-		// standing in over a perfectly healthy Engine.
 		tr.said = max(tr.said, said.percent)
 		tr.last_progress_ns = now_ns
 	case .Duration:
-		// The banner wins over the container probe once it arrives: it is about
-		// the audio the Engine is ACTUALLY working through, and that is what the
-		// estimate is an estimate of.
 		tr.duration_ms = said.duration_ms
 	case .Nothing:
-	// Most of what arrives. Not a reading, and deliberately not a byte either
-	// -- tracker_heard is what says the child is alive, so that a stream of
-	// lines nobody can read still holds the watchdog off.
 	}
 }
 
-// What the display should show now.
-//
-// The order of the three answers is the decision. Silence is read FIRST, because
-// a number that keeps climbing over a child that has stopped producing bytes is
-// worse than a frozen one -- ADR-0012's own words, and the reason that decision
-// exists at all.
 shown :: proc(tr: Tracker, now_ns: i64, watch := DEFAULT_WATCH) -> Progress {
 	assert(now_ns >= tr.started_ns, "the monotonic counter went backwards over one Recording")
 	assert(watch.factor > 0, "an Engine that runs at no speed at all finishes nothing")
 	assert(tr.said >= 0, "a tracker holding a negative percentage")
-	// The chain, checked wherever a caller hands one in -- the compile-time forms
-	// above only cover the constants this package chose (A4). Split rather than
-	// written as one condition (A2): each says which link failed.
 	assert(
 		watch.fallback_ms < watch.quiet_ms,
 		"an estimate that stands in no sooner than the bar freezes never stands in at all",
@@ -515,10 +208,6 @@ shown :: proc(tr: Tracker, now_ns: i64, watch := DEFAULT_WATCH) -> Progress {
 		"a bar that freezes no sooner than the run fails never freezes at all",
 	)
 
-	// The Recording's own bound, and never the handed-in one on its own: that is
-	// the FLOOR, and a Recording longer than it is given its own length. See
-	// silent_after_ms for why a fixed bound cannot be right at both ends of a
-	// corpus whose Recordings run from four minutes to 168.
 	silent_ms := silent_after_ms(tr.duration_ms, watch.silent_ms)
 	quiet_ns := now_ns - tr.last_byte_ns
 	if quiet_ns >= watch.quiet_ms * 1_000_000 {
@@ -534,19 +223,11 @@ shown :: proc(tr: Tracker, now_ns: i64, watch := DEFAULT_WATCH) -> Progress {
 	return Progress{percent = estimated(tr, now_ns, watch.factor), from = .Estimate}
 }
 
-// The time-based estimate, floored at what the Engine last said.
-//
-// The floor is applied BEFORE the ceiling, so an Engine that has already said a
-// hundred keeps it: the ceiling is a rule about what an ESTIMATE may claim, not
-// about what the Engine may report.
 @(private)
 estimated :: proc(tr: Tracker, now_ns: i64, factor: f64) -> int {
 	assert(factor > 0, "an Engine that runs at no speed at all finishes nothing")
 	assert(now_ns >= tr.started_ns, "the monotonic counter went backwards over one Recording")
 
-	// Nothing to divide by. A container that could not be timed and a banner that
-	// never arrived leave the last reading standing, which is honest -- a number
-	// invented from nothing would be the confident bar ADR-0012 refuses.
 	if tr.duration_ms <= 0 {
 		return tr.said
 	}
@@ -562,20 +243,9 @@ estimated :: proc(tr: Tracker, now_ns: i64, factor: f64) -> int {
 	return percent
 }
 
-// How long one Engine invocation is given before it is stopped, in
-// milliseconds.
-//
-// A bound and never INFINITE, which is issue #27's rule: an Engine wedged in a
-// driver call holds a Batch for ever, and one GPU worker means it holds every
-// Recording behind it too (ADR-0006).
-//
-// FOUR TIMES REALTIME PLUS A FLOOR, and both parts earn their place. The
-// multiple is against a CPU-only fallback rather than against anything measured
-// on a GPU -- the fixture ran at 58 times realtime and ADR-0012's machine at 17,
-// so this is more than an order of magnitude of headroom on either. The floor is
-// what a cold Model load costs before any inference happens at all, and without
-// it a two-minute Recording would be given eight minutes for a load that can
-// take one of them.
+// The multiple is sized against a CPU-only fallback rather than against
+// anything measured on a GPU; the floor is what a cold Model load costs before
+// any inference happens at all.
 ENGINE_BOUND_FLOOR_MS :: i64(10 * 60 * 1000)
 ENGINE_BOUND_MULTIPLE :: i64(4)
 

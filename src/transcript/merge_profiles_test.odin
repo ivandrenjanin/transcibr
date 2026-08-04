@@ -5,29 +5,6 @@ import "core:slice"
 import "core:strings"
 import "core:testing"
 
-// ---------------------------------------------------------------------------
-// The two Merge Profiles against the two populations ADR-0007 measured.
-//
-// The objection this answers is a serious one, and the ADR records it: the
-// Engine emits Cues delimited by timestamp tokens in consecutive pairs, so the
-// end of one Cue is by construction the start of the next, and inter-Cue gaps
-// might carry almost no information. If that were true both profiles would
-// collapse into one rule and the whole feature would be theatre.
-//
-// It is false, and the two content types are measurably different populations
-// rather than a distinction invented in advance. The continuous recording is
-// bimodal -- 45.8% touching Cues, with 19% of gaps over two and a half seconds
-// while the speaker pauses -- and the interactive one is a dense continuous
-// distribution of short turns with almost no touching Cues. That is why the
-// fixtures below are gap TABLES rather than round numbers: a profile comparison
-// run against invented gaps proves only that two different thresholds are two
-// different thresholds.
-// ---------------------------------------------------------------------------
-
-// The gap distribution ADR-0007 measured for one kind of material, as shares and
-// percentiles rather than as a histogram. Held beside the table it describes so
-// that a table edited by hand is checked against what it is supposed to be, in
-// checked code rather than in a comment (CLAUDE.md A6).
 @(private)
 Gap_Distribution :: struct {
 	touching:  f64,
@@ -38,37 +15,19 @@ Gap_Distribution :: struct {
 	p90:       Millis,
 }
 
-// One kind of material: its measured gaps, how long its Cues run, and how often
-// they end a sentence.
 @(private)
 Material :: struct {
 	name:                    string,
 	gaps:                    []Millis,
-	// ADR-0007's Cue duration p50 for this material, used for every Cue. The
-	// merger reads durations only through the gap between neighbours, so
-	// spreading them would vary nothing this measures.
 	duration_ms:             Millis,
-	// One Cue in every `unfinished_every` ends without a sentence-ending mark,
-	// which is how the measured sentence-final share is reproduced: one in five
-	// for continuous speech (80.5% measured), one in forty for interactive
-	// (99.8% measured).
 	unfinished_every:        int,
 	finished:                []string,
 	unfinished:              []string,
 	measured:                Gap_Distribution,
-	// What each profile makes of it. Observed and then pinned, so paragraphing
-	// cannot drift without a test saying so -- the relation between them is
-	// asserted separately, and that one comes from the ADR rather than from a
-	// run of this code.
 	monologue_paragraphs:    int,
 	conversation_paragraphs: int,
 }
 
-// 45.8% of these are touching, and a fifth of them are pauses over two and a
-// half seconds long. Written in a plausible spoken order rather than sorted:
-// runs of touching Cues with the occasional long pause through them, which is
-// what "bimodal" looks like laid out in time. The percentiles are read off a
-// sorted copy in the test, so the order here changes nothing it checks.
 @(private, rodata)
 CONTINUOUS_GAPS := []Millis {
 	0,
@@ -113,8 +72,6 @@ CONTINUOUS_GAPS := []Millis {
 	0,
 }
 
-// The other population: short turns, almost nothing touching, and the mass
-// sitting in a dense band either side of half a second.
 @(private, rodata)
 INTERACTIVE_GAPS := []Millis {
 	520,
@@ -190,8 +147,8 @@ INTERACTIVE_FINISHED := []string {
 @(private, rodata)
 INTERACTIVE_UNFINISHED := []string{" and then I said to them,"}
 
-// Not rodata: every row names the tables above, which are variables rather than
-// constants, and rodata takes only constant initialisation.
+// Measured; see ADR-0007.
+// Not rodata: every row names the tables above, which are variables.
 @(private)
 MATERIALS := []Material {
 	{
@@ -232,7 +189,6 @@ MATERIALS := []Material {
 	},
 }
 
-// Lays one material's gaps out into Cues, saying something over each of them.
 @(private)
 material_cues :: proc(m: Material, allocator: mem.Allocator) -> []Cue {
 	assert(len(m.gaps) > 0, "material with no gaps in it describes no cue set")
@@ -260,7 +216,6 @@ material_cues :: proc(m: Material, allocator: mem.Allocator) -> []Cue {
 	return shaped_cues(shape, allocator)
 }
 
-// The share of gaps at or above a threshold.
 @(private)
 share_at_least :: proc(gaps: []Millis, at_least: Millis) -> f64 {
 	assert(len(gaps) > 0, "no gaps to take a share of")
@@ -275,7 +230,6 @@ share_at_least :: proc(gaps: []Millis, at_least: Millis) -> f64 {
 	return f64(counted) / f64(len(gaps))
 }
 
-// The value at a percentile of a SORTED set of gaps.
 @(private)
 percentile :: proc(sorted: []Millis, pct: int) -> Millis {
 	assert(len(sorted) > 0, "no gaps to take a percentile of")
@@ -286,16 +240,11 @@ percentile :: proc(sorted: []Millis, pct: int) -> Millis {
 	return sorted[at]
 }
 
-// Whether a share is close enough to a measured one. Three points: the fixtures
-// are forty gaps apiece against measurements taken over 154 and 415, so a share
-// can only land on a multiple of two and a half points.
+// Forty gaps apiece against measurements taken over 154 and 415, so a share can
+// only land on a multiple of two and a half points.
 @(private)
 NEAR_ENOUGH :: 0.03
 
-// The fixtures against the table they claim to reproduce. A profile comparison
-// run over invented gaps proves only that two different thresholds are two
-// different thresholds, so what makes the comparison below mean anything is
-// this: the gaps it runs on are the ones that were measured.
 @(test)
 the_gap_fixtures_reproduce_what_adr_0007_measured :: proc(t: ^testing.T) {
 	for m in MATERIALS {
@@ -303,8 +252,6 @@ the_gap_fixtures_reproduce_what_adr_0007_measured :: proc(t: ^testing.T) {
 		defer delete(sorted, context.allocator)
 		slice.sort(sorted)
 
-		// Gaps are whole milliseconds, so "at or below zero" is everything that
-		// is not "at or above one".
 		touching := 1 - share_at_least(sorted, 1)
 		testing.expectf(
 			t,
@@ -341,19 +288,6 @@ the_gap_fixtures_reproduce_what_adr_0007_measured :: proc(t: ^testing.T) {
 	}
 }
 
-// The acceptance criterion: both profiles against realistic gap distributions,
-// producing visibly different paragraphing.
-//
-// The margins are the interesting part, and they are the bimodality showing
-// through. On continuous speech the aggressive profile finds a third again as
-// many Paragraphs -- 12 against 9 -- because there is barely any gap mass
-// between 800 ms and 2500 ms for its lower thresholds to reach. On interactive
-// speech it finds nearly three times as many -- 23 against 8 -- because that
-// band is exactly where the interactive distribution puts most of its mass. A
-// single threshold cannot serve both, which is the whole of ADR-0007.
-//
-// The counts here are observations. The RELATION between them is not, and it has
-// a case of its own below.
 @(test)
 the_two_merge_profiles_paragraph_measured_material_differently :: proc(t: ^testing.T) {
 	for m in MATERIALS {
@@ -392,18 +326,8 @@ the_two_merge_profiles_paragraph_measured_material_differently :: proc(t: ^testi
 	}
 }
 
-// ADR-0007's actual claim, which is not "the two profiles differ" but "the two
-// content types are measurably different POPULATIONS rather than a distinction
-// invented in advance". If that were wrong, the profiles would pull the two
-// materials apart by the same margin and the second profile would be a knob
-// rather than a decision.
-//
-// This is the one expectation in this file that does not come from having run
-// the code. It comes from the shape of the two distributions.
 @(test)
 the_profiles_diverge_further_on_interactive_material :: proc(t: ^testing.T) {
-	// MATERIALS is ordered as ADR-0007's table is: continuous first, interactive
-	// second. Stated rather than assumed, because everything below indexes it.
 	if !testing.expect_value(t, len(MATERIALS), 2) {
 		return
 	}
@@ -444,20 +368,8 @@ the_profiles_diverge_further_on_interactive_material :: proc(t: ^testing.T) {
 	)
 }
 
-// ---------------------------------------------------------------------------
-// The profiles by NAME, which is what a person picks and what a Transcript
-// records having been merged under.
-//
-// A Merge Profile is "a named set of thresholds" (CONTEXT.md), and until now the
-// name existed only in prose: the thresholds were two constants and the word
-// `monologue` lived in the spec. A front matter block recording the profile, and
-// a command line accepting one, both need the name to be a value.
-// ---------------------------------------------------------------------------
-
 @(test)
 every_merge_profile_is_named_and_names_itself_back :: proc(t: ^testing.T) {
-	// Every member, so a profile added without a row in PROFILES fails here
-	// rather than rendering a Transcript that records an empty profile.
 	for profile in Merge_Profile {
 		name := profile_name(profile)
 		testing.expectf(t, len(name) > 0, "%v carries no name", profile)
@@ -468,14 +380,8 @@ every_merge_profile_is_named_and_names_itself_back :: proc(t: ^testing.T) {
 	}
 }
 
-// The negative space of that (CLAUDE.md A3). Without it, a lookup that answered
-// `.Monologue` to everything satisfies every line above.
 @(test)
 a_name_no_merge_profile_carries_is_refused :: proc(t: ^testing.T) {
-	// A name off by a letter, a name in the wrong case, and nothing at all. The
-	// middle one is the interesting row: a lookup folding case would accept a
-	// spelling the front matter never writes, and re-rendering would then record
-	// a profile under two names.
 	unknown := []string{"murmur", "Monologue", ""}
 	for name, i in unknown {
 		profile, known := profile_named(name)
@@ -483,36 +389,12 @@ a_name_no_merge_profile_carries_is_refused :: proc(t: ^testing.T) {
 	}
 }
 
-// The thresholds behind each name, against the constants ADR-0007 tuned. Read
-// through the profile rather than beside it: a table row pointing at the wrong
-// constant is a Transcript merged one way and recording the other.
 @(test)
 each_merge_profile_carries_the_thresholds_adr_0007_tuned :: proc(t: ^testing.T) {
 	testing.expect_value(t, profile_params(.Monologue), MONOLOGUE)
 	testing.expect_value(t, profile_params(.Conversation), CONVERSATION)
 }
 
-// What a usage line offers a caller, against the profiles that exist.
-//
-// `monologue|conversation` was hand-written into the command line's USAGE, which
-// is a copy of PROFILES living where no compiler compares the two: a third
-// profile would be unmentioned, and a renamed one would be offered under a
-// spelling profile_named refuses.
-//
-// BUILT AND COMPARED ONCE, rather than approached from three sides. This case
-// used to ask three indirect questions -- every name appears somewhere in the
-// constant, the separator count matches the profile count, and the total length
-// is the names plus the separators -- and `conversation|monologue` answers all
-// three correctly while offering the profiles in the wrong ORDER. A usage block
-// that lists them backwards is what a caller reads, so the order is part of the
-// claim and none of the three indirect questions could see it.
-//
-// The join is the same one grammar the constant is built with, applied once. It
-// is not the constant's own arithmetic repeated: PROFILE_CHOICE is concatenated
-// at compile time out of the two name CONSTANTS, and this walks the ENUMERATION
-// and reads each name back out of the PROFILES table -- so a row pointing at the
-// wrong constant, a renamed profile, a reordered enumeration and a third profile
-// nobody added to the offer are each a disagreement between the two.
 @(test)
 the_profiles_a_caller_may_pick_are_the_profiles_that_exist :: proc(t: ^testing.T) {
 	names: [len(Merge_Profile)]string
@@ -528,26 +410,6 @@ the_profiles_a_caller_may_pick_are_the_profiles_that_exist :: proc(t: ^testing.T
 	testing.expect_value(t, PROFILE_CHOICE, offered)
 }
 
-// The profile a caller who chose none is merged under, and the reason it is that
-// one rather than the other.
-//
-// Spec story 44 asks that a re-render produce the Transcript the original run
-// would have, so the window ADR-0004 promises and the command line must default
-// to the SAME profile. That is bought by naming it once -- DEFAULT_PROFILE, in
-// the package that holds the profiles -- and both shells read it rather than
-// spelling a bare enum member. No test here can reach the command line to check
-// that it does: `cli` collects no tests by design (ADR-0009), so what guards the
-// second half of the claim is review and the fact that there is one constant to
-// read.
-//
-// What IS checkable is the half that has a wrong answer available. The default
-// is the GENEROUS profile because merging too little leaves the
-// subtitle-fragment wall this program exists to avoid, and a reader who wanted
-// the aggressive one can re-render in seconds (spec story 43) -- so a default
-// pointing at a profile that breaks sooner than another has the trade backwards.
-// Read off the ENUMERATION rather than compared against MONOLOGUE by name: this
-// is a claim about the default's PLACE among the profiles, and it must go on
-// meaning that when there is a third.
 @(test)
 the_default_merge_profile_merges_as_generously_as_any :: proc(t: ^testing.T) {
 	fallback := profile_params(DEFAULT_PROFILE)
@@ -572,11 +434,6 @@ the_default_merge_profile_merges_as_generously_as_any :: proc(t: ^testing.T) {
 	}
 }
 
-// Two profiles under one name would resolve to whichever the lookup reached
-// first, so a Batch asking for the second gets the first's thresholds and the
-// front matter records the name both of them answer to. Nothing in the type
-// stops it, and the round trip above cannot see it: the duplicate's own name
-// still comes back as a profile, just not as that one.
 @(test)
 no_two_merge_profiles_answer_to_one_name :: proc(t: ^testing.T) {
 	for profile in Merge_Profile {
@@ -592,13 +449,6 @@ no_two_merge_profiles_answer_to_one_name :: proc(t: ^testing.T) {
 	}
 }
 
-// And the cap, on the profiles that actually ship rather than on a threshold a
-// case pinned for itself.
-//
-// Walked over the ENUMERATION and never over a list of constants written out
-// beside it. A third profile added to Merge_Profile would be silently exempt
-// from the only case checking the cap on shipped thresholds, while this case's
-// name went on claiming it covered every one of them.
 @(test)
 no_shipped_profile_exceeds_its_own_character_cap :: proc(t: ^testing.T) {
 	for m in MATERIALS {

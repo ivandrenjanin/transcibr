@@ -46,9 +46,24 @@ Three constraints come with it:
 The channel procedures are `proc "contextless"`, so per style rule A7 any assertion in a wrapper uses
 `runtime.assert_contextless`.
 
-Concurrent spawns leak each other's inheritable pipe handles unless handled (see ADR-0004), and the
-mitigation partially re-serialises the very path this pipeline exists to parallelise. That is a
-further argument for **one** extract worker rather than two.
+**Concurrent spawns are no longer an argument for one extract worker, and this paragraph used to say
+they were.** It read that they "leak each other's inheritable pipe handles unless handled (see
+ADR-0004), and the mitigation partially re-serialises the very path this pipeline exists to
+parallelise. That is a further argument for **one** extract worker rather than two." The leak is
+real; the sentence about the mitigation is not, and the cross-reference pointed at an ADR that never
+discussed handle inheritance at all — ADR-0004 covers the subsystem, the spawner and stopping a
+tree. ADR-0020 is where inheritance is settled, with the measurement behind it.
+
+What is wrong is the claim about the mitigation. The fix in `src/child/streams.odin` is a
+`PROC_THREAD_ATTRIBUTE_HANDLE_LIST` naming the handles a child may inherit, built per spawn on the
+spawning thread's own frame and torn down with it. It **serialises nothing**: no lock, no ordering
+rule between spawns, and no window one spawn has to wait out for another. ADR-0020 carries the cost.
+
+**One extract worker may still be right, but not for this reason.** The case that survives is the one
+this ADR opens with: extraction is I/O-bound demuxing of tens of seconds against transcription at
+about 17× realtime, so a second extractor buys little and fills the bounded queue faster than a
+single GPU worker can drain it. A measurement showing two extractors paying for themselves reopens
+the count — and the handle list will not be what decides it.
 
 The one-GPU-worker assertion cannot see across process boundaries — an orphaned engine from a
 previous crash is invisible to it. The job object in ADR-0004 is what makes the invariant actually
