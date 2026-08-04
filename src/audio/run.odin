@@ -592,6 +592,17 @@ sweep_cache :: proc(
 	if opening := open_cache(cache, allocator); opening != .None {
 		return 0, opening
 	}
+	// `core:os` and not a hand-rolled FindFirstFileW walk, which is a decision
+	// with a measured cost. That listing opens a HANDLE per entry to work out
+	// each file's type, and nothing here needs it: the size, the modification
+	// time and the directory and reparse-point attributes all come from the
+	// directory entry itself (see cache_entries). So the open is roughly four
+	// kernel calls and two allocations per file, spent for nothing.
+	//
+	// It is spent anyway. This runs ONCE per Batch, and a thousand-file cache is
+	// some tens of milliseconds against a Batch measured in hours -- while the
+	// alternative is hand-rolled Win32 in the procedure that deletes files.
+	// Written down so the next person meets a decision rather than an oversight.
 	listing, unreadable := os.read_all_directory_by_path(cache, allocator)
 	if unreadable != nil {
 		return 0, .Unusable
