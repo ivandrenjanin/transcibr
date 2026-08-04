@@ -47,6 +47,14 @@ Fault :: enum u8 {
 	None = 0,
 	// The Recording's own path names no file to make artifacts from (ADR-0008).
 	Named_No_File,
+	// What the filesystem says about the Recording is not something a Sidecar can
+	// record: a modification time before 1970 is negative, and the record's format
+	// carries a run of decimal digits with no sign. A8, and the ONE filesystem
+	// answer that reaches the Sidecar unvalidated -- refused here, before any
+	// artifact is published, because the Sidecar is written last and a refusal at
+	// that point leaves a Recording two-thirds published with nothing vouching
+	// for it.
+	Not_Recordable,
 	// What the Engine left could not be read back out of the scratch cache. Not
 	// the same as output that is not what the Engine writes: this one never got
 	// as far as having a shape.
@@ -129,6 +137,15 @@ complete :: proc(
 	names, namable := names_of(source, allocator)
 	if !namable {
 		return {}, Error{fault = .Named_No_File}
+	}
+
+	// BEFORE the Engine's output is read and long before anything is published.
+	// `made` carries what `os.stat` answered about the Recording, and the Sidecar
+	// is written LAST -- so a record this package cannot write has to be found
+	// here or not at all. Found where it is written, the Transcript and the
+	// retained output are already on the disk with nothing vouching for them.
+	if !recordable(made) {
+		return names, Error{fault = .Not_Recordable}
 	}
 
 	json_bytes, unreadable := os.read_entire_file_from_path(output, allocator)
@@ -355,6 +372,8 @@ fault_says :: proc(fault: Fault) -> string {
 	switch fault {
 	case .Named_No_File:
 		return "it names no file to make artifacts from"
+	case .Not_Recordable:
+		return "the filesystem dates it before 1970, and no Sidecar can record a moment below zero"
 	case .Output_Unreadable:
 		return "what the Engine left could not be read back"
 	case .Output_Quarantined:
@@ -419,7 +438,7 @@ error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> s
 		message = fmt.aprintf("%q: %s %s", source, which, says, allocator = allocator)
 	case .Output_Quarantined, .Nothing_Transcribed:
 		message = borrowed_message(err, source, says, allocator)
-	case .None, .Named_No_File, .Output_Unreadable:
+	case .None, .Named_No_File, .Not_Recordable, .Output_Unreadable:
 		message = fmt.aprintf("%q: %s", source, says, allocator = allocator)
 	}
 	assert(len(message) > 0, "a refusal rendered as nothing at all")

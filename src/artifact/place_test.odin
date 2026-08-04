@@ -497,6 +497,66 @@ a_recording_whose_path_names_no_file_is_refused_before_anything_is_read :: proc(
 }
 
 @(test)
+a_recording_the_filesystem_dates_before_1970_is_refused_with_nothing_published :: proc(
+	t: ^testing.T,
+) {
+	// A8, on the one field of a Sidecar that is not this program's own
+	// arithmetic. `source_modified_ns` is `os.stat`'s answer about somebody
+	// else's file, and a moment before 1970 is negative -- a recorder whose clock
+	// never started and defaulted to "1970-01-01 00:00" local time anywhere east
+	// of Greenwich, a file restored from an archive that kept its original time,
+	// a virtual filesystem answering FILETIME 0 for 1601.
+	//
+	// This CRASHED THE PROCESS, and it crashed it late: the Sidecar is written
+	// last, so the assertion in write_number fired with the retained Engine
+	// output and the Transcript already published -- a Recording that looks
+	// two-thirds finished, no Sidecar, and under a Batch the whole run dead with
+	// it. Refused here, nothing is published at all and the Batch carries on.
+	cache := scratch(t, "pre-epoch-cache")
+	defer delete(cache, context.allocator)
+	defer remove_scratch(cache)
+	beside := scratch(t, "pre-epoch-beside")
+	defer delete(beside, context.allocator)
+	defer remove_scratch(beside)
+
+	output := file_in(t, cache, "talk.json", ENGINE_JSON)
+	defer delete(output, context.allocator)
+	source := fmt.aprintf("%s\\talk.mkv", beside, allocator = context.allocator)
+	defer delete(source, context.allocator)
+
+	dated := made_by()
+	// 1969-12-31 21:00 UTC.
+	dated.source_modified_ns = -10_800_000_000_000
+
+	placed, err := complete(
+		source,
+		output,
+		FIXTURE_MS,
+		rendered_as(source),
+		dated,
+		context.allocator,
+	)
+	defer destroy_names(placed, context.allocator)
+
+	testing.expect_value(t, err.fault, Fault.Not_Recordable)
+	// NOTHING, and that is the whole of it (A3). The two artifacts that used to
+	// be on the disk by the time this failed are the reason the refusal is where
+	// it is rather than where the record is written.
+	testing.expect(t, !os.exists(placed.transcript), "a refused Recording got a Transcript")
+	testing.expect(
+		t,
+		!os.exists(placed.engine_output),
+		"a refused Recording had its Engine output retained",
+	)
+	testing.expect(t, !os.exists(placed.sidecar), "a refused Recording got a Sidecar")
+	testing.expect(t, !holds_a_part(t, beside), "a refused Recording left a temporary behind")
+	// And what the Engine left is where it was: this is not the shape of failure
+	// a quarantine answers, and moving it aside would set up a re-run that spends
+	// the GPU time again to reach the same refusal.
+	testing.expect(t, os.exists(output), "the Engine's own output was moved aside for a bad clock")
+}
+
+@(test)
 every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testing.T) {
 	// The guard an exhaustive switch cannot give on its own: an arm that is
 	// present and says nothing compiles, and is found by the renderer's own

@@ -172,6 +172,40 @@ changed :: proc(recorded, current: Sidecar) -> (answer: Change) {
 	return .None
 }
 
+// Whether every number in a Sidecar is one this format can carry.
+//
+// THE BOUNDARY (A8) FOR THE ONE FIELD THAT HAS AN OUTSIDE. Three of the four
+// numbers below are this program's own arithmetic. `source_modified_ns` is not:
+// it is `os.stat`'s answer about somebody else's file, and the filesystem really
+// does report moments before 1970 -- a recorder whose clock never started and
+// defaulted to "1970-01-01 00:00" local time, which is negative anywhere east of
+// Greenwich; a file restored from an archive that kept its original time; a
+// virtual filesystem answering FILETIME 0, which is 1601. This format writes a
+// run of decimal digits with NO SIGN, so a negative number can be neither
+// written nor read back, and a Recording carrying one is an operating error.
+//
+// Asked of the WHOLE RECORD rather than of that one field, so a number added to
+// a Sidecar later is covered without anybody remembering to come here -- and it
+// is what makes write_number's assertion an invariant rather than a hope (A4).
+@(private)
+recordable :: proc(s: Sidecar) -> bool {
+	// `beam` is not here and cannot be: it is a u32, so the type says what these
+	// four have to be checked for.
+	if s.model_bytes < 0 {
+		return false
+	}
+	if s.source_bytes < 0 {
+		return false
+	}
+	if s.source_modified_ns < 0 {
+		return false
+	}
+	if s.container_ms < 0 {
+		return false
+	}
+	return true
+}
+
 // Every field a Sidecar carries, as the name it is written under.
 //
 // An enumeration and a table rather than ten string literals scattered across a
@@ -291,10 +325,13 @@ write_text :: proc(out: ^strings.Builder, key: Key, value: string) {
 write_number :: proc(out: ^strings.Builder, key: Key, value: i64) {
 	assert(out != nil, "there is no record here to write a field into")
 	assert(len(KEY[key]) > 0, "a key was added to Key without a row in KEY")
-	// Every number a Sidecar carries is a count or a moment, and neither can be
-	// negative. This program's own arithmetic and not anything external, so a
-	// crash here is a bug in whoever built the record rather than a file that
-	// went wrong (A8).
+	// The read side of what `recordable` refuses on the way in (A4). This comment
+	// used to say every number here was this program's own arithmetic and nothing
+	// external; that was FALSE and the falsehood was the bug. `source_modified_ns`
+	// is the filesystem's answer, a Recording dated before 1970 carries a negative
+	// one, and this assertion killed the process with two artifacts already
+	// published. `complete` now refuses such a record before anything is written,
+	// which is what leaves this as an invariant worth asserting.
 	assert(value >= 0, "a sidecar was handed a count or a moment below zero")
 
 	fmt.sbprintf(out, "%s: %d\n", KEY[key], value)
