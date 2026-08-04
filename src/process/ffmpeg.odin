@@ -16,14 +16,14 @@ import "core:strings"
 // duration is this module's second half arriving early, for a different child
 // from the one the spec's sentence names. What the answer is then USED for --
 // refusing a Recording with no audio, measuring the produced audio against it --
-// is the shell's, and lives in `transcibr:extract`.
+// is the shell's, and lives in `transcibr:audio`.
 //
 // ffprobe ships in the same distribution as ffmpeg and is bundled with it
 // (ADR-0013), so one file holds both.
 
 // The audio the Engine reads: one channel at 16 kHz.
 //
-// Held as constants, and spelled once. `transcibr:extract` checks the produced
+// Held as constants, and spelled once. `transcibr:audio` checks the produced
 // audio against these and ffmpeg is asked for them here, which is A4's paired
 // write side and read side -- the same claim in two places. Spelled twice they
 // drift, and the drift is silent: ffmpeg is asked for 16,000 while the check

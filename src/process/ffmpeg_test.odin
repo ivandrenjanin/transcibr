@@ -187,7 +187,7 @@ the_extraction_asks_for_mono_16_khz_signed_16_bit_pcm :: proc(t: ^testing.T) {
 
 @(test)
 what_the_extraction_asks_for_is_what_the_produced_audio_is_checked_against :: proc(t: ^testing.T) {
-	// The write side of a claim `transcibr:extract` checks on the read side
+	// The write side of a claim `transcibr:audio` checks on the read side
 	// (A4). Spelled twice they drift, and the drift is silent: ffmpeg is asked
 	// for 16 kHz, the check demands 44.1, and every Recording fails for a
 	// reason nobody can find.

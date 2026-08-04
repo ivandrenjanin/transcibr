@@ -1,4 +1,4 @@
-package extract
+package audio
 
 // This file holds one decision: whether the audio ffmpeg produced is the whole
 // Recording.

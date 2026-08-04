@@ -1,11 +1,25 @@
-# Probing and extraction are one package, and the pure half of driving ffmpeg is not in it
+# Probing and extraction are one package, named `audio` for the pair, and the pure half of driving ffmpeg is not in it
 
-`src/extract/` is the spec's shell module *extraction* and its shell module *probing*, in one Odin
+`src/audio/` is the spec's shell module *extraction* and its shell module *probing*, in one Odin
 package. The pure half of driving those two children — the command lines, and ffprobe's answer read
 back as a duration — is not there at all: it is in `src/process/`, the *Process contract*.
 
 ADR-0017 is one package per spec module, so putting two of them in one package is that decision being
 narrowed rather than applied, and it is recorded here for that reason.
+
+## Why it is not called `extract`
+
+It was, for the length of one review. ADR-0017 refuses "a package whose name describes half its
+contents", and a package holding *probing* and *extraction* called `extract` is precisely that — the
+same defect that decision renamed `command_line` to `process` to avoid, with the same remedy: name it
+for the pair. `CONTEXT.md` files **Probe** and **Scratch cache** under one heading, *Turning a
+recording into audio*, and that heading is the name.
+
+The rename happened here for ADR-0017's own reason: it was free and it stops being free. Nothing
+imported `transcibr:extract` yet, packages are **discovered** rather than listed so
+`$OdinPackagesWithoutTests` needed no edit, and the whole cost was one directory. After the first
+consumer it is a directory, an import in every consumer, and a merge conflict with whatever is in
+flight.
 
 ## Why the pure half went to the Process contract
 
@@ -16,7 +30,7 @@ is output lines read back as a duration. The match is with the module's own defi
 convenient reading of it — the spec's sentence names the Engine, and `CONTEXT.md` generalises it to
 "a child process", which is the wording this follows.
 
-That leaves `src/process/ffmpeg.odin` holding the write side of a claim `src/extract` checks on the
+That leaves `src/process/ffmpeg.odin` holding the write side of a claim `src/audio` checks on the
 read side: `AUDIO_SAMPLE_RATE` and `AUDIO_CHANNELS` are spelled once, ffmpeg is asked for them there
 and the produced audio is required to carry them here (CLAUDE.md rule A4).
 
@@ -49,16 +63,25 @@ a case can produce and a clock and a filesystem cannot.
 
 ## Consequences
 
-`src/extract` is the first package in this repository where the pure and the impure sit side by side,
+`src/audio` is the first package in this repository where the pure and the impure sit side by side,
 and the file split is what keeps them apart: `riff.odin`, `duration.odin`, `settling.odin` and
-`sweep.odin` are pure and carry the suite; `run.odin` runs the children and touches the disk and has
-no cases at all, which is ADR-0009's ceiling stated rather than an omission. A decision that turns up
-in `run.odin` belongs in one of the four beside it, and the fact that `run.odin` has no test to add is
-the thing that keeps asking the question — the same pressure ADR-0009 records for `src/cli`.
+`sweep.odin` are pure and carry the suite; `run.odin` runs the children and touches the disk. A
+decision that turns up in `run.odin` belongs in one of the four beside it.
+
+**Nothing enforces that, and the ADR is the whole of the enforcement.** This once claimed "the same
+pressure ADR-0009 records for `src/cli`", and the two are not alike. `src/cli` is named in
+`$OdinPackagesWithoutTests`, and `scripts/test.ps1` fails a package named there that collects
+anything — so a decision landing in `src/cli` turns the sweep red. `src/audio` collects its own cases
+and is not listed, so a decision landing in `run.odin` fails nothing at all. What holds the line here
+is review, and review is what it costs.
 
 **It also brings a fourth copy of the fault-report shape**, which `src/child` says out loud is one
 too many: "a third copy is the point at which the shape moves into a package of its own and both of
-these import it". `src/extract` carries the small version — an enumeration, a table of sentences, one
-checked reader and one renderer, and neither the borrowed-culprit record nor the disposition table,
-because the culprit here is always the Recording and the disposition is always "this Recording fails
-and the Batch carries on". Moving the shape is its own change and is not this one.
+these import it". That trigger did **not** fire here — it fired one ticket earlier, and this records
+that rather than claiming the credit: `src/transcript/engine_json.odin` got its `FAULT` table on
+2026-08-03, and `src/child`'s "THE SECOND COPY IS THE LAST ONE" was written sixteen hours later with
+three copies already in the tree. This is the fourth, and the debt is one ticket older than it looks.
+
+`src/audio` carries the small version — an enumeration, a table of sentences, one checked reader and
+one renderer, and not the borrowed-culprit record — because the culprit here is always the Recording,
+which the renderer is handed. Moving the shape is its own change and is not this one.

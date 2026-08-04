@@ -1,4 +1,4 @@
-// Package extract turns one Recording into the mono 16 kHz audio the Engine
+// Package audio turns one Recording into the mono 16 kHz audio the Engine
 // reads, and settles -- before any of that -- how long the Recording actually is
 // and whether anything is still writing it.
 //
@@ -8,6 +8,12 @@
 // the produced audio is measured against and the two refusals that stop an
 // extraction from starting -- and splitting them would put one test seam across
 // two packages, which is exactly what ADR-0017 refuses.
+//
+// NAMED FOR THE PAIR AND NOT FOR EITHER HALF, which is ADR-0017's own rule
+// applied here: `extract` was "a package whose name describes half its
+// contents", the exact thing that decision refused when it renamed
+// `command_line` to `process`. CONTEXT.md files Probe and Scratch cache under
+// "Turning a recording into audio", and that is what this package does.
 //
 // Impure, and honestly so: it runs ffmpeg and ffprobe through `transcibr:child`,
 // reads bytes off the disk and deletes files out of the scratch cache. But every
@@ -23,7 +29,7 @@
 // from outside, so each is refused through `Error` and reported against the
 // Recording that caused it. The assertions here are about this package's own
 // state.
-package extract
+package audio
 
 import "core:fmt"
 import "core:mem"

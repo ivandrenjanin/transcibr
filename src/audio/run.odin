@@ -1,4 +1,4 @@
-package extract
+package audio
 
 import "core:fmt"
 import "core:mem"

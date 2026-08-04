@@ -1,4 +1,4 @@
-package extract
+package audio
 
 import "core:mem"
 import "core:slice"

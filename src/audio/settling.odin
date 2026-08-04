@@ -1,4 +1,4 @@
-package extract
+package audio
 
 // This file holds one decision: whether something is still writing a Recording.
 //
