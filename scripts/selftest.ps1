@@ -58,7 +58,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 58
+$ExpectedCaseCount = 59
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -479,6 +479,37 @@ function Get-CaseSource {
 		throw "no .odin files under $RepoRoot, so this case would pass having $Having nothing."
 	}
 	return $sources
+}
+
+# A rule and its enforcement, pinned to each other.
+#
+# This is the defect that produced the first of the three cases below: the
+# comment ban was applied to 53 files by a branch that also deleted the section
+# stating it, so the tree arrived shaped by a rule written down nowhere and the
+# next contributor could not learn it existed. A check with no policy behind it
+# is a check somebody deletes as unexplained.
+#
+# Written three times before somebody counted -- once per policy, which is once
+# per chance to leave it out of the fourth, and the same count Get-OdinCheckedSource
+# reached for the same reason. $Enforcer is the only part that differed between
+# them beyond the claims themselves.
+function Assert-PolicyClaim {
+	param(
+		[Parameter(Mandatory)] [string] $Enforcer,
+		[Parameter(Mandatory)] [string[]] $Claims
+	)
+
+	$policy = Join-Path $RepoRoot 'CLAUDE.md'
+	if (-not (Test-Path -LiteralPath $policy)) {
+		throw "no $policy, so the rule $Enforcer enforces is stated nowhere."
+	}
+
+	$text = [System.IO.File]::ReadAllText($policy)
+	foreach ($claim in $Claims) {
+		if (-not $text.Contains($claim)) {
+			throw "CLAUDE.md does not carry '$claim', but scripts\common.ps1 fails the build over it."
+		}
+	}
 }
 
 # The <package>.<test> names a document hands a reader to run, in every spelling
@@ -1401,22 +1432,10 @@ Test-Case 'a comment inside a procedure body fails the build' {
 }
 
 Test-Case 'the comment ban the build enforces is written down' {
-	# The rule and its enforcement, pinned to each other. This is the defect that
-	# produced the check above: the ban was applied to 53 files by a branch that
-	# also deleted the section stating it, so the tree arrived shaped by a rule
-	# written down nowhere and the next contributor could not learn it existed.
-	# A check with no policy behind it is a check somebody deletes as unexplained.
-	$policy = Join-Path $RepoRoot 'CLAUDE.md'
-	if (-not (Test-Path -LiteralPath $policy)) {
-		throw "no $policy, so the rule Assert-OdinCommentPolicy enforces is stated nowhere."
-	}
-
-	$text = [System.IO.File]::ReadAllText($policy)
-	foreach ($claim in @('## 0. Comment policy', 'Comments are banned inside procedure bodies.')) {
-		if (-not $text.Contains($claim)) {
-			throw "CLAUDE.md does not carry '$claim', but scripts\common.ps1 fails the build over it."
-		}
-	}
+	Assert-PolicyClaim -Enforcer 'Assert-OdinCommentPolicy' -Claims @(
+		'## 0. Comment policy'
+		'Comments are banned inside procedure bodies.'
+	)
 }
 
 Test-Case 'no procedure the format check covers hands back an unrequired answer' {
@@ -1705,31 +1724,15 @@ Test-Case 'a procedure TYPE above a table builds, because nothing can annotate o
 }
 
 Test-Case 'the result rule the build enforces is written down' {
-	# The rule and its enforcement, pinned to each other, exactly as the comment
-	# ban above is and for the defect that produced that case: a tree shaped by a
-	# rule written down nowhere is a tree whose next contributor cannot learn the
-	# rule exists, and a check with no policy behind it is a check somebody deletes
-	# as unexplained.
-	$policy = Join-Path $RepoRoot 'CLAUDE.md'
-	if (-not (Test-Path -LiteralPath $policy)) {
-		throw "no $policy, so the rule Assert-OdinResultPolicy enforces is stated nowhere."
-	}
-
-	$text = [System.IO.File]::ReadAllText($policy)
 	# The discard spelling is pinned twice over, because the attribute changes what
 	# a `defer` has to look like and nothing else in the tree would say so: no site
 	# hits it today, so the first person to write `defer f()` over an annotated
 	# procedure meets a compiler error with no rule behind it.
-	$claims = @(
+	Assert-PolicyClaim -Enforcer 'Assert-OdinResultPolicy' -Claims @(
 		'### F2. `@(require_results)` on every procedure that returns anything'
 		'spells it `_ = f(...)`'
 		'`defer _ = f()`'
 	)
-	foreach ($claim in $claims) {
-		if (-not $text.Contains($claim)) {
-			throw "CLAUDE.md does not carry '$claim', but scripts\common.ps1 fails the build over it."
-		}
-	}
 }
 
 Test-Case 'every .odin file the checks cover declares the vet tags' {
@@ -1739,24 +1742,49 @@ Test-Case 'every .odin file the checks cover declares the vet tags' {
 	# untagged sibling builds clean, with the sibling's implicit allocators
 	# unchecked. So a file that never gets the tag is not a rule broken loudly, it
 	# is a file nothing checks.
-	$sources = @(Get-CaseSource -Having 'read')
+	#
+	# The verdict itself comes from Assert-OdinVetTagPolicy rather than from a
+	# second walk written out here. Spelled again, it would be the same reader
+	# reaching the same answer through the same discovery -- a copy, not a
+	# cross-check, and one that goes on passing while the real policy drifts.
+	Assert-OdinVetTagPolicy
 
-	$missing = @()
+	# What earns this case its keep is the count beside it, taken off the LINES by
+	# a scan that knows nothing about package clauses, comments or scopes -- so it
+	# cannot agree with the reader by sharing its mistake. Rule F2's case above is
+	# built the same way, against its attribute count.
+	#
+	# A reader that credited a name in everything it was shown satisfies the policy
+	# over a tree with no tags in it at all; this is what says the lines are really
+	# there. The other direction -- a reader that finds one nowhere -- fails the
+	# policy already and needs nothing here.
+	$sources = @(Get-CaseSource -Having 'read')
+	$declaring = 0
 	foreach ($source in $sources) {
-		$declared = @(Get-OdinFileVetTag -Text ([System.IO.File]::ReadAllText($source.Path)))
-		foreach ($tag in @(Get-OdinRequiredVetTag -Name $source.Name)) {
-			if ($declared -cnotcontains $tag) {
-				$missing += "  - $($source.Name) does not declare $tag"
-			}
+		if ([System.IO.File]::ReadAllText($source.Path) -match '(?m)^#\+vet\b') {
+			$declaring += 1
 		}
 	}
-	if ($missing.Count -gt 0) {
-		throw "$($missing.Count) file(s) do not declare a tag every .odin file carries (CLAUDE.md rule M2):`n$($missing -join "`n")"
+	if ($declaring -ne $sources.Count) {
+		throw "the policy passed over $($sources.Count) file(s), but only $declaring of them carry a '#+vet' line at all -- so it is reading names into files that do not have them."
 	}
 
-	# The negative space (rule A3). Every line above is satisfied by a reader that
-	# finds a name in everything it is shown, so both answers are checked against
-	# text built to a known one.
+	# And that the policy DEMANDED something, which is the seam the compiler case
+	# below covers from the other end. $OdinFileVetTags emptied leaves
+	# Assert-OdinVetTagPolicy finding nothing missing because nothing is asked for,
+	# over a tree that still carries every tag -- green, and measuring nothing.
+	$asked = @(Get-OdinRequiredVetTag -Name $sources[0].Name)
+	if ($asked.Count -eq 0) {
+		throw "the policy passed while requiring no name at all of $($sources[0].Name), so it would pass over a tree with no tags in it."
+	}
+}
+
+Test-Case 'the vet tag reader credits only a tag the compiler would read' {
+	# The reader behind the policy above, against text built to a known answer. The
+	# case above is satisfied by a reader that finds a name in everything it is
+	# shown; these are the probes that say which text it is finding them in, and
+	# they are here rather than up there so that a reader defect reports as one
+	# instead of under a name claiming the tree is untagged.
 	$tagged = "#+vet explicit-allocators`npackage probe`n"
 	$read = @(Get-OdinFileVetTag -Text $tagged)
 	if (($read.Count -ne 1) -or ($read[0] -ne 'explicit-allocators')) {
@@ -1952,46 +1980,30 @@ Test-Case 'a +vet name scoped to files nothing resolves is refused where it is w
 }
 
 Test-Case 'the vet tag rule the build enforces is written down' {
-	# The rule and its enforcement, pinned to each other, exactly as the comment ban
-	# and rule F2 above are and for the defect that produced both those cases: a
-	# tree shaped by a rule written down nowhere is a tree whose next contributor
-	# cannot learn the rule exists, and a check with no policy behind it is a check
-	# somebody deletes as unexplained. A tag on 65 files is the version of that with
-	# the most lines to delete.
-	$policy = Join-Path $RepoRoot 'CLAUDE.md'
-	if (-not (Test-Path -LiteralPath $policy)) {
-		throw "no $policy, so the rule Assert-OdinVetTagPolicy enforces is stated nowhere."
-	}
-
-	$text = [System.IO.File]::ReadAllText($policy)
-	# The per-file reading is pinned alongside the rule itself, because it is the
-	# whole argument for checking the tag rather than writing it once: without it
-	# the check reads as belt and braces over a compiler that already refuses.
+	# A tag on 65 files is the version of the defect above with the most lines to
+	# delete. Three things are pinned beyond the heading.
+	#
+	# The per-file reading, because it is the whole argument for checking the tag
+	# rather than writing it once: without it the check reads as belt and braces
+	# over a compiler that already refuses.
+	#
+	# The resolver by name, because the two refusals it carries are the rule as much
+	# as the tag is -- a name that turns a check off, and a scope nothing resolves.
+	#
+	# And the NAMES, taken from the declaration rather than spelled again, so a name
+	# added to $OdinFileVetTags is a name CLAUDE.md has to explain before the build
+	# will pass.
 	#
 	# The heading states the property and not a habit. It used to say "on the first
 	# line of every file", which nothing checks and which issue #48 makes false for
 	# half the tree the day `#+private` goes above these tags. A pinned sentence that
-	# a later ticket has to edit a test case to repair is a pin that will be
-	# deleted rather than corrected.
-	$claims = @(
-		'### M2. Every file declares the repository''s `#+vet` names above its `package` clause'
-		'per file'
-		'Get-OdinRequiredVetTag'
-	)
-	foreach ($claim in $claims) {
-		if (-not $text.Contains($claim)) {
-			throw "CLAUDE.md does not carry '$claim', but scripts\common.ps1 fails the build over it."
-		}
-	}
-
-	# And the name itself, taken from the declaration rather than spelled again --
-	# so a name added to $OdinFileVetTags is a name CLAUDE.md has to explain before
-	# the build will pass.
-	foreach ($tag in $OdinFileVetTags) {
-		if (-not $text.Contains($tag.Name)) {
-			throw "CLAUDE.md does not mention the +vet name '$($tag.Name)', which every .odin file is made to carry."
-		}
-	}
+	# a later ticket has to edit a test case to repair is a pin that will be deleted
+	# rather than corrected.
+	Assert-PolicyClaim -Enforcer 'Assert-OdinVetTagPolicy' -Claims (@(
+			'### M2. Every file declares the repository''s `#+vet` names above its `package` clause'
+			'per file'
+			'Get-OdinRequiredVetTag'
+		) + @($OdinFileVetTags | ForEach-Object { $_.Name }))
 }
 
 Test-Case 'git checks out every .odin file with the endings the check demands' -MaySkip {
