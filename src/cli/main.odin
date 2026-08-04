@@ -108,6 +108,7 @@ Options :: struct {
 	rc:        transcript.Render_Context,
 }
 
+@(require_results)
 re_render :: proc(arguments: []string) -> int {
 	assert(
 		len(arguments) > 0,
@@ -139,6 +140,7 @@ re_render :: proc(arguments: []string) -> int {
 // The Recording's length is passed as nothing: this binary holds the Engine's
 // output and no Recording, and a length invented from the Cues is the circular
 // measurement ADR-0009 ruled out.
+@(require_results)
 write_transcript :: proc(
 	json_path: string,
 	json_text: string,
@@ -177,6 +179,7 @@ write_transcript :: proc(
 // --help` as a request for usage and reported success on a render that never
 // happened.
 @(private)
+@(require_results)
 asks_for_help :: proc(arguments: []string) -> bool {
 	for at := 0; at < len(arguments); at += 2 {
 		if arguments[at] == HELP {
@@ -186,6 +189,7 @@ asks_for_help :: proc(arguments: []string) -> bool {
 	return false
 }
 
+@(require_results)
 read_options :: proc(arguments: []string) -> (o: Options, ok: bool) {
 	defer if ok {
 		assert(len(o.json_path) > 0, "accepted a command line with nothing to render")
@@ -224,6 +228,7 @@ read_options :: proc(arguments: []string) -> (o: Options, ok: bool) {
 }
 
 @(private)
+@(require_results)
 read_option :: proc(o: ^Options, name, value: string) -> (ok: bool) {
 	assert(o != nil, "there is nothing here to read an option into")
 
@@ -255,6 +260,7 @@ read_option :: proc(o: ^Options, name, value: string) -> (ok: bool) {
 // be deferred where it is used and not where it was read, and a procedure that
 // owned the defer would free it before the run that needs it.
 @(private)
+@(require_results)
 model_identified :: proc(path: string) -> (identified: artifact.Model, ok: bool) {
 	assert(len(path) > 0, "there is no Model here to identify")
 
@@ -273,6 +279,7 @@ model_identified :: proc(path: string) -> (identified: artifact.Model, ok: bool)
 
 // Hands back `false` so a caller can refuse in the one line it took to notice.
 @(private)
+@(require_results)
 refuse :: proc(complaint: string, args: ..any) -> (ok: bool) {
 	assert(len(complaint) > 0, "refused a command line without saying what was wrong with it")
 

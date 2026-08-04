@@ -54,6 +54,7 @@ RECORDING_SUFFIXES := [?]string {
 
 // `artifact.extension_of` is asked rather than the path searched, so a walk and
 // the naming that follows it cut a path in exactly one place.
+@(require_results)
 is_a_recording :: proc(path: string) -> bool {
 	extension := artifact.extension_of(path)
 	if len(extension) == 0 {
@@ -145,6 +146,7 @@ Inventory :: struct {
 // NOTHING, and not a note, for a walk that was STOPPED: it left no note behind,
 // and a `Note` with no absent value answered its own zero -- `Root_Unreadable`,
 // printed at a user over a tree the walk had been reading perfectly well.
+@(require_results)
 left_unlooked_at :: proc(inventory: Inventory) -> (short: Maybe(Walk_Note), yes: bool) {
 	defer if !yes {
 		assert(short == nil, "a whole inventory named a note anyway")
@@ -169,6 +171,7 @@ left_unlooked_at :: proc(inventory: Inventory) -> (short: Maybe(Walk_Note), yes:
 
 // A cancelled walk answers with what it had got to, not with nothing: the notes
 // and the Recordings already found are still true.
+@(require_results)
 discover :: proc(roots: []string, w: Walk, allocator: mem.Allocator) -> (inventory: Inventory) {
 	assert(
 		allocator.procedure != nil,
@@ -315,6 +318,7 @@ walk_one :: proc(state: ^Walking, pending: Pending, frontier: ^[dynamic]Pending)
 // same test `took` will apply, so the answer is read exactly where it was paid
 // for.
 @(private)
+@(require_results)
 holds_a_recording :: proc(listing: []os.File_Info) -> bool {
 	for info in listing {
 		if info.type == .Directory {
@@ -363,6 +367,7 @@ took :: proc(
 // another process holds open reads as, and a Recording still being written by a
 // camera is exactly that file.
 @(private)
+@(require_results)
 a_candidate :: proc(type: os.File_Type, path: string) -> bool {
 	assert(len(path) > 0, "a directory entry with no path at all")
 
@@ -383,6 +388,7 @@ a_candidate :: proc(type: os.File_Type, path: string) -> bool {
 // `attributes` tests FILE_ATTRIBUTE_DIRECTORY before it ever opens a handle. So
 // the files that make up most of a tree cost no Win32 call at all.
 @(private)
+@(require_results)
 shaped :: proc(info: os.File_Info, allocator: mem.Allocator) -> (directory: bool, reparse: bool) {
 	assert(len(info.fullpath) > 0, "a directory entry with no path at all")
 	assert(allocator.procedure != nil, "a path crossing into Win32 needs an allocator to widen it")
@@ -430,6 +436,7 @@ crossed :: proc(
 // has to. The Sidecar is read WHOLE or not at all; `artifact.read_sidecar`
 // refuses a partial record rather than filling the gaps with zeroes.
 @(private)
+@(require_results)
 looked_at :: proc(state: ^Walking, info: os.File_Info, writable: bool) -> (found: Found) {
 	assert(state != nil, "there is no walk here to run")
 	assert(len(info.fullpath) > 0, "a Recording with no path at all")
@@ -457,6 +464,7 @@ looked_at :: proc(state: ^Walking, info: os.File_Info, writable: bool) -> (found
 // An unreadable Sidecar and an absent one are one answer, which is ADR-0003's
 // disposition for unknown provenance: re-do it.
 @(private)
+@(require_results)
 sidecar_at :: proc(path: string, allocator: mem.Allocator) -> Maybe(artifact.Sidecar) {
 	assert(len(path) > 0, "there is nowhere here to read a Sidecar from")
 	assert(allocator.procedure != nil, "a Sidecar outlives this procedure and needs an allocator")
@@ -477,6 +485,7 @@ sidecar_at :: proc(path: string, allocator: mem.Allocator) -> Maybe(artifact.Sid
 // The head and never the whole file: a Transcript is megabytes, and what is
 // being asked is who wrote it.
 @(private)
+@(require_results)
 transcript_state :: proc(path: string) -> Transcript_State {
 	assert(len(path) > 0, "there is nowhere here to look for a Transcript")
 
@@ -527,6 +536,7 @@ report :: proc(state: ^Walking, at: string) {
 // Read atomically because the flag is written on another thread by design, and
 // a plain read of a value another thread stores is a race whatever the width.
 @(private)
+@(require_results)
 stopped :: proc(state: ^Walking) -> (yes: bool) {
 	assert(state != nil, "there is no walk here to stop")
 	defer if yes {
@@ -546,6 +556,7 @@ stopped :: proc(state: ^Walking) -> (yes: bool) {
 // the directory, and a Batch of hundreds beside each other would otherwise open
 // and delete a file hundreds of times to learn it once.
 @(private)
+@(require_results)
 directory_writable :: proc(directory: string, allocator: mem.Allocator) -> bool {
 	assert(len(directory) > 0, "there is no directory here to write into")
 	assert(allocator.procedure != nil, "a probe name needs an allocator to be built in")
@@ -568,6 +579,7 @@ directory_writable :: proc(directory: string, allocator: mem.Allocator) -> bool 
 }
 
 @(private)
+@(require_results)
 enumerable :: proc(w: Walk, path: string, allocator: mem.Allocator) -> bool {
 	assert(len(path) > 0, "there is nothing here to enumerate")
 	assert(allocator.procedure != nil, "asking about a path needs an allocator to widen it")
@@ -595,6 +607,7 @@ Attributes :: struct {
 // ordinary directory: it is refused either way, and refusing it as something the
 // walk declined to enter is the answer that carries a note.
 @(private)
+@(require_results)
 attributes_of :: proc(
 	path: string,
 	allocator: mem.Allocator,
@@ -623,6 +636,7 @@ attributes_of :: proc(
 }
 
 @(private)
+@(require_results)
 is_a_reparse_point :: proc(path: string, allocator: mem.Allocator) -> bool {
 	assert(len(path) > 0, "there is nothing here to ask about")
 	assert(allocator.procedure != nil, "a path crossing into Win32 needs an allocator to widen it")

@@ -1244,6 +1244,108 @@ function Get-OdinBodyComment {
 	return $found.ToArray()
 }
 
+# Every top-level procedure in one file that hands something back, with whether
+# the attribute that makes a dropped answer a build failure sits above it.
+#
+# The THIRD reader of Get-OdinProcedureRange, after rule F1's line limit and
+# section 0's comment ban, and here for the direction the attribute cannot cover
+# by itself. `@(require_results)` catches a call site that drops a result, and
+# the compiler refuses the attribute on a procedure with no results -- so neither
+# of them says anything about the procedure written tomorrow that returns a fault
+# and never carries it. That is how 221 of them came to be here (issue #43), and
+# it is the same lesson $OdinPackagesWithoutTests records: a rule applied once is
+# a snapshot.
+#
+# What counts as returning is a `->` at DEPTH ZERO between the declaration and
+# the brace that opens its body. Depth, and not a search for two characters: a
+# parameter that is itself a procedure carries its own `->` one level in, so
+# `f :: proc(cb: proc(x: int) -> int)` returns nothing at all, and a scan that
+# grepped the header would demand the attribute there and be refused by the
+# compiler for asking. Strings, rune literals and comments inside a header are
+# walked past for the reason Get-OdinLineFact is a lexer rather than a pattern.
+function Get-OdinResultProcedure {
+	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
+
+	$lines = $Text -split "`r?`n"
+	$found = [System.Collections.Generic.List[object]]::new()
+	foreach ($range in @(Get-OdinProcedureRange -Text $Text)) {
+		$depth = 0
+		$block = 0
+		$raw = $false
+		$returns = $false
+		$open = $false
+
+		for ($i = $range.Start; ($i -le $range.End) -and (-not $open); $i++) {
+			$line = $lines[$i]
+			$j = 0
+			while ($j -lt $line.Length) {
+				$char = $line[$j]
+				$next = ''
+				if (($j + 1) -lt $line.Length) {
+					$next = $line[$j + 1]
+				}
+
+				if ($block -gt 0) {
+					if (($char -eq '*') -and ($next -eq '/')) { $block -= 1; $j += 2; continue }
+					if (($char -eq '/') -and ($next -eq '*')) { $block += 1; $j += 2; continue }
+					$j += 1
+					continue
+				}
+				if ($raw) {
+					if ($char -eq '`') { $raw = $false }
+					$j += 1
+					continue
+				}
+				if (($char -eq '/') -and ($next -eq '/')) { break }
+				if (($char -eq '/') -and ($next -eq '*')) { $block += 1; $j += 2; continue }
+				if ($char -eq '`') { $raw = $true; $j += 1; continue }
+				if (($char -eq '"') -or ($char -eq "'")) {
+					$quote = $char
+					$j += 1
+					while ($j -lt $line.Length) {
+						if ($line[$j] -eq '\') { $j += 2; continue }
+						if ($line[$j] -eq $quote) { $j += 1; break }
+						$j += 1
+					}
+					continue
+				}
+				if (($char -eq '(') -or ($char -eq '[')) { $depth += 1; $j += 1; continue }
+				if (($char -eq ')') -or ($char -eq ']')) { $depth -= 1; $j += 1; continue }
+				if (($char -eq '-') -and ($next -eq '>') -and ($depth -eq 0)) {
+					$returns = $true
+					$j += 2
+					continue
+				}
+				# The body's opening brace at depth zero, which is where the header
+				# stops and the walk with it. A brace inside a default value sits
+				# inside the parameter list and is therefore never at depth zero.
+				if (($char -eq '{') -and ($depth -eq 0)) { $open = $true; break }
+				$j += 1
+			}
+		}
+
+		if (-not $returns) {
+			continue
+		}
+
+		# Attributes sit directly above the declaration, one per line. A comment
+		# above THEM is the comment a procedure is allowed and is not read here.
+		$required = $false
+		for ($k = $range.Start - 1; ($k -ge 0) -and ($lines[$k] -match '^@\('); $k--) {
+			if ($lines[$k] -match '\brequire_results\b') {
+				$required = $true
+			}
+		}
+
+		$found.Add([pscustomobject]@{
+				Name     = $range.Name
+				Line     = $range.Start + 1
+				Required = $required
+			})
+	}
+	return $found.ToArray()
+}
+
 # CLAUDE.md section 0 as a single verdict, for the same caller and the same
 # reason Assert-OdinFormatting has one: a rule enforced only at review is a rule
 # that reaches main.
@@ -1287,6 +1389,43 @@ function Assert-OdinCommentPolicy {
 	}
 
 	throw "$($found.Count) comment(s) inside a procedure body (CLAUDE.md section 0):`n$($found -join "`n")`nSay it in the code, or say why above the procedure."
+}
+
+# CLAUDE.md rule F2 as a single verdict, beside section 0's and for the reason
+# that one is here at all.
+#
+# Repository-wide through Get-OdinSource, which is the scope all three of these
+# checks ask -- rule F1 learned it by leaving a spike in docs\reference\ growing
+# to 107 lines with nothing looking outside src\.
+#
+# The sweep FAILS when it finds no returning procedure at all, for the fourth
+# time in this file and the same reason: a check that covers nothing reports the
+# same green as one that covered everything.
+function Assert-OdinResultPolicy {
+	$sources = @(Get-OdinSource)
+	if ($sources.Count -eq 0) {
+		throw "no .odin files found under $RepoRoot, so this check would pass having read nothing."
+	}
+
+	$read = 0
+	$bare = @()
+	foreach ($source in $sources) {
+		$text = [System.IO.File]::ReadAllText($source.Path)
+		foreach ($procedure in @(Get-OdinResultProcedure -Text $text)) {
+			$read += 1
+			if (-not $procedure.Required) {
+				$bare += "  - $($source.Name):$($procedure.Line) $($procedure.Name)"
+			}
+		}
+	}
+	if ($read -eq 0) {
+		throw "read no returning procedure at all out of $($sources.Count) file(s), so this check measured nothing."
+	}
+	if ($bare.Count -eq 0) {
+		return
+	}
+
+	throw "$($bare.Count) procedure(s) hand back an answer nothing obliges the caller to read (CLAUDE.md rule F2):`n$($bare -join "`n")`nPut @(require_results) above the declaration. A caller that means to throw the answer away writes `_ = f(...)`."
 }
 
 # The sweep as a single verdict, for callers that only want it to pass -- which

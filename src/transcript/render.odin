@@ -53,6 +53,7 @@ TRANSCRIPT_PREFIX :: FENCE + "\n" + GENERATOR_KEY + ": \"" + GENERATOR + " "
 // answer cannot drift: a reader that kept its own copy of the marker would go on
 // recognising nothing after a renderer change, and refuse every Recording in a
 // corpus for having a stranger's Markdown beside it.
+@(require_results)
 written_by_transcibr :: proc(head: string) -> bool {
 	return strings.has_prefix(head, TRANSCRIPT_PREFIX)
 }
@@ -63,6 +64,7 @@ UNKNOWN :: "unknown"
 
 // The document outlives this call and crosses a worker boundary (ADR-0010):
 // free it with `delete`, passing the same allocator.
+@(require_results)
 render_transcript :: proc(
 	json_name: string,
 	json_text: string,
@@ -108,6 +110,7 @@ render_transcript :: proc(
 
 // The document outlives this call and crosses a worker boundary (ADR-0010):
 // free it with `delete`, passing the same allocator.
+@(require_results)
 render_markdown :: proc(
 	paragraphs: []Paragraph,
 	rc: Render_Context,
@@ -175,6 +178,7 @@ write_prose :: proc(out: ^strings.Builder, said: string) {
 }
 
 @(private)
+@(require_results)
 write_block_start :: proc(out: ^strings.Builder, said: string) -> (rest: string) {
 	assert(out != nil, "there is no document here to open a paragraph in")
 	defer assert(len(rest) <= len(said), "escaping a block opener grew the speech behind it")

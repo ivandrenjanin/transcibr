@@ -22,21 +22,25 @@ Cue :: struct {
 // Every byte of a multi-byte character is at or above 0x80, so a caller walking
 // BYTES and casting each one to a rune gets the answer decoding would give it.
 @(private)
+@(require_results)
 renders_as_nothing :: proc(r: rune) -> bool {
 	return r < 0x20 || r == 0x7F
 }
 
 @(private)
+@(require_results)
 says_nothing :: proc(r: rune) -> bool {
 	return strings.is_space(r) || renders_as_nothing(r)
 }
 
 @(private)
+@(require_results)
 opens_on_silence :: proc(said: string) -> bool {
 	return len(said) > 0 && says_nothing(rune(said[0]))
 }
 
 @(private)
+@(require_results)
 ends_on_silence :: proc(said: string) -> bool {
 	return len(said) > 0 && says_nothing(rune(said[len(said) - 1]))
 }
@@ -45,6 +49,7 @@ ends_on_silence :: proc(said: string) -> bool {
 // one reaches Markdown as prose opening on a space, which is that renderer's own
 // indentation. Inside the speech they stay, and render as spaces.
 @(private)
+@(require_results)
 spoken_text :: proc(cue: Cue) -> (said: string) {
 	said = strings.trim_left_proc(strings.trim_right_proc(cue.text, says_nothing), says_nothing)
 	assert(len(said) <= len(cue.text), "trimming a cue's text added bytes to it")
@@ -57,6 +62,7 @@ spoken_text :: proc(cue: Cue) -> (said: string) {
 // whole set is ordered. Overlap is not a violation: consecutive Cues whose spans
 // overlap are ordinary Engine output, and demanding a disjoint sequence would
 // reject real Recordings while looking stricter.
+@(require_results)
 first_disordered_cue :: proc(cues: []Cue) -> (ordinal: int) {
 	defer assert(ordinal >= 0, "a cue ordinal is a position or zero, never negative")
 	defer assert(ordinal <= len(cues), "named a cue position past the end of the set")
@@ -75,6 +81,7 @@ first_disordered_cue :: proc(cues: []Cue) -> (ordinal: int) {
 	return 0
 }
 
+@(require_results)
 cues_are_ordered :: proc(cues: []Cue) -> bool {
 	ordinal := first_disordered_cue(cues)
 	if len(cues) == 0 {
@@ -101,6 +108,7 @@ destroy_cues :: proc(cues: []Cue, allocator: mem.Allocator) {
 // behind it has to be exactly as long as the slice says -- and both builders here
 // reserve for the whole input and then deliberately do not fill it.
 @(private)
+@(require_results)
 owned_slice :: proc(built: ^[dynamic]$T) -> (owned: []T) {
 	assert(built != nil, "there is no builder here to take a slice of")
 

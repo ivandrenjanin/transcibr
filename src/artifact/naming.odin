@@ -32,6 +32,7 @@ Names :: distinct [Artifact]string
 // A refusal allocates nothing, so a caller frees what it was handed either way.
 // Injectivity is a property of a whole Batch and is checked in planning:
 // ADR-0008.
+@(require_results)
 names_of :: proc(source: string, allocator: mem.Allocator) -> (names: Names, ok: bool) {
 	assert(allocator.procedure != nil, "the names outlive this procedure and need an allocator")
 	defer if !ok {
@@ -59,6 +60,7 @@ destroy_names :: proc(names: Names, allocator: mem.Allocator) {
 // Not `filepath.stem`: that reads `.talk` as an empty name with a `talk`
 // extension, which maps every dotfile in one directory onto one artifact path.
 @(private)
+@(require_results)
 name_bounds :: proc(source: string) -> (from: int, to: int) {
 	defer {
 		assert(to >= from, "a Recording's name was said to end before it begins")
@@ -83,6 +85,7 @@ name_bounds :: proc(source: string) -> (from: int, to: int) {
 // `C:/clips/talk.mp4` as `C:\clips\talk.md`, which is not what a diagnostic
 // would then have to be searched for.
 @(private)
+@(require_results)
 path_stem_of :: proc(source: string) -> string {
 	_, to := name_bounds(source)
 	return source[:to]
@@ -91,6 +94,7 @@ path_stem_of :: proc(source: string) -> string {
 // The one answer to what a stem is: the scratch audio, the Engine's output
 // prefix and the progress line are all named from it, so a second rule would
 // refuse a Recording at one stage and accept it at the next.
+@(require_results)
 stem_of :: proc(source: string) -> string {
 	from, to := name_bounds(source)
 	return source[from:to]
@@ -100,6 +104,7 @@ stem_of :: proc(source: string) -> string {
 // and a caller naming its artifacts agree about where the name ends. Empty where
 // there is no extension AND where the path names no file at all -- `.mp4` is a
 // name and not an extension, exactly as `stem_of` reads it.
+@(require_results)
 extension_of :: proc(source: string) -> string {
 	from, to := name_bounds(source)
 	if to <= from {
@@ -111,6 +116,7 @@ extension_of :: proc(source: string) -> string {
 // Why the temporary name appends to the destination, and why the process
 // identifier is in it: ADR-0024. The caller owns the answer and frees it with
 // `delete` and the same allocator.
+@(require_results)
 part_of :: proc(destination: string, pid: int, allocator: mem.Allocator) -> (part: string) {
 	assert(len(destination) > 0, "there is nowhere here for an artifact to be published to")
 	assert(allocator.procedure != nil, "the name outlives this procedure and needs an allocator")
@@ -121,6 +127,7 @@ part_of :: proc(destination: string, pid: int, allocator: mem.Allocator) -> (par
 // Appending keeps the answer in the same directory as the file it renames, for
 // part_of's reason. The caller owns the answer and frees it with `delete` and
 // the same allocator.
+@(require_results)
 quarantined :: proc(path: string, allocator: mem.Allocator) -> string {
 	assert(len(path) > 0, "there is nothing here to move aside")
 	assert(allocator.procedure != nil, "the name outlives this procedure and needs an allocator")

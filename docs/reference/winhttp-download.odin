@@ -78,6 +78,7 @@ foreign winhttp {
 // The buffers are the caller's on purpose: URL_COMPONENTS holds pointers into
 // them, so returning the struct by value carries pointers out of this frame and
 // they must outlive it.
+@(require_results)
 crack_url :: proc(
 	url: string,
 	host_buf: []u16,
@@ -105,6 +106,7 @@ crack_url :: proc(
 
 // The GET, with the header this spike exists to test. Added BEFORE
 // WinHttpSendRequest, which is what makes it survive the cross-host redirect.
+@(require_results)
 send_ranged_request :: proc(hRequest: HINTERNET, header: string) -> bool {
 	if !WinHttpAddRequestHeaders(
 		hRequest,
@@ -128,6 +130,7 @@ send_ranged_request :: proc(hRequest: HINTERNET, header: string) -> bool {
 
 // The status line as a number, which is what WINHTTP_QUERY_FLAG_NUMBER buys:
 // without it the same query hands back the status as text.
+@(require_results)
 response_status :: proc(hRequest: HINTERNET) -> win32.DWORD {
 	status: win32.DWORD
 	sz := win32.DWORD(size_of(win32.DWORD))
@@ -167,6 +170,7 @@ report_content_range :: proc(hRequest: HINTERNET) {
 
 // Everything the response body holds, counted and thrown away. A read of zero
 // bytes is the end of it; a failed read is reported and ends it too.
+@(require_results)
 drain_body :: proc(hRequest: HINTERNET) -> (total: int) {
 	buf: [8192]byte
 	for {

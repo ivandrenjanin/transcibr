@@ -25,6 +25,7 @@ Streams :: struct {
 // not get: `CreatePipe` takes one SECURITY_ATTRIBUTES for both ends, so making
 // that one private is a second call rather than a creation flag.
 @(private)
+@(require_results)
 open_streams :: proc() -> (s: Streams, err: Error) {
 	inheritable := win32.SECURITY_ATTRIBUTES {
 		nLength        = size_of(win32.SECURITY_ATTRIBUTES),
@@ -67,6 +68,7 @@ Handle_List :: struct {
 // handle this process holds at that instant, including the write end of another
 // child's diagnostic pipe. Measured; see ADR-0020.
 @(private)
+@(require_results)
 open_handle_list :: proc(hl: ^Handle_List, s: ^Streams, allocator: mem.Allocator) -> Error {
 	assert(hl != nil, "there is nowhere to build a handle list")
 	assert(s != nil, "there are no streams here to name in a handle list")
@@ -134,6 +136,7 @@ close_child_side :: proc(s: ^Streams) {
 // anonymous pipe waits, and the one worker that could afford to wait is also the
 // one watching for a Stop press (ADR-0006). `at_end` is the ordinary end of a
 // child's output and not a fault.
+@(require_results)
 read_diagnostics :: proc(c: ^Child, into: []u8) -> (n: int, at_end: bool, err: Error) {
 	assert(c != nil, "there is no child here to read from")
 	assert(c.diagnostics != nil, "a child that was never started says nothing")

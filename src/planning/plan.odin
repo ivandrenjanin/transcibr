@@ -61,6 +61,7 @@ Outcome :: struct {
 	change:   artifact.Change,
 }
 
+@(require_results)
 decide :: proc(found: Found, settings: Settings) -> (outcome: Outcome) {
 	assert(len(found.source) > 0, "there is no Recording here to decide anything about")
 	assert(len(settings.merge_profile) > 0, "a Batch naming no Merge Profile decides nothing")
@@ -91,6 +92,7 @@ decide :: proc(found: Found, settings: Settings) -> (outcome: Outcome) {
 // reports itself finished rather than refusing every Recording in it. Criterion
 // two and criterion eight meet here, and this is the resolution.
 @(private)
+@(require_results)
 writable :: proc(found: Found, wanted: Outcome) -> Outcome {
 	assert(len(found.source) > 0, "there is no Recording here to decide anything about")
 	assert(wanted.decision != .Refuse, "a Recording refused twice, for two different reasons")
@@ -110,6 +112,7 @@ writable :: proc(found: Found, wanted: Outcome) -> Outcome {
 // (ADR-0008). Whether the directory can be WRITTEN to is not here and cannot be
 // -- see `writable`.
 @(private)
+@(require_results)
 refused :: proc(found: Found, current: artifact.Sidecar) -> (outcome: Outcome, yes: bool) {
 	assert(len(found.source) > 0, "there is no Recording here to refuse")
 	defer assert(yes == (outcome.decision == .Refuse), "a refusal that did not refuse anything")
@@ -129,6 +132,7 @@ refused :: proc(found: Found, current: artifact.Sidecar) -> (outcome: Outcome, y
 // Artifacts with no Sidecar behind them are an interrupted run, and what they
 // were made with is exactly what nothing on disk says.
 @(private)
+@(require_results)
 unrecorded :: proc(found: Found) -> Outcome {
 	assert(len(found.source) > 0, "there is no Recording here to decide anything about")
 	assert(
@@ -162,6 +166,7 @@ unrecorded :: proc(found: Found) -> Outcome {
 // records a run is what that run actually used: `transcript.UNKNOWN` where the
 // Batch named no Engine, and the duration the probe measured.
 @(private)
+@(require_results)
 current_of :: proc(
 	found: Found,
 	settings: Settings,
@@ -205,6 +210,7 @@ current_of :: proc(
 // on an absence. Where there is no record either, what a run with no
 // `--engine-version` writes is UNKNOWN, and that is what this would record.
 @(private)
+@(require_results)
 engine_of :: proc(
 	settings: Settings,
 	recorded: artifact.Sidecar,
@@ -229,6 +235,7 @@ engine_of :: proc(
 // order where everything before the Merge Profile needs the GPU again (ADR-0003).
 // There is no second comparison anywhere in this package.
 @(private)
+@(require_results)
 resumed :: proc(found: Found, recorded, current: artifact.Sidecar, settings: Settings) -> Outcome {
 	assert(
 		len(current.merge_profile) > 0,
@@ -259,6 +266,7 @@ resumed :: proc(found: Found, recorded, current: artifact.Sidecar, settings: Set
 }
 
 @(private)
+@(require_results)
 settled :: proc(found: Found) -> Outcome {
 	assert(len(found.source) > 0, "there is no Recording here to settle anything about")
 	assert(
@@ -275,6 +283,7 @@ settled :: proc(found: Found) -> Outcome {
 // Rendering again is only cheap while the Engine's own output is still there;
 // without it the same reason costs the whole of the GPU time over again.
 @(private)
+@(require_results)
 rendered_again :: proc(found: Found, wanted: Outcome) -> (outcome: Outcome) {
 	assert(wanted.decision == .Transcribe, "a decision was made before it was decided")
 	assert(wanted.reason != .Up_To_Date, "a Recording needing nothing was sent to be rendered")

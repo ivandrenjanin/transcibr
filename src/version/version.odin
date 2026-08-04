@@ -16,6 +16,7 @@ CURRENT :: Version {
 	patch = 0,
 }
 
+@(require_results)
 banner :: proc(program: string, v: Version, allocator: mem.Allocator) -> string {
 	assert(len(program) > 0, "program name must not be empty")
 	assert(strings.index_byte(program, '\n') == -1, "program name must not contain a newline")

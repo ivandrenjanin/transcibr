@@ -18,6 +18,7 @@ Cache_Fault :: enum u8 {
 }
 
 @(private)
+@(require_results)
 cache_fault_says :: proc(fault: Cache_Fault) -> string {
 	switch fault {
 	case .Path_Not_Ascii:
@@ -32,6 +33,7 @@ cache_fault_says :: proc(fault: Cache_Fault) -> string {
 }
 
 // Free the answer with `delete` and this allocator.
+@(require_results)
 cache_error_message :: proc(
 	fault: Cache_Fault,
 	cache: string,
@@ -114,6 +116,7 @@ FAULT := [Fault]string {
 }
 
 @(private)
+@(require_results)
 fault_says :: proc(fault: Fault) -> string {
 	assert(fault != .None, "the success value is not a fault and says nothing")
 
@@ -123,6 +126,7 @@ fault_says :: proc(fault: Fault) -> string {
 }
 
 @(private)
+@(require_results)
 borrowed_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> string {
 	assert(
 		err.fault == .Probe_Unreadable || err.fault == .Audio_Malformed,
@@ -155,6 +159,7 @@ borrowed_message :: proc(err: Error, source: string, allocator: mem.Allocator) -
 // raw NUL cuts it off and a byte that is not UTF-8 converts the whole of it to
 // nil -- and NTFS permits an unpaired surrogate in a filename. Free the answer
 // with `delete` and this allocator.
+@(require_results)
 error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> string {
 	assert(err.fault != .None, "there is no message for a Recording that came through")
 	assert(

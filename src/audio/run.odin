@@ -45,6 +45,7 @@ POLL_MS :: u32(250)
 AUDIO_HEAD_BYTES :: 64 * 1024
 
 // Why `taken_ns` is a wall clock and not a monotonic tick: ADR-0023.
+@(require_results)
 read_source :: proc(source: string, allocator: mem.Allocator) -> (reading: Reading, err: Error) {
 	assert(len(source) > 0, "there is no Recording here to read")
 	assert(allocator.procedure != nil, "a stat needs an allocator for the path it hands back")
@@ -62,6 +63,7 @@ read_source :: proc(source: string, allocator: mem.Allocator) -> (reading: Readi
 	}, Error{}
 }
 
+@(require_results)
 settle :: proc(
 	source: string,
 	planned: Reading,
@@ -106,6 +108,7 @@ Run :: enum u8 {
 }
 
 @(private)
+@(require_results)
 run_bounded :: proc(
 	group: ^child.Job_Object,
 	executable: string,
@@ -144,6 +147,7 @@ run_bounded :: proc(
 // The pipe is 64 KiB and ffmpeg at `-loglevel error` says almost nothing, but a
 // Recording that fails to decode says a line per frame.
 @(private)
+@(require_results)
 drain :: proc(c: ^child.Child) -> (readable: bool) {
 	assert(c != nil, "there is no child here to read")
 
@@ -161,6 +165,7 @@ drain :: proc(c: ^child.Child) -> (readable: bool) {
 }
 
 @(private)
+@(require_results)
 stop :: proc(c: ^child.Child) -> Run {
 	assert(c != nil, "there is no child here to stop")
 
@@ -170,6 +175,7 @@ stop :: proc(c: ^child.Child) -> Run {
 	return .Unstoppable
 }
 
+@(require_results)
 probe :: proc(
 	group: ^child.Job_Object,
 	tools: Tools,
@@ -214,6 +220,7 @@ probe :: proc(
 }
 
 @(private)
+@(require_results)
 check_audio :: proc(
 	part: string,
 	container_ms: i64,
@@ -250,6 +257,7 @@ check_audio :: proc(
 // file the bytes came from: a stat taken separately can name a file something
 // has replaced in between.
 @(private)
+@(require_results)
 read_head :: proc(path: string, into: []u8) -> (head: []u8, bytes: i64, err: Error) {
 	assert(len(path) > 0, "there is no audio here to read")
 	assert(len(into) > 0, "a head with nowhere to be read into reads nothing")
@@ -286,6 +294,7 @@ Job :: struct {
 // The cache is not checked here: a cache that will not open is not a fact about
 // this Recording, it fails every Recording identically, and it is `open_cache`'s
 // answer -- which a Batch calls once, before the first extraction.
+@(require_results)
 extract :: proc(
 	group: ^child.Job_Object,
 	tools: Tools,
@@ -324,6 +333,7 @@ extract :: proc(
 }
 
 @(private)
+@(require_results)
 produce :: proc(
 	group: ^child.Job_Object,
 	tools: Tools,
@@ -388,6 +398,7 @@ discard_part :: proc(part: string, fault: Fault) {
 // and resolves under an account name that may not be. A path that is not valid
 // UTF-8 answers `.Unusable` rather than `.Path_Not_Ascii`, because
 // `get_absolute_path` refuses it before the ASCII check ever sees it.
+@(require_results)
 open_cache :: proc(cache: string, allocator: mem.Allocator) -> Cache_Fault {
 	assert(len(cache) > 0, "there is no scratch cache here to open")
 	assert(allocator.procedure != nil, "resolving a path needs an allocator to resolve it into")
@@ -410,6 +421,7 @@ open_cache :: proc(cache: string, allocator: mem.Allocator) -> Cache_Fault {
 // Best effort by construction: Windows refuses to delete a file another process
 // holds open without sharing delete permission, so the file stays, the sweep
 // carries on, and what is answered is what actually went.
+@(require_results)
 sweep_cache :: proc(
 	cache: string,
 	limits: Sweep_Limits,
@@ -445,6 +457,7 @@ sweep_cache :: proc(
 
 // Why the listing counts entries `core:os` cannot classify: ADR-0023.
 @(private)
+@(require_results)
 cache_entries :: proc(listing: []os.File_Info, allocator: mem.Allocator) -> []Cache_Entry {
 	assert(allocator.procedure != nil, "a listing needs an allocator to be turned into entries")
 

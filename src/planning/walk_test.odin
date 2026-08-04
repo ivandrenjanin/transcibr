@@ -532,7 +532,7 @@ ran :: proc(t: ^testing.T, program: string, arguments: []string) -> bool {
 	defer child.close(&c)
 
 	if !testing.expect(t, child.wait(&c, CMD_BOUND_MS), "a child did not finish in time") {
-		child.stop(&c)
+		testing.expect(t, child.stop(&c), "a child overran and may still hold this tree open")
 		return false
 	}
 	return true

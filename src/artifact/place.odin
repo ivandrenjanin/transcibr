@@ -35,6 +35,7 @@ Error :: struct {
 // path names no file; free them with destroy_names and the same allocator.
 //
 // Why the whole record is validated before the first artifact lands: ADR-0024.
+@(require_results)
 complete :: proc(
 	source: string,
 	output: string,
@@ -85,6 +86,7 @@ complete :: proc(
 }
 
 @(private)
+@(require_results)
 rendered_and_placed :: proc(
 	names: Names,
 	output: string,
@@ -118,6 +120,7 @@ rendered_and_placed :: proc(
 // Windows refuses is reported under a fault of its own rather than as the move
 // that did not happen: ADR-0024.
 @(private)
+@(require_results)
 disposed_of :: proc(
 	output: string,
 	parse_err: transcript.Parse_Error,
@@ -138,6 +141,7 @@ disposed_of :: proc(
 }
 
 @(private)
+@(require_results)
 placed_in_order :: proc(
 	names: Names,
 	json_bytes: []u8,
@@ -161,6 +165,7 @@ placed_in_order :: proc(
 
 // Why the temporary name sits beside the destination, and which MoveFileExW
 // flags `core:os` passes to make the rename atomic and replacing: ADR-0024.
+@(require_results)
 publish :: proc(
 	names: Names,
 	which: Artifact,
@@ -190,6 +195,7 @@ publish :: proc(
 
 // Why the bytes are flushed before publish renames onto the final name: ADR-0024.
 @(private)
+@(require_results)
 wrote :: proc(path: string, bytes: []u8) -> bool {
 	assert(len(path) > 0, "there is nowhere here to write an artifact")
 
@@ -219,6 +225,7 @@ quarantine :: proc(path: string, allocator: mem.Allocator) -> bool {
 }
 
 @(private)
+@(require_results)
 fault_says :: proc(fault: Fault) -> string {
 	switch fault {
 	case .Named_No_File:
@@ -247,6 +254,7 @@ fault_says :: proc(fault: Fault) -> string {
 }
 
 @(private)
+@(require_results)
 artifact_says :: proc(which: Artifact) -> string {
 	switch which {
 	case .Transcript:
@@ -263,6 +271,7 @@ artifact_says :: proc(which: Artifact) -> string {
 // raw NUL cuts the line off and a byte that is not UTF-8 converts it all to nil.
 //
 // The line outlives this procedure; free it with delete and the same allocator.
+@(require_results)
 error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> string {
 	assert(err.fault != .None, "there is no message for a Recording that came through")
 	assert(len(source) > 0, "a refusal must name the Recording it is reported against")
@@ -290,6 +299,7 @@ error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> s
 }
 
 @(private)
+@(require_results)
 borrowed_message :: proc(
 	err: Error,
 	source: string,

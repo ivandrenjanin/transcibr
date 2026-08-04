@@ -25,6 +25,7 @@ ENGINE_OUTPUT_SUFFIX :: ".json"
 // The caller owns the returned slice and frees it with `delete` and the same
 // allocator; the strings in it are borrowed and outlive nothing the caller does not
 // already hold. Why these flags, and why not `-bs`, `-np` or `-l`: ADR-0012.
+@(require_results)
 engine_arguments :: proc(job: Engine_Job, allocator: mem.Allocator) -> (arguments: []string) {
 	assert(allocator.procedure != nil, "an argument list needs an allocator to be built in")
 	assert(len(job.model) > 0, "the Engine was given no Model to load")
@@ -49,6 +50,7 @@ engine_arguments :: proc(job: Engine_Job, allocator: mem.Allocator) -> (argument
 
 // Why a path outside ASCII is refused before the Engine is started, and why the
 // rule sits beside this argument list rather than beside ffmpeg's: ADR-0025.
+@(require_results)
 ascii_only :: proc(path: string) -> bool {
 	for at in 0 ..< len(path) {
 		if path[at] >= 0x80 {
@@ -59,6 +61,7 @@ ascii_only :: proc(path: string) -> bool {
 }
 
 // The caller owns the answer and frees it with `delete` and the same allocator.
+@(require_results)
 engine_output_path :: proc(prefix: string, allocator: mem.Allocator) -> string {
 	assert(len(prefix) > 0, "a prefix of nothing names the extension and nothing else")
 	assert(
@@ -98,6 +101,7 @@ Engine_Line :: struct {
 @(private)
 PROGRESS_MARK :: "whisper_print_progress_callback: progress ="
 
+@(require_results)
 read_engine_line :: proc(line: string) -> Engine_Line {
 	if said, ok := read_progress(line); ok {
 		return checked(said)
@@ -109,6 +113,7 @@ read_engine_line :: proc(line: string) -> Engine_Line {
 }
 
 @(private)
+@(require_results)
 checked :: proc(said: Engine_Line) -> Engine_Line {
 	assert(said.says != .Nothing, "a line that said nothing was handed back as a reading")
 
@@ -130,6 +135,7 @@ checked :: proc(said: Engine_Line) -> Engine_Line {
 }
 
 @(private)
+@(require_results)
 read_progress :: proc(line: string) -> (said: Engine_Line, ok: bool) {
 	mark := strings.index(line, PROGRESS_MARK)
 	if mark < 0 {
@@ -152,6 +158,7 @@ read_progress :: proc(line: string) -> (said: Engine_Line, ok: bool) {
 
 // Why not `strconv.parse_int`, which takes `_` and a sign and overflows in silence:
 // CLAUDE.md, Odin notes.
+@(require_results)
 read_natural :: proc(text: string, max_digits := MAX_NATURAL_DIGITS) -> (value: i64, ok: bool) {
 	assert(max_digits > 0, "a number of no digits at all is not a number")
 
@@ -192,6 +199,7 @@ SECONDS_MARK :: " sec)"
 BANNER_AGREEMENT_MS :: i64(1000)
 
 @(private)
+@(require_results)
 read_banner :: proc(line: string) -> (said: Engine_Line, ok: bool) {
 	mark := strings.last_index(line, SAMPLES_MARK)
 	if mark < 0 {
@@ -215,6 +223,7 @@ read_banner :: proc(line: string) -> (said: Engine_Line, ok: bool) {
 }
 
 @(private)
+@(require_results)
 banner_agrees :: proc(from_samples, from_seconds: i64) -> bool {
 	assert(from_samples > 0, "a sample count that was refused was compared anyway")
 	assert(from_seconds > 0, "a seconds reading that was refused was compared anyway")
@@ -227,6 +236,7 @@ banner_agrees :: proc(from_samples, from_seconds: i64) -> bool {
 }
 
 @(private)
+@(require_results)
 samples_ms :: proc(head: string) -> (duration_ms: i64, ok: bool) {
 	at := len(head)
 	for at > 0 && head[at - 1] >= '0' && head[at - 1] <= '9' {
@@ -245,6 +255,7 @@ samples_ms :: proc(head: string) -> (duration_ms: i64, ok: bool) {
 }
 
 @(private)
+@(require_results)
 seconds_ms :: proc(text: string) -> (duration_ms: i64, ok: bool) {
 	seconds, readable := strconv.parse_f64(strings.trim_space(text))
 	if !readable {

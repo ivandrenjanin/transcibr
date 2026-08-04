@@ -20,6 +20,7 @@ COLLAPSE_THRESHOLDS :: Collapse_Params {
 // The Cues come back CLONED: what is returned is freed with destroy_cues, and the
 // set that went in is freed separately with the allocator that made it. Borrowing
 // instead would make one destroy_cues on each a double free.
+@(require_results)
 collapse_repetition :: proc(
 	cues: []Cue,
 	p: Collapse_Params,
@@ -70,6 +71,7 @@ collapse_repetition :: proc(
 // Why the elapsed time of a run is not read, and what the remaining false
 // positive costs: ADR-0016.
 @(private)
+@(require_results)
 is_invention :: proc(run: []Cue, p: Collapse_Params) -> bool {
 	assert(len(run) > 0, "a run with no cues in it is not a run")
 	assert(
@@ -87,6 +89,7 @@ is_invention :: proc(run: []Cue, p: Collapse_Params) -> bool {
 }
 
 @(private)
+@(require_results)
 run_sayings :: proc(run: []Cue) -> (count: int) {
 	assert(len(run) > 0, "a run with no cues in it is not a run")
 	defer assert(count <= len(run), "counted more sayings than there were cues to say them")
@@ -105,6 +108,7 @@ run_sayings :: proc(run: []Cue) -> (count: int) {
 // comes through with them: the Cues the Engine wrote over it are the Recording's
 // own timeline, and only the tail of an invention is anything to drop.
 @(private)
+@(require_results)
 through_sayings :: proc(run: []Cue, count: int) -> (end: int) {
 	assert(len(run) > 0, "a run with no cues in it is not a run")
 	assert(count > 0, "a run cut short of its first saying keeps no speech at all")
@@ -125,6 +129,7 @@ through_sayings :: proc(run: []Cue, count: int) -> (end: int) {
 }
 
 @(private)
+@(require_results)
 repetition_run_end :: proc(cues: []Cue, start: int) -> (end: int) {
 	assert(start >= 0, "a run cannot begin before the cue set does")
 	assert(start < len(cues), "a run cannot begin past the end of the cue set")
@@ -142,6 +147,7 @@ repetition_run_end :: proc(cues: []Cue, start: int) -> (end: int) {
 // run ON rather than breaking it, because an invention with the Engine's own
 // silence written through it is still ONE invention.
 @(private)
+@(require_results)
 carries_on_run :: proc(cue: Cue, said: string) -> bool {
 	next := spoken_text(cue)
 	if len(next) == 0 {

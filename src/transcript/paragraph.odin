@@ -77,6 +77,7 @@ PROFILE_CHOICE :: MONOLOGUE_NAME + "|" + CONVERSATION_NAME
 #assert(len(Merge_Profile) == 2)
 
 @(private)
+@(require_results)
 profile_row :: proc(profile: Merge_Profile) -> (row: Named_Profile) {
 	row = PROFILES[profile]
 	assert(len(row.name) > 0, "a profile was added to Merge_Profile without a row in PROFILES")
@@ -89,14 +90,17 @@ profile_row :: proc(profile: Merge_Profile) -> (row: Named_Profile) {
 }
 
 // Borrowed from a compiled-in constant and never owned; nothing frees it.
+@(require_results)
 profile_name :: proc(profile: Merge_Profile) -> string {
 	return profile_row(profile).name
 }
 
+@(require_results)
 profile_params :: proc(profile: Merge_Profile) -> Merge_Params {
 	return profile_row(profile).params
 }
 
+@(require_results)
 profile_named :: proc(name: string) -> (profile: Merge_Profile, known: bool) {
 	for candidate in Merge_Profile {
 		if profile_row(candidate).name == name {
@@ -116,12 +120,14 @@ Merge_State :: struct {
 }
 
 @(private)
+@(require_results)
 paragraph_is_open :: proc(s: Merge_State) -> bool {
 	assert(s.runes >= 0, "a paragraph holding a negative number of characters")
 	return s.runes > 0
 }
 
 // Free the returned Paragraphs with destroy_paragraphs, passing the same allocator.
+@(require_results)
 merge_paragraphs :: proc(
 	cues: []Cue,
 	p: Merge_Params,
@@ -189,6 +195,7 @@ destroy_paragraphs :: proc(paragraphs: []Paragraph, allocator: mem.Allocator) {
 }
 
 @(private)
+@(require_results)
 breaks_paragraph :: proc(before, after: Cue, p: Merge_Params) -> bool {
 	assert(p.max_gap_ms > 0, "a paragraph that breaks on no silence at all breaks at every cue")
 	assert(p.hard_gap_ms >= p.max_gap_ms, "hard gap must not sit below max gap")
@@ -211,6 +218,7 @@ SENTENCE_CLOSERS :: `"')]}»”’`
 // Says yes to an abbreviation, and that is the right trade: the false break falls
 // at a pause that had already cleared max_gap_ms.
 @(private)
+@(require_results)
 ends_a_sentence :: proc(said: string) -> bool {
 	assert(
 		!ends_on_silence(said),
@@ -259,6 +267,7 @@ paragraph_admit :: proc(
 }
 
 @(private)
+@(require_results)
 paragraph_room :: proc(s: Merge_State, p: Merge_Params) -> int {
 	assert(p.max_para_chars > 0, "a paragraph that may hold no characters can never be closed")
 
@@ -269,6 +278,7 @@ paragraph_room :: proc(s: Merge_State, p: Merge_Params) -> int {
 }
 
 @(private)
+@(require_results)
 split_trimmed :: proc(said: string, at: int) -> (take, rest: string) {
 	assert(at > 0, "a split that takes nothing is not a split into two sides")
 	assert(at < len(said), "a split at or past the end of the speech behind it")
@@ -281,6 +291,7 @@ split_trimmed :: proc(said: string, at: int) -> (take, rest: string) {
 }
 
 @(private)
+@(require_results)
 word_split :: proc(said: string, room: int) -> (take, rest: string) {
 	assert(len(said) > 0, "there is nothing here to split")
 	assert(!opens_on_silence(said), "speech still opening on something nobody said")
@@ -312,6 +323,7 @@ word_split :: proc(said: string, room: int) -> (take, rest: string) {
 }
 
 @(private)
+@(require_results)
 character_split :: proc(said: string, room: int) -> (take, rest: string) {
 	assert(len(said) > 0, "there is nothing here to carve")
 	assert(room > 0, "a carve that may take no characters never finishes")

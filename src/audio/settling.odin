@@ -24,6 +24,7 @@ SETTLING_ATTEMPTS :: 2
 
 #assert(SETTLING_ATTEMPTS >= 2)
 
+@(require_results)
 settling_fault :: proc(outcome: Settling, attempts_left: int) -> (fault: Fault, again: bool) {
 	assert(attempts_left >= 0, "a look cannot be followed by a negative number of looks")
 
@@ -47,6 +48,7 @@ SLEEP_GRANULARITY_NS :: i64(1_000_000)
 // Never more than the whole gap, because a clock that stepped backwards makes
 // `waited` negative; never a fraction of a millisecond, because the sleep it
 // feeds truncates. Why the truncation costs a Recording: ADR-0023.
+@(require_results)
 remaining_gap_ns :: proc(first: Reading, second: Reading, minimum_gap_ns: i64) -> i64 {
 	assert(minimum_gap_ns > 0, "a gap of no time at all says nothing about anything")
 
@@ -61,6 +63,7 @@ remaining_gap_ns :: proc(first: Reading, second: Reading, minimum_gap_ns: i64) -
 // Deliberately does not assert "taken in order": the readings belong to this
 // package, but the clock they carry belongs to the machine. Why a forward step
 // is not detectable here and what bounds it: ADR-0023.
+@(require_results)
 settling :: proc(first: Reading, second: Reading, minimum_gap_ns: i64) -> Settling {
 	assert(minimum_gap_ns > 0, "a gap of no time at all says nothing about anything")
 

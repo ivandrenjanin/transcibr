@@ -50,7 +50,7 @@ icacls :: proc(t: ^testing.T, arguments: []string) -> bool {
 	defer child.close(&c)
 
 	if !testing.expect(t, child.wait(&c, CMD_BOUND_MS), "icacls did not finish in time") {
-		child.stop(&c)
+		testing.expect(t, child.stop(&c), "icacls overran and may still hold this tree open")
 		return false
 	}
 	return true

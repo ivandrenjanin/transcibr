@@ -33,6 +33,7 @@ TRANSCRIBE :: "--transcribe"
 FFMPEG :: "ffmpeg.exe"
 FFPROBE :: "ffprobe.exe"
 
+@(require_results)
 transcribe_one :: proc(arguments: []string) -> int {
 	assert(len(arguments) > 0, "no arguments at all is the version banner, settled before this")
 
@@ -66,6 +67,7 @@ transcribe_one :: proc(arguments: []string) -> int {
 }
 
 @(private)
+@(require_results)
 run_one :: proc(
 	group: ^child.Job_Object,
 	o: Transcribe_Options,
@@ -94,6 +96,7 @@ run_one :: proc(
 }
 
 @(private)
+@(require_results)
 extract_one :: proc(
 	group: ^child.Job_Object,
 	o: Transcribe_Options,
@@ -124,6 +127,7 @@ extract_one :: proc(
 }
 
 @(private)
+@(require_results)
 transcribe_extracted :: proc(
 	group: ^child.Job_Object,
 	o: Transcribe_Options,
@@ -165,6 +169,7 @@ transcribe_extracted :: proc(
 }
 
 @(private)
+@(require_results)
 place_artifacts :: proc(
 	o: Transcribe_Options,
 	output: string,
@@ -212,6 +217,7 @@ place_artifacts :: proc(
 }
 
 @(private)
+@(require_results)
 model_named :: proc(path: string) -> string {
 	assert(len(path) > 0, "there is no Model here to name")
 
@@ -241,6 +247,7 @@ show :: proc(shown: process.Progress, user: rawptr) {
 }
 
 @(private)
+@(require_results)
 read_transcribe_options :: proc(arguments: []string) -> (o: Transcribe_Options, ok: bool) {
 	defer if ok {
 		assert(len(o.source) > 0, "accepted a command line with no Recording to transcribe")
@@ -311,6 +318,7 @@ defaulted :: proc(o: ^Transcribe_Options) {
 // the provenance fields a Transcript records next door -- one spelling meaning a
 // path here and a name there ends up recorded as the model it was made with.
 @(private)
+@(require_results)
 read_transcribe_option :: proc(o: ^Transcribe_Options, name, value: string) -> (ok: bool) {
 	assert(o != nil, "there is nothing here to read an option into")
 

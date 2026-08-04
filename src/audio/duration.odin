@@ -18,6 +18,7 @@ DEFAULT_TOLERANCE :: Tolerance {
 @(private)
 MAX_PER_MILLE :: i64(1000)
 
+@(require_results)
 allowed_difference_ms :: proc(container_ms: i64, tolerance: Tolerance) -> i64 {
 	assert(container_ms > 0, "a container with no duration was never accepted by the probe")
 	assert(tolerance.floor_ms >= 0, "a tolerance cannot allow a negative difference")
@@ -29,6 +30,7 @@ allowed_difference_ms :: proc(container_ms: i64, tolerance: Tolerance) -> i64 {
 
 // Two-sided deliberately: audio longer than the container means the probe and
 // the extraction read different files.
+@(require_results)
 durations_agree :: proc(container_ms: i64, audio_ms: i64, tolerance: Tolerance) -> bool {
 	assert(container_ms > 0, "a container with no duration was never accepted by the probe")
 	assert(audio_ms >= 0, "audio cannot be a negative number of milliseconds long")
