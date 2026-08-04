@@ -64,8 +64,17 @@ $OdinVetFlags = @(
 # clause is `Lines starting with #+ (file tags) are only allowed before the
 # package line`. ABSENCE is the silent one, and it is silent per file: the
 # repository goes on building, and the file added tomorrow is simply not checked.
+#
+# Each entry says WHICH FILES it is for, and that field is not decoration. Written
+# as a flat list of names with "every file" over it, the next name to be added is
+# `!unused-procedures` (issue #45) -- an EXEMPTION, wanted on `_test.odin` alone
+# because `@(test)` reads as unused in both modes. One more string on a flat list
+# turns -vet-unused-procedures off across every production file: measured, a file
+# carrying a dead procedure goes from `'dead_helper' declared but not used` and
+# exit 1 to exit 0 with nothing said. Get-OdinRequiredVetTag refuses that
+# combination, so the cheap way out of #45 fails the build instead of passing it.
 $OdinFileVetTags = @(
-	'explicit-allocators'
+	[pscustomobject]@{ Name = 'explicit-allocators'; Scope = 'Every' }
 )
 
 # Packages import each other as `transcibr:<package>`.
@@ -1539,6 +1548,49 @@ function Get-OdinFileVetTag {
 	return $names.ToArray()
 }
 
+# The `#+vet` names ONE file has to declare, out of $OdinFileVetTags.
+#
+# Every caller asks this rather than reading the declaration, because "which names
+# does this file need" is the only question any of them actually has, and the
+# answer stops being "all of them" at the next ticket. Issue #45's
+# `!unused-procedures` wants `_test.odin` and nothing else; issue #48's `#+private`
+# is the same shape. Written per file here, that is one arm added to the switch
+# below rather than an edit at five call sites that each assumed a flat list. The
+# one scope there is today covers every file, so no arm reads $Name yet; the
+# parameter is where the next one will read it.
+#
+# It REFUSES rather than resolving to nothing, and refuses here rather than in a
+# check somebody has to remember to run first. Both refusals are silent otherwise:
+# a scope with no arm is a name required of no file, and a name that turns a check
+# OFF, declared for every file, turns it off across the whole repository -- neither
+# produces a diagnostic anywhere, and both are one plausible line of the next
+# ticket. A guarantee that depends on two calls happening in the right order is a
+# guarantee held by whoever read build.ps1 most recently.
+function Get-OdinRequiredVetTag {
+	param(
+		[Parameter(Mandatory)] [string] $Name,
+		# The declaration by default; a fabricated one is what the cases in
+		# scripts\selftest.ps1 hand it, since the real one is meant to be clean.
+		[object[]] $Tags = $OdinFileVetTags
+	)
+
+	$required = [System.Collections.Generic.List[string]]::new()
+	foreach ($tag in $Tags) {
+		if ($tag.Name.StartsWith('!') -and ($tag.Scope -eq 'Every')) {
+			throw "the +vet name '$($tag.Name)' turns a check off, and it is declared for every .odin file: it would disable that check across the whole repository, silently and everywhere. Scope it to the files that need the exemption."
+		}
+		switch ($tag.Scope) {
+			'Every' {
+				$required.Add($tag.Name)
+			}
+			default {
+				throw "the +vet name '$($tag.Name)' is declared for scope '$($tag.Scope)', which nothing here resolves -- so it would be required of no file at all. Give Get-OdinRequiredVetTag an arm that says which files that scope covers."
+			}
+		}
+	}
+	return $required.ToArray()
+}
+
 # Every .odin file the checks cover, refused when discovery finds none.
 #
 # The refusal is the whole reason this is a procedure. A check that covers zero
@@ -1659,7 +1711,7 @@ function Assert-OdinVetTagPolicy {
 	$missing = @()
 	foreach ($source in $sources) {
 		$declared = @(Get-OdinFileVetTag -Text ([System.IO.File]::ReadAllText($source.Path)))
-		foreach ($tag in $OdinFileVetTags) {
+		foreach ($tag in @(Get-OdinRequiredVetTag -Name $source.Name)) {
 			# Case-SENSITIVE, the way the compiler reads the name. A spelling it
 			# would refuse is not a spelling this may accept.
 			if ($declared -cnotcontains $tag) {
@@ -1671,8 +1723,7 @@ function Assert-OdinVetTagPolicy {
 		return
 	}
 
-	$line = "#+vet $($OdinFileVetTags -join ' ')"
-	throw "$($missing.Count) file(s) do not declare a +vet tag every .odin file carries (CLAUDE.md rule M2):`n$($missing -join "`n")`nPut ``$line`` above the package clause. The tag is read per FILE: an untagged one compiles with its implicit allocators never looked at, whatever its siblings carry."
+	throw "$($missing.Count) file(s) do not declare a +vet name their scope requires (CLAUDE.md rule M2):`n$($missing -join "`n")`nPut it on a ``#+vet`` line above the package clause. The tag is read per FILE: an untagged one compiles with its implicit allocators never looked at, whatever its siblings carry."
 }
 
 # The sweep as a single verdict, for callers that only want it to pass -- which

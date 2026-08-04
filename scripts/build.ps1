@@ -77,7 +77,7 @@ Write-Host '-> every .odin procedure that returns carries @(require_results)' -F
 # its siblings carry it. A misspelling or a misplaced tag already fails the
 # compile below and names the file; only a tag nobody wrote is silent.
 Assert-OdinVetTagPolicy
-Write-Host "-> every .odin file declares #+vet $($OdinFileVetTags -join ' ')" -ForegroundColor Green
+Write-Host "-> every .odin file declares the #+vet names it is scoped for ($(($OdinFileVetTags | ForEach-Object { $_.Name }) -join ' '))" -ForegroundColor Green
 
 New-Item -ItemType Directory -Path $BuildRoot -Force | Out-Null
 

@@ -40,11 +40,16 @@ if ($SmokeTargets.Count -lt 1) {
 }
 $SmokeTarget = $SmokeTargets[0]
 
-# The file tag every fixture source carries, rendered from the declaration
-# build.ps1 checks against rather than spelled again here. Spelled twice, a second
-# name added to that list would leave every build fixture failing rule M2 for a
-# reason no case is about.
-$FixtureVetTags = "#+vet $($OdinFileVetTags -join ' ')"
+# The file tag every fixture source carries, resolved through the reader build.ps1
+# checks with rather than spelled again here. Spelled twice, a second name added to
+# that declaration would leave every build fixture failing rule M2 for a reason no
+# case is about.
+#
+# Asked for a file of the shape every fixture plants -- a package source, never a
+# `_test.odin`, whatever the fixture puts inside it. So the exemptions issues #45
+# and #48 scope to test files are correctly absent here, and stay absent without
+# this line being edited.
+$FixtureVetTags = "#+vet $((Get-OdinRequiredVetTag -Name 'src/fixture/fixture.odin') -join ' ')"
 
 $script:Failures = @()
 $script:Skips = @()
@@ -53,7 +58,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 56
+$ExpectedCaseCount = 58
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -1739,7 +1744,7 @@ Test-Case 'every .odin file the checks cover declares the vet tags' {
 	$missing = @()
 	foreach ($source in $sources) {
 		$declared = @(Get-OdinFileVetTag -Text ([System.IO.File]::ReadAllText($source.Path)))
-		foreach ($tag in $OdinFileVetTags) {
+		foreach ($tag in @(Get-OdinRequiredVetTag -Name $source.Name)) {
 			if ($declared -cnotcontains $tag) {
 				$missing += "  - $($source.Name) does not declare $tag"
 			}
@@ -1871,6 +1876,81 @@ Test-Case 'a call that takes its allocator from the context fails the build' {
 	Assert-Result -Result $passes -Matching 'Built 1 target'
 }
 
+Test-Case 'a +vet name that turns a check off fails the build if it is declared for every file' {
+	# The trap the next ticket walks into. Issue #45's job is to add
+	# `!unused-procedures`, which is an EXEMPTION -- wanted on `_test.odin` and
+	# nowhere else, because `@(test)` reads as unused in both build and test mode.
+	# Written as one more entry covering every file, it turns
+	# -vet-unused-procedures OFF across every production file in the repository:
+	# measured, a file carrying a dead procedure goes from
+	# `'dead_helper' declared but not used` and exit 1 to exit 0 saying nothing.
+	#
+	# That is the same silence rule M2 exists for, arriving through the declaration
+	# rather than through a file. So a name that turns a check off may not be
+	# declared at repository scope, and this is the case that makes typing it a
+	# failed build rather than a quiet one.
+	$repo = New-FixtureRepo 'build-disabling-tag'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+
+	# Patched into the fixture's own copy of common.ps1, so what is under test is
+	# the edit itself and not a description of one.
+	$common = Join-Path (Join-Path $repo 'scripts') 'common.ps1'
+	$text = [System.IO.File]::ReadAllText($common)
+	$eol = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
+	$opening = '$OdinFileVetTags = @('
+	$shortcut = $text.Replace($opening, "$opening$eol`t[pscustomobject]@{ Name = '!unused-procedures'; Scope = 'Every' }")
+	if ($shortcut -eq $text) {
+		throw "the fixture's common.ps1 does not open the declaration with ``$opening``, so this case patched nothing."
+	}
+	[System.IO.File]::WriteAllText($common, $shortcut, $Utf8NoBom)
+
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Fails -Matching '!unused-procedures'
+	Assert-Result -Result $result -Fails -Matching 'turns a check off'
+	# Refused for what the DECLARATION says, not for the files disagreeing with it.
+	# Every fixture source was written before the patch, so the per-file check would
+	# also fail here -- and passing on that would leave #45 free to add the name and
+	# write it into every file, which is the whole defect.
+	if ($result.Output -match 'does not declare') {
+		throw "the build refused the FILES for not carrying the name, so declaring it is still the cheaper way out.`n$($result.Output)"
+	}
+
+	# The negative space (rule A3): the refusal above is satisfied by a resolver
+	# that refuses everything, so the real declaration goes through the same one.
+	$required = @(Get-OdinRequiredVetTag -Name 'src/version/version.odin')
+	if ($required -cnotcontains 'explicit-allocators') {
+		throw "the real declaration required $($required.Count) name(s) of a production file, none of them explicit-allocators: $($required -join ', ')"
+	}
+}
+
+Test-Case 'a +vet name scoped to files nothing resolves is refused where it is written' {
+	# The other silent direction out of the same seam, and load-bearing for the same
+	# ticket. A scope the resolver has no arm for is a name required of NO file:
+	# green build, check covering nothing, and no diagnostic anywhere -- the failure
+	# rule M2 is here for, arriving through the declaration instead of through a
+	# file. So issue #45 adding a scope has to teach the resolver about it, and
+	# writing one it does not know fails rather than resolving to nothing.
+	$refused = ''
+	try {
+		Get-OdinRequiredVetTag -Name 'src/version/version.odin' `
+			-Tags @([pscustomobject]@{ Name = 'explicit-allocators'; Scope = 'Some-Files' }) | Out-Null
+	} catch {
+		$refused = "$_"
+	}
+	if ($refused -notmatch 'Some-Files') {
+		throw "an unknown scope resolved to something rather than being refused: '$refused'"
+	}
+
+	# The negative space (rule A3). The line above is satisfied by a resolver that
+	# refuses every scope, so the same name at the scope this repository does know
+	# is asked for beside it.
+	$known = @(Get-OdinRequiredVetTag -Name 'src/version/version.odin' `
+			-Tags @([pscustomobject]@{ Name = 'explicit-allocators'; Scope = 'Every' }))
+	if (($known.Count -ne 1) -or ($known[0] -ne 'explicit-allocators')) {
+		throw "a name at the one scope there is resolved to: $($known.Count) name(s) $($known -join ', ')"
+	}
+}
+
 Test-Case 'the vet tag rule the build enforces is written down' {
 	# The rule and its enforcement, pinned to each other, exactly as the comment ban
 	# and rule F2 above are and for the defect that produced both those cases: a
@@ -1901,8 +1981,8 @@ Test-Case 'the vet tag rule the build enforces is written down' {
 	# so a name added to $OdinFileVetTags is a name CLAUDE.md has to explain before
 	# the build will pass.
 	foreach ($tag in $OdinFileVetTags) {
-		if (-not $text.Contains($tag)) {
-			throw "CLAUDE.md does not mention the +vet name '$tag', which every .odin file is made to carry."
+		if (-not $text.Contains($tag.Name)) {
+			throw "CLAUDE.md does not mention the +vet name '$($tag.Name)', which every .odin file is made to carry."
 		}
 	}
 }
