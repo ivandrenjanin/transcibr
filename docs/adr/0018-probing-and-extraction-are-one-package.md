@@ -103,7 +103,7 @@ in the Batch, and they mean the Batch has nowhere to put any audio at all. Rende
 `error_message` — whose one documented job is *naming the Recording* — meant handing the cache
 directory in the Recording's slot, at Batch start, before any Recording exists.
 
-They are now `Cache_Fault`, with a table, a checked reader and a renderer that names the **directory**
+They are now `Cache_Fault`, with a switch, a checked reader and a renderer that names the **directory**
 and says the Batch cannot start. `open_cache` and `sweep_cache` answer in it; `extract` does not call
 `open_cache` at all.
 
@@ -115,12 +115,14 @@ one. ADR-0002 also asks that the check be on the **resolved** path, and it now i
 decision names is a non-ASCII Windows account name inside `%LOCALAPPDATA%`, which a perfectly ASCII
 relative cache path resolves straight into.
 
-**It also brings a fourth copy of the fault-report shape**, which `src/child` says out loud is one
-too many: "a third copy is the point at which the shape moves into a package of its own and both of
-these import it". That trigger did **not** fire here — it fired one ticket earlier, and this records
-that rather than claiming the credit: `src/transcript/engine_json.odin` got its `FAULT` table on
-2026-08-03, and `src/child`'s "THE SECOND COPY IS THE LAST ONE" was written sixteen hours later with
-three copies already in the tree. This is the fourth, and the debt is one ticket older than it looks.
+**It also brings a fourth copy of the fault-report shape**, which `src/child` once said out loud was
+one too many: "a third copy is the point at which the shape moves into a package of its own and both
+of these import it" — a comment CLAUDE.md's section 0 has since banned from every procedure body, and
+it is gone from `src/child` along with every other one that rule reached. That trigger did **not**
+fire here — it fired one ticket earlier, and this records that rather than claiming the credit:
+`src/transcript/engine_json.odin` got its `FAULT` table on 2026-08-03, and `src/child` carried "THE
+SECOND COPY IS THE LAST ONE" sixteen hours later with three copies already in the tree, before the
+comment ban removed it. This is the fourth, and the debt is one ticket older than it looks.
 
 `src/audio` carries the small version — an enumeration, a table of sentences, one checked reader and
 one renderer, and not the borrowed-culprit record — because the culprit here is always the Recording,
