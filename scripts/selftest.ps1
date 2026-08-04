@@ -58,7 +58,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 59
+$ExpectedCaseCount = 60
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -1826,6 +1826,33 @@ Test-Case 'the vet tag reader credits only a tag the compiler would read' {
 	$quoted = @(Get-OdinFileVetTag -Text "/*`n#+vet explicit-allocators`n*/`npackage probe`n")
 	if ($quoted.Count -ne 0) {
 		throw "a tag inside a block comment read as $($quoted.Count) name(s)."
+	}
+}
+
+Test-Case 'two texts differing only in letter case do not share one lex' {
+	# Get-OdinLineFact memoises per file, and its comment says the key is "the exact
+	# text". A PowerShell @{} is a case-INSENSITIVE hashtable, so it was not: two
+	# texts differing only in letter case collide, and whichever is lexed second is
+	# handed the first one's facts.
+	#
+	# Reproduced here rather than anywhere else because rule M2's guard is the first
+	# check in this repository to compare a name case-SENSITIVELY. It has to: the
+	# compiler does, and answers `Invalid vet flag name: Explicit-Allocators`. The
+	# collision breaks that comparison in both directions -- lexed second, the
+	# misspelling reads as the correct name and passes the guard; lexed first, a
+	# correctly spelled file reads as the misspelling and fails it. Neither is a
+	# spelling the reader ever saw.
+	#
+	# The order below is the one that reproduced it: correct first, so the
+	# capitalised text is the one that would be handed the wrong answer.
+	$correct = @(Get-OdinFileVetTag -Text "#+vet explicit-allocators`npackage probe`n")
+	if (($correct.Count -ne 1) -or ($correct[0] -cne 'explicit-allocators')) {
+		throw "the correctly spelled tag read as: $($correct.Count) name(s) $($correct -join ', ')"
+	}
+
+	$capitalised = @(Get-OdinFileVetTag -Text "#+vet Explicit-Allocators`npackage probe`n")
+	if (($capitalised.Count -ne 1) -or ($capitalised[0] -cne 'Explicit-Allocators')) {
+		throw "a text differing from the one above only in letter case read as '$($capitalised -join ', ')', so the two shared a lex."
 	}
 }
 

@@ -1087,7 +1087,16 @@ function Write-FileAtomically {
 # text, which is sound because every reader here is a pure function of it -- and
 # the whole sweep reads each file once, so the key is never a stale copy of a
 # file that has since changed on disk.
-$script:OdinLineFactMemo = @{}
+#
+# ORDINAL, because "the exact text" is a claim about bytes and a PowerShell @{}
+# does not make it: a hashtable literal compares keys case-INSENSITIVELY, so two
+# texts differing only in letter case collided and whichever was lexed second was
+# handed the first one's facts. Rule M2's guard is the first check here to compare
+# a name case-sensitively -- the compiler does, and answers `Invalid vet flag
+# name: Explicit-Allocators` -- and the collision broke it in both directions at
+# once: a misspelled tag reading as the correct name, or a correct one reading as
+# the misspelling, depending only on which file the sweep reached first.
+$script:OdinLineFactMemo = [System.Collections.Generic.Dictionary[string, object]]::new([System.StringComparer]::Ordinal)
 
 # The only four characters that can open a comment or a literal, and therefore
 # the only four that can make a line's code differ from the line. A line already
