@@ -1142,6 +1142,12 @@ function Get-OdinLineFact {
 # checks read these boundaries -- rule F1's line limit and section 0's comment
 # ban -- and a second copy is two readers that disagree about where a procedure
 # ends the first time either is fixed.
+#
+# What column zero costs is a procedure declared INDENTED -- inside a `when`
+# block, or nested in another body. This does not see one at all: not its
+# length, and not its comments. Get-OdinHiddenProcedure below closes that from
+# the other end by refusing the declaration, so the two checks keep saying
+# something true rather than something narrower than they claim.
 function Get-OdinProcedureRange {
 	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
 
@@ -1167,6 +1173,46 @@ function Get-OdinProcedureRange {
 			if (($facts[$j].Text -match '^[A-Za-z_][A-Za-z0-9_]*\s*::') -or ($facts[$j].Text -match '^@\(')) {
 				break
 			}
+		}
+	}
+	return $found.ToArray()
+}
+
+# Every procedure declaration in one file that Get-OdinProcedureRange cannot
+# see: one indented, rather than at column 0.
+#
+# The alternative was a note saying the scan misses them, and a note is what the
+# next person reads AFTER the check has been quietly passing over a body for a
+# year. Both readers above are anchored at column 0, so the honest way to make
+# their answers complete is to refuse the declaration that would make them
+# incomplete -- hoist it out of the `when` block, or teach both scans.
+#
+# The exception is a `foreign` block, whose entries are indented by construction
+# and carry no body at all. Tracked by the block rather than by the trailing
+# `---`: what makes those entries uninteresting is that nothing can be inside
+# them, and that is a property of where they sit.
+function Get-OdinHiddenProcedure {
+	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
+
+	$facts = @(Get-OdinLineFact -Text $Text)
+	$found = [System.Collections.Generic.List[object]]::new()
+	$foreign = $false
+	for ($i = 0; $i -lt $facts.Count; $i++) {
+		if (-not $facts[$i].Live) {
+			continue
+		}
+		if ($foreign) {
+			if ($facts[$i].Text -eq '}') {
+				$foreign = $false
+			}
+			continue
+		}
+		if ($facts[$i].Text -match '^foreign\b[^"]*\{\s*$') {
+			$foreign = $true
+			continue
+		}
+		if ($facts[$i].Text -match '^\s+([A-Za-z_][A-Za-z0-9_]*)\s*::\s*proc\b') {
+			$found.Add([pscustomobject]@{ Name = $Matches[1]; Line = $i + 1 })
 		}
 	}
 	return $found.ToArray()
@@ -1211,17 +1257,30 @@ function Get-OdinBodyComment {
 # The sweep FAILS when it finds nothing to read, for the third time in this file
 # and for the same reason: a check that covers zero files reports the same green
 # as one that checked everything.
+#
+# The hidden-procedure refusal comes first because it is what makes the verdict
+# after it mean what it says. A message reading "N comment(s) inside a procedure
+# body" is a claim about EVERY procedure; a procedure the scan cannot see makes
+# that claim false without ever making it look false.
 function Assert-OdinCommentPolicy {
 	$sources = @(Get-OdinSource)
 	if ($sources.Count -eq 0) {
 		throw "no .odin files found under $RepoRoot, so this check would pass having read nothing."
 	}
 
+	$hidden = @()
 	$found = @()
 	foreach ($source in $sources) {
-		foreach ($comment in @(Get-OdinBodyComment -Text ([System.IO.File]::ReadAllText($source.Path)))) {
+		$text = [System.IO.File]::ReadAllText($source.Path)
+		foreach ($procedure in @(Get-OdinHiddenProcedure -Text $text)) {
+			$hidden += "  - $($source.Name):$($procedure.Line) declares $($procedure.Name)"
+		}
+		foreach ($comment in @(Get-OdinBodyComment -Text $text)) {
 			$found += "  - $($source.Name):$($comment.Line) in $($comment.Name): $($comment.Text)"
 		}
+	}
+	if ($hidden.Count -gt 0) {
+		throw "$($hidden.Count) procedure(s) declared indented, where neither this check nor rule F1's line limit can see them:`n$($hidden -join "`n")`nDeclare it at column 0, or teach Get-OdinProcedureRange to find it."
 	}
 	if ($found.Count -eq 0) {
 		return

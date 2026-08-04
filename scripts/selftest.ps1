@@ -47,7 +47,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 45
+$ExpectedCaseCount = 46
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -1203,6 +1203,61 @@ Test-Case 'a comment that follows code on its line is still a comment in the bod
 	$fooledByRune = @(Get-OdinBodyComment -Text $runes)
 	if ($fooledByRune.Count -ne 0) {
 		throw "rune literals '/' and '\'' were read as $($fooledByRune.Count) body comment(s)."
+	}
+}
+
+Test-Case 'every procedure in the tree is declared where the two scans can see it' {
+	# What the scan actually reads is a declaration at COLUMN ZERO, which is what
+	# separates a procedure from the `proc(...) ---` entries indented inside a
+	# foreign block. A procedure declared inside a `when` block is indented too, and
+	# the scan does not see it AT ALL -- not its comments for section 0, and not its
+	# length for rule F1, which reads the same boundaries.
+	#
+	# So the gap is closed from the other end: nothing may be declared where the
+	# scan cannot look. The tree has no such declaration today and this case finds
+	# none, which is exactly when a limitation goes unrecorded and turns into a
+	# silent false negative later. Hoist it to column zero, or teach both scans.
+	$sources = @(Get-OdinSource)
+	if ($sources.Count -eq 0) {
+		throw "no .odin files under $RepoRoot, so this case would pass having read nothing."
+	}
+
+	$hidden = @()
+	foreach ($source in $sources) {
+		foreach ($procedure in @(Get-OdinHiddenProcedure -Text ([System.IO.File]::ReadAllText($source.Path)))) {
+			$hidden += "  - $($source.Name):$($procedure.Line) declares $($procedure.Name)"
+		}
+	}
+	if ($hidden.Count -gt 0) {
+		throw "$($hidden.Count) procedure(s) declared where Get-OdinProcedureRange cannot see them:`n$($hidden -join "`n")"
+	}
+
+	# The negative space (rule A3). Every line above is satisfied by a reader that
+	# finds nothing anywhere, so both answers are checked against text built to a
+	# known one: a `when` block hides a procedure, and a foreign block does not.
+	$hiddenByWhen = @(
+		'when ODIN_OS == .Windows {'
+		"`thelper :: proc() {"
+		"`t`t// invisible to a column-zero scan"
+		"`t}"
+		'}'
+	) -join "`n"
+	$read = @(Get-OdinHiddenProcedure -Text $hiddenByWhen)
+	if (($read.Count -ne 1) -or ($read[0].Name -ne 'helper') -or ($read[0].Line -ne 2)) {
+		throw "a procedure inside a when block read as: $($read.Count) finding(s) $(($read | ForEach-Object { "$($_.Name):$($_.Line)" }) -join ', ')"
+	}
+
+	$foreign = @(
+		'foreign import kernel32 "system:Kernel32.lib"'
+		''
+		'@(default_calling_convention = "std")'
+		'foreign kernel32 {'
+		"`tGetTickCount64 :: proc() -> u64 ---"
+		'}'
+	) -join "`n"
+	$overreach = @(Get-OdinHiddenProcedure -Text $foreign)
+	if ($overreach.Count -ne 0) {
+		throw "a foreign block's bodyless entries read as $($overreach.Count) hidden procedure(s)."
 	}
 }
 
