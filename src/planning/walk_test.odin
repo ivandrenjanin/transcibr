@@ -138,6 +138,52 @@ nothing_transcibr_writes_is_ever_taken_for_a_recording :: proc(t: ^testing.T) {
 	}
 }
 
+// A Recording nothing looked at is indistinguishable from one that is not
+// there, and only the walk knows which happened. Anything that leaves the
+// inventory short of the tree has to be answerable AFTER the walk, or a caller
+// reports success over a plan missing half its Recordings (ADR-0009).
+@(test)
+a_walk_that_did_not_see_the_whole_tree_says_so_afterwards :: proc(t: ^testing.T) {
+	Case :: struct {
+		note:  Note,
+		whole: bool,
+	}
+
+	for c in ([?]Case {
+			{.Root_Unreadable, false},
+			{.Directory_Unreadable, false},
+			{.Too_Deep, false},
+			{.Reparse_Point_Not_Followed, true},
+		}) {
+		inventory := Inventory {
+			notes = []Walk_Note{{note = c.note, path = "D:\\archive"}},
+		}
+		short, yes := left_unlooked_at(inventory)
+		testing.expectf(
+			t,
+			yes == !c.whole,
+			"%v was called %v, which is not what it means for an inventory",
+			c.note,
+			yes ? "incomplete" : "complete",
+		)
+		if !c.whole {
+			testing.expect_value(t, short, c.note)
+		}
+	}
+}
+
+@(test)
+a_walk_that_saw_the_whole_tree_says_nothing_was_left_out :: proc(t: ^testing.T) {
+	_, short := left_unlooked_at(Inventory{})
+	testing.expect(t, !short, "a walk that left nothing out reported that it had")
+
+	cancelled := Inventory {
+		cancelled = true,
+	}
+	_, stopped := left_unlooked_at(cancelled)
+	testing.expect(t, stopped, "a walk that was stopped part way called itself whole")
+}
+
 @(test)
 a_tree_is_walked_into_an_inventory_of_every_recording_under_it :: proc(t: ^testing.T) {
 	tree := scratch_tree(t, "walk")

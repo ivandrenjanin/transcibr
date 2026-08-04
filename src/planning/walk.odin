@@ -111,6 +111,23 @@ Inventory :: struct {
 	cancelled: bool,
 }
 
+// Whether the inventory is the whole tree. A reparse point not followed is what
+// the caller ASKED for and leaves it whole; everything else means Recordings
+// exist that nothing looked at, and a caller that reported success over that
+// would be the silently short file list ADR-0009 names.
+left_unlooked_at :: proc(inventory: Inventory) -> (short: Note, yes: bool) {
+	if inventory.cancelled {
+		return .Root_Unreadable, true
+	}
+	for note in inventory.notes {
+		if note.note == .Reparse_Point_Not_Followed {
+			continue
+		}
+		return note.note, true
+	}
+	return .Root_Unreadable, false
+}
+
 // A cancelled walk answers with what it had got to, not with nothing: the notes
 // and the Recordings already found are still true.
 discover :: proc(roots: []string, w: Walk, allocator: mem.Allocator) -> (inventory: Inventory) {

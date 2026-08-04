@@ -19,7 +19,9 @@ Entry :: struct {
 Collision :: struct {
 	left:  int,
 	right: int,
-	// The artifact both Recordings would write. Owned by the Plan.
+	// The artifact both Recordings would write, spelled as it would ACTUALLY be
+	// written: the folded key is what the comparison runs on, and reporting that
+	// would show a user a path their directory is not called. Owned by the Plan.
 	name:  string,
 }
 
@@ -95,14 +97,31 @@ collided :: proc(
 		if len(keys[current]) == 0 || keys[previous] != keys[current] {
 			continue
 		}
-		return Collision {
-				left = min(previous, current),
-				right = max(previous, current),
-				name = strings.clone(keys[current], allocator),
-			},
-			true
+		return paired(inventory, min(previous, current), max(previous, current), allocator), true
 	}
 	return {}, false
+}
+
+@(private)
+paired :: proc(
+	inventory: []Found,
+	left, right: int,
+	allocator: mem.Allocator,
+) -> (
+	collision: Collision,
+) {
+	assert(left < right, "a pair named in the wrong order")
+	defer assert(len(collision.name) > 0, "a pair that would share an artifact nobody named")
+
+	names, namable := artifact.names_of(inventory[left].source, allocator)
+	defer artifact.destroy_names(names, allocator)
+	assert(namable, "a Recording that named no file was paired with one that did")
+
+	return Collision {
+		left = left,
+		right = right,
+		name = strings.clone(names[.Transcript], allocator),
+	}
 }
 
 // A Recording whose path names no file has an EMPTY key and never collides: it

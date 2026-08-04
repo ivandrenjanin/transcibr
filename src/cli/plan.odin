@@ -1,0 +1,181 @@
+package main
+
+import "core:fmt"
+import "transcibr:artifact"
+import "transcibr:planning"
+import "transcibr:transcript"
+
+// The dry run: walk a folder tree and print what a Batch would do to it,
+// spending no GPU time at all. Every decision, every sentence and every refusal
+// is `transcibr:planning`'s; what is here is argument reading and a write.
+
+PLAN :: "--plan"
+
+Plan_Options :: struct {
+	root:           string,
+	model:          string,
+	engine_version: string,
+	prompt:         string,
+	profile:        transcript.Merge_Profile,
+	follow:         bool,
+}
+
+plan_batch :: proc(arguments: []string) -> int {
+	assert(len(arguments) > 0, "no arguments at all is the version banner, settled before this")
+
+	o, ok := read_plan_options(arguments)
+	if !ok {
+		return USAGE_ERROR
+	}
+
+	identified, unidentified := artifact.identify_model(o.model, context.allocator)
+	defer artifact.destroy_model(identified, context.allocator)
+	if unidentified != .None {
+		message := artifact.model_error_message(unidentified, o.model, context.allocator)
+		defer delete(message, context.allocator)
+		fmt.eprintln(message)
+		return OPERATING_ERROR
+	}
+	return report_plan(o, identified)
+}
+
+@(private)
+report_plan :: proc(o: Plan_Options, identified: artifact.Model) -> int {
+	assert(len(o.root) > 0, "there is no folder here to walk")
+	assert(len(identified.digest) > 0, "a Model nobody identified reached the plan")
+
+	inventory := planning.discover(
+		[]string{o.root},
+		planning.Walk{on_progress = walked, follow_reparse_points = o.follow},
+		context.allocator,
+	)
+	defer planning.destroy_inventory(inventory, context.allocator)
+	fmt.eprintln()
+
+	plan, runnable := planning.plan_batch(
+		inventory.found,
+		planning.Settings {
+			engine_version = o.engine_version,
+			model = identified,
+			beam = artifact.ENGINE_DEFAULT_BEAM,
+			merge_profile = transcript.profile_name(o.profile),
+			prompt = o.prompt,
+		},
+		context.allocator,
+	)
+	defer planning.destroy_plan(plan, context.allocator)
+
+	print_plan(plan, inventory)
+	return plan_verdict(plan, inventory, runnable)
+}
+
+@(private)
+print_plan :: proc(plan: planning.Plan, inventory: planning.Inventory) {
+	for entry in plan.entries {
+		line := planning.plan_line(entry, context.allocator)
+		defer delete(line, context.allocator)
+		fmt.println(line)
+	}
+	for note in inventory.notes {
+		line := planning.note_line(note, context.allocator)
+		defer delete(line, context.allocator)
+		fmt.eprintln(line)
+	}
+}
+
+// A cancelled walk and a refused plan are both failures: what the first found is
+// true and incomplete, and acting on either as though it were the whole Batch is
+// the silently short file list ADR-0009 names.
+@(private)
+plan_verdict :: proc(plan: planning.Plan, inventory: planning.Inventory, runnable: bool) -> int {
+	assert(len(plan.entries) == len(inventory.found), "a plan that lost a Recording")
+
+	if !runnable {
+		line := planning.collision_line(plan, context.allocator)
+		defer delete(line, context.allocator)
+		assert(len(line) > 0, "a Batch was refused and nothing said which pair refused it")
+		fmt.eprintln(line)
+		return OPERATING_ERROR
+	}
+	if short, incomplete := planning.left_unlooked_at(inventory); incomplete {
+		fmt.eprintfln(
+			"this walk did not see the whole tree (%v); the plan above is partial.",
+			short,
+		)
+		return OPERATING_ERROR
+	}
+	return 0
+}
+
+// See CLAUDE.md, Odin notes: core:fmt integer padding.
+@(private)
+walked :: proc(progress: planning.Progress, user: rawptr) {
+	fmt.eprintf(
+		"\r  walking %d directories, %d Recordings            ",
+		progress.directories,
+		progress.recordings,
+	)
+}
+
+@(private)
+read_plan_options :: proc(arguments: []string) -> (o: Plan_Options, ok: bool) {
+	defer if ok {
+		assert(len(o.root) > 0, "accepted a command line with no folder to walk")
+		assert(len(o.model) > 0, "accepted a command line naming no Model")
+		assert(len(o.engine_version) > 0, "an Engine nobody named is UNKNOWN, never empty")
+	} else {
+		assert(len(o.root) == 0, "refused a command line and kept what it asked for")
+	}
+
+	o.profile = transcript.DEFAULT_PROFILE
+
+	for at := 0; at < len(arguments); at += 2 {
+		name := arguments[at]
+		if at + 1 >= len(arguments) {
+			return {}, refuse("%q stands at the end of the command line with no value after it.", name)
+		}
+		if !read_plan_option(&o, name, arguments[at + 1]) {
+			return {}, false
+		}
+	}
+
+	if len(o.engine_version) == 0 {
+		o.engine_version = transcript.UNKNOWN
+	}
+	for missing in ([?][2]string{{o.root, PLAN}, {o.model, "--model-file"}}) {
+		if len(missing[0]) == 0 {
+			return {}, refuse("%s names nothing.", missing[1])
+		}
+	}
+	return o, true
+}
+
+// `--follow-reparse-points` takes a value like every other option here, because
+// the loop above pairs a name with the argument after it and a flag that took
+// none would swallow the option behind it.
+@(private)
+read_plan_option :: proc(o: ^Plan_Options, name, value: string) -> (ok: bool) {
+	assert(o != nil, "there is nothing here to read an option into")
+
+	switch name {
+	case PLAN:
+		o.root = value
+	case "--model-file":
+		o.model = value
+	case "--engine-version":
+		o.engine_version = value
+	case "--prompt":
+		o.prompt = value
+	case "--follow-reparse-points":
+		o.follow = value == "yes"
+	case "--profile":
+		profile, known := transcript.profile_named(value)
+		if !known {
+			return refuse("no merge profile called %q.", value)
+		}
+		o.profile = profile
+	case:
+		return refuse("unknown option %q.", name)
+	}
+	return true
+}

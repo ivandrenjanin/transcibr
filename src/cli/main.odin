@@ -39,6 +39,14 @@ USAGE ::
       output and its sidecar beside the recording, and print the transcript's
       path. Spends GPU time.
 
+  transcibr-cli --plan <folder> --model-file <path>
+                [--profile ` +
+	transcript.PROFILE_CHOICE +
+	`] [--engine-version <version>] [--prompt <text>]
+                [--follow-reparse-points yes]
+      walk the folder and print what each recording found under it would get,
+      and why. Spends no GPU time and writes nothing beside any recording.
+
   transcibr-cli --help
       print this and exit.
 
@@ -71,6 +79,9 @@ main :: proc() {
 	}
 	if os.args[1] == TRANSCRIBE {
 		os.exit(transcribe_one(os.args[1:]))
+	}
+	if os.args[1] == PLAN {
+		os.exit(plan_batch(os.args[1:]))
 	}
 	os.exit(re_render(os.args[1:]))
 }
