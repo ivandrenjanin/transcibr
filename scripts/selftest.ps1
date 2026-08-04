@@ -1967,9 +1967,16 @@ Test-Case 'the vet tag rule the build enforces is written down' {
 	# The per-file reading is pinned alongside the rule itself, because it is the
 	# whole argument for checking the tag rather than writing it once: without it
 	# the check reads as belt and braces over a compiler that already refuses.
+	#
+	# The heading states the property and not a habit. It used to say "on the first
+	# line of every file", which nothing checks and which issue #48 makes false for
+	# half the tree the day `#+private` goes above these tags. A pinned sentence that
+	# a later ticket has to edit a test case to repair is a pin that will be
+	# deleted rather than corrected.
 	$claims = @(
-		'### M2. `#+vet explicit-allocators` on the first line of every file'
+		'### M2. Every file declares the repository''s `#+vet` names above its `package` clause'
 		'per file'
+		'Get-OdinRequiredVetTag'
 	)
 	foreach ($claim in $claims) {
 		if (-not $text.Contains($claim)) {

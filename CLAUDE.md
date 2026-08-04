@@ -225,7 +225,7 @@ for job in w.jobs { job_advance(&job) }
 Do not alias state into convenience locals that outlive a mutation; a slice taken before an `append`
 is stale after it.
 
-### M2. `#+vet explicit-allocators` on the first line of every file
+### M2. Every file declares the repository's `#+vet` names above its `package` clause
 
 ADR-0010 is the rule: every procedure that allocates takes `allocator: mem.Allocator`, and nothing
 crossing a thread boundary comes from `context.temp_allocator`. The tag is that rule spelled so the
@@ -241,7 +241,16 @@ progress_test.odin(40:2) Error: Parameter 'allocator' of type 'Allocator' must b
 There is no command-line flag for it — `odin build -vet-explicit-allocators` answers `Unknown flag`
 at the pin, so unlike S1's set this one cannot be passed once. It is a **file tag**, it goes above
 the `package` clause, and `scripts\common.ps1` holds the names in `$OdinFileVetTags`. Adding a name
-there is what puts it on every file; do not spell one at a call site.
+there is what puts it on the files it is scoped for; do not spell one at a call site.
+
+**Above the clause is the whole of the placement rule — not the first line.** What makes a tag do
+anything is that the compiler reads it, and it reads every `#+` line above `package`: stacked with
+another tag, or under a twenty-line doc comment, all the same. Nothing checks position among them,
+deliberately, because issue #48 puts `#+private` on these files too and one of the two would then
+have to be second. Each entry in `$OdinFileVetTags` also says **which files** it is for, and
+`Get-OdinRequiredVetTag` refuses the two ways that can be silent: a name that turns a check *off*
+declared for every file, and a scope nothing resolves. A name is not repository-wide because the
+list is called a list.
 
 **The tag is read per file, and that is why `Assert-OdinVetTagPolicy` fails the build over a missing
 one.** Measured: a package holding one tagged file and one untagged sibling compiles clean, with the
