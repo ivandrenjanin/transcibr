@@ -71,6 +71,34 @@ a_sidecar_is_written_in_one_fixed_order_a_later_run_can_read :: proc(t: ^testing
 }
 
 @(test)
+the_one_constructor_carries_every_field_through_to_the_record :: proc(t: ^testing.T) {
+	// WHAT THE CALL GIVES AND A STRUCT LITERAL DOES NOT is that a field cannot be
+	// left out -- Odin fills what a literal omits with a zero and says nothing,
+	// and the Sidecar the program writes was built as a literal in a package
+	// ADR-0009 requires to collect no tests. What a case can still check is that
+	// nothing is dropped BETWEEN the parameters and the record: a constructor that
+	// failed to carry `model_digest` through would compile, and every Sidecar
+	// would then agree with every other one about which Model made it.
+	built := sidecar_of(
+		engine_version = EXAMPLE.engine_version,
+		model = Model {
+			path = EXAMPLE.model,
+			digest = EXAMPLE.model_digest,
+			bytes = EXAMPLE.model_bytes,
+		},
+		beam = EXAMPLE.beam,
+		merge_profile = EXAMPLE.merge_profile,
+		prompt = EXAMPLE.prompt,
+		source_bytes = EXAMPLE.source_bytes,
+		source_modified_ns = EXAMPLE.source_modified_ns,
+		container_ms = EXAMPLE.container_ms,
+	)
+	// Against the record the golden bytes above pin, so what this agrees with is
+	// the format on disk rather than another copy of itself.
+	testing.expect_value(t, changed(built, EXAMPLE), Change.None)
+}
+
+@(test)
 a_sidecar_reads_back_as_the_record_that_was_written :: proc(t: ^testing.T) {
 	written := sidecar_text(EXAMPLE, context.allocator)
 	defer delete(written, context.allocator)

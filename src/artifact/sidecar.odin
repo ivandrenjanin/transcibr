@@ -98,6 +98,78 @@ Sidecar :: struct {
 	container_ms:       i64,
 }
 
+// One Recording's Sidecar, out of the things that settled it.
+//
+// A PROCEDURE AND NOT A STRUCT LITERAL AT THE CALL SITE, and the difference is
+// the whole reason this exists: Odin fills a field a literal leaves out with a
+// zero and says nothing, and a call cannot leave a parameter out at all. This
+// record was built inline in `src/cli`, which ADR-0009 requires to collect no
+// tests, and the suite next door had reimplemented it -- so the two agreed by
+// authorship rather than by construction, and a builder that dropped
+// `model_digest` would write `model_sha256: ""`, which round-trips, compares
+// equal to the next empty one, and makes `changed` answer `.None` for two
+// different Models. That is ADR-0003's exact failure arriving from the
+// construction side, and nothing about it would look wrong on disk.
+//
+// The Model arrives WHOLE rather than as three strings and a number, so its path
+// and its digest cannot be handed over the wrong way round -- which is the same
+// pair rule T2 gave `Digest` its own type for.
+//
+// Every string is BORROWED, like every other Sidecar a caller builds. See
+// Sidecar for the one lifetime rule.
+sidecar_of :: proc(
+	engine_version: string,
+	model: Model,
+	beam: u32,
+	merge_profile: string,
+	prompt: string,
+	source_bytes: i64,
+	source_modified_ns: i64,
+	container_ms: i64,
+) -> (
+	made: Sidecar,
+) {
+	// The write side of what `complete` checks when it is handed one (A4). The
+	// numbers are deliberately not here: a moment before 1970 is the filesystem's
+	// answer and an operating error, which `recordable` refuses and this would
+	// crash on.
+	defer assert_filled_in(made)
+
+	return Sidecar {
+		engine_version = engine_version,
+		model = model.path,
+		model_digest = model.digest,
+		model_bytes = model.bytes,
+		beam = beam,
+		merge_profile = merge_profile,
+		prompt = prompt,
+		source_bytes = source_bytes,
+		source_modified_ns = source_modified_ns,
+		container_ms = container_ms,
+	}
+}
+
+// What a Sidecar a caller built must already be true of.
+//
+// AN ASSERTION AND NOT A REFUSAL (A8), because every field here is this
+// program's own answer and none of it is the outside's: `identify_model`
+// produced the digest and asserts its length on the way out, `profile_name`
+// produced the Merge Profile, and the shell defaults an Engine nobody named to
+// UNKNOWN rather than to nothing. An empty one is transcibr having lost it.
+//
+// The digest is the one that matters and the one that would never crash: an
+// empty one is a Sidecar that agrees with every other Sidecar whose Model was
+// also lost. `hex_digest` asserts the length on the way OUT and there was
+// nothing on the way in, so A4's pair was half built.
+@(private)
+assert_filled_in :: proc(made: Sidecar) {
+	assert(len(made.engine_version) > 0, "an Engine nobody named is UNKNOWN, never empty")
+	assert(len(made.model) > 0, "a Sidecar that names no Model cannot notice one changing")
+	assert(len(made.model_digest) == DIGEST_CHARS, "a Model identified by a partial digest")
+	assert(len(made.merge_profile) > 0, "a Sidecar that names no Merge Profile records nothing")
+	// The prompt is deliberately absent: empty is a FACT there and not a gap.
+}
+
 // What about a Recording has changed since its Sidecar was written.
 //
 // THE ORDER OF THE MEMBERS IS THE DECISION and is not an accident of how the

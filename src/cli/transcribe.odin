@@ -289,17 +289,24 @@ place_artifacts :: proc(
 			model          = model_named(identified.path),
 			profile        = o.profile,
 		},
-		artifact.Sidecar {
+		// BUILT BY THE PACKAGE THAT OWNS THE RECORD and not as a struct literal
+		// here. A literal fills a field it leaves out with a zero and says nothing;
+		// this call cannot leave one out. That matters most for the digest, which
+		// is the one field whose absence would never crash -- an empty one
+		// round-trips and compares equal to the next empty one, so `changed` would
+		// answer `.None` for two different Models (ADR-0003). The prompt is the one
+		// thing this command has nothing to say about yet, and empty is what a
+		// Recording made with no prompt really was.
+		artifact.sidecar_of(
 			engine_version = o.engine_version,
-			model = identified.path,
-			model_digest = identified.digest,
-			model_bytes = identified.bytes,
+			model = identified,
 			beam = artifact.ENGINE_DEFAULT_BEAM,
 			merge_profile = transcript.profile_name(o.profile),
+			prompt = "",
 			source_bytes = planned.bytes,
 			source_modified_ns = planned.modified_ns,
 			container_ms = extracted.container_ms,
-		},
+		),
 		context.allocator,
 	)
 	defer artifact.destroy_names(placed, context.allocator)

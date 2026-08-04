@@ -141,6 +141,11 @@ complete :: proc(
 		len(rc.language) == 0,
 		"the language is read out of the Engine's own output here and is not the caller's to supply",
 	)
+	// The read side of what sidecar_of guarantees on the way out (A4), asked
+	// where a caller hands one over rather than where it is turned into bytes --
+	// the Sidecar is written LAST, so an assertion down there fires with two
+	// artifacts already published.
+	assert_filled_in(made)
 
 	names, namable := names_of(source, allocator)
 	if !namable {

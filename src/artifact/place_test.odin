@@ -31,20 +31,30 @@ ENGINE_JSON :: #load("../transcript/fixtures/engine-output.json", string)
 @(private)
 FIXTURE_MS :: transcript.Millis(253_949)
 
-// One Recording's Sidecar, filled in the way the shell fills it.
+// One Recording's Sidecar, built THE WAY THE SHELL BUILDS IT and not the way a
+// suite would.
+//
+// `sidecar_of` and not a struct literal, which is the point: this used to be a
+// literal here and another literal in `src/cli`, and ADR-0009 requires that
+// package to collect no tests -- so the record under test agreed with the record
+// the program writes by authorship alone. Both now go through one call that
+// cannot leave a field out.
 @(private)
 made_by :: proc(profile := transcript.DEFAULT_PROFILE) -> Sidecar {
-	return Sidecar {
+	return sidecar_of(
 		engine_version = "whisper.cpp v1.9.1",
-		model = "C:\\models\\ggml-large-v3.bin",
-		model_digest = Digest(ABC_SHA256),
-		model_bytes = 3_094_623_691,
+		model = Model {
+			path = "C:\\models\\ggml-large-v3.bin",
+			digest = Digest(ABC_SHA256),
+			bytes = 3_094_623_691,
+		},
 		beam = ENGINE_DEFAULT_BEAM,
 		merge_profile = transcript.profile_name(profile),
+		prompt = "",
 		source_bytes = 402_653_184,
 		source_modified_ns = 1_754_136_000_000_000_000,
 		container_ms = i64(FIXTURE_MS),
-	}
+	)
 }
 
 // The Render Context the shell hands in, with the language deliberately left for
