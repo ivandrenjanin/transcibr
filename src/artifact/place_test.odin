@@ -1,3 +1,4 @@
+#+vet explicit-allocators
 package artifact
 
 import "core:fmt"
@@ -60,7 +61,12 @@ Bench :: struct {
 @(require_results)
 set_out :: proc(t: ^testing.T, tag: string, left := ENGINE_JSON) -> (b: Bench) {
 	for directory, at in ([?]^string{&b.cache, &b.beside}) {
-		named := fmt.aprintf("%s-%s", tag, "cache" if at == 0 else "beside")
+		named := fmt.aprintf(
+			"%s-%s",
+			tag,
+			"cache" if at == 0 else "beside",
+			allocator = context.allocator,
+		)
 		defer delete(named, context.allocator)
 		directory^ = scratch(t, named)
 	}

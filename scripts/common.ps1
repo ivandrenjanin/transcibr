@@ -32,6 +32,51 @@ $OdinVetFlags = @(
 	'-disallow-do'
 )
 
+# The vet set's other half: the names every .odin file declares for itself, on a
+# `#+vet` line above its own `package` clause.
+#
+# Here rather than in $OdinVetFlags because there is nowhere else to put them. At
+# the pin these are FILE TAGS and nothing else -- `odin build
+# -vet-explicit-allocators` answers `Unknown flag` -- so a name that is to apply
+# to the whole repository has to be written into every file, and this is the one
+# declaration saying which names those are.
+#
+# `explicit-allocators` is ADR-0010 made mechanical. That ADR's rule is that
+# nothing crossing a thread boundary comes from `context.temp_allocator` and that
+# every procedure which allocates takes its allocator explicitly; the tag turns a
+# call that lets Odin fill an `allocator` parameter from the context into
+# `Parameter 'allocator' of type 'Allocator' must be explicitly provided in
+# procedure call`, at the call site, on every build.
+#
+# Measured against the pin, dev-2026-07-nightly:819fdc7:
+#
+#   - the tag ADDS to the command-line set rather than replacing it, so a tagged
+#     file still fails -vet-tabs and -vet-unused-variables;
+#   - several names on one `#+vet` line all fire, and a `#+vet` line stacks with
+#     a file tag of another kind on the line below it -- which is what makes this
+#     a list rather than a string;
+#   - and the tag is PER FILE. A package holding one tagged file and one untagged
+#     sibling builds clean, with the sibling's implicit allocators unchecked.
+#
+# That last one is why Assert-OdinVetTagPolicy exists. The two ways a tag can be
+# WRONG are already loud and need nothing from this repository -- a misspelled
+# name is `Syntax Error: Invalid vet flag name`, and a tag below the package
+# clause is `Lines starting with #+ (file tags) are only allowed before the
+# package line`. ABSENCE is the silent one, and it is silent per file: the
+# repository goes on building, and the file added tomorrow is simply not checked.
+#
+# Each entry says WHICH FILES it is for, and that field is not decoration. Written
+# as a flat list of names with "every file" over it, the next name to be added is
+# `!unused-procedures` (issue #45) -- an EXEMPTION, wanted on `_test.odin` alone
+# because `@(test)` reads as unused in both modes. One more string on a flat list
+# turns -vet-unused-procedures off across every production file: measured, a file
+# carrying a dead procedure goes from `'dead_helper' declared but not used` and
+# exit 1 to exit 0 with nothing said. Get-OdinRequiredVetTag refuses that
+# combination, so the cheap way out of #45 fails the build instead of passing it.
+$OdinFileVetTags = @(
+	[pscustomobject]@{ Name = 'explicit-allocators'; Scope = 'Every' }
+)
+
 # Packages import each other as `transcibr:<package>`.
 $OdinCollection = "-collection:transcibr=$SrcRoot"
 
@@ -1042,7 +1087,16 @@ function Write-FileAtomically {
 # text, which is sound because every reader here is a pure function of it -- and
 # the whole sweep reads each file once, so the key is never a stale copy of a
 # file that has since changed on disk.
-$script:OdinLineFactMemo = @{}
+#
+# ORDINAL, because "the exact text" is a claim about bytes and a PowerShell @{}
+# does not make it: a hashtable literal compares keys case-INSENSITIVELY, so two
+# texts differing only in letter case collided and whichever was lexed second was
+# handed the first one's facts. Rule M2's guard is the first check here to compare
+# a name case-sensitively -- the compiler does, and answers `Invalid vet flag
+# name: Explicit-Allocators` -- and the collision broke it in both directions at
+# once: a misspelled tag reading as the correct name, or a correct one reading as
+# the misspelling, depending only on which file the sweep reached first.
+$script:OdinLineFactMemo = [System.Collections.Generic.Dictionary[string, object]]::new([System.StringComparer]::Ordinal)
 
 # The only four characters that can open a comment or a literal, and therefore
 # the only four that can make a line's code differ from the line. A line already
@@ -1464,6 +1518,88 @@ function Get-OdinResultProcedure {
 	return $found.ToArray()
 }
 
+# The `#+vet` names one file declares for itself, read off the file tags above
+# its `package` clause.
+#
+# ABOVE the clause and not merely anywhere in the file, because above it is the
+# only place the compiler reads one: a `#+vet` line below the clause is a syntax
+# error, so a reader that credited it would report a name for a file that does
+# not build at all.
+#
+# Through Get-OdinLineFact like every other reader here, and not over the raw
+# lines. What sits above `package` is the file's doc comment --
+# docs\reference\winhttp-download.odin's runs to twenty lines -- and a comment
+# QUOTING a tag line is exactly what a file explaining this rule would carry.
+#
+# WHERE among the tags it sits is not read, deliberately. Issue #48 puts
+# `#+private` on the first line of every test file and issue #45 adds a second
+# vet name; a rule pinning this one to line 1 would have to be re-litigated by
+# both, and would be enforcing a habit rather than the property. What makes the
+# tag do anything is that it is above the clause, which is what this reads.
+function Get-OdinFileVetTag {
+	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
+
+	$names = [System.Collections.Generic.List[string]]::new()
+	foreach ($fact in @(Get-OdinLineFact -Text $Text)) {
+		$code = $fact.Code.Trim()
+		if ($code -match '^package\b') {
+			break
+		}
+		if ($code -notmatch '^#\+vet\b') {
+			continue
+		}
+		foreach ($name in @(($code -replace '^#\+vet\b', '') -split '\s+')) {
+			if ($name -ne '') {
+				$names.Add($name)
+			}
+		}
+	}
+	return $names.ToArray()
+}
+
+# The `#+vet` names ONE file has to declare, out of $OdinFileVetTags.
+#
+# Every caller asks this rather than reading the declaration, because "which names
+# does this file need" is the only question any of them actually has, and the
+# answer stops being "all of them" at the next ticket. Issue #45's
+# `!unused-procedures` wants `_test.odin` and nothing else; issue #48's `#+private`
+# is the same shape. Written per file here, that is one arm added to the switch
+# below rather than an edit at five call sites that each assumed a flat list. The
+# one scope there is today covers every file, so no arm reads $Name yet; the
+# parameter is where the next one will read it.
+#
+# It REFUSES rather than resolving to nothing, and refuses here rather than in a
+# check somebody has to remember to run first. Both refusals are silent otherwise:
+# a scope with no arm is a name required of no file, and a name that turns a check
+# OFF, declared for every file, turns it off across the whole repository -- neither
+# produces a diagnostic anywhere, and both are one plausible line of the next
+# ticket. A guarantee that depends on two calls happening in the right order is a
+# guarantee held by whoever read build.ps1 most recently.
+function Get-OdinRequiredVetTag {
+	param(
+		[Parameter(Mandatory)] [string] $Name,
+		# The declaration by default; a fabricated one is what the cases in
+		# scripts\selftest.ps1 hand it, since the real one is meant to be clean.
+		[object[]] $Tags = $OdinFileVetTags
+	)
+
+	$required = [System.Collections.Generic.List[string]]::new()
+	foreach ($tag in $Tags) {
+		if ($tag.Name.StartsWith('!') -and ($tag.Scope -eq 'Every')) {
+			throw "the +vet name '$($tag.Name)' turns a check off, and it is declared for every .odin file: it would disable that check across the whole repository, silently and everywhere. Scope it to the files that need the exemption."
+		}
+		switch ($tag.Scope) {
+			'Every' {
+				$required.Add($tag.Name)
+			}
+			default {
+				throw "the +vet name '$($tag.Name)' is declared for scope '$($tag.Scope)', which nothing here resolves -- so it would be required of no file at all. Give Get-OdinRequiredVetTag an arm that says which files that scope covers."
+			}
+		}
+	}
+	return $required.ToArray()
+}
+
 # Every .odin file the checks cover, refused when discovery finds none.
 #
 # The refusal is the whole reason this is a procedure. A check that covers zero
@@ -1561,6 +1697,42 @@ function Assert-OdinResultPolicy {
 	}
 
 	throw "$($bare.Count) procedure(s) hand back an answer nothing obliges the caller to read (CLAUDE.md rule F2):`n$($bare -join "`n")`nPut @(require_results) above the declaration. A caller that means to throw the answer away writes `_ = f(...)`."
+}
+
+# CLAUDE.md rule M2 as a single verdict, beside section 0's and rule F2's, and
+# here for the reason all three are: a rule enforced only at review is a rule that
+# reaches main.
+#
+# ABSENCE is the whole subject, and it is the only failure this has to cover. A
+# misspelled name is `Syntax Error: Invalid vet flag name` and a tag below the
+# package clause is `Lines starting with #+ (file tags) are only allowed before
+# the package line` -- both stop the build on their own, naming the file. A tag
+# that was never written stops nothing: the file compiles, and every call in it
+# that takes its allocator from the context goes unread, because the tag applies
+# to the FILE that carries it and to nothing else.
+#
+# So this is a ratchet and not a sweep. It changes nothing about a tree that
+# already obeys the rule; what it refuses is the file added tomorrow, which is
+# the one direction 65 hand-written lines rot in.
+function Assert-OdinVetTagPolicy {
+	$sources = @(Get-OdinCheckedSource)
+
+	$missing = @()
+	foreach ($source in $sources) {
+		$declared = @(Get-OdinFileVetTag -Text ([System.IO.File]::ReadAllText($source.Path)))
+		foreach ($tag in @(Get-OdinRequiredVetTag -Name $source.Name)) {
+			# Case-SENSITIVE, the way the compiler reads the name. A spelling it
+			# would refuse is not a spelling this may accept.
+			if ($declared -cnotcontains $tag) {
+				$missing += "  - $($source.Name) does not declare $tag"
+			}
+		}
+	}
+	if ($missing.Count -eq 0) {
+		return
+	}
+
+	throw "$($missing.Count) file(s) do not declare a +vet name their scope requires (CLAUDE.md rule M2):`n$($missing -join "`n")`nPut it on a ``#+vet`` line above the package clause. The tag is read per FILE: an untagged one compiles with its implicit allocators never looked at, whatever its siblings carry."
 }
 
 # The sweep as a single verdict, for callers that only want it to pass -- which

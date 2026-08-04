@@ -40,6 +40,17 @@ if ($SmokeTargets.Count -lt 1) {
 }
 $SmokeTarget = $SmokeTargets[0]
 
+# The file tag every fixture source carries, resolved through the reader build.ps1
+# checks with rather than spelled again here. Spelled twice, a second name added to
+# that declaration would leave every build fixture failing rule M2 for a reason no
+# case is about.
+#
+# Asked for a file of the shape every fixture plants -- a package source, never a
+# `_test.odin`, whatever the fixture puts inside it. So the exemptions issues #45
+# and #48 scope to test files are correctly absent here, and stay absent without
+# this line being edited.
+$FixtureVetTags = "#+vet $((Get-OdinRequiredVetTag -Name 'src/fixture/fixture.odin') -join ' ')"
+
 $script:Failures = @()
 $script:Skips = @()
 $script:Passes = 0
@@ -47,7 +58,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 52
+$ExpectedCaseCount = 60
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -158,7 +169,7 @@ function Add-FixturePackage {
 		'leaking' { "import `"core:testing`"`n`n@(test)`n${Name}_leaks :: proc(t: ^testing.T) {`n`tleaked := make([]u8, 8, context.allocator)`n`ttesting.expect(t, len(leaked) == 8)`n}`n" }
 		'none' { "${Name}_CONSTANT :: 1`n" }
 	}
-	$source = "package $Name`n`n$body"
+	$source = "$FixtureVetTags`npackage $Name`n`n$body"
 	Write-FixtureSource -Path (Join-Path $dir "$Name.odin") -Text $source
 	return $dir
 }
@@ -173,7 +184,7 @@ function Add-FixtureBinary {
 
 	$dir = Join-Path (Join-Path $RepoRoot 'src') $SmokeTarget.Package
 	New-Item -ItemType Directory -Path $dir -Force | Out-Null
-	Write-FixtureSource -Path (Join-Path $dir 'main.odin') -Text "package main`n`n$Body"
+	Write-FixtureSource -Path (Join-Path $dir 'main.odin') -Text "$FixtureVetTags`npackage main`n`n$Body"
 	return $dir
 }
 
@@ -468,6 +479,37 @@ function Get-CaseSource {
 		throw "no .odin files under $RepoRoot, so this case would pass having $Having nothing."
 	}
 	return $sources
+}
+
+# A rule and its enforcement, pinned to each other.
+#
+# This is the defect that produced the first of the three cases below: the
+# comment ban was applied to 53 files by a branch that also deleted the section
+# stating it, so the tree arrived shaped by a rule written down nowhere and the
+# next contributor could not learn it existed. A check with no policy behind it
+# is a check somebody deletes as unexplained.
+#
+# Written three times before somebody counted -- once per policy, which is once
+# per chance to leave it out of the fourth, and the same count Get-OdinCheckedSource
+# reached for the same reason. $Enforcer is the only part that differed between
+# them beyond the claims themselves.
+function Assert-PolicyClaim {
+	param(
+		[Parameter(Mandatory)] [string] $Enforcer,
+		[Parameter(Mandatory)] [string[]] $Claims
+	)
+
+	$policy = Join-Path $RepoRoot 'CLAUDE.md'
+	if (-not (Test-Path -LiteralPath $policy)) {
+		throw "no $policy, so the rule $Enforcer enforces is stated nowhere."
+	}
+
+	$text = [System.IO.File]::ReadAllText($policy)
+	foreach ($claim in $Claims) {
+		if (-not $text.Contains($claim)) {
+			throw "CLAUDE.md does not carry '$claim', but scripts\common.ps1 fails the build over it."
+		}
+	}
 }
 
 # The <package>.<test> names a document hands a reader to run, in every spelling
@@ -1383,28 +1425,17 @@ Test-Case 'a comment inside a procedure body fails the build' {
 	Assert-Result -Result $result -Fails -Matching 'inside a procedure body'
 	# The LINE and not merely the file. A checker that names the file it found
 	# something in is a checker somebody has to go and search; the whole cost of
-	# reading procedure ranges rather than grepping is paid to say where. Line 6 is
-	# where Add-FixtureBinary's `package main` preamble puts the comment above.
-	Assert-Result -Result $result -Fails -Matching 'main\.odin:6'
+	# reading procedure ranges rather than grepping is paid to say where. Line 7 is
+	# where Add-FixtureBinary's file tag and `package main` preamble put the
+	# comment above.
+	Assert-Result -Result $result -Fails -Matching 'main\.odin:7'
 }
 
 Test-Case 'the comment ban the build enforces is written down' {
-	# The rule and its enforcement, pinned to each other. This is the defect that
-	# produced the check above: the ban was applied to 53 files by a branch that
-	# also deleted the section stating it, so the tree arrived shaped by a rule
-	# written down nowhere and the next contributor could not learn it existed.
-	# A check with no policy behind it is a check somebody deletes as unexplained.
-	$policy = Join-Path $RepoRoot 'CLAUDE.md'
-	if (-not (Test-Path -LiteralPath $policy)) {
-		throw "no $policy, so the rule Assert-OdinCommentPolicy enforces is stated nowhere."
-	}
-
-	$text = [System.IO.File]::ReadAllText($policy)
-	foreach ($claim in @('## 0. Comment policy', 'Comments are banned inside procedure bodies.')) {
-		if (-not $text.Contains($claim)) {
-			throw "CLAUDE.md does not carry '$claim', but scripts\common.ps1 fails the build over it."
-		}
-	}
+	Assert-PolicyClaim -Enforcer 'Assert-OdinCommentPolicy' -Claims @(
+		'## 0. Comment policy'
+		'Comments are banned inside procedure bodies.'
+	)
 }
 
 Test-Case 'no procedure the format check covers hands back an unrequired answer' {
@@ -1563,9 +1594,9 @@ Test-Case 'a procedure that returns without the attribute fails the build' {
 	Assert-Result -Result $result -Fails -Matching 'CLAUDE\.md rule F2'
 	# The LINE and the NAME, not merely the file, for the reason the comment ban
 	# names both: a checker somebody has to go and search for is a checker nobody
-	# runs. Line 5 is where Add-FixtureBinary's `package main` preamble and the
-	# import above put the declaration.
-	Assert-Result -Result $result -Fails -Matching 'main\.odin:5 banner'
+	# runs. Line 6 is where Add-FixtureBinary's file tag and `package main`
+	# preamble and the import above put the declaration.
+	Assert-Result -Result $result -Fails -Matching 'main\.odin:6 banner'
 }
 
 Test-Case 'the result policy refuses a procedure it cannot see, on its own' {
@@ -1693,31 +1724,313 @@ Test-Case 'a procedure TYPE above a table builds, because nothing can annotate o
 }
 
 Test-Case 'the result rule the build enforces is written down' {
-	# The rule and its enforcement, pinned to each other, exactly as the comment
-	# ban above is and for the defect that produced that case: a tree shaped by a
-	# rule written down nowhere is a tree whose next contributor cannot learn the
-	# rule exists, and a check with no policy behind it is a check somebody deletes
-	# as unexplained.
-	$policy = Join-Path $RepoRoot 'CLAUDE.md'
-	if (-not (Test-Path -LiteralPath $policy)) {
-		throw "no $policy, so the rule Assert-OdinResultPolicy enforces is stated nowhere."
-	}
-
-	$text = [System.IO.File]::ReadAllText($policy)
 	# The discard spelling is pinned twice over, because the attribute changes what
 	# a `defer` has to look like and nothing else in the tree would say so: no site
 	# hits it today, so the first person to write `defer f()` over an annotated
 	# procedure meets a compiler error with no rule behind it.
-	$claims = @(
+	Assert-PolicyClaim -Enforcer 'Assert-OdinResultPolicy' -Claims @(
 		'### F2. `@(require_results)` on every procedure that returns anything'
 		'spells it `_ = f(...)`'
 		'`defer _ = f()`'
 	)
-	foreach ($claim in $claims) {
-		if (-not $text.Contains($claim)) {
-			throw "CLAUDE.md does not carry '$claim', but scripts\common.ps1 fails the build over it."
+}
+
+Test-Case 'every .odin file the checks cover declares the vet tags' {
+	# CLAUDE.md rule M2, over the same scope rule F1, section 0 and rule F2 read.
+	# The tag is what turns ADR-0010 from a review finding into a compile error,
+	# and it is PER FILE -- measured: a package with one tagged file and one
+	# untagged sibling builds clean, with the sibling's implicit allocators
+	# unchecked. So a file that never gets the tag is not a rule broken loudly, it
+	# is a file nothing checks.
+	#
+	# The verdict itself comes from Assert-OdinVetTagPolicy rather than from a
+	# second walk written out here. Spelled again, it would be the same reader
+	# reaching the same answer through the same discovery -- a copy, not a
+	# cross-check, and one that goes on passing while the real policy drifts.
+	Assert-OdinVetTagPolicy
+
+	# What earns this case its keep is the count beside it, taken off the LINES by
+	# a scan that knows nothing about package clauses, comments or scopes -- so it
+	# cannot agree with the reader by sharing its mistake. Rule F2's case above is
+	# built the same way, against its attribute count.
+	#
+	# A reader that credited a name in everything it was shown satisfies the policy
+	# over a tree with no tags in it at all; this is what says the lines are really
+	# there. The other direction -- a reader that finds one nowhere -- fails the
+	# policy already and needs nothing here.
+	$sources = @(Get-CaseSource -Having 'read')
+	$declaring = 0
+	foreach ($source in $sources) {
+		if ([System.IO.File]::ReadAllText($source.Path) -match '(?m)^#\+vet\b') {
+			$declaring += 1
 		}
 	}
+	if ($declaring -ne $sources.Count) {
+		throw "the policy passed over $($sources.Count) file(s), but only $declaring of them carry a '#+vet' line at all -- so it is reading names into files that do not have them."
+	}
+
+	# And that the policy DEMANDED something, which is the seam the compiler case
+	# below covers from the other end. $OdinFileVetTags emptied leaves
+	# Assert-OdinVetTagPolicy finding nothing missing because nothing is asked for,
+	# over a tree that still carries every tag -- green, and measuring nothing.
+	$asked = @(Get-OdinRequiredVetTag -Name $sources[0].Name)
+	if ($asked.Count -eq 0) {
+		throw "the policy passed while requiring no name at all of $($sources[0].Name), so it would pass over a tree with no tags in it."
+	}
+}
+
+Test-Case 'the vet tag reader credits only a tag the compiler would read' {
+	# The reader behind the policy above, against text built to a known answer. The
+	# case above is satisfied by a reader that finds a name in everything it is
+	# shown; these are the probes that say which text it is finding them in, and
+	# they are here rather than up there so that a reader defect reports as one
+	# instead of under a name claiming the tree is untagged.
+	$tagged = "#+vet explicit-allocators`npackage probe`n"
+	$read = @(Get-OdinFileVetTag -Text $tagged)
+	if (($read.Count -ne 1) -or ($read[0] -ne 'explicit-allocators')) {
+		throw "a tag on line 1 read as: $($read.Count) name(s) $($read -join ', ')"
+	}
+
+	$bare = @(Get-OdinFileVetTag -Text "package probe`n")
+	if ($bare.Count -ne 0) {
+		throw "a file with no tag at all read as $($bare.Count) name(s)."
+	}
+
+	# Several names on one line, which the compiler accepts and fires all of --
+	# and which is the shape this line takes the moment a second name is declared.
+	$several = @(Get-OdinFileVetTag -Text "#+vet explicit-allocators unused-imports`npackage probe`n")
+	if (($several.Count -ne 2) -or ($several -join ' ') -ne 'explicit-allocators unused-imports') {
+		throw "two names on one tag line read as: $($several.Count) name(s) $($several -join ', ')"
+	}
+
+	# Stacked with a tag of ANOTHER kind, which is the shape issue #48 puts on
+	# these files, and below the doc comment docs\reference\ opens with -- both
+	# placements compile, and a reader that only looked at line 1 would refuse one
+	# of them.
+	$stacked = "// why this file exists`n#+vet explicit-allocators`n#+private`npackage probe`n"
+	$alongside = @(Get-OdinFileVetTag -Text $stacked)
+	if (($alongside.Count -ne 1) -or ($alongside[0] -ne 'explicit-allocators')) {
+		throw "a tag under a comment and above #+private read as: $($alongside.Count) name(s) $($alongside -join ', ')"
+	}
+
+	# BELOW the package clause is not a tag the compiler reads -- it is
+	# `Lines starting with #+ (file tags) are only allowed before the package
+	# line`. Crediting one would report a tag for a file that does not build.
+	$late = @(Get-OdinFileVetTag -Text "package probe`n`n#+vet explicit-allocators`n")
+	if ($late.Count -ne 0) {
+		throw "a tag below the package clause read as $($late.Count) name(s), for a file the compiler refuses."
+	}
+
+	# And one QUOTED in the doc comment above the clause, which is what every file
+	# explaining this rule to a reader would carry.
+	$quoted = @(Get-OdinFileVetTag -Text "/*`n#+vet explicit-allocators`n*/`npackage probe`n")
+	if ($quoted.Count -ne 0) {
+		throw "a tag inside a block comment read as $($quoted.Count) name(s)."
+	}
+}
+
+Test-Case 'two texts differing only in letter case do not share one lex' {
+	# Get-OdinLineFact memoises per file, and its comment says the key is "the exact
+	# text". A PowerShell @{} is a case-INSENSITIVE hashtable, so it was not: two
+	# texts differing only in letter case collide, and whichever is lexed second is
+	# handed the first one's facts.
+	#
+	# Reproduced here rather than anywhere else because rule M2's guard is the first
+	# check in this repository to compare a name case-SENSITIVELY. It has to: the
+	# compiler does, and answers `Invalid vet flag name: Explicit-Allocators`. The
+	# collision breaks that comparison in both directions -- lexed second, the
+	# misspelling reads as the correct name and passes the guard; lexed first, a
+	# correctly spelled file reads as the misspelling and fails it. Neither is a
+	# spelling the reader ever saw.
+	#
+	# The order below is the one that reproduced it: correct first, so the
+	# capitalised text is the one that would be handed the wrong answer.
+	$correct = @(Get-OdinFileVetTag -Text "#+vet explicit-allocators`npackage probe`n")
+	if (($correct.Count -ne 1) -or ($correct[0] -cne 'explicit-allocators')) {
+		throw "the correctly spelled tag read as: $($correct.Count) name(s) $($correct -join ', ')"
+	}
+
+	$capitalised = @(Get-OdinFileVetTag -Text "#+vet Explicit-Allocators`npackage probe`n")
+	if (($capitalised.Count -ne 1) -or ($capitalised[0] -cne 'Explicit-Allocators')) {
+		throw "a text differing from the one above only in letter case read as '$($capitalised -join ', ')', so the two shared a lex."
+	}
+}
+
+Test-Case 'a file without the vet tag fails the build' {
+	# The whole reason the tag is checked at all rather than merely written once.
+	# It is PER FILE -- measured: a package holding one tagged file and one
+	# untagged sibling builds clean, and the sibling's implicit allocators are
+	# never looked at. So a file that arrives without it does not break a rule
+	# loudly, it quietly leaves itself out of one, which is the same failure
+	# $OdinPackagesWithoutTests and the format sweep's zero-file rule are here for.
+	#
+	# The fixture is the file every passing case plants, minus its tag: the one
+	# difference between them is the thing under test.
+	$repo = New-FixtureRepo 'build-untagged'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+	$stripped = Join-Path (Add-FixturePackage -RepoRoot $repo -Name 'untagged' -Test 'none') 'untagged.odin'
+	$text = [System.IO.File]::ReadAllText($stripped)
+	Write-FixtureSource -Path $stripped -Text ($text -replace '(?m)^#\+vet[^\r\n]*\r?\n', '')
+
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Fails -Matching 'CLAUDE\.md rule M2'
+	# The FILE and the NAME it is missing, for the reason the comment ban names a
+	# line: a checker somebody has to go and search is a checker nobody runs. The
+	# binary beside it still carries the tag, so naming the wrong file would be a
+	# refusal pointing at a file that is already right.
+	Assert-Result -Result $result -Fails -Matching 'src/untagged/untagged\.odin'
+	Assert-Result -Result $result -Fails -Matching 'explicit-allocators'
+	if ($result.Output -match 'src/cli/main\.odin') {
+		throw "the refusal named the tagged binary as well.`n$($result.Output)"
+	}
+}
+
+Test-Case 'a call that takes its allocator from the context fails the build' {
+	# The deliverable, end to end, and the one claim none of the cases above make.
+	# They check that the tag is WRITTEN -- and a tag that is written on every file
+	# and does nothing reads exactly the same green. What is between those two is
+	# the compiler, so the only way to tell them apart is to hand it a call that
+	# must not compile and watch it refuse.
+	#
+	# That is not a hypothetical seam. $OdinFileVetTags emptied leaves every case
+	# above passing vacuously, and a compiler pin that moved the flag's name or its
+	# behaviour would be reported by nothing else here.
+	#
+	# The fixture is the binary every other build case uses, one argument short:
+	# it prints the same banner and exits zero, so what fails is the allocator and
+	# nothing the compiler would have caught anyway.
+	$repo = New-FixtureRepo 'build-implicit-allocator'
+	$implicit = @(
+		'import "core:fmt"'
+		'import "core:strings"'
+		''
+		'main :: proc() {'
+		"`tsaid := strings.clone(`"$SmokeBanner`")"
+		"`tdefer delete(said, context.allocator)"
+		"`tfmt.println(said)"
+		'}'
+	) -join "`n"
+	Add-FixtureBinary -RepoRoot $repo -Body "$implicit`n" | Out-Null
+
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Fails -Matching "Parameter 'allocator' of type 'Allocator' must be explicitly provided"
+	# The LINE, so this cannot be satisfied by a build that failed somewhere else.
+	# Line 8 is where Add-FixtureBinary's file tag, `package main` preamble and the
+	# two imports put the clone.
+	Assert-Result -Result $result -Fails -Matching 'main\.odin\(8:'
+
+	# The negative space (rule A3), and here it is the whole measurement rather
+	# than a formality: a build that refuses everything satisfies every line above.
+	# Same file, same banner, one argument of difference.
+	$explicit = $implicit.Replace("strings.clone(`"$SmokeBanner`")", "strings.clone(`"$SmokeBanner`", context.allocator)")
+	if ($explicit -eq $implicit) {
+		throw 'the control fixture is the same text as the one under test, so it measures nothing.'
+	}
+	Add-FixtureBinary -RepoRoot $repo -Body "$explicit`n" | Out-Null
+	$passes = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $passes -Matching 'Built 1 target'
+}
+
+Test-Case 'a +vet name that turns a check off fails the build if it is declared for every file' {
+	# The trap the next ticket walks into. Issue #45's job is to add
+	# `!unused-procedures`, which is an EXEMPTION -- wanted on `_test.odin` and
+	# nowhere else, because `@(test)` reads as unused in both build and test mode.
+	# Written as one more entry covering every file, it turns
+	# -vet-unused-procedures OFF across every production file in the repository:
+	# measured, a file carrying a dead procedure goes from
+	# `'dead_helper' declared but not used` and exit 1 to exit 0 saying nothing.
+	#
+	# That is the same silence rule M2 exists for, arriving through the declaration
+	# rather than through a file. So a name that turns a check off may not be
+	# declared at repository scope, and this is the case that makes typing it a
+	# failed build rather than a quiet one.
+	$repo = New-FixtureRepo 'build-disabling-tag'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+
+	# Patched into the fixture's own copy of common.ps1, so what is under test is
+	# the edit itself and not a description of one.
+	$common = Join-Path (Join-Path $repo 'scripts') 'common.ps1'
+	$text = [System.IO.File]::ReadAllText($common)
+	$eol = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
+	$opening = '$OdinFileVetTags = @('
+	$shortcut = $text.Replace($opening, "$opening$eol`t[pscustomobject]@{ Name = '!unused-procedures'; Scope = 'Every' }")
+	if ($shortcut -eq $text) {
+		throw "the fixture's common.ps1 does not open the declaration with ``$opening``, so this case patched nothing."
+	}
+	[System.IO.File]::WriteAllText($common, $shortcut, $Utf8NoBom)
+
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Fails -Matching '!unused-procedures'
+	Assert-Result -Result $result -Fails -Matching 'turns a check off'
+	# Refused for what the DECLARATION says, not for the files disagreeing with it.
+	# Every fixture source was written before the patch, so the per-file check would
+	# also fail here -- and passing on that would leave #45 free to add the name and
+	# write it into every file, which is the whole defect.
+	if ($result.Output -match 'does not declare') {
+		throw "the build refused the FILES for not carrying the name, so declaring it is still the cheaper way out.`n$($result.Output)"
+	}
+
+	# The negative space (rule A3): the refusal above is satisfied by a resolver
+	# that refuses everything, so the real declaration goes through the same one.
+	$required = @(Get-OdinRequiredVetTag -Name 'src/version/version.odin')
+	if ($required -cnotcontains 'explicit-allocators') {
+		throw "the real declaration required $($required.Count) name(s) of a production file, none of them explicit-allocators: $($required -join ', ')"
+	}
+}
+
+Test-Case 'a +vet name scoped to files nothing resolves is refused where it is written' {
+	# The other silent direction out of the same seam, and load-bearing for the same
+	# ticket. A scope the resolver has no arm for is a name required of NO file:
+	# green build, check covering nothing, and no diagnostic anywhere -- the failure
+	# rule M2 is here for, arriving through the declaration instead of through a
+	# file. So issue #45 adding a scope has to teach the resolver about it, and
+	# writing one it does not know fails rather than resolving to nothing.
+	$refused = ''
+	try {
+		Get-OdinRequiredVetTag -Name 'src/version/version.odin' `
+			-Tags @([pscustomobject]@{ Name = 'explicit-allocators'; Scope = 'Some-Files' }) | Out-Null
+	} catch {
+		$refused = "$_"
+	}
+	if ($refused -notmatch 'Some-Files') {
+		throw "an unknown scope resolved to something rather than being refused: '$refused'"
+	}
+
+	# The negative space (rule A3). The line above is satisfied by a resolver that
+	# refuses every scope, so the same name at the scope this repository does know
+	# is asked for beside it.
+	$known = @(Get-OdinRequiredVetTag -Name 'src/version/version.odin' `
+			-Tags @([pscustomobject]@{ Name = 'explicit-allocators'; Scope = 'Every' }))
+	if (($known.Count -ne 1) -or ($known[0] -ne 'explicit-allocators')) {
+		throw "a name at the one scope there is resolved to: $($known.Count) name(s) $($known -join ', ')"
+	}
+}
+
+Test-Case 'the vet tag rule the build enforces is written down' {
+	# A tag on 65 files is the version of the defect above with the most lines to
+	# delete. Three things are pinned beyond the heading.
+	#
+	# The per-file reading, because it is the whole argument for checking the tag
+	# rather than writing it once: without it the check reads as belt and braces
+	# over a compiler that already refuses.
+	#
+	# The resolver by name, because the two refusals it carries are the rule as much
+	# as the tag is -- a name that turns a check off, and a scope nothing resolves.
+	#
+	# And the NAMES, taken from the declaration rather than spelled again, so a name
+	# added to $OdinFileVetTags is a name CLAUDE.md has to explain before the build
+	# will pass.
+	#
+	# The heading states the property and not a habit. It used to say "on the first
+	# line of every file", which nothing checks and which issue #48 makes false for
+	# half the tree the day `#+private` goes above these tags. A pinned sentence that
+	# a later ticket has to edit a test case to repair is a pin that will be deleted
+	# rather than corrected.
+	Assert-PolicyClaim -Enforcer 'Assert-OdinVetTagPolicy' -Claims (@(
+			'### M2. Every file declares the repository''s `#+vet` names above its `package` clause'
+			'per file'
+			'Get-OdinRequiredVetTag'
+		) + @($OdinFileVetTags | ForEach-Object { $_.Name }))
 }
 
 Test-Case 'git checks out every .odin file with the endings the check demands' -MaySkip {

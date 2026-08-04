@@ -1,3 +1,4 @@
+#+vet explicit-allocators
 // transcibr-cli — the console-subsystem binary: argument reading, one file read,
 // one clock read, and a write. Nothing in this package is covered by a test and
 // nothing in it can be (ADR-0009).

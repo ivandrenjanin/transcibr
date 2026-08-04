@@ -1,3 +1,4 @@
+#+vet explicit-allocators
 // Package audio turns one Recording into the mono 16 kHz audio the Engine
 // reads, and settles -- before any of that -- how long the Recording actually is
 // and whether anything is still writing it.

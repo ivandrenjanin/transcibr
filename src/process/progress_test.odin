@@ -1,5 +1,7 @@
+#+vet explicit-allocators
 package process
 
+import "core:mem"
 import "core:strings"
 import "core:testing"
 
@@ -10,8 +12,13 @@ lines_of :: proc(
 	r: ^Line_Reader,
 	chunk: string,
 	into: ^[dynamic]string,
-	allocator := context.allocator,
+	allocator: mem.Allocator,
 ) {
+	assert(
+		allocator.procedure != nil,
+		"the cloned lines outlive this procedure and need an allocator",
+	)
+
 	remaining := chunk
 	for {
 		line, ok := next_line(r, &remaining)
@@ -22,8 +29,17 @@ lines_of :: proc(
 	}
 }
 
+// The presence side of the assertion above (rule A3). `delete` through a nil
+// allocator is not a crash: `mem_free_with_size` returns success having freed
+// nothing, so the pair that hands memory back is the one place where a missing
+// allocator is silent.
 @(private)
-free_lines :: proc(lines: ^[dynamic]string, allocator := context.allocator) {
+free_lines :: proc(lines: ^[dynamic]string, allocator: mem.Allocator) {
+	assert(
+		allocator.procedure != nil,
+		"the lines were cloned through an allocator and have to go back through one",
+	)
+
 	for line in lines {
 		delete(line, allocator)
 	}
@@ -34,12 +50,12 @@ free_lines :: proc(lines: ^[dynamic]string, allocator := context.allocator) {
 a_line_cut_in_half_by_the_pipe_is_put_back_together :: proc(t: ^testing.T) {
 	r: Line_Reader
 	collected := make([dynamic]string, context.allocator)
-	defer free_lines(&collected)
+	defer free_lines(&collected, context.allocator)
 
-	lines_of(&r, "whisper_print_progress_callback: prog", &collected)
+	lines_of(&r, "whisper_print_progress_callback: prog", &collected, context.allocator)
 	testing.expect_value(t, len(collected), 0)
 
-	lines_of(&r, "ress =  42%\n", &collected)
+	lines_of(&r, "ress =  42%\n", &collected, context.allocator)
 	if !testing.expect_value(t, len(collected), 1) {
 		return
 	}
@@ -52,9 +68,9 @@ a_line_cut_in_half_by_the_pipe_is_put_back_together :: proc(t: ^testing.T) {
 a_crlf_line_arrives_without_its_carriage_return :: proc(t: ^testing.T) {
 	r: Line_Reader
 	collected := make([dynamic]string, context.allocator)
-	defer free_lines(&collected)
+	defer free_lines(&collected, context.allocator)
 
-	lines_of(&r, "whisper_model_load: loading model\r\nsecond\r\n", &collected)
+	lines_of(&r, "whisper_model_load: loading model\r\nsecond\r\n", &collected, context.allocator)
 	if !testing.expect_value(t, len(collected), 2) {
 		return
 	}
@@ -66,15 +82,20 @@ a_crlf_line_arrives_without_its_carriage_return :: proc(t: ^testing.T) {
 a_line_too_long_to_hold_is_dropped_whole_and_the_next_one_still_reads :: proc(t: ^testing.T) {
 	r: Line_Reader
 	collected := make([dynamic]string, context.allocator)
-	defer free_lines(&collected)
+	defer free_lines(&collected, context.allocator)
 
 	flood := strings.repeat("x", 4 * MAX_DIAGNOSTIC_LINE, context.allocator)
 	defer delete(flood, context.allocator)
 
-	lines_of(&r, flood, &collected)
+	lines_of(&r, flood, &collected, context.allocator)
 	testing.expect_value(t, len(collected), 0)
 
-	lines_of(&r, "\nwhisper_print_progress_callback: progress =  52%\n", &collected)
+	lines_of(
+		&r,
+		"\nwhisper_print_progress_callback: progress =  52%\n",
+		&collected,
+		context.allocator,
+	)
 	if !testing.expect_value(t, len(collected), 1) {
 		return
 	}
@@ -85,9 +106,14 @@ a_line_too_long_to_hold_is_dropped_whole_and_the_next_one_still_reads :: proc(t:
 bytes_that_are_not_utf8_pass_through_and_read_as_nothing :: proc(t: ^testing.T) {
 	r: Line_Reader
 	collected := make([dynamic]string, context.allocator)
-	defer free_lines(&collected)
+	defer free_lines(&collected, context.allocator)
 
-	lines_of(&r, "main: \xff\xfe\x80 processing\nwhisper: \xc3\x28\n", &collected)
+	lines_of(
+		&r,
+		"main: \xff\xfe\x80 processing\nwhisper: \xc3\x28\n",
+		&collected,
+		context.allocator,
+	)
 	if !testing.expect_value(t, len(collected), 2) {
 		return
 	}
@@ -100,9 +126,9 @@ bytes_that_are_not_utf8_pass_through_and_read_as_nothing :: proc(t: ^testing.T) 
 what_is_held_behind_no_newline_is_a_line_at_end_of_stream :: proc(t: ^testing.T) {
 	r: Line_Reader
 	collected := make([dynamic]string, context.allocator)
-	defer free_lines(&collected)
+	defer free_lines(&collected, context.allocator)
 
-	lines_of(&r, "whisper_print_progress_callback: progress = 100%", &collected)
+	lines_of(&r, "whisper_print_progress_callback: progress = 100%", &collected, context.allocator)
 	testing.expect_value(t, len(collected), 0)
 
 	line, ok := last_line(&r)
@@ -119,12 +145,12 @@ what_is_held_behind_no_newline_is_a_line_at_end_of_stream :: proc(t: ^testing.T)
 a_chunk_with_nothing_in_it_yields_nothing :: proc(t: ^testing.T) {
 	r: Line_Reader
 	collected := make([dynamic]string, context.allocator)
-	defer free_lines(&collected)
+	defer free_lines(&collected, context.allocator)
 
-	lines_of(&r, "", &collected)
+	lines_of(&r, "", &collected, context.allocator)
 	testing.expect_value(t, len(collected), 0)
 
-	lines_of(&r, "\n\n", &collected)
+	lines_of(&r, "\n\n", &collected, context.allocator)
 	testing.expect_value(t, len(collected), 2)
 	if len(collected) == 2 {
 		testing.expect_value(t, collected[0], "")

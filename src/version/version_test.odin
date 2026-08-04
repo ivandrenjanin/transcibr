@@ -1,3 +1,4 @@
+#+vet explicit-allocators
 package version
 
 import "core:testing"

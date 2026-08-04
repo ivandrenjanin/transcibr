@@ -1,3 +1,4 @@
+#+vet explicit-allocators
 package process
 
 import "core:strings"

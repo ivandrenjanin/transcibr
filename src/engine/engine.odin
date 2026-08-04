@@ -1,3 +1,4 @@
+#+vet explicit-allocators
 // Package engine runs the Engine over one Recording's audio, reports how far it
 // has got while it runs, and answers with what it left in the scratch cache.
 package engine

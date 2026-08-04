@@ -1,3 +1,4 @@
+#+vet explicit-allocators
 package audio
 
 // Whether the audio ffmpeg produced is the whole Recording, and the tolerance

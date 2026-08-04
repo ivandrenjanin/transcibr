@@ -1,3 +1,4 @@
+#+vet explicit-allocators
 package process
 
 // A child's diagnostic pipe reassembled into lines, and what a Recording's

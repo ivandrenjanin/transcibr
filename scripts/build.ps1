@@ -71,6 +71,14 @@ Write-Host '-> no .odin procedure body carries a comment' -ForegroundColor Green
 Assert-OdinResultPolicy
 Write-Host '-> every .odin procedure that returns carries @(require_results)' -ForegroundColor Green
 
+# CLAUDE.md rule M2, and the one of the four whose absence the compiler cannot
+# report. The tag is what makes ADR-0010 a compile error, and it is read per file:
+# an untagged file builds with its implicit allocators unchecked however many of
+# its siblings carry it. A misspelling or a misplaced tag already fails the
+# compile below and names the file; only a tag nobody wrote is silent.
+Assert-OdinVetTagPolicy
+Write-Host "-> every .odin file declares the #+vet names it is scoped for ($(($OdinFileVetTags | ForEach-Object { $_.Name }) -join ' '))" -ForegroundColor Green
+
 New-Item -ItemType Directory -Path $BuildRoot -Force | Out-Null
 
 # Counted as each target is finished, not taken from $OdinTargets afterwards:
