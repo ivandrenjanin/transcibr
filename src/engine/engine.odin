@@ -146,6 +146,29 @@ Report :: struct {
 // a shared enumeration is a generic error message in front of a user.
 Fault :: enum u8 {
 	None = 0,
+	// One of the three paths this invocation would have handed the Engine
+	// carries a byte outside ASCII, so the Engine could not open it (ADR-0002).
+	//
+	// REFUSED BEFORE THE CHILD STARTS, which is the whole value of it: the
+	// Engine's own answer to such a path is to spend the GPU time, write nothing
+	// and exit ZERO, and there is nothing in that a caller can act on.
+	//
+	// A PER-RECORDING FAULT AND NOT A BATCH-LEVEL ONE, which the other two ASCII
+	// checks in this program are. The scratch cache is one directory for the
+	// whole Batch and the Model is one file, so both are answered once, before
+	// anything starts. This one is not: the artifact stem comes from the
+	// RECORDING's own name (ADR-0008), so a Batch of ASCII-named Recordings and
+	// one called `Bjoern.mp4` fails exactly that one and carries on.
+	//
+	// WHAT WOULD FIX IT PROPERLY is decoupling the scratch name from the artifact
+	// stem: the Engine only ever sees paths inside the cache, so those could be
+	// named from something injective and ASCII by construction while the
+	// artifacts beside the Recording keep the Recording's own name. That is a
+	// change to what ADR-0008 says a stem is, it moves three packages, and it is
+	// not this ticket. Until then a Recording whose name carries a non-ASCII byte
+	// fails loudly and by name, which is the whole of what ADR-0002 asks for and
+	// is a great deal better than the silent nothing it replaces.
+	Path_Not_Ascii,
 	// The Engine would not start. The reason travels in `Error.child`, which
 	// names what Windows said.
 	Not_Started,
@@ -192,6 +215,10 @@ Error :: struct {
 @(private)
 fault_says :: proc(fault: Fault) -> string {
 	switch fault {
+	case .Path_Not_Ascii:
+		return(
+			"one of the paths this Recording would have handed the Engine carries a byte outside ASCII, which the Engine cannot open" \
+		)
 	case .Not_Started:
 		return "the Engine could not be started"
 	case .Did_Not_Finish:

@@ -140,6 +140,13 @@ transcribe :: proc(
 
 	prefix := fmt.aprintf("%s\\%s", job.cache, job.name, allocator = allocator)
 	defer delete(prefix, allocator)
+	// BEFORE anything is started, because the Engine's own answer to a path it
+	// cannot open is to spend the GPU time, write nothing and exit zero
+	// (ADR-0002) -- so a Recording refused here costs nothing, and one refused by
+	// the Engine costs minutes and says nothing.
+	if !openable_by_the_engine(job, prefix) {
+		return {}, Error{fault = .Path_Not_Ascii}
+	}
 	arguments := process.engine_arguments(
 		process.Engine_Job{model = job.model, audio = job.audio, prefix = prefix},
 		allocator,
@@ -161,6 +168,39 @@ transcribe :: proc(
 		return {}, Error{fault = missing}
 	}
 	return Transcribed{output = output, duration_ms = ending.duration_ms}, Error{}
+}
+
+// Whether every path this invocation is about to hand the Engine is one the
+// Engine can open (ADR-0002).
+//
+// ALL THREE, and a check on one of them is a check on none: the Model comes from
+// settings, the audio and the output prefix are both named from the Recording's
+// own stem (ADR-0008), and any one of the three carrying a byte outside ASCII
+// produces the same silent nothing at exit code zero.
+//
+// Three `if`s and not one conjunction, which is rule S2's own remedy: every case
+// is visible, and the day one of them earns a fault of its own there is a line
+// to put it on.
+//
+// THE SCRATCH CACHE IS NOT CHECKED HERE, and its absence is deliberate rather
+// than an omission. It is one directory for the whole Batch, `open_cache`
+// answers about it once before any Recording starts, and the prefix below is
+// built from it -- so a cache the Engine cannot open is caught here too, by a
+// Recording, after the Batch should already have refused to start.
+@(private)
+openable_by_the_engine :: proc(job: Job, prefix: string) -> bool {
+	assert(len(prefix) > 0, "the Engine was given nowhere to write its output")
+
+	if !process.ascii_only(job.model) {
+		return false
+	}
+	if !process.ascii_only(job.audio) {
+		return false
+	}
+	if !process.ascii_only(prefix) {
+		return false
+	}
+	return true
 }
 
 // One ending, as the Recording's failure or as nothing at all.

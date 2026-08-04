@@ -667,3 +667,98 @@ every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testin
 		)
 	}
 }
+
+// ------------------------------------ what the Engine may be given at all --
+
+// A stand-in that leaves a MARKER as its very first act, so a case can tell "the
+// child was never started" from "the child ran and produced nothing". Every
+// other case in this file settles a run by what is on the disk afterwards; these
+// settle it by what is not.
+@(private)
+marker_in :: proc(cache: string) -> string {
+	return fmt.aprintf("%s\\started.txt", cache, allocator = context.allocator)
+}
+
+@(test)
+a_recording_whose_scratch_paths_the_engine_cannot_open_never_starts_one :: proc(t: ^testing.T) {
+	// ADR-0002's third measurement, at the one place the paths are actually
+	// handed over. The artifact stem comes from the RECORDING's own name
+	// (ADR-0008), and a Recording called `Bjoern.mp4` with an o-umlaut in it makes
+	// a scratch prefix the Engine cannot open -- so it spends the GPU time, writes
+	// nothing, and exits zero. The cache being ASCII is checked once per Batch and
+	// says nothing about this: the non-ASCII byte arrives with the Recording.
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	cache := scratch_cache(t, "not-ascii")
+	defer delete(cache, context.allocator)
+	defer remove_cache(cache)
+
+	marker := marker_in(cache)
+	defer delete(marker, context.allocator)
+	executable := stand_in(
+		t,
+		cache,
+		"not-ascii",
+		fmt.tprintf(">\"%s\" echo yes\r\n>\"%%PREFIX%%.json\" echo {{}}", marker),
+	)
+	defer delete(executable, context.allocator)
+
+	tools, job := job_in(cache, executable)
+	job.name = "Bj\u00f6rn interview"
+
+	produced, err := transcribe(&group, tools, job, Report{}, context.allocator, SHORT_LIMITS)
+	defer delete(produced.output, context.allocator)
+
+	testing.expect_value(t, err.fault, Fault.Path_Not_Ascii)
+	// The half that matters (A3): no child was started at all. A Recording
+	// refused after the Engine has loaded the Model is a Recording that cost
+	// minutes of GPU time to refuse.
+	testing.expect(t, !os.exists(marker), "the Engine was started with a path it cannot open")
+}
+
+@(test)
+every_path_one_invocation_is_handed_is_checked_and_not_just_the_prefix :: proc(t: ^testing.T) {
+	// Three paths reach the Engine's argument list -- the Model, the audio and
+	// the output prefix -- and a check on one of them is a check on none: the
+	// Model comes from settings, the audio is named from the Recording's stem
+	// like the prefix, and any one of the three failing to open produces the same
+	// silent nothing.
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	cache := scratch_cache(t, "each-path")
+	defer delete(cache, context.allocator)
+	defer remove_cache(cache)
+
+	marker := marker_in(cache)
+	defer delete(marker, context.allocator)
+	executable := stand_in(
+		t,
+		cache,
+		"each-path",
+		fmt.tprintf(">\"%s\" echo yes\r\n>\"%%PREFIX%%.json\" echo {{}}", marker),
+	)
+	defer delete(executable, context.allocator)
+
+	for spoiled in ([?]int{0, 1}) {
+		tools, job := job_in(cache, executable)
+		if spoiled == 0 {
+			job.model = "C:\\models\\ggml-large-v3-t\u00fcrkce.bin"
+		} else {
+			job.audio = "C:\\nowhere\\\u5f55\u97f3.wav"
+		}
+
+		produced, err := transcribe(&group, tools, job, Report{}, context.allocator, SHORT_LIMITS)
+		defer delete(produced.output, context.allocator)
+
+		testing.expectf(t, err.fault == Fault.Path_Not_Ascii, "path %d was handed over", spoiled)
+		testing.expectf(t, !os.exists(marker), "path %d started the Engine anyway", spoiled)
+	}
+}
