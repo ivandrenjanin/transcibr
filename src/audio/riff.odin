@@ -1,6 +1,7 @@
 package audio
 
 import "core:mem"
+import "transcibr:process"
 
 // This file reads back what ffmpeg wrote by WALKING the chunks it wrote, which
 // is the only way to find where the audio starts.
@@ -252,6 +253,35 @@ read_fmt :: proc(head: []u8, payload: int, length: i64) -> (facts: Wav_Facts, fa
 			bits_per_sample = int(body.bits_per_sample),
 		},
 		.None
+}
+
+// Whether the audio ffmpeg produced is the audio ffmpeg was asked for.
+//
+// A4's READ SIDE, and the reason `transcibr:process` holds the three numbers as
+// constants: the command line asks for them there and this demands them here.
+// It is a pure decision over facts already walked out of the file, so a WAV
+// that answers wrongly is a value a case can produce rather than a file
+// somebody has to write.
+as_asked_for :: proc(facts: Wav_Facts) -> bool {
+	// The write side of read_fmt's own refusal (A4): a rate or a channel count
+	// of zero never leaves the walk, so what reaches here is a real format
+	// being compared against the asked-for one.
+	assert(facts.channels > 0, "audio with no channels never came out of the walk")
+	assert(facts.samples_per_second > 0, "audio with no sample rate never came out of the walk")
+
+	if facts.channels != process.AUDIO_CHANNELS {
+		return false
+	}
+	if facts.samples_per_second != process.AUDIO_SAMPLE_RATE {
+		return false
+	}
+	// THE BIT DEPTH, which is the third of the three and the one the check was
+	// missing. `-c:a pcm_s16le` had a write side and nothing at all on the read
+	// side, so a WAV declaring one channel at 16 kHz and eight bits a sample
+	// was accepted as the mono 16 kHz it was asked for -- and the Engine reads
+	// 16-bit PCM and nothing else. Zero passed the same way: `Nonsense_Format`
+	// guards the rate, the channels and the byte rate, and not this.
+	return facts.bits_per_sample == process.AUDIO_BITS_PER_SAMPLE
 }
 
 // How long the audio in a WAV is, in milliseconds.

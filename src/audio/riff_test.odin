@@ -67,6 +67,65 @@ the_length_of_real_ffmpeg_output_comes_from_its_data_chunk :: proc(t: ^testing.T
 	testing.expect_value(t, audio_ms(facts), i64(200))
 }
 
+// ------------------------------------------ the audio that was asked for --
+//
+// The read side of `-ac 1 -ar 16000 -c:a pcm_s16le` (A4). All three numbers,
+// because the third had a write side and nothing at all on the read side.
+
+@(test)
+real_ffmpeg_output_is_the_audio_the_command_line_asked_for :: proc(t: ^testing.T) {
+	facts, fault := read_wav_facts(FFMPEG_WAV, FFMPEG_WAV_BYTES)
+	testing.expect_value(t, fault, Riff_Fault.None)
+	testing.expect(t, as_asked_for(facts), "real ffmpeg output is not what ffmpeg was asked for")
+}
+
+@(test)
+audio_of_the_wrong_bit_depth_is_refused_however_right_the_rest_of_it_is :: proc(t: ^testing.T) {
+	// The bit depth is the last field of the `fmt ` payload, which the dump puts
+	// at offset 34. Everything else is left alone: one channel, 16,000 samples a
+	// second and a byte rate of 32,000, so this file walks with no fault at all
+	// and is refused for the one thing that is wrong with it.
+	//
+	// The Engine reads 16-bit PCM and nothing else. Eight is a real ffmpeg
+	// output format (`-c:a pcm_u8`), and zero is what a `fmt ` chunk carries when
+	// whatever wrote it did not fill the field -- `Nonsense_Format` guards the
+	// rate, the channels and the byte rate, and neither of these.
+	eight := edited_fixture()
+	eight[34] = 8
+	shallow, shallow_fault := read_wav_facts(eight[:], FFMPEG_WAV_BYTES)
+	testing.expect_value(t, shallow_fault, Riff_Fault.None)
+	testing.expect_value(t, shallow.bits_per_sample, 8)
+	testing.expect(
+		t,
+		!as_asked_for(shallow),
+		"eight-bit audio passed as the mono 16 kHz asked for",
+	)
+
+	none := edited_fixture()
+	none[34] = 0
+	nothing, nothing_fault := read_wav_facts(none[:], FFMPEG_WAV_BYTES)
+	testing.expect_value(t, nothing_fault, Riff_Fault.None)
+	testing.expect(t, !as_asked_for(nothing), "audio declaring no bit depth at all was accepted")
+}
+
+@(test)
+audio_of_the_wrong_rate_or_channel_count_is_refused :: proc(t: ^testing.T) {
+	// The two that were already paired, kept as cases so the pairing cannot be
+	// dropped quietly while the depth check stands in for all three.
+	stereo := edited_fixture()
+	stereo[22] = 2
+	two, two_fault := read_wav_facts(stereo[:], FFMPEG_WAV_BYTES)
+	testing.expect_value(t, two_fault, Riff_Fault.None)
+	testing.expect(t, !as_asked_for(two), "stereo audio passed as the mono it was asked for")
+
+	fast := edited_fixture()
+	// 44,100 over the four bytes of the sample rate at offset 24.
+	put_length(fast[:], 24, 44_100)
+	rate, rate_fault := read_wav_facts(fast[:], FFMPEG_WAV_BYTES)
+	testing.expect_value(t, rate_fault, Riff_Fault.None)
+	testing.expect(t, !as_asked_for(rate), "44.1 kHz audio passed as the 16 kHz it was asked for")
+}
+
 // The fixture on the stack, so a case may edit it without touching the bytes
 // every other case reads.
 @(private)

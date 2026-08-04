@@ -21,7 +21,7 @@ import "core:strings"
 // ffprobe ships in the same distribution as ffmpeg and is bundled with it
 // (ADR-0013), so one file holds both.
 
-// The audio the Engine reads: one channel at 16 kHz.
+// The audio the Engine reads: one channel at 16 kHz, signed 16 bits a sample.
 //
 // Held as constants, and spelled once. `transcibr:audio` checks the produced
 // audio against these and ffmpeg is asked for them here, which is A4's paired
@@ -29,23 +29,34 @@ import "core:strings"
 // drift, and the drift is silent: ffmpeg is asked for 16,000 while the check
 // demands 44,100, and every Recording in the Batch fails for a reason that
 // appears in neither.
+//
+// ALL THREE, because two of them were paired and the third was not: `pcm_s16le`
+// was asked for and nothing read the bit depth back, so a WAV declaring eight
+// bits a sample was accepted as the audio the Engine reads.
 AUDIO_SAMPLE_RATE :: 16000
 AUDIO_CHANNELS :: 1
+AUDIO_BITS_PER_SAMPLE :: 16
 
-// The same two numbers as ffmpeg spells them. Written out rather than formatted
-// at every call: an argument list that allocated its own strings would make the
-// caller free the strings as well as the slice, and the whole point of the
-// borrowing rule below is that it does not have to.
+// The same three numbers as ffmpeg spells them. Written out rather than
+// formatted at every call: an argument list that allocated its own strings would
+// make the caller free the strings as well as the slice, and the whole point of
+// the borrowing rule below is that it does not have to.
+//
+// The depth's spelling is a CODEC NAME rather than a number, so the compiler
+// cannot hold it against AUDIO_BITS_PER_SAMPLE the way it holds the other two.
+// `s16` is the sixteen; `le` is the byte order the WAV walk decodes with.
 @(private)
 AUDIO_SAMPLE_RATE_ARGUMENT :: "16000"
 @(private)
 AUDIO_CHANNELS_ARGUMENT :: "1"
+@(private)
+AUDIO_SAMPLE_FORMAT_ARGUMENT :: "pcm_s16le"
 
-// The two numbers against their own spellings, held by the COMPILER. An edit to
-// one and not the other is what this catches, and it catches it before a test
-// runs.
+// The numbers against their own spellings, held by the COMPILER. An edit to one
+// and not the other is what this catches, and it catches it before a test runs.
 #assert(AUDIO_SAMPLE_RATE == 16000)
 #assert(AUDIO_CHANNELS == 1)
+#assert(AUDIO_BITS_PER_SAMPLE == 16)
 
 // What ffprobe is asked to print, and how.
 //
@@ -295,7 +306,7 @@ OUTPUT_ARGUMENTS := [13]string {
 	"-ar",
 	AUDIO_SAMPLE_RATE_ARGUMENT,
 	"-c:a",
-	"pcm_s16le",
+	AUDIO_SAMPLE_FORMAT_ARGUMENT,
 	// Stated rather than inferred from the destination's extension: the
 	// destination is a `.part` file, and ffmpeg would have no idea what to make
 	// of that.

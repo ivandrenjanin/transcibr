@@ -242,8 +242,9 @@ probe :: proc(
 
 // Reads back what ffmpeg produced and checks it is what ffmpeg was asked for.
 //
-// A4's read side, and the reason `transcibr:process` holds the two numbers as
-// constants: the command line asks for them here and this demands them there.
+// The two decisions in it are next door and are pure: as_asked_for in riff.odin
+// compares the format against what the command line asked for, and
+// durations_agree in duration.odin measures the audio against the container.
 @(private)
 check_audio :: proc(
 	part: string,
@@ -267,8 +268,7 @@ check_audio :: proc(
 	if malformed != .None {
 		return 0, Error{fault = .Audio_Malformed, riff = malformed}
 	}
-	if facts.channels != process.AUDIO_CHANNELS ||
-	   facts.samples_per_second != process.AUDIO_SAMPLE_RATE {
+	if !as_asked_for(facts) {
 		return 0, Error{fault = .Audio_Not_As_Asked_For}
 	}
 
