@@ -5,11 +5,7 @@ import "core:slice"
 import "core:strings"
 import "core:testing"
 
-// The thresholds every case below pins for itself, so that tuning MONOLOGUE and
-// CONVERSATION -- which ADR-0007 says is expected, and is the one part of this
-// program tuned by reading real output -- moves no test's meaning. The profiles
-// get their own cases, which are about the difference between them rather than
-// about any number in either.
+// Pinned here so that tuning MONOLOGUE and CONVERSATION moves no case's meaning.
 @(private)
 PINNED_MERGE :: Merge_Params {
 	max_gap_ms     = 1_000,
@@ -17,9 +13,6 @@ PINNED_MERGE :: Merge_Params {
 	max_para_chars = 2_000,
 }
 
-// The Engine cuts a Cue every few seconds and mid-sentence, so the silence
-// between two Cues is usually nothing at all. A Paragraph that broke on those
-// would be the subtitle dump this program exists not to produce.
 @(test)
 a_short_gap_does_not_break_a_paragraph :: proc(t: ^testing.T) {
 	shape := []Shaped_Cue {
@@ -40,11 +33,8 @@ a_short_gap_does_not_break_a_paragraph :: proc(t: ^testing.T) {
 	if !testing.expect_value(t, len(paragraphs), 1) {
 		return
 	}
-	// Offsets copied off the shape by hand: 3480 + 400 + 4060 + 120 + 4620.
 	testing.expect_value(t, paragraphs[0].start, Millis(0))
 	testing.expect_value(t, paragraphs[0].end, Millis(12_680))
-	// The Engine's leading space is gone from every Cue and one space stands at
-	// each seam. Prose, not a subtitle dump with the padding still in it.
 	testing.expect_value(
 		t,
 		paragraphs[0].text,
@@ -52,9 +42,6 @@ a_short_gap_does_not_break_a_paragraph :: proc(t: ^testing.T) {
 	)
 }
 
-// The two signals together, which is the only place either one decides anything
-// (ADR-0007). This is silence past max_gap_ms landing where a sentence just
-// ended.
 @(test)
 a_long_gap_after_a_sentence_breaks_a_paragraph :: proc(t: ^testing.T) {
 	shape := []Shaped_Cue {
@@ -83,11 +70,6 @@ a_long_gap_after_a_sentence_breaks_a_paragraph :: proc(t: ^testing.T) {
 	}
 }
 
-// The negative space of the case above (CLAUDE.md A3), and the reason the
-// sentence signal is read at all. The SAME silence, in the middle of a sentence:
-// a speaker drawing breath after a comma is not starting a new paragraph, and a
-// merger that broke here would cut prose in half at the one place a reader
-// notices.
 @(test)
 the_same_gap_in_the_middle_of_a_sentence_does_not :: proc(t: ^testing.T) {
 	shape := []Shaped_Cue {
@@ -114,9 +96,6 @@ the_same_gap_in_the_middle_of_a_sentence_does_not :: proc(t: ^testing.T) {
 	)
 }
 
-// And the silence that ends a Paragraph whatever was being said. Without this,
-// a speaker who trails off mid-clause and comes back a minute later leaves one
-// Paragraph with a minute of nothing inside it and no punctuation to break on.
 @(test)
 a_gap_past_the_hard_threshold_breaks_a_paragraph_mid_sentence :: proc(t: ^testing.T) {
 	shape := []Shaped_Cue {
@@ -145,11 +124,6 @@ a_gap_past_the_hard_threshold_breaks_a_paragraph_mid_sentence :: proc(t: ^testin
 	}
 }
 
-// The Engine writes an empty Cue over silence, and it covers the silence: the
-// gap in FRONT of it is nothing and the gap BEHIND it is nothing, so a merger
-// reading the Cue in front of each Cue sees no pause at all where half a minute
-// of it went by. Both signals are gone at once and the two halves of the
-// Recording run together.
 @(test)
 silence_the_engine_covered_with_an_empty_cue_still_breaks_a_paragraph :: proc(t: ^testing.T) {
 	shape := []Shaped_Cue {
@@ -175,18 +149,6 @@ silence_the_engine_covered_with_an_empty_cue_still_breaks_a_paragraph :: proc(t:
 	}
 }
 
-// ---------------------------------------------------------------------------
-// The character cap.
-//
-// It is the only thing standing between a Recording with no pauses in it and one
-// unbroken wall of text, and it is the acceptance criterion stated absolutely: a
-// Paragraph NEVER exceeds it. That absolute is what forces the carve -- a Cue
-// whose own speech is longer than the cap cannot be admitted whole, cannot be
-// dropped, and must not send the loop that admits it round for ever.
-// ---------------------------------------------------------------------------
-
-// The Paragraphs' prose put back together, so a case can say "nothing was lost"
-// rather than listing every break the cap happened to make.
 @(private)
 paragraph_prose :: proc(paragraphs: []Paragraph, sep: string, allocator: mem.Allocator) -> string {
 	assert(len(paragraphs) > 0, "no paragraphs to put back together")
@@ -200,7 +162,6 @@ paragraph_prose :: proc(paragraphs: []Paragraph, sep: string, allocator: mem.All
 	return strings.join(parts, sep, allocator)
 }
 
-// The same, off the Cues that went in.
 @(private)
 cue_speech :: proc(cues: []Cue, allocator: mem.Allocator) -> string {
 	assert(len(cues) > 0, "no cues to put back together")
@@ -212,15 +173,6 @@ cue_speech :: proc(cues: []Cue, allocator: mem.Allocator) -> string {
 	return strings.join(parts, " ", allocator)
 }
 
-// Speech with no pause and no full stop in it: neither signal fires, so the cap
-// is the only thing that can break this and every break it makes falls at a word
-// boundary. Putting the Paragraphs back together has to give back exactly what
-// went in.
-//
-// Rejoining with ONE space is honest here because the speech is single-spaced:
-// every break the cap makes falls at exactly the one space this puts back. It
-// would not be honest on speech carrying runs of them, and that is a different
-// case with a different expectation.
 @(test)
 a_paragraph_never_exceeds_the_character_cap :: proc(t: ^testing.T) {
 	tight := Merge_Params {
@@ -261,9 +213,6 @@ a_paragraph_never_exceeds_the_character_cap :: proc(t: ^testing.T) {
 	testing.expect_value(t, prose, speech)
 }
 
-// One word longer than the cap, with no space anywhere in it to break at. There
-// is no word boundary, so the carve falls inside the word -- and every piece of
-// it still has to arrive, in order, with nothing invented between them.
 @(test)
 a_cue_longer_than_the_cap_is_carved_rather_than_looping :: proc(t: ^testing.T) {
 	tight := Merge_Params {
@@ -271,9 +220,6 @@ a_cue_longer_than_the_cap_is_carved_rather_than_looping :: proc(t: ^testing.T) {
 		hard_gap_ms    = 3_000,
 		max_para_chars = 10,
 	}
-	// Derived rather than written twice: the same 58 characters spelled out in
-	// two literals is two things to keep in step, and the case that puts them
-	// back together would pass a drift between them straight through.
 	shape := []Shaped_Cue {
 		{
 			duration_ms = 4_000,
@@ -287,7 +233,6 @@ a_cue_longer_than_the_cap_is_carved_rather_than_looping :: proc(t: ^testing.T) {
 	paragraphs := merge_paragraphs(cues, tight, context.allocator)
 	defer destroy_paragraphs(paragraphs, context.allocator)
 
-	// 58 characters carved ten at a time, so six pieces and the last one short.
 	if !testing.expect_value(t, len(paragraphs), 6) {
 		return
 	}
@@ -301,37 +246,15 @@ a_cue_longer_than_the_cap_is_carved_rather_than_looping :: proc(t: ^testing.T) {
 			held,
 		)
 		testing.expectf(t, held > 0, "piece %d holds nothing at all", i + 1)
-		// Every piece carries the Cue's own offsets. Nothing in the Engine's
-		// output says where inside a Cue a carve landed, and inventing an
-		// offset for it would put an Anchor at a time nobody spoke.
 		testing.expectf(t, paragraph.start == 0, "piece %d starts at %v", i + 1, paragraph.start)
 		testing.expectf(t, paragraph.end == 4_000, "piece %d ends at %v", i + 1, paragraph.end)
 	}
 
-	// Concatenated with NOTHING between them: a carve inside a word must not
-	// leave a space behind where the word had none.
 	prose := paragraph_prose(paragraphs, "", context.allocator)
 	defer delete(prose, context.allocator)
 	testing.expect_value(t, prose, word)
 }
 
-// The consequence of that, on a Cue set rather than on one Cue, RECORDED rather
-// than fixed.
-//
-// Nothing in the Engine's output says where inside a Cue a carve landed, so the
-// alternative is inventing an offset by interpolation and putting an Anchor at a
-// time nobody spoke. That trade is deliberate. What it costs is not visible on a
-// single-Cue set, and this is it: every piece carved out of one long Cue claims
-// that Cue's whole span, so a Paragraph ENDS a minute after the next one STARTS,
-// and four of them sit within one second of each other across a minute of
-// speech.
-//
-// CONTEXT.md defines an Anchor as what lets a reader find their place. Four
-// Anchors a second apart over a minute of speech does not, so the Anchor ticket
-// has to decide what to do here -- place Anchors off Paragraph starts and it
-// emits four identical ones, take the first per stretch and three Paragraphs go
-// unanchored. This case exists so that ticket finds the problem stated rather
-// than discovers it.
 @(test)
 carved_paragraphs_all_claim_their_cue_and_so_overlap_each_other :: proc(t: ^testing.T) {
 	tight := Merge_Params {
@@ -339,8 +262,6 @@ carved_paragraphs_all_claim_their_cue_and_so_overlap_each_other :: proc(t: ^test
 		hard_gap_ms    = 3_000,
 		max_para_chars = 20,
 	}
-	// One Cue holding a minute of Recording and one unbroken 70-character word,
-	// between two ordinary short ones.
 	long := strings.repeat("x", 70, context.allocator)
 	defer delete(long, context.allocator)
 	shape := []Shaped_Cue {
@@ -354,9 +275,6 @@ carved_paragraphs_all_claim_their_cue_and_so_overlap_each_other :: proc(t: ^test
 	paragraphs := merge_paragraphs(cues, tight, context.allocator)
 	defer destroy_paragraphs(paragraphs, context.allocator)
 
-	// Offsets copied off the shape by hand. Everything carved out of the middle
-	// Cue carries that Cue's own start and end, the last piece picking up the
-	// short Cue that follows it.
 	expected := []Paragraph {
 		{0, 1_000, "hi there"},
 		{1_000, 61_000, "xxxxxxxxxxxxxxxxxxxx"},
@@ -371,8 +289,6 @@ carved_paragraphs_all_claim_their_cue_and_so_overlap_each_other :: proc(t: ^test
 		testing.expect_value(t, paragraphs[i], want)
 	}
 
-	// The part that bites, said as its own claim rather than left to be read off
-	// the table above: consecutive Paragraphs overlap, and by a minute.
 	overlapped := 0
 	for paragraph, i in paragraphs[1:] {
 		if paragraph.start < paragraphs[i].end {
@@ -382,15 +298,9 @@ carved_paragraphs_all_claim_their_cue_and_so_overlap_each_other :: proc(t: ^test
 	testing.expect_value(t, overlapped, 3)
 }
 
-// The cap counts CHARACTERS. Every accented character the Engine writes is two
-// bytes or more, so a cap enforced on bytes cuts a Recording of French short of
-// one recorded in English -- silently, and only on the material where it is
-// hardest to notice.
 @(test)
 the_character_cap_counts_characters_and_not_bytes :: proc(t: ^testing.T) {
 	said := "Déjà vu, déjà vu, déjà vu"
-	// Twenty-five characters and thirty-one bytes, so a cap of twenty-five holds
-	// it whole by one measure and breaks it three times by the other.
 	tight := Merge_Params {
 		max_gap_ms     = 1_000,
 		hard_gap_ms    = 3_000,
@@ -412,10 +322,6 @@ the_character_cap_counts_characters_and_not_bytes :: proc(t: ^testing.T) {
 	testing.expect_value(t, paragraphs[0].text, said)
 }
 
-// ---------------------------------------------------------------------------
-// Nothing in, nothing out.
-// ---------------------------------------------------------------------------
-
 @(test)
 merging_no_cues_yields_no_paragraphs :: proc(t: ^testing.T) {
 	paragraphs := merge_paragraphs(nil, PINNED_MERGE, context.allocator)
@@ -429,10 +335,6 @@ merging_no_cues_yields_no_paragraphs :: proc(t: ^testing.T) {
 	)
 }
 
-// The other way a Cue set can hold no prose. The Engine writes these over
-// silence and the parser keeps them, so a Recording of nothing but silence
-// arrives here as a set full of Cues that say nothing -- and a Paragraph with no
-// prose in it is a blank line in the deliverable, not a paragraph.
 @(test)
 merging_cues_that_say_nothing_yields_no_paragraphs :: proc(t: ^testing.T) {
 	shape := []Shaped_Cue {
@@ -447,9 +349,6 @@ merging_cues_that_say_nothing_yields_no_paragraphs :: proc(t: ^testing.T) {
 	defer destroy_paragraphs(paragraphs, context.allocator)
 
 	testing.expect_value(t, len(paragraphs), 0)
-	// The same claim the no-Cues case makes, by the other route into it: this one
-	// reaches the end with an array reserved and never filled, and a reservation
-	// handed back unshrunk is a block destroy_paragraphs frees at the wrong size.
 	testing.expect(
 		t,
 		paragraphs == nil,
@@ -457,19 +356,6 @@ merging_cues_that_say_nothing_yields_no_paragraphs :: proc(t: ^testing.T) {
 	)
 }
 
-// ---------------------------------------------------------------------------
-// Both stages over the one real Engine output in this repository.
-//
-// The fixtures above are shapes chosen to isolate one threshold at a time, which
-// is what makes them readable and what makes them not proof. This is the whole
-// of the ticket's work -- parse, collapse, merge -- run over 30 seconds of
-// speech a real Engine really transcribed, its inventions and mishearings intact.
-// ---------------------------------------------------------------------------
-
-// The fixture's gaps are 900, 920, 980, 1040, 660 and 520 ms, every Cue ends a
-// sentence, and the whole thing is 397 characters. So the generous profile
-// merges all of it and the aggressive one breaks at every seam -- the two
-// profiles at their furthest apart, on material neither was tuned against.
 @(test)
 real_engine_output_becomes_paragraphs :: proc(t: ^testing.T) {
 	cues, err := parse_cues("engine-output.json", ENGINE_JSON, FIXTURE_DURATION, context.allocator)
@@ -478,11 +364,6 @@ real_engine_output_becomes_paragraphs :: proc(t: ^testing.T) {
 		return
 	}
 
-	// Nothing here repeats, so nothing collapses. The Engine's invention over the
-	// trailing silence -- " Thank you.", dated past the end of a Recording that
-	// runs 30356 ms -- is a SINGLE Cue and not a run, and repetition detection is
-	// the only handle there is (ADR-0001). It survives, un-clamped, because a
-	// stage that clamped it would be hiding the evidence rather than reading it.
 	kept := collapse_repetition(cues, COLLAPSE_THRESHOLDS, context.allocator)
 	defer destroy_cues(kept, context.allocator)
 	if !testing.expect_value(t, len(kept), 7) {
@@ -509,15 +390,6 @@ real_engine_output_becomes_paragraphs :: proc(t: ^testing.T) {
 	testing.expect_value(t, broken[6], Paragraph{30_000, 59_980, "Thank you."})
 }
 
-// What the Engine wrote between two words is the Engine's, and a run of spaces
-// is never quietly rewritten into one. A run has exactly two fates: it stays
-// inside a Paragraph byte for byte, or the cap breaks at it and it is the break.
-//
-// There was a third, and it was silent. The carve loop split at the run, dropped
-// it, and then carried on filling the SAME Paragraph -- where the seam space
-// that stands between two Cues went in instead. Four spaces came back as one,
-// inside one Paragraph, and the character cap counted the Paragraph three
-// characters shorter than the speech it was made of.
 @(test)
 a_run_of_spaces_is_kept_whole_or_is_the_break :: proc(t: ^testing.T) {
 	said := " one  two   three    four"
@@ -525,7 +397,6 @@ a_run_of_spaces_is_kept_whole_or_is_the_break :: proc(t: ^testing.T) {
 	cues := shaped_cues(shape, context.allocator)
 	defer delete(cues, context.allocator)
 
-	// Room for all of it: nothing breaks, so every run is left exactly alone.
 	roomy := Merge_Params {
 		max_gap_ms     = 1_000,
 		hard_gap_ms    = 3_000,
@@ -537,8 +408,6 @@ a_run_of_spaces_is_kept_whole_or_is_the_break :: proc(t: ^testing.T) {
 		testing.expect_value(t, whole[0].text, strings.trim_space(said))
 	}
 
-	// Room for eight characters at a time: each run the cap reaches is a break,
-	// and no run survives as a single space on either side of one.
 	tight := Merge_Params {
 		max_gap_ms     = 1_000,
 		hard_gap_ms    = 3_000,
@@ -556,14 +425,6 @@ a_run_of_spaces_is_kept_whole_or_is_the_break :: proc(t: ^testing.T) {
 	}
 }
 
-// A Paragraph's prose is prose: the Engine's padding is off it and it does not
-// end in the space the carve happened to break at. A trailing space reaches the
-// deliverable and is spent against the cap -- at a cap of five, "one  two" would
-// come back holding four characters of speech and one of nothing.
-//
-// Every run of spaces here is one the cap breaks at, so every one of them is a
-// break and none survives. The case above is the one that says what happens to
-// a run the cap does NOT reach.
 @(test)
 a_carve_at_a_word_boundary_leaves_no_padding_behind :: proc(t: ^testing.T) {
 	tight := Merge_Params {
@@ -587,19 +448,7 @@ a_carve_at_a_word_boundary_leaves_no_padding_behind :: proc(t: ^testing.T) {
 	}
 }
 
-// A byte nobody said sitting in the MIDDLE of a Cue, at the one place a carve
-// can land on it.
-//
-// spoken_text guards a Cue's ENDS, and that is the whole of what it can promise:
-// a Paragraph is built out of carved interiors as well, and the carve walks
-// bytes spoken_text never looked at. Trimmed with a predicate that knew
-// whitespace and not control bytes, a split either side of a lone control
-// character handed back a `take` made of nothing else -- and the Paragraph
-// carrying it holds no speech at all, which is what the renderer refuses.
-//
-// One control byte in a Cue is enough, on ordinary Engine output, and it is the
-// pure core that produces it -- so this is a whole Batch down and not one
-// command line.
+// One control byte mid-Cue is ordinary Engine output, and it takes a whole Batch down.
 @(test)
 a_carve_around_a_byte_nobody_said_never_makes_a_paragraph_of_it :: proc(t: ^testing.T) {
 	tight := Merge_Params {
@@ -639,14 +488,7 @@ a_carve_around_a_byte_nobody_said_never_makes_a_paragraph_of_it :: proc(t: ^test
 	}
 }
 
-// The two routes a split takes, so neither can be fixed while the other is left
-// carving a piece out of what nobody said: the first row breaks at the boundary
-// sitting exactly AT the cut, and the second at the last boundary the search
-// finds inside the window. The byte is gone in both, the way the padding either
-// side of a Cue is gone, and every letter that was said arrives.
-//
-// Not rodata: the rows hold slices, and rodata takes only constant
-// initialisation.
+// Not rodata: the rows hold slices, and rodata takes only constant initialisation.
 @(private)
 Interior_Silence_Case :: struct {
 	said:    string,
