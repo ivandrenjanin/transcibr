@@ -35,9 +35,26 @@ import "transcibr:process"
 // program takes process.DEFAULT_WATCH, whose silent bound is five minutes.
 @(private)
 SHORT_WATCH :: process.Watch {
-	factor    = 4,
-	quiet_ms  = 400,
-	silent_ms = 1_200,
+	factor      = 4,
+	fallback_ms = 200,
+	quiet_ms    = 400,
+	silent_ms   = 1_200,
+}
+
+// The watchdog for the case that has to watch the ESTIMATE stand in.
+//
+// The other way round from SHORT_WATCH: the bound a case must reach here is the
+// FALLBACK's, and the two silence bounds have to stay out of reach for the whole
+// of a child that is talking steadily. So the fallback is half a second, and the
+// quiet bound is three -- longer than the one-second gaps the stand-in leaves
+// between its lines, which would otherwise freeze the bar before the estimate
+// ever got to supply a number.
+@(private)
+PATIENT_WATCH :: process.Watch {
+	factor      = 4,
+	fallback_ms = 500,
+	quiet_ms    = 3_000,
+	silent_ms   = 6_000,
 }
 
 // How long the child that must outlive the watchdog waits before ending itself,
@@ -325,6 +342,86 @@ an_engine_that_says_nothing_at_all_is_stopped_before_its_bound_runs_out :: proc(
 	defer delete(produced.output, context.allocator)
 
 	testing.expect_value(t, err.fault, Fault.Went_Silent)
+}
+
+@(test)
+an_engine_whose_progress_format_this_reader_cannot_read_still_drives_the_display :: proc(
+	t: ^testing.T,
+) {
+	// ACCEPTANCE CRITERION 3, end to end. The decision has a case next door, and a
+	// decision nothing ever calls with reachable bounds is a decision no run
+	// exercises: this is the one that puts `Progress_Source.Estimate` in front of
+	// the display over a real child.
+	//
+	// A release that renames the progress callback. The lines keep arriving, so
+	// there is nothing wrong with the child; what has gone is this package's
+	// reading of them, and ADR-0012 is explicit that the run degrades to an
+	// estimate rather than failing.
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	cache := scratch_cache(t, "estimate")
+	defer delete(cache, context.allocator)
+	defer remove_cache(cache)
+
+	name := lonely_signal("estimate")
+	defer delete(name, context.allocator)
+	executable := stand_in(
+		t,
+		cache,
+		"estimate",
+		fmt.tprintf(
+			">&2 echo whisper: progress is now 50 per cent\r\n" +
+			"waitfor /t 1 %s\r\n" +
+			">&2 echo whisper: progress is now 90 per cent\r\n" +
+			"waitfor /t 1 %s\r\n" +
+			">\"%%PREFIX%%.json\" echo {}",
+			name,
+			name,
+		),
+	)
+	defer delete(executable, context.allocator)
+
+	watched := Watched {
+		seen = make([dynamic]process.Progress, context.allocator),
+	}
+	defer delete(watched.seen)
+
+	// Four seconds of audio at four times realtime is an expected second, so the
+	// estimate has something to key on and reaches half way while the stand-in is
+	// still on its first wait.
+	tools, job := job_in(cache, executable, 4_000)
+	produced, err := transcribe(
+		&group,
+		tools,
+		job,
+		Report{on_progress = note, user = &watched},
+		context.allocator,
+		PATIENT_WATCH,
+	)
+	defer delete(produced.output, context.allocator)
+	if !testing.expectf(
+		t,
+		err.fault == .None,
+		"an unreadable format failed the run: %v",
+		err.fault,
+	) {
+		return
+	}
+
+	estimated := false
+	for shown in watched.seen {
+		if shown.from == .Estimate {
+			estimated = true
+		}
+	}
+	testing.expect(t, estimated, "the estimate never stood in for an Engine nobody could read")
+	// And it MOVED. The Engine said nothing this reader understands, so a bar still
+	// reading zero is one the estimate never supplied a number for.
+	testing.expect(t, watched.highest > 0, "the estimate stood in and reported nothing at all")
 }
 
 @(test)

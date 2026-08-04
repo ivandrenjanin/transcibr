@@ -186,9 +186,10 @@ STARTED :: i64(987_654_321_000_000)
 // construction rather than with an answer somebody worked out.
 @(private)
 FOUR_TIMES :: Watch {
-	factor    = 4,
-	quiet_ms  = QUIET_AFTER_MS,
-	silent_ms = SILENT_AFTER_MS,
+	factor      = 4,
+	fallback_ms = FALLBACK_AFTER_MS,
+	quiet_ms    = QUIET_AFTER_MS,
+	silent_ms   = SILENT_AFTER_MS,
 }
 
 // Milliseconds as the nanoseconds the tracker counts in.
@@ -270,6 +271,34 @@ an_unrecognised_progress_format_engages_the_time_based_estimate :: proc(t: ^test
 	testing.expect_value(t, now.from, Progress_Source.Estimate)
 	testing.expect_value(t, now.percent, 50)
 	testing.expect(t, !now.silent, "a child that is still writing was reported as silent")
+}
+
+@(test)
+the_fallback_stands_in_on_the_bound_it_was_handed :: proc(t: ^testing.T) {
+	// The write side (A4) of what the engine suite now reaches end to end, and the
+	// case that would have caught this bound being read off the package constant
+	// while the other three were handed in. It is a hundredth of FALLBACK_AFTER_MS,
+	// so a `shown` reading the constant would still report the Engine's own
+	// reading at every instant below.
+	patient := Watch {
+		factor      = 4,
+		fallback_ms = 300,
+		quiet_ms    = 5_000,
+		silent_ms   = 20_000,
+	}
+
+	// One real reading, then lines this reader has no reading for -- which keep the
+	// child audibly alive without moving the fallback's own clock.
+	tr := tracker_start(600_000, STARTED)
+	tracker_heard(&tr, 64, after(1_000))
+	tracker_said(&tr, Engine_Line{says = .Progress, percent = 12}, after(1_000))
+	tracker_heard(&tr, 64, after(1_400))
+	tracker_said(&tr, read_engine_line("whisper: progress is now 50 per cent"), after(1_400))
+
+	// Both halves (A3): the Engine's own reading a tenth of a second past its last
+	// readable line, and the estimate half a second past it.
+	testing.expect_value(t, shown(tr, after(1_100), patient).from, Progress_Source.Engine)
+	testing.expect_value(t, shown(tr, after(1_500), patient).from, Progress_Source.Estimate)
 }
 
 @(test)

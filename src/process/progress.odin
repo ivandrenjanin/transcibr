@@ -137,6 +137,12 @@ trimmed :: proc(held: []u8) -> string {
 // reading roughly every forty seconds, so the estimate does stand in between
 // readings on a long one. That costs nothing, because the estimate is floored at
 // whatever the Engine last said.
+//
+// The DEFAULT and not the number `shown` reads. It is a field of Watch, for the
+// reason the other three are: a bound no case can reach is a decision no run
+// exercises, and this one was left on the constant when the other three were
+// handed in -- so the estimate never once stood in front of a display in the
+// whole sweep.
 FALLBACK_AFTER_MS :: i64(30_000)
 
 // How long nothing may arrive on any stream this program can see before the
@@ -187,6 +193,14 @@ SILENT_AFTER_MS :: i64(5 * 60 * 1000)
 // compiler, because it is a relationship between two constants and not
 // something a test would notice going wrong (A5).
 #assert(QUIET_AFTER_MS < SILENT_AFTER_MS)
+
+// And the estimate must be able to STAND IN before the bar freezes, for the
+// mirror of the same reason: silence is read first, so a fallback bound that
+// reached its quiet bound would make `Progress_Source.Estimate` a state nothing
+// can ever be in and the display would go from the Engine's own last reading
+// straight to a frozen bar. This one was missing while the two above were held
+// twice over, and the watchdog every case handed in violated it.
+#assert(FALLBACK_AFTER_MS < QUIET_AFTER_MS)
 
 // How long nothing may arrive on any stream this program can see before THIS
 // Recording's run is an operating error, in milliseconds.
@@ -263,24 +277,36 @@ DEFAULT_REALTIME_FACTOR :: f64(4)
 
 #assert(DEFAULT_REALTIME_FACTOR > 0)
 
-// The three numbers `shown` decides with, as one value.
+// The four numbers `shown` decides with, as one value.
 //
-// A RECORD RATHER THAN THREE DEFAULTED PARAMETERS, because two of them are a
-// pair -- a quiet bound that reached its silent bound would make the frozen bar
-// unobservable -- and a caller that could move one without the other would be
-// able to spell that. Handed in, the shape ADR-0018 records for `Tolerance` in
-// `transcibr:audio`: the shipped program takes DEFAULT_WATCH, and a case or a
-// shell that needs a bound it can actually reach hands in its own.
+// A RECORD RATHER THAN FOUR DEFAULTED PARAMETERS, because three of them are an
+// ORDERED CHAIN -- fallback below quiet below silent -- and a caller that could
+// move one without the others would be able to spell a run in which the estimate
+// or the frozen bar is a state nothing can ever be in. Handed in, the shape
+// ADR-0018 records for `Tolerance` in `transcibr:audio`: the shipped program
+// takes DEFAULT_WATCH, and a case or a shell that needs a bound it can actually
+// reach hands in its own.
+//
+// `fallback_ms` WAS LEFT OUT and that is worth the sentence. The other three were
+// handed in and this one went on being read off the package constant, so no case
+// could reach it: every watchdog a case hands in has bounds far below thirty
+// seconds, and `Progress_Source.Estimate` never once reached a display in the
+// whole sweep -- the fallback being the entire reason ADR-0012 exists.
 Watch :: struct {
-	factor:    f64,
-	quiet_ms:  i64,
-	silent_ms: i64,
+	factor:      f64,
+	// How long the Engine may go without a readable progress line before the
+	// estimate stands in. Must sit BELOW quiet_ms, or the bar has already frozen
+	// by the time the estimate would have supplied a number.
+	fallback_ms: i64,
+	quiet_ms:    i64,
+	silent_ms:   i64,
 }
 
 DEFAULT_WATCH :: Watch {
-	factor    = DEFAULT_REALTIME_FACTOR,
-	quiet_ms  = QUIET_AFTER_MS,
-	silent_ms = SILENT_AFTER_MS,
+	factor      = DEFAULT_REALTIME_FACTOR,
+	fallback_ms = FALLBACK_AFTER_MS,
+	quiet_ms    = QUIET_AFTER_MS,
+	silent_ms   = SILENT_AFTER_MS,
 }
 
 // Everything one Recording's progress display keys on.
@@ -436,8 +462,13 @@ shown :: proc(tr: Tracker, now_ns: i64, watch := DEFAULT_WATCH) -> Progress {
 	assert(now_ns >= tr.started_ns, "the monotonic counter went backwards over one Recording")
 	assert(watch.factor > 0, "an Engine that runs at no speed at all finishes nothing")
 	assert(tr.said >= 0, "a tracker holding a negative percentage")
-	// The pair, checked wherever a caller hands one in -- the compile-time form
-	// below only covers the constants this package chose (A4).
+	// The chain, checked wherever a caller hands one in -- the compile-time forms
+	// above only cover the constants this package chose (A4). Split rather than
+	// written as one condition (A2): each says which link failed.
+	assert(
+		watch.fallback_ms < watch.quiet_ms,
+		"an estimate that stands in no sooner than the bar freezes never stands in at all",
+	)
 	assert(
 		watch.quiet_ms < watch.silent_ms,
 		"a bar that freezes no sooner than the run fails never freezes at all",
@@ -456,7 +487,7 @@ shown :: proc(tr: Tracker, now_ns: i64, watch := DEFAULT_WATCH) -> Progress {
 			silent = quiet_ns >= silent_ms * 1_000_000,
 		}
 	}
-	if now_ns - tr.last_progress_ns < FALLBACK_AFTER_MS * 1_000_000 {
+	if now_ns - tr.last_progress_ns < watch.fallback_ms * 1_000_000 {
 		return Progress{percent = tr.said, from = .Engine}
 	}
 	return Progress{percent = estimated(tr, now_ns, watch.factor), from = .Estimate}
