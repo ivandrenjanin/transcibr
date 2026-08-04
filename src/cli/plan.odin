@@ -11,10 +11,14 @@ import "transcibr:transcript"
 
 PLAN :: "--plan"
 
+// `engine_version` is NOTHING where the command line did not name one, and is
+// never defaulted to UNKNOWN here. `transcibr:planning` is what decides what an
+// unnamed Engine means, because this package collects no tests and a decision
+// nothing can turn red is a decision nobody is holding (ADR-0009).
 Plan_Options :: struct {
 	root:           string,
 	model:          string,
-	engine_version: string,
+	engine_version: Maybe(string),
 	prompt:         string,
 	profile:        transcript.Merge_Profile,
 	follow:         bool,
@@ -135,7 +139,6 @@ read_plan_options :: proc(arguments: []string) -> (o: Plan_Options, ok: bool) {
 	defer if ok {
 		assert(len(o.root) > 0, "accepted a command line with no folder to walk")
 		assert(len(o.model) > 0, "accepted a command line naming no Model")
-		assert(len(o.engine_version) > 0, "an Engine nobody named is UNKNOWN, never empty")
 	} else {
 		assert(len(o.root) == 0, "refused a command line and kept what it asked for")
 	}
@@ -152,9 +155,6 @@ read_plan_options :: proc(arguments: []string) -> (o: Plan_Options, ok: bool) {
 		}
 	}
 
-	if len(o.engine_version) == 0 {
-		o.engine_version = transcript.UNKNOWN
-	}
 	for missing in ([?][2]string{{o.root, PLAN}, {o.model, "--model-file"}}) {
 		if len(missing[0]) == 0 {
 			return {}, refuse("%s names nothing.", missing[1])

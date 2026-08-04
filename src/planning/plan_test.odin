@@ -25,8 +25,9 @@ settings :: proc() -> Settings {
 @(private)
 matching_sidecar :: proc(found: Found) -> artifact.Sidecar {
 	s := settings()
+	named, _ := s.engine_version.?
 	return artifact.sidecar_of(
-		s.engine_version,
+		named,
 		s.model,
 		s.beam,
 		s.merge_profile,
@@ -263,6 +264,55 @@ a_transcript_whose_recorded_settings_differ_is_done_again :: proc(t: ^testing.T)
 			c.change,
 		)
 	}
+}
+
+// Criterion two, on the command line a user actually types. `--engine-version`
+// is optional, and a Batch that does not name its Engine cannot say the Engine
+// changed -- otherwise a finished corpus is re-transcribed from the top by
+// anybody who did not re-type the version string byte for byte.
+@(test)
+a_batch_that_names_no_engine_never_reports_the_engine_as_changed :: proc(t: ^testing.T) {
+	found := a_recording()
+	found.transcript = .Transcibrs
+	found.engine_output = true
+	found.recorded = matching_sidecar(found)
+
+	unnamed := settings()
+	unnamed.engine_version = nil
+
+	expect_decided(
+		t,
+		"a finished Recording planned without naming the Engine",
+		decide(found, unnamed),
+		.Skip,
+		.Up_To_Date,
+	)
+}
+
+// The other direction, which is NOT symmetric. A record that names no Engine is
+// unknown provenance, and ADR-0003's disposition for unknown is re-do it -- so a
+// Batch that does name one still re-transcribes what was recorded without.
+@(test)
+a_transcript_recorded_without_an_engine_is_done_again_by_a_batch_that_names_one :: proc(
+	t: ^testing.T,
+) {
+	found := a_recording()
+	found.transcript = .Transcibrs
+	found.engine_output = true
+	recorded := matching_sidecar(found)
+	recorded.engine_version = "unknown"
+	found.recorded = recorded
+
+	outcome := decide(found, settings())
+
+	expect_decided(
+		t,
+		"a Recording whose record names no Engine",
+		outcome,
+		.Transcribe,
+		.Settings_Changed,
+	)
+	testing.expect_value(t, outcome.change, artifact.Change.Engine_Version)
 }
 
 @(test)

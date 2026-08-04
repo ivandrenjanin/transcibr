@@ -1,6 +1,7 @@
 package planning
 
 import "transcibr:artifact"
+import "transcibr:transcript"
 
 // What one Recording's Transcript is, if it is there at all. The Sidecar answers
 // staleness and never ownership: ADR-0026.
@@ -24,7 +25,9 @@ Found :: struct {
 
 // Everything a Batch settles once, against which every Recording is measured.
 Settings :: struct {
-	engine_version: string,
+	// NOTHING where the Batch does not name an Engine, which is the ordinary
+	// command line: `--engine-version` is optional. See `engine_of`.
+	engine_version: Maybe(string),
 	model:          artifact.Model,
 	beam:           u32,
 	merge_profile:  string,
@@ -71,14 +74,14 @@ decide :: proc(found: Found, settings: Settings) -> (outcome: Outcome) {
 	)
 
 	recorded, known := found.recorded.?
-	current := current_of(found, settings, known ? recorded.container_ms : 0)
+	current := current_of(found, settings, recorded, known)
 	if refusal, refused := refused(found, current); refused {
 		return refusal
 	}
 	if !known {
 		return unrecorded(found)
 	}
-	return resumed(found, recorded, current)
+	return resumed(found, recorded, current, settings)
 }
 
 // Refused ahead of every resume rule, because a Recording nothing may be written
@@ -126,27 +129,74 @@ unrecorded :: proc(found: Found) -> Outcome {
 // file, and probing every Recording to plan a Batch is the GPU-free half of the
 // work this ticket exists to avoid (ADR-0026).
 @(private)
-current_of :: proc(found: Found, settings: Settings, container_ms: i64) -> artifact.Sidecar {
-	assert(container_ms >= 0, "a container cannot have lasted a negative length of time")
-	assert(len(settings.engine_version) > 0, "an Engine nobody named is UNKNOWN, never empty")
+current_of :: proc(
+	found: Found,
+	settings: Settings,
+	recorded: artifact.Sidecar,
+	known: bool,
+) -> artifact.Sidecar {
+	assert(
+		len(settings.merge_profile) > 0,
+		"a Batch naming no Merge Profile compares against nothing",
+	)
+	if known {
+		assert(
+			recorded.container_ms >= 0,
+			"a container cannot have lasted a negative length of time",
+		)
+	}
 
 	return artifact.sidecar_of(
-		settings.engine_version,
+		engine_of(settings, recorded, known),
 		settings.model,
 		settings.beam,
 		settings.merge_profile,
 		settings.prompt,
 		found.bytes,
 		found.modified_ns,
-		container_ms,
+		known ? recorded.container_ms : 0,
 	)
+}
+
+// The Engine this Batch would record, and the Engine it MEASURES against. A
+// Batch that names one is measured against it. A Batch that names NONE is
+// measured against the record's own -- the same copy the container duration
+// gets, and for a stricter reason: the Engine is the one setting taken on faith
+// where the Model is hashed to identity, so an Engine nobody named is an
+// unanswerable question rather than a change.
+//
+// The direction matters and is not symmetric. A RECORD that names no Engine is
+// unknown provenance and ADR-0003 re-does it; a BATCH that names no Engine has
+// said nothing about the Engine at all, and re-transcribing a finished corpus
+// because somebody did not re-type a version string is hours of GPU time spent
+// on an absence. Where there is no record either, what a run with no
+// `--engine-version` writes is UNKNOWN, and that is what this would record.
+@(private)
+engine_of :: proc(
+	settings: Settings,
+	recorded: artifact.Sidecar,
+	known: bool,
+) -> (
+	engine: string,
+) {
+	defer assert(len(engine) > 0, "an Engine nobody named is UNKNOWN, never empty")
+
+	if named, on_purpose := settings.engine_version.?; on_purpose {
+		if len(named) > 0 {
+			return named
+		}
+	}
+	if known {
+		return recorded.engine_version
+	}
+	return transcript.UNKNOWN
 }
 
 // `artifact.changed` answers with the FIRST recorded setting that differs, in an
 // order where everything before the Merge Profile needs the GPU again (ADR-0003).
 // There is no second comparison anywhere in this package.
 @(private)
-resumed :: proc(found: Found, recorded, current: artifact.Sidecar) -> Outcome {
+resumed :: proc(found: Found, recorded, current: artifact.Sidecar, settings: Settings) -> Outcome {
 	assert(
 		len(current.merge_profile) > 0,
 		"a Batch naming no Merge Profile compares against nothing",
@@ -157,6 +207,12 @@ resumed :: proc(found: Found, recorded, current: artifact.Sidecar) -> Outcome {
 		change != .Container_Duration,
 		"a duration this package copied out of the record differs from itself",
 	)
+	if _, named := settings.engine_version.?; !named {
+		assert(
+			change != .Engine_Version,
+			"an Engine this package copied out of the record differs from itself",
+		)
+	}
 
 	switch change {
 	case .None:

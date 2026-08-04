@@ -46,6 +46,8 @@ USAGE ::
                 [--follow-reparse-points yes]
       walk the folder and print what each recording found under it would get,
       and why. Spends no GPU time and writes nothing beside any recording.
+      --engine-version left out means "not asked", not "unknown": a plan that
+      cannot name its engine never reports the engine as having changed.
 
   transcibr-cli --help
       print this and exit.
