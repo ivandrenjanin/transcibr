@@ -12,6 +12,7 @@ import "transcibr:child"
 ICACLS :: "icacls.exe"
 
 @(private)
+@(require_results)
 denied :: proc(t: ^testing.T, path: string, rights: string) -> bool {
 	who := os.get_env("USERNAME", context.allocator)
 	defer delete(who, context.allocator)
@@ -32,10 +33,15 @@ undenied :: proc(t: ^testing.T, path: string) {
 		return
 	}
 
-	icacls(t, []string{path, "/remove:d", who})
+	testing.expect(
+		t,
+		icacls(t, []string{path, "/remove:d", who}),
+		"a deny this case set could not be taken off, so the tree will not remove",
+	)
 }
 
 @(private)
+@(require_results)
 icacls :: proc(t: ^testing.T, arguments: []string) -> bool {
 	group, opening := child.job_object_open()
 	defer child.job_object_close(&group)

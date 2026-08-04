@@ -22,6 +22,7 @@ GOLDEN_CONTEXT :: Render_Context {
 }
 
 @(private)
+@(require_results)
 golden_context :: proc(profile: Merge_Profile, language: string) -> Render_Context {
 	assert(len(language) > 0, "a front matter field nobody settled is UNKNOWN, never empty")
 
@@ -89,6 +90,7 @@ seven_cues_carry_one_anchor_under_either_profile :: proc(t: ^testing.T) {
 }
 
 @(private)
+@(require_results)
 paragraphs_in :: proc(markdown: string) -> int {
 	body := body_of(markdown)
 	if len(body) == 0 {
@@ -245,6 +247,7 @@ an_engine_schema_change_is_refused_rather_than_rendered_empty :: proc(t: ^testin
 // A substitution rather than a second committed fixture: what the row claims is
 // that ONLY the language moved.
 @(private)
+@(require_results)
 golden_reading :: proc(language: string, allocator: mem.Allocator) -> (document: string) {
 	assert(len(language) > 0, "a front matter field nobody settled is UNKNOWN, never empty")
 	assert(

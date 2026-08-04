@@ -86,6 +86,7 @@ audio_of_the_wrong_rate_or_channel_count_is_refused :: proc(t: ^testing.T) {
 }
 
 @(private)
+@(require_results)
 edited_fixture :: proc() -> (copied: [FFMPEG_WAV_BYTES]u8) {
 	copy(copied[:], FFMPEG_WAV)
 	return
@@ -179,6 +180,7 @@ a_well_formed_file_holding_no_audio_at_all_is_refused :: proc(t: ^testing.T) {
 @(private)
 ODD_CHUNK_WAV_BYTES :: 58
 @(private)
+@(require_results)
 odd_chunk_wav :: proc() -> (bytes: [ODD_CHUNK_WAV_BYTES]u8) {
 	whole := edited_fixture()
 	copy(bytes[:], whole[:36])
@@ -194,6 +196,7 @@ odd_chunk_wav :: proc() -> (bytes: [ODD_CHUNK_WAV_BYTES]u8) {
 @(private)
 TWO_FMT_WAV_BYTES :: 72
 @(private)
+@(require_results)
 two_fmt_wav :: proc() -> (bytes: [TWO_FMT_WAV_BYTES]u8) {
 	whole := edited_fixture()
 	copy(bytes[:], whole[:36])

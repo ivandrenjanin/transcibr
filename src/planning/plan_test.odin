@@ -7,6 +7,7 @@ import "transcibr:artifact"
 A_DIGEST :: artifact.Digest("a1b2c3d4e5f60718293a4b5c6d7e8f901a2b3c4d5e6f708192a3b4c5d6e7f801")
 
 @(private)
+@(require_results)
 settings :: proc() -> Settings {
 	return Settings {
 		engine_version = "whisper.cpp 1.9.1",
@@ -23,6 +24,7 @@ settings :: proc() -> Settings {
 
 // What the Batch above would have written for this Recording last time.
 @(private)
+@(require_results)
 matching_sidecar :: proc(found: Found) -> artifact.Sidecar {
 	s := settings()
 	named, _ := s.engine_version.?
@@ -65,6 +67,7 @@ expect_decided :: proc(
 }
 
 @(private)
+@(require_results)
 a_recording :: proc() -> Found {
 	return Found {
 		source = "C:\\clips\\talk.mp4",

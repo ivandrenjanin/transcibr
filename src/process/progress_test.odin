@@ -148,6 +148,7 @@ FOUR_TIMES :: Watch {
 }
 
 @(private)
+@(require_results)
 after :: proc(milliseconds: i64) -> i64 {
 	return STARTED + milliseconds * 1_000_000
 }

@@ -22,6 +22,7 @@ Shaped_Cue :: struct {
 // freed with `delete` and never with destroy_cues -- there is nothing behind
 // those strings for destroy_cues to give back.
 @(private)
+@(require_results)
 shaped_cues :: proc(shape: []Shaped_Cue, allocator: mem.Allocator) -> []Cue {
 	assert(len(shape) > 0, "a shape with nothing in it describes no cue set")
 	assert(allocator.procedure != nil, "the cue set outlives this procedure")

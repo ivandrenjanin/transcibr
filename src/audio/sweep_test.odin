@@ -10,6 +10,7 @@ DAY_NS :: 24 * HOUR_NS
 GIB :: i64(1024 * 1024 * 1024)
 
 @(private)
+@(require_results)
 entry :: proc(name: string, bytes: i64, age_ns: i64) -> Cache_Entry {
 	return Cache_Entry{name = name, bytes = bytes, age_ns = age_ns}
 }

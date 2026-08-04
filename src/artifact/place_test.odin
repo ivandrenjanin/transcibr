@@ -14,6 +14,7 @@ ENGINE_JSON :: #load("../transcript/fixtures/engine-output.json", string)
 FIXTURE_MS :: transcript.Millis(253_949)
 
 @(private)
+@(require_results)
 made_by :: proc(profile := transcript.DEFAULT_PROFILE) -> Sidecar {
 	return sidecar_of(
 		engine_version = "whisper.cpp v1.9.1",
@@ -32,6 +33,7 @@ made_by :: proc(profile := transcript.DEFAULT_PROFILE) -> Sidecar {
 }
 
 @(private)
+@(require_results)
 rendered_as :: proc(
 	source: string,
 	profile := transcript.DEFAULT_PROFILE,
@@ -55,6 +57,7 @@ Bench :: struct {
 }
 
 @(private)
+@(require_results)
 set_out :: proc(t: ^testing.T, tag: string, left := ENGINE_JSON) -> (b: Bench) {
 	for directory, at in ([?]^string{&b.cache, &b.beside}) {
 		named := fmt.aprintf("%s-%s", tag, "cache" if at == 0 else "beside")
@@ -82,6 +85,7 @@ cleared :: proc(b: Bench) {
 }
 
 @(private)
+@(require_results)
 completed :: proc(b: Bench, made := Sidecar{}) -> (Names, Error) {
 	settings := made if len(made.model_digest) > 0 else made_by()
 	return complete(
@@ -95,6 +99,7 @@ completed :: proc(b: Bench, made := Sidecar{}) -> (Names, Error) {
 }
 
 @(private)
+@(require_results)
 holds_a_part :: proc(t: ^testing.T, directory: string) -> bool {
 	listing, unreadable := os.read_all_directory_by_path(directory, context.allocator)
 	if !testing.expect(t, unreadable == nil, "a directory a case just wrote to would not list") {
@@ -394,6 +399,7 @@ a_recording_the_filesystem_dates_before_1970_is_refused_with_nothing_published :
 // than borrowed_message's assertion firing inside the runner, which takes the
 // whole sweep down instead of naming a case (issue #22).
 @(private)
+@(require_results)
 reason_for :: proc(fault: Fault) -> transcript.Parse_Error {
 	switch fault {
 	case .Output_Quarantined, .Output_Not_Quarantined:
