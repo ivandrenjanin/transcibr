@@ -1156,7 +1156,7 @@ function Write-FileAtomically {
 # content hash: the question is only whether an edit has happened since, and git
 # touches a file on checkout, so the answer errs towards rebuilding.
 #
-# Resolved once per process. Three policies ask for it, and the version check
+# Resolved once per process. Four policies ask for it, and the version check
 # behind Resolve-OdinCompiler starts a child of its own.
 $script:OdinPolicyTool = ''
 function Resolve-OdinPolicyTool {
@@ -1288,11 +1288,11 @@ function Get-OdinSourceFact {
 # about a file it could not read.
 #
 # Every source asked about must come back, and none of them may come back with a
-# fault. Both refusals are here rather than in the three policies, for the reason
+# fault. Both refusals are here rather than in the four policies, for the reason
 # Get-OdinCheckedSource is a procedure at all: written per policy, the guard is
-# three chances to leave it out of the fourth -- and a file silently missing from
-# an answer is the exact shape of every bug this repository's build commands have
-# shipped.
+# one chance per policy to leave it out of the next -- and a file silently missing
+# from an answer is the exact shape of every bug this repository's build commands
+# have shipped.
 #
 # A record kind this does not know is refused too. The tool and this reader are in
 # two languages and nothing type-checks across the gap, so a record added on one
@@ -1424,7 +1424,7 @@ function Get-OdinRequiredVetTag {
 # written that guard out three times before somebody counted -- once per caller,
 # which is once per chance to leave it out of the fourth.
 #
-# Repository-wide through Get-OdinSource, which is the scope all three checks and
+# Repository-wide through Get-OdinSource, which is the scope all four checks and
 # the formatter ask. Rule F1 learned it the hard way: an audit scoped to src\
 # left a spike in docs\reference\ growing to 107 lines with nothing looking
 # outside src\, and left body comments there that section 0's ban never saw.
@@ -1440,8 +1440,12 @@ function Get-OdinCheckedSource {
 # has no exceptions without a maintainer decision recorded at the site".
 #
 # Measured from the line carrying `::` through the closing brace, comments and
-# blanks included, which is what the tool reports and not arithmetic done here --
-# a span computed at two call sites is two rules the first time either moves.
+# blanks included. The tool reports both ENDS and this does the one subtraction:
+# the span is a property of this rule and not of a source file, and a tool that
+# reported it would carry the rule's arithmetic in its record format. It is
+# spelled twice more -- in scripts\selftest.ps1's guard and in tools\policy's own
+# test -- and both of those are checking THIS one, so a spelling they shared with
+# it would agree by construction and check nothing.
 #
 # Only a `::` declaration is counted. A procedure literal passed as an argument
 # has a body and no `::` line for the count to start from, and its lines are

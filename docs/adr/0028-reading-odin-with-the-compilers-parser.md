@@ -10,7 +10,7 @@ held. The reasoning below is why it is being reopened rather than re-litigated.
 
 ## What the scan was
 
-598 lines of `scripts\common.ps1`, out of 1,889: `Get-OdinLineFact` lexed a line into ordinary code
+478 lines of `scripts\common.ps1`, out of 1,889: `Get-OdinLineFact` lexed a line into ordinary code
 with every comment, string and rune literal blanked to spaces; `Read-OdinProcedureHeader` and
 `Get-OdinProcedureRange` walked column 0 for a declaration and its closing brace;
 `Get-OdinHiddenProcedure`, `Get-OdinBodyComment`, `Get-OdinResultProcedure` and `Get-OdinFileVetTag`
@@ -78,9 +78,12 @@ startup, against the real package.
 `core:odin/parser` is a recursive descent with no depth limit — the same trap `core:encoding/json`
 carries (CLAUDE.md, Odin notes) — and it overflows its stack at 62 nested parentheses in a debug
 build. So the depth is bounded before the parse with the compiler's own tokenizer, which is iterative.
-Unlike the JSON case there is no order of magnitude to be had: 62 is the shallowest crash and the
-deepest file here reaches 7, so the bound is a guard against the pathological file rather than a
-proof, and the residual is a loud crash that fails the build. And `core:odin/tokenizer` fills its
+Unlike the JSON case there is no order of magnitude to be had: 62 is the shallowest *bracket* crash
+and the deepest file here reaches 7, so the bound is a guard against the pathological file rather
+than a proof. It is not the shallowest crash outright — a chain of `^` in a type carries no bracket
+at all and goes at about eighty, counted depth one — so the residual is real, and the tool writes
+each file's name **before** it reads that file: a crash fails the build naming one file rather than
+saying only that something died somewhere in seventy-odd. And `core:odin/tokenizer` fills its
 keyword table behind a double-checked lock that never re-checks, so two threads calling
 `tokenizer.init` for the first time race and the second trips an assertion inside `core` — one run in
 three of this package's own test sweep died that way, with no summary (issue #22). An `@(init)` fills
@@ -94,7 +97,7 @@ refused that split for that reason. All four moved together.
 
 ## Consequences
 
-**The reader is tested in Odin, and that is most of the point.** `tools\policy` carries 49 `@(test)`
+**The reader is tested in Odin, and that is most of the point.** `tools\policy` carries 52 `@(test)`
 procedures and is **not** in `$OdinPackagesWithoutTests`; `.\scripts\test.ps1` sweeps it like any
 package under `src\`. Every shape these rules turn on — a procedure type, a `where` clause over two
 lines, a raw string holding a `}` at column 0, an attribute quoted inside one, both spellings of

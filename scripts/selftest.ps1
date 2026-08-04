@@ -484,11 +484,11 @@ function Assert-Result {
 
 # The .odin files a case reads, refused when discovery finds none.
 #
-# Five cases below open by asking for them, and every one of them is worthless
+# Three cases below open by asking for them, and every one of them is worthless
 # against an empty answer -- which is this suite's whole subject: a sweep exiting
 # 0 having run nothing, a suite announcing all zero cases passed. Written out per
-# case, the guard was five chances to leave it out of the sixth. The verb is the
-# only part that differed.
+# case, the guard is one chance per case to leave it out of the next. The verb is
+# the only part that differs.
 function Get-CaseSource {
 	param([Parameter(Mandatory)] [string] $Having)
 
@@ -501,7 +501,7 @@ function Get-CaseSource {
 
 # A rule and its enforcement, pinned to each other.
 #
-# This is the defect that produced the first of the three cases below: the
+# This is the defect that produced the first of the four cases below: the
 # comment ban was applied to 53 files by a branch that also deleted the section
 # stating it, so the tree arrived shaped by a rule written down nowhere and the
 # next contributor could not learn it existed. A check with no policy behind it
