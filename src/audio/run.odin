@@ -138,36 +138,39 @@ settle :: proc(
 		return {}, Error{fault = .Planned_Reading_Unusable}
 	}
 
-	// TWICE AT MOST, and the second time only where the first pair of readings
-	// were too close together to mean anything. Read-and-decide is one thing, so
-	// it is spelled once: both passes compare against the PLANNED reading and
-	// never against the last one, because the gap that has to be long enough is
-	// the whole of it and comparing the last two would answer "too soon" for
-	// ever.
-	ATTEMPTS :: 2
-	for attempt in 0 ..< ATTEMPTS {
+	// SETTLING_ATTEMPTS TIMES AT MOST, and the later looks only where the readings
+	// so far were too close together to mean anything. Read-and-decide is one
+	// thing, so it is spelled once: every pass compares against the PLANNED
+	// reading and never against the last one, because the gap that has to be long
+	// enough is the whole of it and comparing the last two would answer "too soon"
+	// for ever.
+	//
+	// WHAT TO MAKE OF EACH LOOK IS NOT DECIDED HERE. That is settling_fault next
+	// door, which has cases of its own -- including the one that says a Recording
+	// nothing was ever seen to stop writing is a refusal and not a success.
+	for attempt in 0 ..< SETTLING_ATTEMPTS {
 		now, unreadable := read_source(source, allocator)
 		if unreadable.fault != .None {
 			return {}, unreadable
 		}
-		switch settling(planned, now, gap_ns) {
-		case .Still_Being_Written:
-			return {}, Error{fault = .Still_Being_Written}
-		case .Settled:
+		fault, again := settling_fault(
+			settling(planned, now, gap_ns),
+			SETTLING_ATTEMPTS - attempt - 1,
+		)
+		if !again {
+			if fault != .None {
+				return {}, Error{fault = fault}
+			}
 			return now, Error{}
-		case .Too_Soon_To_Tell:
-		// Waited out below, once.
-		}
-		if attempt + 1 == ATTEMPTS {
-			break
 		}
 		time.sleep(time.Duration(remaining_gap_ns(planned, now, gap_ns)))
 	}
-
-	// Nothing was seen to move, and the readings were never far enough apart to
-	// make anything of that. The caller is told so rather than told the file is
-	// fine.
-	return {}, Error{fault = .Still_Unsettled}
+	// settling_fault asks for another look only where `attempts_left` is above
+	// zero, and the last pass hands it zero. This package's own arithmetic and
+	// nothing external (A8), so it is a crash and not a fabricated verdict --
+	// which is what a second `.Still_Unsettled` spelled here would be: a line no
+	// case can reach, saying what the loop already said.
+	unreachable()
 }
 
 // How one bounded run of a child ended.
@@ -498,13 +501,7 @@ produce :: proc(
 	part := fmt.aprintf("%s.%d.part", audio, os.get_pid(), allocator = allocator)
 	defer delete(part, allocator)
 	defer if err.fault != .None {
-		// Nothing half-written is left where the next run could find it and
-		// take it for finished work -- unless ffmpeg would not stop, in which
-		// case it may still hold this file open and deleting it is the one
-		// thing CLAUDE.md says not to do. The sweep takes it on age instead.
-		if err.fault != .Extraction_Not_Stopped {
-			os.remove(part)
-		}
+		discard_part(part, err.fault)
 		delete(audio, allocator)
 	}
 
@@ -532,6 +529,31 @@ produce :: proc(
 		return {}, Error{fault = .Audio_Not_Published}
 	}
 	return Extracted{audio = audio, container_ms = container_ms, measured_ms = measured}, Error{}
+}
+
+// Removes the half-written audio a failed extraction left behind, unless ffmpeg
+// would not stop.
+//
+// THE ONE PLACE THE `.part` IS DELETED, and a procedure rather than a condition
+// buried in `produce`'s own `defer` for the reason ADR-0018 gives: it is a
+// decision, nothing in run.odin can be reached by a case, and deleting the guard
+// outright passed every case in this package.
+//
+// What the guard is for is CLAUDE.md's rule on stopping a child -- do not touch
+// any file the child had open until the wait completes. `.Extraction_Not_Stopped`
+// is the report that the wait never completed: ffmpeg may still be running and
+// may still hold this file. The sweep takes it on age instead. Every other
+// failure leaves a half-written file the next run would find and take for
+// finished work.
+@(private)
+discard_part :: proc(part: string, fault: Fault) {
+	assert(len(part) > 0, "there is no half-written audio here to discard")
+	assert(fault != .None, "an extraction that came through has no half-written audio")
+
+	if fault == .Extraction_Not_Stopped {
+		return
+	}
+	os.remove(part)
 }
 
 // The scratch cache, checked and created. ONCE PER BATCH and never per

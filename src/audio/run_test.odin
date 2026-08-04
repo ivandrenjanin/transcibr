@@ -51,6 +51,21 @@ SHORT_BOUND_MS :: i64(500)
 @(private)
 LONGER_SECONDS :: 25
 
+// The gap the settling case below works to, in nanoseconds.
+//
+// Deliberately NOT MINIMUM_SETTLING_GAP_NS: the gap is a parameter precisely so
+// a case can choose one, and what this number has to be is long enough that the
+// first look cannot land past it by accident -- the planning reading is taken
+// microseconds earlier, so defeating this would take a two-second stall between
+// two adjacent statements -- and short enough to spend in a suite.
+@(private)
+SETTLING_GAP_NS :: i64(2_000_000_000)
+
+// And the gap for the Recording that never settles, which is paid once between
+// its two looks and answers the same at any length at all.
+@(private)
+UNSETTLED_GAP_NS :: i64(50_000_000)
+
 // A scratch cache of this run's own. The caller frees the path and removes the
 // directory.
 @(private)
@@ -291,6 +306,110 @@ a_head_read_from_a_file_that_is_not_there_is_refused :: proc(t: ^testing.T) {
 	buffer: [64]u8 = ---
 	_, _, err := read_head(path, buffer[:])
 	testing.expect_value(t, err.fault, Fault.Audio_Unreadable)
+}
+
+// ------------------------------------------------ settling a Recording --
+//
+// `settle` reads a Recording against the reading its Batch planned it with, and
+// the two things it decides -- that there is a SECOND look, and what an answer
+// that never arrived means -- had no case at all. Both are checked here against
+// a real file rather than a stand-in, because `settle` is what reads the disk;
+// what it decides FROM those readings is next door in settling.odin and has
+// cases of its own.
+
+@(test)
+a_recording_looked_at_too_soon_is_looked_at_again_rather_than_refused :: proc(t: ^testing.T) {
+	// THE REPRODUCTION for the second look. Every Batch's FIRST Recording is
+	// planned microseconds before its extraction starts, so its first look is
+	// always too soon to tell -- and with one look only, every Batch's first
+	// Recording fails as `.Still_Unsettled`.
+	cache := scratch_cache(t, "settle")
+	defer delete(cache, context.allocator)
+	defer remove_cache(cache)
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
+
+	source := aged_file(t, cache, "source.mp4", 4096, 0)
+	defer delete(source, context.allocator)
+
+	planned, unreadable := read_source(source, context.allocator)
+	testing.expect_value(t, unreadable.fault, Fault.None)
+
+	started := time.tick_now()
+	_, err := settle(source, planned, SETTLING_GAP_NS, context.allocator)
+	waited := time.tick_since(started)
+
+	testing.expect_value(t, err.fault, Fault.None)
+	// That it WAITED, which is the half no fault code can show: a `settle` given
+	// one look answers in microseconds, and answers a refusal.
+	testing.expect(
+		t,
+		waited >= time.Duration(SETTLING_GAP_NS / 2),
+		"settle answered without ever taking the second look",
+	)
+}
+
+@(test)
+a_recording_that_was_never_shown_to_stop_changing_is_refused_not_accepted :: proc(t: ^testing.T) {
+	// THE REPRODUCTION for the verdict, and the serious one. A planning reading
+	// whose clock is AHEAD of this machine's -- a Batch planned before an NTP step
+	// backwards, which is exactly what a Reading's wall clock is exposed to
+	// (ADR-0003) -- makes every gap read negative, so both looks answer "too soon
+	// to tell" and there is no third.
+	//
+	// Nothing was seen to move and nothing could be made of that. Reporting it as
+	// SUCCESS is spec story 52's own failure: a Recording nothing ever watched
+	// stop, transcribed anyway.
+	cache := scratch_cache(t, "unsettled")
+	defer delete(cache, context.allocator)
+	defer remove_cache(cache)
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
+
+	source := aged_file(t, cache, "source.mp4", 4096, 0)
+	defer delete(source, context.allocator)
+
+	planned, unreadable := read_source(source, context.allocator)
+	testing.expect_value(t, unreadable.fault, Fault.None)
+	planned.taken_ns += i64(time.Hour)
+
+	_, err := settle(source, planned, UNSETTLED_GAP_NS, context.allocator)
+	testing.expect_value(t, err.fault, Fault.Still_Unsettled)
+}
+
+// ------------------------------------------ what a failed extraction leaves --
+
+@(test)
+the_one_failure_that_leaves_a_part_behind_is_an_ffmpeg_that_would_not_stop :: proc(t: ^testing.T) {
+	// CLAUDE.md's rule for stopping a child is not to touch a file it had open
+	// until the wait completes, and `.Extraction_Not_Stopped` is the report that
+	// the wait never completed -- ffmpeg may still be running and may still hold
+	// this `.part`. Every other failure leaves a half-written file the next run
+	// would find and take for finished work.
+	//
+	// WALKED over the whole enumeration rather than checked at the one member,
+	// which is what pins the negative space too (A3): a guard widened to spare
+	// more faults than that one fails here as loudly as a guard deleted.
+	cache := scratch_cache(t, "part")
+	defer delete(cache, context.allocator)
+	defer remove_cache(cache)
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
+
+	part := fmt.aprintf("%s\\one.wav.part", cache, allocator = context.allocator)
+	defer delete(part, context.allocator)
+
+	for fault in Fault {
+		if fault == .None {
+			continue
+		}
+		testing.expectf(t, os.write_entire_file(part, []u8{0}) == nil, "could not write %s", part)
+		discard_part(part, fault)
+		testing.expectf(
+			t,
+			os.exists(part) == (fault == .Extraction_Not_Stopped),
+			"%v left the half-written audio in the wrong state",
+			fault,
+		)
+		os.remove(part)
+	}
 }
 
 // ------------------------------------------------------- the bounded run --

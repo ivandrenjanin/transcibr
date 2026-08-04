@@ -67,6 +67,59 @@ Settling :: enum u8 {
 // pays it.
 MINIMUM_SETTLING_GAP_NS :: i64(3_000_000_000)
 
+// How many times a Recording is looked at before the question is given up on.
+//
+// TWO, and the second is the whole of it. Every Batch's FIRST Recording is
+// planned microseconds before its extraction starts, so its first look is always
+// too soon to tell -- at one look, every Batch's first Recording fails as
+// `.Still_Unsettled`. A third buys nothing the second did not: both compare
+// against the PLANNED reading rather than the last one, so the gap the second
+// look waits out is already the whole of it.
+//
+// It is HERE and not a local constant in `settle`, for ADR-0018's reason: a
+// decision that turns up in run.odin belongs in one of the files beside it,
+// where a case can reach it.
+SETTLING_ATTEMPTS :: 2
+
+// The claim the number rests on, held by the COMPILER (A5) rather than left to
+// the prose above: a Recording looked at once and found too soon to tell can
+// never answer anything else, because there is no second reading to compare
+// against.
+#assert(SETTLING_ATTEMPTS >= 2)
+
+// What one look at a Recording settles, and whether another one is worth taking.
+//
+// THE OUTCOME MAPPING, and the reason it is a procedure rather than three arms
+// inside `settle`: it is a decision, nothing in run.odin can be reached by a
+// case, and all three of its answers were invisible there. Mutated in place, a
+// `settle` that reported SUCCESS for a Recording nothing was ever seen to stop
+// writing passed every case in this package -- which is spec story 52's exact
+// failure, shipped green.
+//
+// `attempts_left` is how many looks the caller has AFTER this one. It is the
+// only thing separating "too soon to tell, so look again" from "too soon to
+// tell, and there is no later look" -- and the second of those is a REFUSAL and
+// never a success. Nothing was seen to move, and nothing could be made of that;
+// the caller is told so rather than told the file is fine.
+settling_fault :: proc(outcome: Settling, attempts_left: int) -> (fault: Fault, again: bool) {
+	assert(attempts_left >= 0, "a look cannot be followed by a negative number of looks")
+
+	switch outcome {
+	case .Settled:
+		return .None, false
+	case .Still_Being_Written:
+		// PROOF, and the one outcome here that is proof of anything, so no later
+		// look could add to it.
+		return .Still_Being_Written, false
+	case .Too_Soon_To_Tell:
+		if attempts_left > 0 {
+			return .None, true
+		}
+		return .Still_Unsettled, false
+	}
+	unreachable()
+}
+
 // How long is left of the gap before a Recording is worth reading again, in
 // nanoseconds.
 //

@@ -262,6 +262,56 @@ a_clock_that_went_backwards_does_not_ask_for_a_longer_wait_than_the_gap :: proc(
 	)
 }
 
+// ------------------- what one look settles, and whether another is worth it --
+//
+// The OUTCOME MAPPING, which lived inline in `settle` where no case could reach
+// it. Mutated in place, all three of its decisions were invisible: a `settle`
+// that answered SUCCESS for a Recording nothing was ever seen to stop writing
+// passed every case in this package.
+
+@(test)
+a_recording_seen_to_have_settled_is_no_fault_and_no_second_look :: proc(t: ^testing.T) {
+	fault, again := settling_fault(.Settled, 1)
+	testing.expect_value(t, fault, Fault.None)
+	testing.expect(t, !again, "a Recording that had settled was waited for anyway")
+}
+
+@(test)
+a_recording_seen_to_move_is_refused_however_many_looks_are_left :: proc(t: ^testing.T) {
+	// A change is PROOF, and the one outcome here that is proof of anything, so
+	// there is nothing a later look could add to it.
+	for left in 0 ..= SETTLING_ATTEMPTS {
+		fault, again := settling_fault(.Still_Being_Written, left)
+		testing.expect_value(t, fault, Fault.Still_Being_Written)
+		testing.expectf(
+			t,
+			!again,
+			"a Recording caught moving was looked at again, with %d left",
+			left,
+		)
+	}
+}
+
+@(test)
+too_soon_to_tell_asks_for_another_look_while_there_is_one_to_ask_for :: proc(t: ^testing.T) {
+	// The one wait this package ever takes, and the whole reason there are two
+	// looks: every Batch's FIRST Recording is planned microseconds before its
+	// extraction starts, so the first look is always too soon to tell.
+	fault, again := settling_fault(.Too_Soon_To_Tell, 1)
+	testing.expect(t, again, "the second look was never asked for")
+	testing.expect_value(t, fault, Fault.None)
+}
+
+@(test)
+too_soon_to_tell_with_no_look_left_is_refused_and_never_called_settled :: proc(t: ^testing.T) {
+	// SPEC STORY 52's own failure if this answers `.None`: a Recording nothing was
+	// ever seen to stop writing, reported as success and transcribed into a
+	// Transcript that stops mid-sentence and is marked complete forever.
+	fault, again := settling_fault(.Too_Soon_To_Tell, 0)
+	testing.expect_value(t, fault, Fault.Still_Unsettled)
+	testing.expect(t, !again, "a look was asked for that the caller does not have")
+}
+
 @(test)
 the_minimum_gap_outlasts_the_coarsest_timestamp_a_recording_can_carry :: proc(t: ^testing.T) {
 	// FAT and exFAT store a modification time to a two-second granularity, and
