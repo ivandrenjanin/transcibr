@@ -29,6 +29,10 @@ Every rule here earned its place in a working codebase. Review enforces all of t
 vet flags enforce S1 and S2 on every build. Examples are retargeted to this repository; where an
 example and the linked original differ, the rule is the same and the linked document is canonical.
 
+## 0. Comment policy
+
+The operative contract is self-documenting code with comments driven toward minimal. Comments are banned inside procedure bodies. IF a comment is needed, it must be a comment that explains why the code is doing what it is doing, not a comment that repeats the code's logic.
+
 ## 1. Assertions
 
 Assertions detect programmer errors. Operating errors (a malformed SRT, a missing video, a
