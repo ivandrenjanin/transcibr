@@ -80,6 +80,32 @@ a_container_of_no_length_at_all_is_refused :: proc(t: ^testing.T) {
 }
 
 @(test)
+a_container_too_short_to_round_to_a_millisecond_is_refused :: proc(t: ^testing.T) {
+	// MEASURED: a WAV holding three samples at 8 kHz makes ffprobe print
+	// `duration=0.000375`. It is a positive number of seconds and a zero number
+	// of milliseconds, so a guard on the float lets it through and read_probe's
+	// own postcondition then fires on it -- which is an assertion reached by
+	// bytes ffprobe wrote (A8), and a Batch that dies on one degenerate
+	// container rather than failing that Recording and carrying on (ADR-0002).
+	//
+	// The rounding is what has to be guarded, not the seconds: these three all
+	// round to zero.
+	_, tiny := read_probe("codec_type=audio\nduration=0.000375\n")
+	testing.expect_value(t, tiny, Probe_Fault.Duration_Not_Positive)
+	_, tinier := read_probe("codec_type=audio\nduration=0.000021\n")
+	testing.expect_value(t, tinier, Probe_Fault.Duration_Not_Positive)
+	_, half := read_probe("codec_type=audio\nduration=0.000499\n")
+	testing.expect_value(t, half, Probe_Fault.Duration_Not_Positive)
+
+	// The other side of the boundary (A3), so this is a claim about where the
+	// refusal falls rather than about refusing more: half a millisecond rounds
+	// UP to one and is the shortest container that survives.
+	shortest, none := read_probe("codec_type=audio\nduration=0.000500\n")
+	testing.expect_value(t, none, Probe_Fault.None)
+	testing.expect_value(t, shortest.duration_ms, i64(1))
+}
+
+@(test)
 carriage_returns_in_a_probe_answer_do_not_hide_the_duration :: proc(t: ^testing.T) {
 	// The fixtures are LF because that is what ffprobe writes on this machine.
 	// Nothing promises it stays that way, and a value carrying a trailing \r

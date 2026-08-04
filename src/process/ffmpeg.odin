@@ -172,14 +172,31 @@ read_duration :: proc(value: string) -> (duration_ms: i64, fault: Probe_Fault) {
 	if math.is_nan(seconds) || math.is_inf(seconds) {
 		return 0, .Duration_Unreadable
 	}
-	if seconds <= 0 || seconds > f64(LONGEST_CONTAINER_MS) / 1000 {
+	// Bounded, not yet judged: what this stops is the multiplication below
+	// walking into a cast no standard defines. Whether the duration is usable
+	// is decided on the rounded value.
+	if seconds < 0 || seconds > f64(LONGEST_CONTAINER_MS) / 1000 {
 		return 0, .Duration_Not_Positive
 	}
 
 	// Rounded rather than truncated: ffprobe prints six decimals, and 0.2
 	// seconds arrives as a binary fraction a hair under 200 milliseconds.
 	rounded := i64(math.round(seconds * 1000))
-	assert(rounded >= 0, "a positive duration rounded to a negative number of milliseconds")
+	// THE ROUNDED VALUE IS WHAT IS REFUSED, and the seconds were only bounded.
+	// A container of a handful of timescale ticks -- three samples at 8 kHz
+	// prints as `duration=0.000375` -- is a positive number of seconds and a
+	// zero number of milliseconds, so a guard applied before the rounding hands
+	// a zero duration back with no fault on it. read_probe's postcondition then
+	// fires on bytes ffprobe wrote, which is an assertion reached from outside
+	// this program (A8) and a Batch that dies on one degenerate container
+	// instead of failing that Recording and carrying on (ADR-0002).
+	if rounded <= 0 {
+		return 0, .Duration_Not_Positive
+	}
+	// The write side of read_probe's own assertion (A4): every duration that
+	// leaves here without a fault is one that comparison downstream can divide
+	// by and measure against.
+	assert(rounded > 0, "a duration came back from the refusal above still not positive")
 	return rounded, .None
 }
 
