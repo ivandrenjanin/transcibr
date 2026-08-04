@@ -179,6 +179,18 @@ a_chunk_with_nothing_in_it_yields_nothing :: proc(t: ^testing.T) {
 @(private)
 STARTED :: i64(987_654_321_000_000)
 
+// What every case below decides with, SPELLED OUT rather than defaulted. The
+// expected percentages are worked out from the factor by hand, so a case that
+// took it from DEFAULT_REALTIME_FACTOR would quietly start checking something
+// else the day that constant moved -- and would agree with the code by
+// construction rather than with an answer somebody worked out.
+@(private)
+FOUR_TIMES :: Watch {
+	factor    = 4,
+	quiet_ms  = QUIET_AFTER_MS,
+	silent_ms = SILENT_AFTER_MS,
+}
+
 // Milliseconds as the nanoseconds the tracker counts in.
 @(private)
 after :: proc(milliseconds: i64) -> i64 {
@@ -254,7 +266,7 @@ an_unrecognised_progress_format_engages_the_time_based_estimate :: proc(t: ^test
 		tracker_said(&tr, read_engine_line("whisper: progress is now 50 per cent"), after(at))
 	}
 
-	now := shown(tr, after(75_000), 4)
+	now := shown(tr, after(75_000), FOUR_TIMES)
 	testing.expect_value(t, now.from, Progress_Source.Estimate)
 	testing.expect_value(t, now.percent, 50)
 	testing.expect(t, !now.silent, "a child that is still writing was reported as silent")
@@ -272,7 +284,7 @@ the_estimate_never_goes_below_what_the_engine_said :: proc(t: ^testing.T) {
 		tracker_heard(&tr, 64, after(at))
 	}
 
-	now := shown(tr, after(40_000), 4)
+	now := shown(tr, after(40_000), FOUR_TIMES)
 	testing.expect_value(t, now.percent, 52)
 }
 
@@ -287,7 +299,7 @@ the_estimate_never_claims_the_recording_is_finished :: proc(t: ^testing.T) {
 		tracker_heard(&tr, 64, after(at))
 	}
 
-	now := shown(tr, after(3_600_000), 4)
+	now := shown(tr, after(3_600_000), FOUR_TIMES)
 	testing.expect_value(t, now.from, Progress_Source.Estimate)
 	testing.expect(
 		t,
@@ -307,8 +319,8 @@ the_estimate_stops_moving_over_a_child_that_has_stopped_talking :: proc(t: ^test
 	tr := tracker_start(600_000, STARTED)
 	tracker_heard(&tr, 64, after(60_000))
 
-	first := shown(tr, after(60_000 + QUIET_AFTER_MS), 4)
-	second := shown(tr, after(60_000 + QUIET_AFTER_MS + 60_000), 4)
+	first := shown(tr, after(60_000 + QUIET_AFTER_MS), FOUR_TIMES)
+	second := shown(tr, after(60_000 + QUIET_AFTER_MS + 60_000), FOUR_TIMES)
 
 	testing.expect_value(t, first.from, Progress_Source.Frozen)
 	testing.expect_value(t, second.from, Progress_Source.Frozen)
@@ -325,10 +337,10 @@ prolonged_silence_on_every_stream_is_an_operating_error :: proc(t: ^testing.T) {
 	tr := tracker_start(600_000, STARTED)
 	tracker_heard(&tr, 64, after(60_000))
 
-	frozen := shown(tr, after(60_000 + QUIET_AFTER_MS), 4)
+	frozen := shown(tr, after(60_000 + QUIET_AFTER_MS), FOUR_TIMES)
 	testing.expect(t, !frozen.silent, "a child quiet for a minute was already a failed run")
 
-	gone := shown(tr, after(60_000 + SILENT_AFTER_MS), 4)
+	gone := shown(tr, after(60_000 + SILENT_AFTER_MS), FOUR_TIMES)
 	testing.expect(
 		t,
 		gone.silent,
@@ -348,7 +360,7 @@ a_child_that_keeps_talking_is_never_called_silent :: proc(t: ^testing.T) {
 		tracker_heard(&tr, 64, after(at))
 		testing.expectf(
 			t,
-			!shown(tr, after(at), 4).silent,
+			!shown(tr, after(at), FOUR_TIMES).silent,
 			"a child that spoke at %d ms was called silent",
 			at,
 		)
@@ -375,7 +387,7 @@ the_engines_own_banner_replaces_the_duration_the_tracker_started_with :: proc(t:
 	// Twenty minutes at four times realtime is 300 seconds expected, so 150
 	// seconds in is half way. Against the ten minutes it started with it would be
 	// past the ceiling.
-	now := shown(tr, after(150_000), 4)
+	now := shown(tr, after(150_000), FOUR_TIMES)
 	testing.expect_value(t, now.from, Progress_Source.Estimate)
 	testing.expect_value(t, now.percent, 50)
 }
@@ -390,7 +402,7 @@ an_estimate_with_no_duration_to_key_on_does_not_move :: proc(t: ^testing.T) {
 		tracker_heard(&tr, 64, after(at))
 	}
 
-	now := shown(tr, after(120_000), 4)
+	now := shown(tr, after(120_000), FOUR_TIMES)
 	testing.expect_value(t, now.percent, 0)
 	testing.expect(t, !now.silent, "a child with no known duration was reported as silent")
 }

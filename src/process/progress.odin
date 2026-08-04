@@ -211,6 +211,26 @@ DEFAULT_REALTIME_FACTOR :: f64(4)
 
 #assert(DEFAULT_REALTIME_FACTOR > 0)
 
+// The three numbers `shown` decides with, as one value.
+//
+// A RECORD RATHER THAN THREE DEFAULTED PARAMETERS, because two of them are a
+// pair -- a quiet bound that reached its silent bound would make the frozen bar
+// unobservable -- and a caller that could move one without the other would be
+// able to spell that. Handed in, the shape ADR-0018 records for `Tolerance` in
+// `transcibr:audio`: the shipped program takes DEFAULT_WATCH, and a case or a
+// shell that needs a bound it can actually reach hands in its own.
+Watch :: struct {
+	factor:    f64,
+	quiet_ms:  i64,
+	silent_ms: i64,
+}
+
+DEFAULT_WATCH :: Watch {
+	factor    = DEFAULT_REALTIME_FACTOR,
+	quiet_ms  = QUIET_AFTER_MS,
+	silent_ms = SILENT_AFTER_MS,
+}
+
 // Everything one Recording's progress display keys on.
 //
 // NO CLOCK IS READ IN THIS FILE. Every reading is handed in, which is the shape
@@ -336,23 +356,29 @@ tracker_said :: proc(tr: ^Tracker, said: Engine_Line, now_ns: i64) {
 // a number that keeps climbing over a child that has stopped producing bytes is
 // worse than a frozen one -- ADR-0012's own words, and the reason that decision
 // exists at all.
-shown :: proc(tr: Tracker, now_ns: i64, factor := DEFAULT_REALTIME_FACTOR) -> Progress {
+shown :: proc(tr: Tracker, now_ns: i64, watch := DEFAULT_WATCH) -> Progress {
 	assert(now_ns >= tr.started_ns, "the monotonic counter went backwards over one Recording")
-	assert(factor > 0, "an Engine that runs at no speed at all finishes nothing")
+	assert(watch.factor > 0, "an Engine that runs at no speed at all finishes nothing")
 	assert(tr.said >= 0, "a tracker holding a negative percentage")
+	// The pair, checked wherever a caller hands one in -- the compile-time form
+	// below only covers the constants this package chose (A4).
+	assert(
+		watch.quiet_ms < watch.silent_ms,
+		"a bar that freezes no sooner than the run fails never freezes at all",
+	)
 
 	quiet_ns := now_ns - tr.last_byte_ns
-	if quiet_ns >= QUIET_AFTER_MS * 1_000_000 {
+	if quiet_ns >= watch.quiet_ms * 1_000_000 {
 		return Progress {
 			percent = tr.said,
 			from = .Frozen,
-			silent = quiet_ns >= SILENT_AFTER_MS * 1_000_000,
+			silent = quiet_ns >= watch.silent_ms * 1_000_000,
 		}
 	}
 	if now_ns - tr.last_progress_ns < FALLBACK_AFTER_MS * 1_000_000 {
 		return Progress{percent = tr.said, from = .Engine}
 	}
-	return Progress{percent = estimated(tr, now_ns, factor), from = .Estimate}
+	return Progress{percent = estimated(tr, now_ns, watch.factor), from = .Estimate}
 }
 
 // The time-based estimate, floored at what the Engine last said.
