@@ -47,7 +47,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 50
+$ExpectedCaseCount = 51
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -453,11 +453,6 @@ function Get-OdinProcedureLength {
 		})
 }
 
-# The <package>.<test> names a document hands a reader to run, in every spelling
-# PowerShell itself binds: a space or a colon before the value, the value quoted
-# either way, and any casing -- [regex]::Matches is case-SENSITIVE, so `-testname`
-# read as no command at all. The dot is what keeps prose about the flag
-# ("-TestName takes <package>.<test>") from reading as a name.
 # The .odin files a case reads, refused when discovery finds none.
 #
 # Five cases below open by asking for them, and every one of them is worthless
@@ -475,6 +470,11 @@ function Get-CaseSource {
 	return $sources
 }
 
+# The <package>.<test> names a document hands a reader to run, in every spelling
+# PowerShell itself binds: a space or a colon before the value, the value quoted
+# either way, and any casing -- [regex]::Matches is case-SENSITIVE, so `-testname`
+# read as no command at all. The dot is what keeps prose about the flag
+# ("-TestName takes <package>.<test>") from reading as a name.
 function Get-DocumentedTestName {
 	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
 
@@ -1566,6 +1566,47 @@ Test-Case 'a procedure that returns without the attribute fails the build' {
 	# runs. Line 5 is where Add-FixtureBinary's `package main` preamble and the
 	# import above put the declaration.
 	Assert-Result -Result $result -Fails -Matching 'main\.odin:5 banner'
+}
+
+Test-Case 'a procedure TYPE above a table builds, because nothing can annotate one' {
+	# The other direction of the case above, at the level that matters: a false
+	# positive here is not a wrong message, it is a repository that cannot be
+	# built. The attribute rule F2 would demand is one the compiler refuses on a
+	# procedure type -- `Unknown attribute element name 'require_results'` -- so
+	# there is no edit to the source that makes such a build pass.
+	#
+	# The fixture is issue #36's shared fault report in miniature, and the shape
+	# src\process\command_line.odin and src\transcript\engine_json.odin already
+	# carry: a fault-facts signature above a `:=` table. What kept those two from
+	# tripping it was the `@(private, rodata)` above their tables, which the old
+	# scan stopped at by luck rather than by rule -- so the table here carries no
+	# attribute, which is the shape that actually failed.
+	$repo = New-FixtureRepo 'build-procedure-type'
+	$shape = @(
+		'import "core:fmt"'
+		''
+		'@(private)'
+		'Probe_Fault :: enum u8 {'
+		"`tNone = 0,"
+		"`tBroken,"
+		'}'
+		''
+		'@(private)'
+		'Probe_Says :: proc(fault: Probe_Fault) -> string'
+		''
+		'PROBE := [Probe_Fault]string {'
+		"`t.None   = `"`","
+		"`t.Broken = `"broken`","
+		'}'
+		''
+		'main :: proc() {'
+		"`t_ = PROBE[.Broken]"
+		"`tfmt.println(`"$SmokeBanner`")"
+		'}'
+	) -join "`n"
+	Add-FixtureBinary -RepoRoot $repo -Body "$shape`n" | Out-Null
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Matching 'every \.odin procedure that returns carries'
 }
 
 Test-Case 'the result rule the build enforces is written down' {
