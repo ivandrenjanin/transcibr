@@ -61,9 +61,10 @@ _Avoid_: spawner, subprocess, runner, process
 
 **Reading**:
 One progress percentage the engine has actually reported. Arbitrary values rather than a grid, and
-at most twenty per recording — eleven in the one real capture (ADR-0012). The gap between two of
-them is therefore the longest silence a healthy run produces, which is what every silence bound in
-transcibr is sized against.
+how many a recording produces depends on its length: at most twenty, and eleven in the one real
+capture of a four-minute recording (ADR-0012). The gap between two of them is the longest silence a
+healthy run produces, which is what every silence bound in transcibr is sized against — from the
+capture's largest jump between two readings rather than from a count of them.
 _Avoid_: progress line, tick, sample, update, step
 
 **Startup banner**:

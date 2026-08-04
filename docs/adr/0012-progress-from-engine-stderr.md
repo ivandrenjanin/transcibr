@@ -60,18 +60,37 @@ healthy run. A per-job watchdog treats no bytes on either stream for N minutes a
 
 **N is the recording's own length, floored at what a cold model load costs, and never a fixed number
 of minutes.** This follows from the amendment above and from ADR-0004 together, and issue #9 shipped
-the fixed version first and had to correct it. At most twenty progress lines per recording and eleven
-in the one real capture; every cue on stdout, which goes to the null device — so between two progress
-lines transcibr sees *nothing*, and a run of wall time W carries a legitimate silence of W/11. A
-fixed five minutes therefore fails any healthy run over about ninety minutes of wall time, which is
-the corpus's longest recording on anything slower than 1.7× realtime, and it contradicts the run
-bound in the same file: that one is four times realtime plus a floor, explicitly sized against a
-CPU-only fallback at a quarter of realtime.
+the fixed version first and had to correct it. Every cue goes to stdout, which goes to the null
+device — so between two progress lines transcibr sees *nothing*, and the longest legitimate silence
+in a run is whatever the largest jump between two consecutive readings is worth. In the capture that
+jump is **12 points**, 52 → 64, so a run of wall time W carries a legitimate silence of **0.12·W**.
 
-The recording's own length clears eleven readings at realtime or faster outright, and clears the
-quarter-of-realtime fallback with a margin of 2.7. A quarter of the length does not: it assumes the
-twenty readings this decision permits rather than the eleven that were measured. Size the watchdog
-against the capture, not against the ceiling.
+A fixed five minutes therefore fails any healthy run past about **42 minutes** of wall time, which is
+the corpus's longest recording, 168 minutes, on anything slower than four times realtime. It also
+contradicts the run bound in the same file: that one is four times realtime plus a floor, explicitly
+sized against a CPU-only fallback at a quarter of realtime — and at that speed the same recording's
+largest gap is 80.6 minutes against a five-minute bound.
+
+The recording's own length clears it everywhere on that grid. At realtime or faster the whole run
+fits inside one bound, so no gap inside it can reach one: a margin of 8.3. At the quarter of realtime
+the run bound is sized for, the largest gap is 0.48 of the recording's length against a bound of 1.0,
+a margin of **2.08**. A *quarter* of the length does not clear it — 0.48 is past 0.25, so at 168
+minutes the gap is 80.6 against a 42-minute bound and the healthy run is discarded again. Size the
+watchdog against the capture, not against the ceiling.
+
+**Eleven is not the reading count, and it is not a denominator.** The count is a function of the
+recording's length: the callback can fire at most once per decoder window, and a window is at most
+thirty seconds of audio. A four-minute capture therefore has about ten windows to report from and
+each one it reports is worth about a tenth of the whole — the fixture's own timings line says as
+much, `encode time = 461.54 ms / 11 runs`, eleven windows against eleven readings. A 168-minute
+recording has three hundred and more, each worth about 0.3%, so the 5% threshold is crossed close to
+where it sits and the readings come out near 5, 10, … 100: about twenty of them, finely spaced.
+
+Reasoning from the four-minute capture is nonetheless the **safe** choice, and that is why the bound
+above is derived from a jump rather than from a count. Fewer readings means larger gaps, and a bound
+has to be sized against the sparsest plausible pattern. So the case that walks the capture's eleven
+percentages across a 168-minute recording is **conservative, not approximate** — pessimistic in the
+direction a bound needs to be wrong in.
 
 **Audio duration comes from the engine's own startup banner**, which reports sample count and
 seconds for the file it is about to process, or from the container probe (ADR-0009) — not from the

@@ -213,34 +213,44 @@ SILENT_AFTER_MS :: i64(5 * 60 * 1000)
 //
 // SCALED WITH THE RECORDING, and it has to be, because the two documents this
 // program is built on decide the longest legitimate silence between them and
-// neither of them mentions a clock. ADR-0012 as this PR amends it: at most
-// TWENTY progress lines per Recording, and the one real capture holds ELEVEN.
-// ADR-0004: every Cue goes to the null device, so between two progress lines
-// there is nothing on any stream this program can see. A run of wall time W
-// therefore has a legitimate silence of W/11 in it, measured -- and W is the
-// Recording's length divided by whatever the machine manages.
+// neither of them mentions a clock. ADR-0004: every Cue goes to the null device,
+// so between two progress lines there is nothing on any stream this program can
+// see. ADR-0012, from the one real capture: the largest jump between two
+// consecutive readings is TWELVE POINTS, 52 -> 64. So a run of wall time W has a
+// legitimate silence of 0.12*W in it, measured -- and W is the Recording's own
+// length divided by whatever the machine manages.
+//
+// A JUMP AND NOT A READING COUNT, because the count is a function of the
+// Recording's length rather than a constant: the callback fires at most once per
+// thirty-second decoder window, so the four-minute capture reports eleven times
+// in jumps of six to twelve points, and a 168-minute Recording reports about
+// twenty, finely spaced. The capture's is the COARSE pattern, which is the
+// pessimistic direction for a bound, so it is the one this is sized against.
 //
 // A FIXED FIVE MINUTES FAILED EVERY LONG RUN. The corpus's longest Recording is
-// 168 minutes; at realtime that is eleven readings across 168 minutes, a gap of
-// fifteen, and the run was discarded three times over while the Engine was
-// working perfectly. It could not be right: transcribe_bound_ms gives that same
-// Recording 730 minutes and ENGINE_BOUND_MULTIPLE's own comment says the four is
-// sized "against a CPU-only fallback", so the two bounds in this file contradict
-// each other for every Recording over about ninety minutes.
+// 168 minutes; at realtime the capture's largest jump is worth twenty minutes of
+// it, and the run was discarded four times over while the Engine was working
+// perfectly. It could not be right: transcribe_bound_ms gives that same Recording
+// 730 minutes and ENGINE_BOUND_MULTIPLE's own comment says the four is sized
+// "against a CPU-only fallback", so the two bounds in this file contradict each
+// other for every Recording over about ten minutes -- at the quarter of realtime
+// the run bound is sized for, ten minutes of audio already carries a legitimate
+// silence of five.
 //
-// THE RECORDING'S OWN LENGTH, floored. Against the eleven readings that were
-// measured, that clears any machine at realtime or faster outright -- W is then
-// at most the Recording's length and the whole run fits inside one bound, so no
-// gap in it can reach one -- and it clears the quarter-of-realtime CPU fallback
-// the run bound is sized for with a margin of 2.7 (W/11 is 0.36 of the
-// Recording's length there, against a bound of 1.0).
+// THE RECORDING'S OWN LENGTH, floored. That clears any machine at realtime or
+// faster outright -- W is then at most the Recording's length and the whole run
+// fits inside one bound, so no gap in it can reach one, a margin of 8.3 -- and it
+// clears the quarter-of-realtime CPU fallback the run bound is sized for with a
+// margin of 2.08 (0.12*W is 0.48 of the Recording's length there, against a bound
+// of 1.0).
 //
 // A QUARTER of the length -- one reading per five per cent, which is the most
 // ADR-0012 permits rather than what anybody measured -- was the first answer and
-// is wrong for the same reason the fixed one was: at the eleven readings this
-// repository has actually captured, 0.36 is past 0.25 and the CPU fallback fails
-// again. Sizing this against the best case the amendment allows is how the first
-// bound got here.
+// is wrong for the same reason the fixed one was: against the jump this
+// repository has actually captured, 0.48 is past 0.25, so a 168-minute Recording
+// on that machine has an 80.6-minute silence in it against a 42-minute bound.
+// Sizing this against the best case the amendment allows is how the first bound
+// got here.
 //
 // What it costs is honest: a wedged Engine on a 168-minute Recording is now
 // noticed after 168 minutes rather than five. That is still four times sooner

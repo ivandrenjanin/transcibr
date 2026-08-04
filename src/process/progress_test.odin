@@ -404,6 +404,14 @@ LONGEST_RECORDING_MS :: i64(168 * 60 * 1000)
 // them, because ADR-0004 sends the Cues the Engine writes during inference to the
 // null device. So the gap between readings is the longest silence a perfectly
 // healthy run produces.
+//
+// AND WALKING A FOUR-MINUTE CAPTURE'S ELEVEN READINGS ACROSS A 168-MINUTE
+// RECORDING IS CONSERVATIVE RATHER THAN APPROXIMATE. How many readings a
+// Recording produces depends on its length -- the callback fires at most once per
+// thirty-second decoder window -- so a Recording this long reports about twenty
+// of them, finely spaced, and its real gaps are SMALLER than the ones this walks.
+// A bound has to be sized against the sparsest plausible pattern, which is the
+// short capture's; see silent_after_ms.
 @(private)
 never_silent_across :: proc(t: ^testing.T, duration_ms: i64, wall_ms: i64) {
 	readings := FIXTURE_READINGS
@@ -431,9 +439,10 @@ the_longest_recording_is_not_failed_between_its_own_readings :: proc(t: ^testing
 	// realtime for this repository's fixture and 17 for ADR-0012's machine -- and
 	// well inside the bound transcribe_bound_ms gives the same Recording.
 	//
-	// Eleven readings across 168 minutes is a gap of over fifteen minutes between
-	// them, and a bound that failed a run after five discarded the whole of the
-	// Engine's work three times over while it was doing exactly what it should.
+	// The capture's largest jump is twelve points, so across 168 minutes it is
+	// worth over twenty minutes of silence, and a bound that failed a run after
+	// five discarded the whole of the Engine's work four times over while it was
+	// doing exactly what it should.
 	never_silent_across(t, LONGEST_RECORDING_MS, LONGEST_RECORDING_MS)
 }
 
