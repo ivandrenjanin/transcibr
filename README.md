@@ -81,8 +81,9 @@ deleted rather than used.
 identically.
 
 This is structural, not a promise: all network code lives in one file, `src/net/winhttp.odin`,
-called from exactly two places. `grep -r winhttp src/` is the whole audit, and CI fails the build if
-the name appears anywhere else.
+called from exactly two places. `grep -r winhttp src/` is the whole audit, and it is not merely run
+by hand: `Assert-OdinNetworkConfinement` in `scripts\common.ps1` fails `build.ps1` -- and so CI, which
+runs nothing else -- the moment the name appears anywhere under `src\` outside that one file.
 
 ## Requirements and installation
 

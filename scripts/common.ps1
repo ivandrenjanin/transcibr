@@ -1608,6 +1608,64 @@ function Assert-OdinVetTagPolicy {
 	throw "$($missing.Count) file(s) do not declare a +vet name their scope requires (CLAUDE.md rule M2):`n$($missing -join "`n")`nPut it on a ``#+vet`` line above the package clause. The tag is read per FILE: an untagged one compiles with its implicit allocators never looked at, whatever its siblings carry."
 }
 
+# README.md's Network access section, made true rather than merely corrected
+# (issue #58): "all network code lives in one file, src/net/winhttp.odin ...
+# and CI fails the build if the name appears anywhere else." `grep -r winhttp
+# src/` is the audit that sentence names, and this is that audit -- literal
+# and case-sensitive, the way grep runs with no flag of its own, read straight
+# off the same file list the four policies above already discovered.
+#
+# Not answered by tools\policy. ADR-0028's whole argument is that a
+# STRUCTURAL question -- where a procedure begins, whether `//` sits inside a
+# raw string -- needs the compiler's own parser to answer safely. This is not
+# one of those: it is a literal substring, and reading it with the parser
+# would be the second model of Odin ADR-0028 exists to avoid, applied to a
+# question that never needed one.
+#
+# `src/net/winhttp.odin` does not exist yet -- issue #14 is what adds it --
+# so today this refuses the name EVERYWHERE under src\, which is the correct
+# verdict for a tree carrying no network code at all. The day the file lands,
+# the one path below starts being read and every other one goes on being
+# refused.
+$NetworkCodeName = 'winhttp'
+$NetworkCodeFile = Join-Path $SrcRoot (Join-Path 'net' 'winhttp.odin')
+
+function Assert-OdinNetworkConfinement {
+	param(
+		# Repository-wide, like the four policies above, and filtered to src\
+		# here: the claim is about src\ and not about tools\ or
+		# docs\reference\, which is what `grep -r winhttp src/` itself would
+		# have been scoped to.
+		[object[]] $Sources = @(Get-OdinCheckedSource)
+	)
+
+	$stray = [System.Collections.Generic.List[string]]::new()
+	foreach ($source in $Sources) {
+		if (-not $source.Path.StartsWith($SrcRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+			continue
+		}
+		if ($source.Path.Equals($NetworkCodeFile, [System.StringComparison]::OrdinalIgnoreCase)) {
+			continue
+		}
+		# .Contains rather than -match: the claim is about the literal name a
+		# plain grep finds with no -i, and a regex engine reading "winhttp" as
+		# a pattern rather than a literal is one more thing that could
+		# disagree with what grep would say -- there is nothing in the name
+		# for a pattern to mean differently, but nothing here should rely on
+		# that staying true.
+		$text = [System.IO.File]::ReadAllText($source.Path)
+		if ($text.Contains($NetworkCodeName)) {
+			$stray.Add($source.Name)
+		}
+	}
+	if ($stray.Count -eq 0) {
+		return
+	}
+
+	$named = ($stray | ForEach-Object { "  - $_" }) -join "`n"
+	throw "'$NetworkCodeName' appears outside src/net/winhttp.odin in $($stray.Count) file(s):`n$named`nAll network code must live in that one file (README.md, Network access)."
+}
+
 # The sweep as a single verdict, for callers that only want it to pass -- which
 # is build.ps1, so that a misformatted file fails the BUILD and not merely a
 # check somebody remembers to run. Rule S1 is a rule; the vet flags beside it

@@ -74,7 +74,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 62
+$ExpectedCaseCount = 65
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -514,10 +514,15 @@ function Get-CaseSource {
 function Assert-PolicyClaim {
 	param(
 		[Parameter(Mandatory)] [string] $Enforcer,
-		[Parameter(Mandatory)] [string[]] $Claims
+		[Parameter(Mandatory)] [string[]] $Claims,
+		# CLAUDE.md by default -- every case here until issue #58's network claim,
+		# which is stated in README.md instead. One parameter rather than a second
+		# procedure: the two differ only in which file is read, and a second copy
+		# is a second place for the "does not carry" message to drift from this one.
+		[string] $Document = 'CLAUDE.md'
 	)
 
-	$policy = Join-Path $RepoRoot 'CLAUDE.md'
+	$policy = Join-Path $RepoRoot $Document
 	if (-not (Test-Path -LiteralPath $policy)) {
 		throw "no $policy, so the rule $Enforcer enforces is stated nowhere."
 	}
@@ -525,7 +530,7 @@ function Assert-PolicyClaim {
 	$text = [System.IO.File]::ReadAllText($policy)
 	foreach ($claim in $Claims) {
 		if (-not $text.Contains($claim)) {
-			throw "CLAUDE.md does not carry '$claim', but scripts\common.ps1 fails the build over it."
+			throw "$Document does not carry '$claim', but scripts\common.ps1 fails the build over it."
 		}
 	}
 }
@@ -1911,6 +1916,57 @@ Test-Case 'the vet tag rule the build enforces is written down' {
 			'per file'
 			'Get-OdinRequiredVetTag'
 		) + @($OdinFileVetTags | ForEach-Object { $_.Name }))
+}
+
+# ------------------------------------------------- cases for the network gate --
+#
+# README.md's Network access section (issue #58): "all network code lives in
+# one file, src/net/winhttp.odin ... and CI fails the build if the name
+# appears anywhere else." Nothing checked that until now -- src/net does not
+# exist yet, so today's tree passes vacuously, and these two cases are what
+# stand between that and the claim quietly going false the day issue #14
+# lands a second file that mentions the name.
+
+Test-Case 'the word winhttp outside its one allowed file fails the build' {
+	$repo = New-FixtureRepo 'build-stray-winhttp'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line "$($SmokeTarget.Name) 0.1.0") | Out-Null
+
+	# Anywhere but src/net/winhttp.odin is the claim's whole subject, so this
+	# plants the name in an unrelated package rather than in a plausible-looking
+	# rival of the real one.
+	$dir = Join-Path (Join-Path $repo 'src') 'other'
+	New-Item -ItemType Directory -Path $dir -Force | Out-Null
+	Write-FixtureSource -Path (Join-Path $dir 'other.odin') -Text "$FixtureVetTags`npackage other`n`nSTRAY :: `"winhttp`"`n"
+
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Fails -Matching "'winhttp' appears outside src/net/winhttp\.odin"
+	# The FILE and not merely the count, for the reason every other checker here
+	# names one: a claim somebody has to go and search the tree for is a claim
+	# nobody checks by hand either.
+	Assert-Result -Result $result -Fails -Matching 'src/other/other\.odin'
+}
+
+Test-Case 'the word winhttp inside its one allowed file does not fail the build' {
+	# The negative space (rule A3): a check that refused every file containing
+	# the name would pass the case above for the wrong reason. This is the one
+	# place the name is allowed, and a build naming it there still has to finish.
+	$repo = New-FixtureRepo 'build-allowed-winhttp'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line "$($SmokeTarget.Name) 0.1.0") | Out-Null
+
+	$dir = Join-Path (Join-Path $repo 'src') 'net'
+	New-Item -ItemType Directory -Path $dir -Force | Out-Null
+	Write-FixtureSource -Path (Join-Path $dir 'winhttp.odin') -Text "$FixtureVetTags`npackage net`n`nWINHTTP :: `"winhttp`"`n"
+
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Matching 'is confined to src/net/winhttp\.odin'
+	Assert-Result -Result $result -Matching 'Built 1 target'
+}
+
+Test-Case 'the network confinement claim README makes is written down' {
+	Assert-PolicyClaim -Document 'README.md' -Enforcer 'Assert-OdinNetworkConfinement' -Claims @(
+		'`grep -r winhttp src/` is the whole audit'
+		'Assert-OdinNetworkConfinement'
+	)
 }
 
 Test-Case 'git checks out every .odin file with the endings the check demands' -MaySkip {

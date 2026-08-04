@@ -120,6 +120,13 @@ Write-Host '-> every .odin procedure that returns carries @(require_results)' -F
 Assert-OdinVetTagPolicy -Facts $facts
 Write-Host "-> every .odin file declares the #+vet names it is scoped for ($(($OdinFileVetTags | ForEach-Object { $_.Name }) -join ' '))" -ForegroundColor Green
 
+# README.md's Network access claim (issue #58), the fifth verdict over the same
+# file list and the only one that is not one of CLAUDE.md's four source
+# policies: it answers a literal substring rather than a structural question,
+# so it reads the sources directly rather than through tools\policy's facts.
+Assert-OdinNetworkConfinement -Sources $sources
+Write-Host "-> '$NetworkCodeName' is confined to src/net/winhttp.odin, if it appears in src\ at all" -ForegroundColor Green
+
 New-Item -ItemType Directory -Path $BuildRoot -Force | Out-Null
 
 # Counted as each target is finished, not taken from $OdinTargets afterwards:
