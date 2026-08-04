@@ -47,7 +47,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 41
+$ExpectedCaseCount = 44
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -439,33 +439,18 @@ function Assert-Result {
 # measures: from the line carrying `::` through the closing brace, comments and
 # blanks included.
 #
-# Column zero is what makes this readable rather than a parser. Every file the
-# check covers has been through odinfmt, so a top-level declaration starts at
-# column 0 and its closing brace is a bare `}` there -- which is exactly what
-# separates a procedure from the `proc(...) ---` entries inside a foreign block,
-# indented one level in. A header with no body (a procedure TYPE) is recognised
-# by the next column-0 declaration arriving before any closing brace does.
+# The boundaries come from Get-OdinProcedureRange in common.ps1 rather than from
+# a second scan here. They were two, and the copy in this file was the older and
+# blinder of them -- it read a column-0 `}` inside a raw string as the end of a
+# procedure. Rule F1's limit and section 0's comment ban are two questions about
+# one set of boundaries, so there is one reader that answers where a procedure
+# starts and stops, and this is the arithmetic F1 does on the answer.
 function Get-OdinProcedureLength {
 	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
 
-	$lines = $Text -split "`r?`n"
-	$found = @()
-	for ($i = 0; $i -lt $lines.Count; $i++) {
-		if ($lines[$i] -notmatch '^([A-Za-z_][A-Za-z0-9_]*)\s*::\s*proc\b') {
-			continue
-		}
-		$name = $Matches[1]
-		for ($j = $i + 1; $j -lt $lines.Count; $j++) {
-			if ($lines[$j] -eq '}') {
-				$found += [pscustomobject]@{ Name = $name; Lines = ($j - $i + 1) }
-				break
-			}
-			if (($lines[$j] -match '^[A-Za-z_][A-Za-z0-9_]*\s*::') -or ($lines[$j] -match '^@\(')) {
-				break
-			}
-		}
-	}
-	return $found
+	return @(Get-OdinProcedureRange -Text $Text | ForEach-Object {
+			[pscustomobject]@{ Name = $_.Name; Lines = ($_.End - $_.Start + 1) }
+		})
 }
 
 # The <package>.<test> names a document hands a reader to run, in every spelling
@@ -1100,6 +1085,110 @@ Test-Case 'no procedure the format check covers is over the line limit' {
 	$names = @(Get-OdinProcedureLength -Text $bodyless | ForEach-Object { $_.Name })
 	if (($names.Count -ne 1) -or ($names[0] -ne 'Caller')) {
 		throw "reading a bodyless procedure type gave: $($names -join ', ')"
+	}
+}
+
+# CLAUDE.md section 0, which until now nothing enforced. Rule F1 beside it is a
+# hard limit a machine checks on every run; the comment ban was a sweep somebody
+# performed once, and a rule enforced once is a snapshot -- the next body comment
+# lands next week and nothing says so.
+#
+# One backtick, as a single-quoted string so nothing escapes it. The raw-string
+# case below is the whole reason this reader is not a regex, and writing its
+# fixture with `` in a double-quoted string is how that case comes to test the
+# wrong text.
+$Backtick = '`'
+
+Test-Case 'no procedure the format check covers carries a comment in its body' {
+	# Over every file the FORMAT check covers, which is the scope rule F1 already
+	# learned the hard way: the audit behind the ban was scoped to src\, and
+	# docs\reference\ kept two body comments nobody was looking at. Get-OdinSource
+	# is what both checks ask, so the two scopes are the same scope by construction.
+	$sources = @(Get-OdinSource)
+	if ($sources.Count -eq 0) {
+		throw "no .odin files under $RepoRoot, so this case would pass having read nothing."
+	}
+
+	$found = @()
+	foreach ($source in $sources) {
+		foreach ($comment in @(Get-OdinBodyComment -Text ([System.IO.File]::ReadAllText($source.Path)))) {
+			$found += "  - $($source.Name):$($comment.Line) in $($comment.Name): $($comment.Text)"
+		}
+	}
+	if ($found.Count -gt 0) {
+		throw "$($found.Count) comment(s) inside a procedure body (CLAUDE.md section 0):`n$($found -join "`n")"
+	}
+
+	# The negative space (rule A3). Every line above is satisfied by a reader that
+	# finds nothing anywhere, so what it does find is checked against bodies built
+	# to a known answer.
+	$planted = "held :: proc() {`n`t// this one is banned`n`treturn`n}`n"
+	$caught = @(Get-OdinBodyComment -Text $planted)
+	if (($caught.Count -ne 1) -or ($caught[0].Name -ne 'held') -or ($caught[0].Line -ne 2)) {
+		throw "a planted body comment read as: $($caught.Count) finding(s) $(($caught | ForEach-Object { "$($_.Name):$($_.Line)" }) -join ', ')"
+	}
+
+	# A `//` INSIDE a raw string is not a comment, and this is the case that
+	# separates this reader from a grep: a backtick string spans lines, so the
+	# middle line here begins at column 0 with two slashes and is transcribed text.
+	# A checker fooled by it refuses a Recording for what somebody said.
+	$rawString = @(
+		'held :: proc() {'
+		"`ttext := $Backtick"
+		'// inside a raw string, so not a comment at all'
+		"$Backtick"
+		"`t_ = text"
+		'}'
+	) -join "`n"
+	$fooled = @(Get-OdinBodyComment -Text $rawString)
+	if ($fooled.Count -ne 0) {
+		throw "a `$Backtick-quoted string holding two slashes was read as $($fooled.Count) body comment(s)."
+	}
+
+	# And the comment a procedure is ALLOWED: the one above it, explaining why.
+	# Reading that as a body comment would fail every well-documented file in the
+	# repository and make the check the first thing anybody turned off.
+	$documented = "// why this procedure exists`nheld :: proc() {`n`treturn`n}`n"
+	$overreach = @(Get-OdinBodyComment -Text $documented)
+	if ($overreach.Count -ne 0) {
+		throw "a comment ABOVE a procedure was read as $($overreach.Count) body comment(s)."
+	}
+}
+
+Test-Case 'a comment inside a procedure body fails the build' {
+	# Rule S1's formatting check fails the BUILD rather than a step somebody
+	# remembers to run, and section 0 is enforced the same way for the same reason.
+	# The fixture is otherwise the binary every other build case uses: it still
+	# prints the banner and still exits zero, so what fails here is the comment and
+	# nothing the compiler would have caught anyway.
+	$repo = New-FixtureRepo 'build-body-comment'
+	$commented = "import `"core:fmt`"`n`nmain :: proc() {`n`t// banned by CLAUDE.md section 0`n`tfmt.println(`"$SmokeBanner`")`n}`n"
+	Add-FixtureBinary -RepoRoot $repo -Body $commented | Out-Null
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Fails -Matching 'inside a procedure body'
+	# The LINE and not merely the file. A checker that names the file it found
+	# something in is a checker somebody has to go and search; the whole cost of
+	# reading procedure ranges rather than grepping is paid to say where. Line 6 is
+	# where Add-FixtureBinary's `package main` preamble puts the comment above.
+	Assert-Result -Result $result -Fails -Matching 'main\.odin:6'
+}
+
+Test-Case 'the comment ban the build enforces is written down' {
+	# The rule and its enforcement, pinned to each other. This is the defect that
+	# produced the check above: the ban was applied to 53 files by a branch that
+	# also deleted the section stating it, so the tree arrived shaped by a rule
+	# written down nowhere and the next contributor could not learn it existed.
+	# A check with no policy behind it is a check somebody deletes as unexplained.
+	$policy = Join-Path $RepoRoot 'CLAUDE.md'
+	if (-not (Test-Path -LiteralPath $policy)) {
+		throw "no $policy, so the rule Assert-OdinCommentPolicy enforces is stated nowhere."
+	}
+
+	$text = [System.IO.File]::ReadAllText($policy)
+	foreach ($claim in @('## 0. Comment policy', 'Comments are banned inside procedure bodies.')) {
+		if (-not $text.Contains($claim)) {
+			throw "CLAUDE.md does not carry '$claim', but scripts\common.ps1 fails the build over it."
+		}
 	}
 }
 

@@ -1037,6 +1037,185 @@ function Write-FileAtomically {
 	}
 }
 
+# One fact per line of an Odin file: whether the line BEGINS in ordinary code,
+# and whether its first token opens a comment.
+#
+# This is a lexer and not a regex, and the reason is one line in
+# src\transcript\render.odin:
+#
+#   INLINE_SPECIALS :: `\` + "`" + `*_[]<|`
+#
+# Three string literals, one of which is a double-quoted backtick. Count
+# backticks with a pattern and that file reads as having an unterminated raw
+# string, after which every following line is misclassified. Odin's raw strings
+# also SPAN LINES and take no escapes, so a line beginning `//` inside one is
+# transcribed speech rather than a comment -- and this repository transcribes
+# whatever somebody said. A checker that cannot tell those apart refuses a
+# Recording for its contents.
+#
+# Block comments nest in Odin, so the depth is counted rather than flagged.
+# Double-quoted strings and rune literals cannot span a line, so their state is
+# not carried across one; raw strings and block comments are, which is the whole
+# reason a line's opening state is worth reporting at all.
+function Get-OdinLineFact {
+	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
+
+	$facts = [System.Collections.Generic.List[object]]::new()
+	$raw = $false
+	$depth = 0
+
+	foreach ($line in ($Text -split "`r?`n")) {
+		$live = (-not $raw) -and ($depth -eq 0)
+		$trimmed = $line.TrimStart()
+		$facts.Add([pscustomobject]@{
+				Text    = $line
+				Live    = $live
+				Comment = $live -and ($trimmed.StartsWith('//') -or $trimmed.StartsWith('/*'))
+			})
+
+		$i = 0
+		while ($i -lt $line.Length) {
+			$char = $line[$i]
+			$next = ''
+			if (($i + 1) -lt $line.Length) {
+				$next = $line[$i + 1]
+			}
+
+			if ($depth -gt 0) {
+				if (($char -eq '*') -and ($next -eq '/')) { $depth -= 1; $i += 2; continue }
+				if (($char -eq '/') -and ($next -eq '*')) { $depth += 1; $i += 2; continue }
+				$i += 1
+				continue
+			}
+			if ($raw) {
+				if ($char -eq '`') { $raw = $false }
+				$i += 1
+				continue
+			}
+			# Everything after `//` on this line is comment, including any quote or
+			# backtick in it, so the scan stops rather than reading them as literals.
+			if (($char -eq '/') -and ($next -eq '/')) { break }
+			if (($char -eq '/') -and ($next -eq '*')) { $depth += 1; $i += 2; continue }
+			if ($char -eq '`') { $raw = $true; $i += 1; continue }
+			if (($char -eq '"') -or ($char -eq "'")) {
+				$quote = $char
+				$i += 1
+				while ($i -lt $line.Length) {
+					if ($line[$i] -eq '\') { $i += 2; continue }
+					if ($line[$i] -eq $quote) { $i += 1; break }
+					$i += 1
+				}
+				continue
+			}
+			$i += 1
+		}
+	}
+	return $facts.ToArray()
+}
+
+# Every top-level procedure in one file, as the half-open span of lines its body
+# occupies: the line carrying `::` and the line carrying its closing brace.
+#
+# Column zero is what makes this readable rather than a parser. Every file the
+# check covers has been through odinfmt, so a top-level declaration starts at
+# column 0 and its closing brace is a bare `}` there -- which is exactly what
+# separates a procedure from the `proc(...) ---` entries inside a foreign block,
+# indented one level in. A header with no body (a procedure TYPE) is recognised
+# by the next column-0 declaration arriving before any closing brace does.
+#
+# Lines that do not BEGIN in ordinary code are skipped, so a `}` at column 0
+# inside a raw string does not end a procedure early. ONE scan, because two
+# checks read these boundaries -- rule F1's line limit and section 0's comment
+# ban -- and a second copy is two readers that disagree about where a procedure
+# ends the first time either is fixed.
+function Get-OdinProcedureRange {
+	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
+
+	$facts = @(Get-OdinLineFact -Text $Text)
+	$found = [System.Collections.Generic.List[object]]::new()
+	for ($i = 0; $i -lt $facts.Count; $i++) {
+		if (-not $facts[$i].Live) {
+			continue
+		}
+		if ($facts[$i].Text -notmatch '^([A-Za-z_][A-Za-z0-9_]*)\s*::\s*proc\b') {
+			continue
+		}
+		# Read before the inner loop's own matches overwrite $Matches.
+		$name = $Matches[1]
+		for ($j = $i + 1; $j -lt $facts.Count; $j++) {
+			if (-not $facts[$j].Live) {
+				continue
+			}
+			if ($facts[$j].Text -eq '}') {
+				$found.Add([pscustomobject]@{ Name = $name; Start = $i; End = $j })
+				break
+			}
+			if (($facts[$j].Text -match '^[A-Za-z_][A-Za-z0-9_]*\s*::') -or ($facts[$j].Text -match '^@\(')) {
+				break
+			}
+		}
+	}
+	return $found.ToArray()
+}
+
+# Every comment inside a procedure body in one file, with the line it sits on.
+#
+# STRICTLY inside: the header line and the closing brace are excluded, so the
+# comment a procedure is allowed -- the one above it, explaining why it exists --
+# is not read as one inside it. Reported at the line a comment OPENS on, so a
+# block comment spanning ten lines is one finding and not ten.
+function Get-OdinBodyComment {
+	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
+
+	$facts = @(Get-OdinLineFact -Text $Text)
+	$found = [System.Collections.Generic.List[object]]::new()
+	foreach ($range in @(Get-OdinProcedureRange -Text $Text)) {
+		for ($i = $range.Start + 1; $i -lt $range.End; $i++) {
+			if (-not $facts[$i].Comment) {
+				continue
+			}
+			$found.Add([pscustomobject]@{
+					Name = $range.Name
+					Line = $i + 1
+					Text = $facts[$i].Text.Trim()
+				})
+		}
+	}
+	return $found.ToArray()
+}
+
+# CLAUDE.md section 0 as a single verdict, for the same caller and the same
+# reason Assert-OdinFormatting has one: a rule enforced only at review is a rule
+# that reaches main.
+#
+# Repository-wide through Get-OdinSource, which is the scope rule F1 already
+# learned the hard way -- an audit scoped to src\ left docs\reference\ carrying
+# body comments nobody was looking at, exactly as it once left a spike there at
+# 107 lines. The two checks and the formatter now ask one question about scope
+# and get one answer.
+#
+# The sweep FAILS when it finds nothing to read, for the third time in this file
+# and for the same reason: a check that covers zero files reports the same green
+# as one that checked everything.
+function Assert-OdinCommentPolicy {
+	$sources = @(Get-OdinSource)
+	if ($sources.Count -eq 0) {
+		throw "no .odin files found under $RepoRoot, so this check would pass having read nothing."
+	}
+
+	$found = @()
+	foreach ($source in $sources) {
+		foreach ($comment in @(Get-OdinBodyComment -Text ([System.IO.File]::ReadAllText($source.Path)))) {
+			$found += "  - $($source.Name):$($comment.Line) in $($comment.Name): $($comment.Text)"
+		}
+	}
+	if ($found.Count -eq 0) {
+		return
+	}
+
+	throw "$($found.Count) comment(s) inside a procedure body (CLAUDE.md section 0):`n$($found -join "`n")`nSay it in the code, or say why above the procedure."
+}
+
 # The sweep as a single verdict, for callers that only want it to pass -- which
 # is build.ps1, so that a misformatted file fails the BUILD and not merely a
 # check somebody remembers to run. Rule S1 is a rule; the vet flags beside it
