@@ -204,7 +204,10 @@ a_walk_that_did_not_see_the_whole_tree_says_so_afterwards :: proc(t: ^testing.T)
 			yes ? "incomplete" : "complete",
 		)
 		if !c.whole {
-			testing.expect_value(t, short, c.note)
+			left_out, named := short.?
+			testing.expect(t, named, "an inventory was called partial and named nothing")
+			testing.expect_value(t, left_out.note, c.note)
+			testing.expect_value(t, left_out.path, "D:\\archive")
 		}
 	}
 }
@@ -219,6 +222,20 @@ a_walk_that_saw_the_whole_tree_says_nothing_was_left_out :: proc(t: ^testing.T) 
 	}
 	_, stopped := left_unlooked_at(cancelled)
 	testing.expect(t, stopped, "a walk that was stopped part way called itself whole")
+}
+
+// A walk that was STOPPED left no note behind, and there is no note to name: it
+// answered `Root_Unreadable` -- the zero value -- over a tree it had been
+// reading perfectly well, and the dry run printed that at a user. Latent only
+// while the CLI never sets the flag, and reachable the moment the window (#16)
+// drives the seam this package exists to provide.
+@(test)
+a_walk_that_was_stopped_part_way_blames_no_directory_for_it :: proc(t: ^testing.T) {
+	short, yes := left_unlooked_at(Inventory{cancelled = true})
+	testing.expect(t, yes, "a walk that was stopped part way called itself whole")
+
+	_, named := short.?
+	testing.expect(t, !named, "a walk that was stopped blamed a directory nothing was wrong with")
 }
 
 @(test)

@@ -33,8 +33,14 @@ Plan :: struct {
 // The entries come back whichever way this ends, so a dry run still reports what
 // it found; `ok` is false when the Batch must not run. Free with destroy_plan
 // and the same allocator.
+//
+// The whole INVENTORY and never its `found` alone. A plan handed the slice
+// cannot see that the walk was cancelled or left a directory unread, so the one
+// thing that stops a Batch running over a short file list would live entirely in
+// caller discipline -- and the only caller that asks is `src/cli`, the package
+// nothing can turn red (ADR-0009).
 plan_batch :: proc(
-	inventory: []Found,
+	inventory: Inventory,
 	settings: Settings,
 	allocator: mem.Allocator,
 ) -> (
@@ -44,12 +50,12 @@ plan_batch :: proc(
 	assert(allocator.procedure != nil, "the plan outlives this procedure and needs an allocator")
 	assert(len(settings.merge_profile) > 0, "a Batch naming no Merge Profile decides nothing")
 	defer assert(
-		len(plan.entries) == len(inventory),
+		len(plan.entries) == len(inventory.found),
 		"a Batch was planned with more or fewer Recordings than it was given",
 	)
 
-	entries := make([]Entry, len(inventory), allocator)
-	for found, at in inventory {
+	entries := make([]Entry, len(inventory.found), allocator)
+	for found, at in inventory.found {
 		entries[at] = Entry {
 			found   = found,
 			outcome = decide(found, settings),
@@ -57,9 +63,12 @@ plan_batch :: proc(
 	}
 	plan.entries = entries
 
-	collision, raced := collided(inventory, allocator)
+	collision, raced := collided(inventory.found, allocator)
 	if raced {
 		plan.collision = collision
+		return plan, false
+	}
+	if _, incomplete := left_unlooked_at(inventory); incomplete {
 		return plan, false
 	}
 	return plan, true

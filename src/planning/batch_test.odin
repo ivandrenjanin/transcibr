@@ -11,13 +11,13 @@ recording_at :: proc(source: string) -> Found {
 }
 
 @(private)
-planned :: proc(t: ^testing.T, sources: []string) -> (plan: Plan, ok: bool) {
-	inventory := make([]Found, len(sources), context.allocator)
-	defer delete(inventory, context.allocator)
+planned :: proc(sources: []string) -> (plan: Plan, ok: bool) {
+	found := make([]Found, len(sources), context.allocator)
+	defer delete(found, context.allocator)
 	for source, at in sources {
-		inventory[at] = recording_at(source)
+		found[at] = recording_at(source)
 	}
-	return plan_batch(inventory, settings(), context.allocator)
+	return plan_batch(Inventory{found = found}, settings(), context.allocator)
 }
 
 // ADR-0008: a video and its extracted audio side by side is the mainstream
@@ -25,7 +25,6 @@ planned :: proc(t: ^testing.T, sources: []string) -> (plan: Plan, ok: bool) {
 @(test)
 two_recordings_that_would_write_one_artifact_fail_the_plan_naming_the_pair :: proc(t: ^testing.T) {
 	plan, ok := planned(
-		t,
 		[]string{"C:\\clips\\keynote.mp4", "C:\\clips\\interview.mp4", "C:\\clips\\interview.m4a"},
 	)
 	defer destroy_plan(plan, context.allocator)
@@ -50,7 +49,7 @@ two_recordings_that_would_write_one_artifact_fail_the_plan_naming_the_pair :: pr
 // one file and the second Recording would overwrite the first's Transcript.
 @(test)
 two_recordings_whose_names_differ_only_in_case_still_fail_the_plan :: proc(t: ^testing.T) {
-	plan, ok := planned(t, []string{"C:\\clips\\INTERVIEW.mp4", "C:\\clips\\interview.m4a"})
+	plan, ok := planned([]string{"C:\\clips\\INTERVIEW.mp4", "C:\\clips\\interview.m4a"})
 	defer destroy_plan(plan, context.allocator)
 
 	testing.expect(t, !ok, "two Recordings one filesystem cannot tell apart were planned anyway")
@@ -62,7 +61,7 @@ two_recordings_whose_names_differ_only_in_case_still_fail_the_plan :: proc(t: ^t
 // directories is two Transcripts and not a collision.
 @(test)
 one_stem_under_two_directories_is_two_artifacts_and_plans_cleanly :: proc(t: ^testing.T) {
-	plan, ok := planned(t, []string{"C:\\clips\\june\\talk.mp4", "C:\\clips\\july\\talk.mp4"})
+	plan, ok := planned([]string{"C:\\clips\\june\\talk.mp4", "C:\\clips\\july\\talk.mp4"})
 	defer destroy_plan(plan, context.allocator)
 
 	testing.expect(t, ok, "two Recordings in different directories were called a collision")
@@ -72,7 +71,6 @@ one_stem_under_two_directories_is_two_artifacts_and_plans_cleanly :: proc(t: ^te
 @(test)
 every_recording_found_reaches_the_plan_with_a_decision_of_its_own :: proc(t: ^testing.T) {
 	plan, ok := planned(
-		t,
 		[]string{"C:\\clips\\one.mp4", "C:\\clips\\two.mkv", "C:\\clips\\three.m4a"},
 	)
 	defer destroy_plan(plan, context.allocator)
@@ -94,7 +92,7 @@ every_recording_found_reaches_the_plan_with_a_decision_of_its_own :: proc(t: ^te
 // with anything -- and it must still reach the plan as its own refusal.
 @(test)
 a_path_that_names_no_file_is_refused_rather_than_dropped_from_the_plan :: proc(t: ^testing.T) {
-	plan, ok := planned(t, []string{"C:\\clips\\", "C:\\clips\\talk.mp4"})
+	plan, ok := planned([]string{"C:\\clips\\", "C:\\clips\\talk.mp4"})
 	defer destroy_plan(plan, context.allocator)
 
 	testing.expect(t, ok, "a path naming no file was reported as a collision")

@@ -2,6 +2,7 @@ package planning
 
 import "core:fmt"
 import "core:mem"
+import "core:strings"
 
 // What a dry run prints. Here rather than in `src/cli`, because that package is
 // named in `$OdinPackagesWithoutTests` and a sentence nothing can turn red is a
@@ -99,6 +100,41 @@ note_line :: proc(note: Walk_Note, allocator: mem.Allocator) -> (line: string) {
 	assert(len(says) > 0, "a note was added to Note without a sentence")
 
 	return fmt.aprintf("%-10s %q: %s", "report", note.path, says, allocator = allocator)
+}
+
+// A walk that was stopped left no note to name, so the sentence names none.
+@(private)
+STOPPED_PART_WAY :: "this walk was stopped before it finished; the plan above is partial."
+
+// Why the walk did not see the whole tree, or EMPTY where it did -- so a caller
+// prints it or does not without asking a second question, which is
+// `collision_line`'s shape and is here for the same reason. Free it with
+// `delete` and this allocator.
+//
+// The note is rendered through its own sentence and never as `%v`: the CLI
+// printed the enumeration member, so a cancelled walk read
+// "this walk did not see the whole tree (Root_Unreadable)" over a root it had
+// read perfectly well, and no reader of that line could tell those two apart.
+incomplete_line :: proc(inventory: Inventory, allocator: mem.Allocator) -> string {
+	assert(allocator.procedure != nil, "the line outlives this procedure and needs an allocator")
+
+	short, incomplete := left_unlooked_at(inventory)
+	if !incomplete {
+		return ""
+	}
+	left_out, named := short.?
+	if !named {
+		return strings.clone(STOPPED_PART_WAY, allocator)
+	}
+
+	says := note_says(left_out.note)
+	assert(len(says) > 0, "a note was added to Note without a sentence")
+	return fmt.aprintf(
+		"this walk did not see the whole tree: %q %s. The plan above is partial.",
+		left_out.path,
+		says,
+		allocator = allocator,
+	)
 }
 
 // Empty for a plan that came through, so a caller prints it or does not without

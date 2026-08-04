@@ -148,7 +148,7 @@ a_failed_plan_names_both_recordings_and_the_artifact_they_would_share :: proc(t:
 		recording_at("C:\\clips\\interview.mp4"),
 		recording_at("C:\\clips\\interview.m4a"),
 	}
-	plan, ok := plan_batch(inventory, settings(), context.allocator)
+	plan, ok := plan_batch(Inventory{found = inventory}, settings(), context.allocator)
 	defer destroy_plan(plan, context.allocator)
 	if !testing.expect(t, !ok, "two Recordings racing one output path were planned anyway") {
 		return
@@ -177,7 +177,7 @@ a_failed_plan_names_the_artifact_as_it_would_be_written_and_not_folded :: proc(t
 		recording_at("C:\\Clips\\Interview.mp4"),
 		recording_at("C:\\Clips\\Interview.m4a"),
 	}
-	plan, ok := plan_batch(inventory, settings(), context.allocator)
+	plan, ok := plan_batch(Inventory{found = inventory}, settings(), context.allocator)
 	defer destroy_plan(plan, context.allocator)
 	if !testing.expect(t, !ok, "two Recordings racing one output path were planned anyway") {
 		return
@@ -192,16 +192,106 @@ a_failed_plan_names_the_artifact_as_it_would_be_written_and_not_folded :: proc(t
 @(test)
 a_plan_that_came_through_has_no_collision_line_to_print :: proc(t: ^testing.T) {
 	plan, ok := plan_batch(
-		[]Found{recording_at("C:\\clips\\talk.mp4")},
+		Inventory{found = []Found{recording_at("C:\\clips\\talk.mp4")}},
 		settings(),
 		context.allocator,
 	)
 	defer destroy_plan(plan, context.allocator)
 
 	testing.expect(t, ok, "a Batch with one Recording in it failed the plan")
-	line := collision_line(plan, context.allocator)
-	defer delete(line, context.allocator)
-	testing.expect_value(t, len(line), 0)
+	for line in ([?]string {
+			collision_line(plan, context.allocator),
+			incomplete_line(Inventory{}, context.allocator),
+		}) {
+		defer delete(line, context.allocator)
+		testing.expectf(t, len(line) == 0, "a Batch that came through said <%s> anyway", line)
+	}
+}
+
+// A Batch must not run over a tree the walk did not finish, and the plan itself
+// is what refuses it: handed the Recordings alone, this could only ever have
+// been the caller's discipline -- and the only caller that asks is the package
+// nothing can turn red (ADR-0009).
+@(test)
+a_walk_that_did_not_see_the_whole_tree_fails_the_plan_it_feeds :: proc(t: ^testing.T) {
+	Case :: struct {
+		says:      string,
+		inventory: Inventory,
+		ok:        bool,
+	}
+
+	whole := []Found{recording_at("C:\\clips\\talk.mp4")}
+	for c in ([?]Case {
+			{"a walk that saw the whole tree", Inventory{found = whole}, true},
+			{
+				"a walk that was stopped part way",
+				Inventory{found = whole, cancelled = true},
+				false,
+			},
+			{
+				"a walk that could not list a directory",
+				Inventory {
+					found = whole,
+					notes = []Walk_Note {
+						{note = .Directory_Unreadable, path = "D:\\archive\\shut"},
+					},
+				},
+				false,
+			},
+			{
+				"a walk that declined a reparse point it was told to decline",
+				Inventory {
+					found = whole,
+					notes = []Walk_Note{{note = .Reparse_Point_Not_Followed, path = "D:\\link"}},
+				},
+				true,
+			},
+		}) {
+		plan, ok := plan_batch(c.inventory, settings(), context.allocator)
+		defer destroy_plan(plan, context.allocator)
+
+		testing.expectf(t, ok == c.ok, "%s was %v, which is not what it means", c.says, ok)
+		testing.expect_value(t, len(plan.entries), 1)
+	}
+}
+
+// The note is rendered through its own sentence and never as `%v`: a cancelled
+// walk read "did not see the whole tree (Root_Unreadable)" over a root it had
+// read perfectly well, and no reader of that line could tell those apart.
+@(test)
+a_partial_walk_says_which_directory_left_it_short_and_a_stopped_one_names_none :: proc(
+	t: ^testing.T,
+) {
+	unread := incomplete_line(
+		Inventory{notes = []Walk_Note{{note = .Directory_Unreadable, path = "D:\\archive\\shut"}}},
+		context.allocator,
+	)
+	defer delete(unread, context.allocator)
+
+	for named in ([?]string{"shut", note_says(.Directory_Unreadable)}) {
+		testing.expectf(
+			t,
+			strings.contains(unread, named),
+			"<%s> does not carry %q",
+			unread,
+			named,
+		)
+	}
+
+	stopped := incomplete_line(Inventory{cancelled = true}, context.allocator)
+	defer delete(stopped, context.allocator)
+
+	testing.expect_value(t, stopped, STOPPED_PART_WAY)
+	for note in Note {
+		says := note_says(note)
+		testing.expectf(
+			t,
+			!strings.contains(stopped, says),
+			"a walk that was stopped blamed %v: <%s>",
+			note,
+			stopped,
+		)
+	}
 }
 
 @(test)

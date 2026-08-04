@@ -58,7 +58,7 @@ report_plan :: proc(o: Plan_Options, identified: artifact.Model) -> int {
 	fmt.eprintln()
 
 	plan, runnable := planning.plan_batch(
-		inventory.found,
+		inventory,
 		planning.Settings {
 			engine_version = o.engine_version,
 			model = identified,
@@ -80,10 +80,6 @@ print_plan :: proc(plan: planning.Plan, inventory: planning.Inventory) {
 		len(plan.entries) == len(inventory.found),
 		"a plan that lost a Recording on the way here",
 	)
-	assert(
-		len(inventory.found) > 0 || len(inventory.notes) > 0 || len(plan.entries) == 0,
-		"an empty plan over a tree nothing was said about",
-	)
 
 	for entry in plan.entries {
 		line := planning.plan_line(entry, context.allocator)
@@ -99,26 +95,30 @@ print_plan :: proc(plan: planning.Plan, inventory: planning.Inventory) {
 
 // A cancelled walk and a refused plan are both failures: what the first found is
 // true and incomplete, and acting on either as though it were the whole Batch is
-// the silently short file list ADR-0009 names.
+// the silently short file list ADR-0009 names. Both come back as `runnable`
+// being false, and both sentences are `transcibr:planning`'s.
 @(private)
 plan_verdict :: proc(plan: planning.Plan, inventory: planning.Inventory, runnable: bool) -> int {
 	assert(len(plan.entries) == len(inventory.found), "a plan that lost a Recording")
 
-	if !runnable {
-		line := planning.collision_line(plan, context.allocator)
+	if runnable {
+		return 0
+	}
+
+	said := false
+	for line in ([?]string {
+			planning.collision_line(plan, context.allocator),
+			planning.incomplete_line(inventory, context.allocator),
+		}) {
 		defer delete(line, context.allocator)
-		assert(len(line) > 0, "a Batch was refused and nothing said which pair refused it")
+		if len(line) == 0 {
+			continue
+		}
 		fmt.eprintln(line)
-		return OPERATING_ERROR
+		said = true
 	}
-	if short, incomplete := planning.left_unlooked_at(inventory); incomplete {
-		fmt.eprintfln(
-			"this walk did not see the whole tree (%v); the plan above is partial.",
-			short,
-		)
-		return OPERATING_ERROR
-	}
-	return 0
+	assert(said, "a Batch was refused and nothing said what refused it")
+	return OPERATING_ERROR
 }
 
 // See CLAUDE.md, Odin notes: core:fmt integer padding.

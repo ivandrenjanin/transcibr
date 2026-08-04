@@ -112,27 +112,35 @@ Inventory :: struct {
 	cancelled: bool,
 }
 
-// Whether the inventory is the whole tree. A reparse point not followed is what
-// the caller ASKED for and leaves it whole; everything else means Recordings
-// exist that nothing looked at, and a caller that reported success over that
-// would be the silently short file list ADR-0009 names.
-left_unlooked_at :: proc(inventory: Inventory) -> (short: Note, yes: bool) {
-	defer assert(
-		!yes || inventory.cancelled || len(inventory.notes) > 0,
-		"an inventory was called partial with nothing to say what was left out",
-	)
-	defer assert(yes || short == .Root_Unreadable, "a whole inventory named a note anyway")
+// Whether the inventory is the whole tree, and which note left it short. A
+// reparse point not followed is what the caller ASKED for and leaves it whole;
+// everything else means Recordings exist that nothing looked at, and a caller
+// that reported success over that would be the silently short file list ADR-0009
+// names.
+//
+// NOTHING, and not a note, for a walk that was STOPPED: it left no note behind,
+// and a `Note` with no absent value answered its own zero -- `Root_Unreadable`,
+// printed at a user over a tree the walk had been reading perfectly well.
+left_unlooked_at :: proc(inventory: Inventory) -> (short: Maybe(Walk_Note), yes: bool) {
+	defer if yes {
+		assert(
+			inventory.cancelled || len(inventory.notes) > 0,
+			"an inventory was called partial with nothing to say what was left out",
+		)
+	} else {
+		assert(short == nil, "a whole inventory named a note anyway")
+	}
 
 	if inventory.cancelled {
-		return .Root_Unreadable, true
+		return nil, true
 	}
 	for note in inventory.notes {
 		if note.note == .Reparse_Point_Not_Followed {
 			continue
 		}
-		return note.note, true
+		return note, true
 	}
-	return .Root_Unreadable, false
+	return nil, false
 }
 
 // A cancelled walk answers with what it had got to, not with nothing: the notes
