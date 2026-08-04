@@ -85,6 +85,37 @@ Transcribed :: struct {
 	duration_ms: i64,
 }
 
+// Everything one invocation is bounded by, as one value.
+//
+// TWO TUNABLES AT TWO ALTITUDES, which is the shape ADR-0018 records and the
+// reason they travel together: the watchdog decides when an Engine that has
+// stopped saying anything is a failure, and the run bound decides when one that
+// is still saying things has had long enough. A caller that could move one
+// without seeing the other is a caller that can spell a run whose watchdog fires
+// after its bound, and then neither is what it says it is.
+//
+// Handed in the way `Tolerance` is in `transcibr:audio`: the shipped program
+// takes DEFAULT_LIMITS and a case hands in bounds it can actually reach.
+Limits :: struct {
+	watch:    process.Watch,
+	// How long the whole invocation is given, in milliseconds.
+	//
+	// ZERO IS THE RECORDING'S OWN BOUND -- process.transcribe_bound_ms of its
+	// length -- and that is what the shipped program runs. It is a sentinel
+	// rather than a defaulted parameter because the answer depends on the Job,
+	// which arrives beside it; the same "zero where nobody could say" that
+	// `Tracker.duration_ms` uses next door.
+	//
+	// A CASE IS THE OTHER CALLER. Derived, the bound is at least the ten-minute
+	// floor a cold Model load costs, so nothing in a sweep could ever reach it
+	// and `Fault.Did_Not_Finish` was a member no run produced.
+	bound_ms: i64,
+}
+
+DEFAULT_LIMITS :: Limits {
+	watch = process.DEFAULT_WATCH,
+}
+
 // What the caller is told while the Engine runs.
 //
 // A procedure and a pointer, because Odin's procedures do not capture: the

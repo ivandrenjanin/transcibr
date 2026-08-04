@@ -57,6 +57,29 @@ PATIENT_WATCH :: process.Watch {
 	silent_ms   = 6_000,
 }
 
+// The two watchdogs above as the limits a case hands `transcribe`, plus the one
+// whose RUN BOUND a case can reach.
+//
+// A bound far shorter than the child that has to outlive it, the shape
+// `src/audio`'s SHORT_BOUND_MS has: derived from the Recording, the bound is at
+// least the ten-minute floor a cold Model load needs, so no case could ever
+// reach it and `Fault.Did_Not_Finish` was a member no run in the sweep produced.
+@(private)
+SHORT_LIMITS :: Limits {
+	watch = SHORT_WATCH,
+}
+
+@(private)
+PATIENT_LIMITS :: Limits {
+	watch = PATIENT_WATCH,
+}
+
+@(private)
+EXPIRING_LIMITS :: Limits {
+	watch    = PATIENT_WATCH,
+	bound_ms = 500,
+}
+
 // How long the child that must outlive the watchdog waits before ending itself,
 // whatever this suite does or fails to do.
 @(private)
@@ -234,7 +257,7 @@ a_stand_in_engine_that_reports_progress_drives_the_display :: proc(t: ^testing.T
 		job,
 		Report{on_progress = note, user = &watched},
 		context.allocator,
-		SHORT_WATCH,
+		SHORT_LIMITS,
 	)
 	defer delete(produced.output, context.allocator)
 	if !testing.expectf(t, err.fault == .None, "the Engine failed: %v", err.fault) {
@@ -279,7 +302,7 @@ an_engine_that_produced_nothing_is_a_failure_whatever_it_exited_with :: proc(t: 
 	defer delete(executable, context.allocator)
 
 	tools, job := job_in(cache, executable)
-	produced, err := transcribe(&group, tools, job, Report{}, context.allocator, SHORT_WATCH)
+	produced, err := transcribe(&group, tools, job, Report{}, context.allocator, SHORT_LIMITS)
 	defer delete(produced.output, context.allocator)
 
 	testing.expect_value(t, err.fault, Fault.No_Output)
@@ -305,7 +328,7 @@ an_engine_that_produced_an_empty_file_is_a_failure :: proc(t: ^testing.T) {
 	defer delete(executable, context.allocator)
 
 	tools, job := job_in(cache, executable)
-	produced, err := transcribe(&group, tools, job, Report{}, context.allocator, SHORT_WATCH)
+	produced, err := transcribe(&group, tools, job, Report{}, context.allocator, SHORT_LIMITS)
 	defer delete(produced.output, context.allocator)
 
 	testing.expect_value(t, err.fault, Fault.Output_Empty)
@@ -338,7 +361,7 @@ an_engine_that_says_nothing_at_all_is_stopped_before_its_bound_runs_out :: proc(
 	defer delete(executable, context.allocator)
 
 	tools, job := job_in(cache, executable)
-	produced, err := transcribe(&group, tools, job, Report{}, context.allocator, SHORT_WATCH)
+	produced, err := transcribe(&group, tools, job, Report{}, context.allocator, SHORT_LIMITS)
 	defer delete(produced.output, context.allocator)
 
 	testing.expect_value(t, err.fault, Fault.Went_Silent)
@@ -400,7 +423,7 @@ an_engine_whose_progress_format_this_reader_cannot_read_still_drives_the_display
 		job,
 		Report{on_progress = note, user = &watched},
 		context.allocator,
-		PATIENT_WATCH,
+		PATIENT_LIMITS,
 	)
 	defer delete(produced.output, context.allocator)
 	if !testing.expectf(
@@ -425,6 +448,86 @@ an_engine_whose_progress_format_this_reader_cannot_read_still_drives_the_display
 }
 
 @(test)
+an_engine_that_outlives_its_bound_is_stopped_and_told_apart_from_a_silent_one :: proc(
+	t: ^testing.T,
+) {
+	// Issue #27's rule, wired up: a wedged Engine holds a Batch for ever, and one
+	// GPU worker means it holds every Recording behind it (ADR-0006). The bound is
+	// what stops that.
+	//
+	// The bound is handed in for the reason `src/audio`'s SHORT_BOUND_MS exists:
+	// derived from the Recording, it is at least the ten-minute floor a cold Model
+	// load needs, so `Fault.Did_Not_Finish` was a member no run in this sweep
+	// could produce.
+	//
+	// AND IT IS THE BOUND AND NOT THE WATCHDOG THAT FIRES, which is the half worth
+	// having: silence is read first in the poll loop, so a case whose silent bound
+	// sat under its run bound would answer `.Went_Silent` and check nothing. This
+	// watchdog gives the child six seconds of silence and the bound gives it half
+	// of one.
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	cache := scratch_cache(t, "bound")
+	defer delete(cache, context.allocator)
+	defer remove_cache(cache)
+
+	name := lonely_signal("bound")
+	defer delete(name, context.allocator)
+	executable := stand_in(
+		t,
+		cache,
+		"bound",
+		fmt.tprintf("waitfor /t %d %s", LONGER_SECONDS, name),
+	)
+	defer delete(executable, context.allocator)
+
+	// A tenth of a second of audio, so the bound handed in is above the
+	// Recording's own length -- which is what transcribe_bound_ms requires of any
+	// bound, and what silent_after_ms keys the watchdog's floor on.
+	tools, job := job_in(cache, executable, 100)
+	produced, err := transcribe(&group, tools, job, Report{}, context.allocator, EXPIRING_LIMITS)
+	defer delete(produced.output, context.allocator)
+
+	testing.expect_value(t, err.fault, Fault.Did_Not_Finish)
+}
+
+@(test)
+every_way_a_run_can_end_is_the_fault_that_names_it :: proc(t: ^testing.T) {
+	// The ending table, checked directly. Four of the five endings a run has are
+	// produced by a real child in this suite; `.Unstoppable` is not, and cannot
+	// be -- it is a child that survived `TerminateJobObject` and would not leave
+	// its job, which is not something a case can arrange and not something a
+	// sweep should try to. So the mapping is what is pinned, and
+	// `Fault.Not_Stopped` stops being a member nothing in the repository produces.
+	//
+	// The pair that matters is the two `.Stopped` arms: an Engine too slow for the
+	// time it was given is a Recording to re-run, and one that stopped saying
+	// anything is a wedge, and the caller acts on them differently (ADR-0012).
+	started := child.Error {
+		fault = .Not_Started,
+	}
+	testing.expect_value(
+		t,
+		refused(Ending{run = .Not_Started, child = started}).fault,
+		Fault.Not_Started,
+	)
+	testing.expect_value(t, refused(Ending{run = .Unstoppable}).fault, Fault.Not_Stopped)
+	testing.expect_value(
+		t,
+		refused(Ending{run = .Stopped, silent = true}).fault,
+		Fault.Went_Silent,
+	)
+	testing.expect_value(t, refused(Ending{run = .Stopped}).fault, Fault.Did_Not_Finish)
+	// The one ending that is not a refusal: the Engine exited by itself, which
+	// says nothing about whether it did anything (ADR-0002). The disk settles it.
+	testing.expect_value(t, refused(Ending{run = .Finished}).fault, Fault.None)
+}
+
+@(test)
 an_executable_that_is_not_there_is_reported_and_not_asserted :: proc(t: ^testing.T) {
 	// A8: the Engine's path is a settings field, so one naming nothing that
 	// exists is an operating error against this Recording and the Batch carries
@@ -441,7 +544,7 @@ an_executable_that_is_not_there_is_reported_and_not_asserted :: proc(t: ^testing
 	defer remove_cache(cache)
 
 	tools, job := job_in(cache, "C:\\nowhere\\no-such-engine.exe")
-	produced, err := transcribe(&group, tools, job, Report{}, context.allocator, SHORT_WATCH)
+	produced, err := transcribe(&group, tools, job, Report{}, context.allocator, SHORT_LIMITS)
 	defer delete(produced.output, context.allocator)
 
 	testing.expect_value(t, err.fault, Fault.Not_Started)

@@ -91,7 +91,7 @@ transcribe :: proc(
 	job: Job,
 	report: Report,
 	allocator: mem.Allocator,
-	watch := process.DEFAULT_WATCH,
+	limits := DEFAULT_LIMITS,
 ) -> (
 	produced: Transcribed,
 	err: Error,
@@ -114,7 +114,7 @@ transcribe :: proc(
 	)
 	defer delete(arguments, allocator)
 
-	ending := run_engine(group, tools.engine, arguments, job, report, watch, allocator)
+	ending := run_engine(group, tools.engine, arguments, job, report, limits, allocator)
 	output := process.engine_output_path(prefix, allocator)
 	defer if err.fault != .None {
 		delete(output, allocator)
@@ -197,7 +197,7 @@ run_engine :: proc(
 	arguments: []string,
 	job: Job,
 	report: Report,
-	watch: process.Watch,
+	limits: Limits,
 	allocator: mem.Allocator,
 ) -> (
 	ending: Ending,
@@ -205,13 +205,21 @@ run_engine :: proc(
 	assert(group != nil, "a child started outside a job object outlives transcibr")
 	assert(len(arguments) > 0, "the Engine was started with no arguments at all")
 
+	// The Recording's own bound where nobody named one, which is every caller but
+	// a case. Worked out BEFORE the child starts, so a bound nobody could compute
+	// is a crash with no child running rather than one holding the GPU.
+	bound_ms := limits.bound_ms
+	if bound_ms <= 0 {
+		bound_ms = process.transcribe_bound_ms(job.container_ms)
+	}
+	assert(bound_ms > 0, "an Engine given no time at all cannot transcribe anything")
+
 	c, refusal := child.start(group, executable, arguments, allocator)
 	if refusal.fault != .None {
 		return Ending{run = .Not_Started, child = refusal}
 	}
 	defer child.close(&c)
 
-	bound_ms := process.transcribe_bound_ms(job.container_ms)
 	started := time.tick_now()
 	tracker := process.tracker_start(job.container_ms, elapsed_ns(started))
 	reader: process.Line_Reader
@@ -223,13 +231,13 @@ run_engine :: proc(
 			// detectable in milliseconds into hours of nothing happening.
 			return stopped(&c, false, tracker.duration_ms)
 		}
-		now := process.shown(tracker, elapsed_ns(started), watch)
+		now := process.shown(tracker, elapsed_ns(started), limits.watch)
 		tell(report, now)
 		if now.silent {
 			return stopped(&c, true, tracker.duration_ms)
 		}
 		if child.wait(&c, POLL_MS) {
-			return finished(&c, &tracker, &reader, started, report, watch)
+			return finished(&c, &tracker, &reader, started, report, limits.watch)
 		}
 		if i64(time.duration_milliseconds(time.tick_since(started))) > bound_ms {
 			return stopped(&c, false, tracker.duration_ms)
