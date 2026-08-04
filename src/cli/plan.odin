@@ -11,6 +11,15 @@ import "transcibr:transcript"
 
 PLAN :: "--plan"
 
+// The whole vocabulary `--follow-reparse-points` accepts, and the same constant
+// the usage block prints, so what is offered and what is read cannot drift. A
+// value outside it is REFUSED and never read as `no`: `--follow-reparse-points
+// true` quietly doing the opposite of what it says is external input
+// reinterpreted rather than rejected, which rule A8 forbids.
+FOLLOW_YES :: "yes"
+FOLLOW_NO :: "no"
+FOLLOW_CHOICE :: FOLLOW_YES + "|" + FOLLOW_NO
+
 // `engine_version` is NOTHING where the command line did not name one, and is
 // never defaulted to UNKNOWN here. `transcibr:planning` is what decides what an
 // unnamed Engine means, because this package collects no tests and a decision
@@ -179,7 +188,14 @@ read_plan_option :: proc(o: ^Plan_Options, name, value: string) -> (ok: bool) {
 	case "--prompt":
 		o.prompt = value
 	case "--follow-reparse-points":
-		o.follow = value == "yes"
+		switch value {
+		case FOLLOW_YES:
+			o.follow = true
+		case FOLLOW_NO:
+			o.follow = false
+		case:
+			return refuse("--follow-reparse-points takes %s, not %q.", FOLLOW_CHOICE, value)
+		}
 	case "--profile":
 		profile, known := transcript.profile_named(value)
 		if !known {

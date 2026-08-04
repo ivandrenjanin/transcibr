@@ -44,7 +44,9 @@ USAGE ::
                 [--profile ` +
 	transcript.PROFILE_CHOICE +
 	`] [--engine-version <version>] [--prompt <text>]
-                [--follow-reparse-points yes]
+                [--follow-reparse-points ` +
+	FOLLOW_CHOICE +
+	`]
       walk the folder and print what each recording found under it would get,
       and why. Spends no GPU time and writes nothing beside any recording.
       --engine-version left out means "not asked", not "unknown": a plan that
