@@ -74,7 +74,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 61
+$ExpectedCaseCount = 62
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -1728,6 +1728,65 @@ Test-Case 'a file without the vet tag fails the build' {
 	Assert-Result -Result $result -Fails -Matching 'explicit-allocators'
 	if ($result.Output -match 'src/cli/main\.odin') {
 		throw "the refusal named the tagged binary as well.`n$($result.Output)"
+	}
+}
+
+Test-Case 'a vet name in the wrong case is not the name the compiler reads' {
+	# The policy matches `#+vet` names case-SENSITIVELY, the way the compiler
+	# matches them: `EXPLICIT-ALLOCATORS` is not a spelling of
+	# `explicit-allocators`, it is `Syntax Error: Invalid vet flag name`. A reader
+	# that accepted it would credit a file with a check that is not on, which is
+	# rule M2's whole subject -- a file quietly leaving itself out of one.
+	#
+	# Measured: softening `-cnotcontains` to `-notcontains` in
+	# Assert-OdinVetTagPolicy left every other case in this suite green and the
+	# build green, so nothing but this stands under that one letter.
+	#
+	# Asked of the policy rather than of the build command because the compiler
+	# refuses the misspelling on its own moments later: a build fixture goes red
+	# either way and says nothing about which of the two refused it.
+	$repo = New-FixtureRepo 'policy-miscased-tag'
+	$package = Join-Path (Join-Path $repo 'src') 'shouty'
+	New-Item -ItemType Directory -Path $package -Force | Out-Null
+	$required = @(Get-OdinRequiredVetTag -Name 'src/shouty/shouty.odin')
+	$shouted = "#+vet $(($required | ForEach-Object { $_.ToUpperInvariant() }) -join ' ')"
+	Write-FixtureSource -Path (Join-Path $package 'shouty.odin') -Text "$shouted`npackage shouty`n`nheld :: proc() {`n}`n"
+
+	$refused = & {
+		$RepoRoot = $repo
+		try {
+			Assert-OdinVetTagPolicy
+			''
+		}
+		catch {
+			$_.Exception.Message
+		}
+	}
+	if ($refused -eq '') {
+		throw "the policy read '$shouted' as declaring $($required -join ' '), so it accepts a spelling the compiler refuses."
+	}
+	foreach ($claim in @('src.shouty.shouty\.odin', [regex]::Escape($required[0]))) {
+		if ($refused -cnotmatch $claim) {
+			throw "the refusal did not name /$claim/: $refused"
+		}
+	}
+
+	# The negative space (rule A3): the same file with the name spelled as the
+	# compiler spells it passes, so what failed above is the casing and not the
+	# fixture.
+	Write-FixtureSource -Path (Join-Path $package 'shouty.odin') -Text "$FixtureVetTags`npackage shouty`n`nheld :: proc() {`n}`n"
+	$accepted = & {
+		$RepoRoot = $repo
+		try {
+			Assert-OdinVetTagPolicy
+			''
+		}
+		catch {
+			$_.Exception.Message
+		}
+	}
+	if ($accepted -ne '') {
+		throw "the same file, spelled as the compiler spells it, was refused: $accepted"
 	}
 }
 
