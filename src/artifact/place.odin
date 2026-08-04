@@ -192,9 +192,12 @@ complete :: proc(
 
 // The Transcript, rendered from the Engine's output and then placed with it.
 //
-// Split out of `complete` for rule F1's sake, and along the line that made the
-// split honest: everything above it is about finding the bytes, and everything
-// here is about what they turn out to be.
+// SPLIT FOR READING AND NOT FOR RULE F1, which is what this used to claim and
+// what measurement does not support: merged, the two came to about fifty-seven
+// lines when the split was made, comfortably inside the seventy-line limit, so
+// F1 decided nothing. What decides it is the line the split falls on --
+// everything above is about FINDING the bytes, and everything here is about what
+// they turn out to be -- and that argument never needed the other one.
 @(private)
 rendered_and_placed :: proc(
 	names: Names,

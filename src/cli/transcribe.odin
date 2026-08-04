@@ -411,10 +411,15 @@ read_transcribe_options :: proc(arguments: []string) -> (o: Transcribe_Options, 
 		assert(len(o.source) == 0, "refused a command line and kept what it asked for")
 	}
 
-	o.tools = audio.Tools {
-		ffmpeg  = FFMPEG,
-		ffprobe = FFPROBE,
-	}
+	// The two tool paths are NOT set here, and were: `defaulted` puts them back
+	// after the loop, which is the order that matters, so setting them before it
+	// was a state nothing could observe.
+	//
+	// The Merge Profile is different and stays. Nothing puts it back afterwards,
+	// because there is no empty spelling of an enumeration member for `defaulted`
+	// to notice -- a command line that named none has to arrive at the loop with
+	// this already in it.
+	//
 	// Read from the package that holds the profiles rather than spelled here as a
 	// bare enum member: the window ADR-0004 promises has to produce the same bytes
 	// from the same input (spec story 44), and this shell is not where either

@@ -8,6 +8,22 @@ import "core:strings"
 // directory, opens no file and asks the filesystem nothing: every answer in it
 // is a decision about a string, which is what lets a case check the one property
 // that no filesystem this machine has could demonstrate -- see part_of.
+//
+// WHICH PUTS THIS FILE UNDER A1's AVERAGE, at 8 assertions across 7 procedures,
+// and the carve-out is recorded here rather than left for a reader to work out.
+// It used to count 14, and the six that went did not go quietly: four were
+// claims about CONSTANTS -- that the three artifact suffixes differ, that the
+// quarantine suffix is not empty -- and A5 says those belong to the compiler, so
+// they are `#assert`s above rather than checks re-run per Recording. The other
+// two were part_of's, and they could not fire for any input this program can
+// produce; what they guarded was an edit to one format string, which
+// naming_test guards over three destinations.
+//
+// The three that carry none are `destroy_names`, which frees what it was handed,
+// and `path_stem_of` and `stem_of`, which are two lines each over `name_bounds`
+// -- and `name_bounds` holds the pair that is actually about them. A1's own
+// wording is the licence: pure leaf math may carry fewer when its callers carry
+// more, and `names_of` and `part_of` carry it on the way in.
 
 // What a Transcript is called, ADR-0008's rule spelled once: a Recording at
 // `<dir>\<stem>.<ext>` produces `<dir>\<stem>.md`.
@@ -32,6 +48,17 @@ SIDECAR_SUFFIX :: ".sidecar"
 // name say so: `<stem>.json.bad` reads as a `.json` that went wrong, where
 // `<stem>.bad` reads as nothing at all.
 QUARANTINE_SUFFIX :: ".bad"
+
+// The two relationships every name above rests on, held by the COMPILER (A5)
+// rather than re-checked on every Recording. Both were run-time assertions --
+// one in names_of and one in quarantined -- and neither is about a value: three
+// artifacts sharing one stem are three different files exactly when their three
+// suffixes differ, and a quarantined file is named differently from the original
+// exactly when the suffix is not empty.
+#assert(TRANSCRIPT_SUFFIX != ENGINE_OUTPUT_SUFFIX)
+#assert(TRANSCRIPT_SUFFIX != SIDECAR_SUFFIX)
+#assert(ENGINE_OUTPUT_SUFFIX != SIDECAR_SUFFIX)
+#assert(len(QUARANTINE_SUFFIX) > 0)
 
 // The three names one Recording's completion writes.
 //
@@ -63,15 +90,13 @@ Names :: struct {
 // nothing to compare.
 names_of :: proc(source: string, allocator: mem.Allocator) -> (names: Names, ok: bool) {
 	assert(allocator.procedure != nil, "the names outlive this procedure and need an allocator")
-	// Both halves of what a return means (A3), where both are in hand: a refusal
-	// hands back nothing to free, and an acceptance hands back three names that
-	// are really three files.
+	// A refusal hands back nothing to free, which is the half a caller depends on
+	// and the half that is about a value rather than about a constant. That the
+	// three names differ is the other half, and it is not asserted here any more:
+	// all three are one stem plus a suffix, so it is a claim about the three
+	// SUFFIXES and the compiler settles it beside their definitions (A5).
 	defer if !ok {
 		assert(len(names.transcript) == 0, "refused a Recording and kept a name for it")
-	} else {
-		assert(names.transcript != names.engine_output, "two artifacts under one name")
-		assert(names.transcript != names.sidecar, "two artifacts under one name")
-		assert(names.engine_output != names.sidecar, "two artifacts under one name")
 	}
 
 	stem := path_stem_of(source)
@@ -177,24 +202,18 @@ stem_of :: proc(source: string) -> string {
 // transcibr windows over one Recording under one temporary name had one
 // window's rename publishing the file the other was still writing.
 //
+// WHERE THAT CLAIM IS CHECKED is naming_test, over three destinations, and not
+// in a `defer` here -- which is what it was. The property is about the FORMAT
+// STRING below and not about any argument: for every input this procedure can be
+// handed, an answer that appends to the destination has the destination's own
+// last separator, so a run-time assertion on it could never fire. What it
+// guarded was an EDIT to the format, and three destinations guard that exactly
+// as well as infinitely many, because the answer does not depend on the input.
+//
 // The caller owns the answer and frees it with `delete` and the same allocator.
 part_of :: proc(destination: string, pid: int, allocator: mem.Allocator) -> (part: string) {
 	assert(len(destination) > 0, "there is nowhere here for an artifact to be published to")
 	assert(allocator.procedure != nil, "the name outlives this procedure and needs an allocator")
-	// The claim the whole paragraph above rests on, in checked code rather than
-	// in prose (A6): the last separator of either kind is where it was, so the
-	// temporary file is in the artifact's own directory. It is the one thing that
-	// could be broken by an innocent edit to the format below.
-	defer {
-		assert(
-			strings.last_index_byte(part, '\\') == strings.last_index_byte(destination, '\\'),
-			"an artifact is written under a temporary name in another directory",
-		)
-		assert(
-			strings.last_index_byte(part, '/') == strings.last_index_byte(destination, '/'),
-			"an artifact is written under a temporary name in another directory",
-		)
-	}
 
 	return fmt.aprintf("%s.%d.part", destination, pid, allocator = allocator)
 }
@@ -210,7 +229,5 @@ quarantined :: proc(path: string, allocator: mem.Allocator) -> string {
 	assert(len(path) > 0, "there is nothing here to move aside")
 	assert(allocator.procedure != nil, "the name outlives this procedure and needs an allocator")
 
-	aside := strings.concatenate({path, QUARANTINE_SUFFIX}, allocator)
-	assert(len(aside) > len(path), "a quarantined file was named the same as the original")
-	return aside
+	return strings.concatenate({path, QUARANTINE_SUFFIX}, allocator)
 }

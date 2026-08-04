@@ -19,18 +19,21 @@ import "core:strings"
 // does not understand answers `.Nothing` and degrades the progress bar instead
 // of failing the run (ADR-0012).
 //
-// WHICH PUTS THIS FILE UNDER A1's AVERAGE, at 19 assertions across 10
+// WHICH PUTS THIS FILE UNDER A1's AVERAGE, at 21 assertions across 11
 // procedures, and the carve-out is recorded here rather than left for a reader
-// to work out. Four of those procedures -- read_progress, read_banner,
-// samples_ms, seconds_ms -- carry NONE, and every one of them takes a string the
-// Engine wrote. A8 forbids asserting on it, so an assertion in any of them would
-// be a line the Engine can crash this program with, which is the one thing this
-// whole file exists to prevent. A1's own wording is the licence: "pure leaf math
-// may carry fewer when its callers carry more", and the callers do -- `checked`
-// holds seven over what these four hand back, and `transcribe_bound_ms` and
-// `shown` next door hold the rest of the way in. Raising the count here would
-// mean putting assertions where A8 forbids them, which is a worse file that
-// counts better.
+// to work out. Six of those procedures -- read_engine_line, read_progress,
+// read_banner, samples_ms, seconds_ms and ascii_only -- carry NONE, and every
+// one of them takes a string somebody outside this program wrote. A8 forbids
+// asserting on it, so an assertion in any of them would be a line the Engine can
+// crash this program with, which is the one thing this whole file exists to
+// prevent. A1's own wording is the licence: "pure leaf math may carry fewer when
+// its callers carry more", and the callers do -- `checked` holds seven over what
+// these hand back, and `transcribe_bound_ms` and `shown` next door hold the rest
+// of the way in. Raising the count here would mean putting assertions where A8
+// forbids them, which is a worse file that counts better.
+//
+// The numbers above were 19 and 10 and named four, and none of the three was
+// right; they are counted here rather than remembered.
 
 // What the Engine is told to do with one Recording's audio.
 //
@@ -301,18 +304,31 @@ read_progress :: proc(line: string) -> (said: Engine_Line, ok: bool) {
 // it accepts a leading sign, so a negative percentage arrives as a negative
 // number rather than as a refusal; and it OVERFLOWS SILENTLY -- `value *= base`
 // with no check -- so a forty-digit number answers something arbitrary and
-// reports success. Every one of those is a byte the Engine can write.
+// reports success. Every one of those is a byte the Engine can write, and every
+// one of them is a byte a corrupt Sidecar can carry too.
 //
-// The digit ceiling is what closes the overflow, before the multiplication
-// rather than after it: see MAX_NATURAL_DIGITS.
-@(private)
-read_natural :: proc(text: string) -> (value: i64, ok: bool) {
-	if len(text) == 0 || len(text) > MAX_NATURAL_DIGITS {
+// EXPORTED, AND THE CEILING IS THE CALLER'S. `transcibr:artifact` had a
+// character-for-character copy of this loop down to the assertion string,
+// because a Sidecar's reader wants exactly these three refusals -- and it could
+// not simply call this one, because the ceilings are not the same number and
+// cannot be: twelve digits is a bound on what this file's arithmetic does with a
+// reading, and a Sidecar carries a nanosecond moment, which is nineteen. So the
+// ceiling is a parameter with this file's own as its default, and the overflow
+// check is done BEFORE the multiplication rather than left to the ceiling, which
+// is the whole difference between a refusal and a wrap once nineteen digits are
+// allowed.
+read_natural :: proc(text: string, max_digits := MAX_NATURAL_DIGITS) -> (value: i64, ok: bool) {
+	assert(max_digits > 0, "a number of no digits at all is not a number")
+
+	if len(text) == 0 || len(text) > max_digits {
 		return 0, false
 	}
 	for at in 0 ..< len(text) {
 		digit := text[at]
 		if digit < '0' || digit > '9' {
+			return 0, false
+		}
+		if value > (max(i64) - i64(digit - '0')) / 10 {
 			return 0, false
 		}
 		value = value * 10 + i64(digit - '0')
@@ -329,7 +345,9 @@ read_natural :: proc(text: string) -> (value: i64, ok: bool) {
 // i64's 9.2 x 10^18. A number too large to be meant is then refused on its
 // VALUE by whichever reader wanted it, which is a refusal, rather than wrapped
 // into a plausible small one, which is not.
-@(private)
+//
+// Exported with read_natural, because it is that procedure's default and a
+// caller in another package cannot be handed a default it cannot see.
 MAX_NATURAL_DIGITS :: 12
 
 #assert(MAX_NATURAL_DIGITS < 19)

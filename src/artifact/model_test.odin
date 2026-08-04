@@ -1,6 +1,7 @@
 package artifact
 
 import "core:crypto/hash"
+import "core:encoding/hex"
 import "core:fmt"
 import "core:os"
 import "core:strings"
@@ -93,7 +94,10 @@ a_model_bigger_than_one_read_hashes_the_same_as_the_whole_of_it_at_once :: proc(
 	//
 	// Compared against the one-shot hash of the same bytes: the same algorithm
 	// through a different entry point, which is an answer this package did not
-	// compute.
+	// compute. THE INDEPENDENCE IS ABOUT THE HASH and not about the hexadecimal,
+	// which used to be written out a third time here by hand; what pins the
+	// rendering is the two published constants above and in sidecar_test, both
+	// compared against what identify_model really produced.
 	directory := scratch(t, "model-big")
 	defer delete(directory, context.allocator)
 	defer remove_scratch(directory)
@@ -113,17 +117,14 @@ a_model_bigger_than_one_read_hashes_the_same_as_the_whole_of_it_at_once :: proc(
 
 	at_once := hash.hash_bytes(.SHA256, transmute([]u8)content, context.allocator)
 	defer delete(at_once, context.allocator)
-	expected := strings.builder_make(context.allocator)
-	defer strings.builder_destroy(&expected)
-	for b in at_once {
-		fmt.sbprintf(&expected, "%02x", b)
-	}
+	expected := hex.encode(at_once, context.allocator)
+	defer delete(expected, context.allocator)
 
 	identified, fault := identify_model(path, context.allocator)
 	defer destroy_model(identified, context.allocator)
 
 	testing.expect_value(t, fault, Model_Fault.None)
-	testing.expect_value(t, string(identified.digest), strings.to_string(expected))
+	testing.expect_value(t, string(identified.digest), string(expected))
 	testing.expect_value(t, identified.bytes, i64(len(content)))
 }
 

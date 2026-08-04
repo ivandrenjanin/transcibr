@@ -1,11 +1,11 @@
 package artifact
 
 import "core:crypto/sha2"
+import "core:encoding/hex"
 import "core:fmt"
 import "core:io"
 import "core:mem"
 import "core:os"
-import "core:strings"
 import "transcibr:process"
 
 // This file settles what the Model IS -- where it really lives, whether the
@@ -232,15 +232,12 @@ hex_digest :: proc(context_256: ^sha2.Context_256, allocator: mem.Allocator) -> 
 
 	sum: [sha2.DIGEST_SIZE_256]u8
 	sha2.final(context_256, sum[:])
-
-	out := strings.builder_make(allocator)
-	defer strings.builder_destroy(&out)
-	for b in sum {
-		// Lower case, which is what read_sidecar's own hexadecimal reader accepts
-		// and nothing else -- one spelling, so a Sidecar always reads back.
-		fmt.sbprintf(&out, "%02x", b)
-	}
-	return Digest(strings.clone(strings.to_string(out), allocator))
+	// `core:encoding/hex` and not thirty-two `sbprintf`s into a builder, which is
+	// what this was: twenty lines and five allocations to render sixty-four
+	// characters. LOWER CASE, which is `encode` rather than `encode_upper`, and it
+	// is the only spelling read_sidecar's own hexadecimal reader accepts -- one
+	// spelling, so a Sidecar always reads back.
+	return Digest(string(hex.encode(sum[:], allocator)))
 }
 
 // What each Model fault reads as, without the file's name -- model_error_message

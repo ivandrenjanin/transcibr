@@ -3,6 +3,7 @@ package artifact
 import "core:fmt"
 import "core:mem"
 import "core:strings"
+import "transcibr:process"
 
 // This file holds the Sidecar: what it records, the bytes it is written as, and
 // what makes a Transcript's staleness knowable when settings change (ADR-0003).
@@ -18,7 +19,7 @@ import "core:strings"
 // and is refused whole the moment a byte of it is not what transcibr writes.
 // `write_yaml_quoted` next door is a renderer for a document; this is a record.
 //
-// WHICH PUTS THIS FILE UNDER A1's AVERAGE, at 24 assertions across 19
+// WHICH PUTS THIS FILE UNDER A1's AVERAGE, at 22 assertions across 17
 // procedures, and the carve-out is recorded here rather than left for a reader
 // to work out. Six carry none, and each is one of three shapes. `read_field` and
 // `key_named` take a line off a disk, which is A8's own prohibition -- an
@@ -358,7 +359,12 @@ sidecar_text :: proc(s: Sidecar, allocator: mem.Allocator) -> (written: string) 
 		assert(strings.has_suffix(written, "\n"), "a sidecar whose last field is not a whole line")
 	}
 
-	out := strings.builder_make(allocator)
+	// Room for a whole record up front, because the alternative is measured: a
+	// builder grown from nothing takes seven allocations to reach the 338 bytes
+	// the golden record is, and one is one. Five hundred and twelve is a comfortable
+	// ceiling on a Sidecar whose paths and prompt are ordinary, and a longer one
+	// still works -- it grows.
+	out := strings.builder_make(0, 512, allocator)
 	defer strings.builder_destroy(&out)
 
 	strings.write_string(&out, SIDECAR_VERSION_LINE)
@@ -474,7 +480,7 @@ read_sidecar :: proc(text: string, allocator: mem.Allocator) -> (s: Sidecar, ok:
 	// Both ends of "this is a whole record" (A3): nothing after the last newline,
 	// which is what a truncated file leaves, and every field present, which is
 	// what a record written by another build does not have.
-	if len(rest) > 0 || seen != every_key() {
+	if len(rest) > 0 || seen != EVERY_KEY {
 		return not_a_sidecar(s, allocator)
 	}
 	return s, true
@@ -505,16 +511,18 @@ destroy_sidecar :: proc(s: Sidecar, allocator: mem.Allocator) {
 	delete(s.prompt, allocator)
 }
 
-// Every member of Key, worked out rather than spelled, so a field added to the
-// record cannot be left out of the "is this whole" check.
+// Every member of Key, so a field added to the record cannot be left out of the
+// "is this whole" check.
+//
+// The COMPLEMENT OF THE EMPTY SET, which is one operator and is settled by the
+// compiler. This was a procedure that looped over `Key` adding a member at a
+// time and then asserted it had ended up with as many members as `Key` has --
+// ten lines and a run-time claim for something `~` answers, and "as many as
+// there are" is the one thing `~` cannot get wrong. There is no `#assert` under
+// this for the same reason: `card` is not constant, so the claim could only be
+// re-made at run time, and there is nothing left for it to be about.
 @(private)
-every_key :: proc() -> (all: bit_set[Key]) {
-	for key in Key {
-		all += {key}
-	}
-	assert(card(all) == len(Key), "a key went missing between the enumeration and the set")
-	return
-}
+EVERY_KEY :: ~bit_set[Key]{}
 
 // The next whole line, and whether there was one. A trailing fragment with no
 // newline behind it is left where it is, which is how read_sidecar tells a
@@ -591,16 +599,16 @@ store :: proc(s: ^Sidecar, key: Key, value: string, allocator: mem.Allocator) ->
 	case .Prompt:
 		s.prompt, ok = unquoted(value, allocator)
 	case .Model_Bytes:
-		s.model_bytes, ok = whole(value)
+		s.model_bytes, ok = process.read_natural(value, MAX_SIDECAR_DIGITS)
 	case .Source_Bytes:
-		s.source_bytes, ok = whole(value)
+		s.source_bytes, ok = process.read_natural(value, MAX_SIDECAR_DIGITS)
 	case .Source_Modified_Ns:
-		s.source_modified_ns, ok = whole(value)
+		s.source_modified_ns, ok = process.read_natural(value, MAX_SIDECAR_DIGITS)
 	case .Container_Ms:
-		s.container_ms, ok = whole(value)
+		s.container_ms, ok = process.read_natural(value, MAX_SIDECAR_DIGITS)
 	case .Beam:
 		beam: i64
-		beam, ok = whole(value)
+		beam, ok = process.read_natural(value, MAX_SIDECAR_DIGITS)
 		ok = ok && beam <= i64(max(u32))
 		s.beam = u32(beam) if ok else 0
 	}
@@ -623,7 +631,11 @@ unquoted :: proc(value: string, allocator: mem.Allocator) -> (text: string, ok: 
 	}
 	body := value[1:len(value) - 1]
 
-	out := strings.builder_make(allocator)
+	// The body's own length is an exact upper bound on the answer: every escape
+	// this reader understands is two bytes or four and produces one. So the
+	// builder never grows, and it is one allocation rather than however many
+	// doubling from nothing takes.
+	out := strings.builder_make(0, len(body), allocator)
 	defer strings.builder_destroy(&out)
 	for at := 0; at < len(body); at += 1 {
 		if body[at] == '"' || body[at] < 0x20 || body[at] == 0x7F {
@@ -700,37 +712,19 @@ hex :: proc(digit: u8) -> (value: u8, ok: bool) {
 }
 
 // The most decimal digits a number in a Sidecar may carry: nineteen, which is
-// what `max(i64)` takes. A twentieth digit cannot fit whatever it says, and the
-// overflow check below is what refuses the nineteen-digit numbers that do not.
+// what `max(i64)` takes. A twentieth digit cannot fit whatever it says, and
+// read_natural's overflow check is what refuses the nineteen-digit numbers that
+// do not.
+//
+// A CEILING AND NOT A READER. `whole` used to live here, and it was
+// `process.read_natural` written out a second time down to the assertion string
+// -- because a Sidecar's reader wants exactly the three refusals that one makes:
+// no `_` as a digit separator, no leading sign, and no silent overflow, all of
+// which are bytes a corrupt Sidecar can carry, and a number that wrapped would
+// be a plausible small count that compares equal to another one. What is
+// genuinely this format's own is only the ceiling, because that file's twelve is
+// a bound on ITS arithmetic and a Sidecar carries a nanosecond moment.
 @(private)
 MAX_SIDECAR_DIGITS :: 19
 
 #assert(MAX_SIDECAR_DIGITS == len("9223372036854775807"))
-
-// A whole non-negative number, strictly.
-//
-// Stricter than `strconv.parse_int` for the reasons `transcibr:process`'s own
-// reader gives: that procedure accepts `_` as a digit separator, accepts a
-// leading sign, and OVERFLOWS SILENTLY -- and every one of those is a byte a
-// corrupt Sidecar can carry. A number that wrapped would be a plausible small
-// count, and a plausible small count compares equal to another one.
-@(private)
-whole :: proc(text: string) -> (value: i64, ok: bool) {
-	if len(text) == 0 || len(text) > MAX_SIDECAR_DIGITS {
-		return 0, false
-	}
-	for at in 0 ..< len(text) {
-		digit := text[at]
-		if digit < '0' || digit > '9' {
-			return 0, false
-		}
-		// BEFORE the multiplication and not after it, which is the whole
-		// difference between a refusal and a wrap.
-		if value > (max(i64) - i64(digit - '0')) / 10 {
-			return 0, false
-		}
-		value = value * 10 + i64(digit - '0')
-	}
-	assert(value >= 0, "a run of decimal digits added up to a negative number")
-	return value, true
-}
