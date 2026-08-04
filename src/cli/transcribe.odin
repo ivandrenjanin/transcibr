@@ -57,12 +57,9 @@ transcribe_one :: proc(arguments: []string) -> int {
 		return OPERATING_ERROR
 	}
 
-	identified, unidentified := artifact.identify_model(o.model, context.allocator)
+	identified, named := model_identified(o.model)
 	defer artifact.destroy_model(identified, context.allocator)
-	if unidentified != .None {
-		message := artifact.model_error_message(unidentified, o.model, context.allocator)
-		defer delete(message, context.allocator)
-		fmt.eprintln(message)
+	if !named {
 		return OPERATING_ERROR
 	}
 	return run_one(&group, o, identified)

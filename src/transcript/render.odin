@@ -31,6 +31,32 @@ GENERATOR :: "transcibr"
 @(private)
 FENCE :: "---"
 
+// The first field of the front matter, and the one a Transcript is RECOGNISED
+// by. Named rather than spelled at the write below, because `written_by_this_-`
+// `program` is built out of the same three facts and a second copy of any of
+// them would go stale in silence.
+@(private)
+GENERATOR_KEY :: "generator"
+
+// The bytes a Transcript this program wrote OPENS with: the fence, the first
+// field's key, and the name `version.banner` puts before the space and the
+// number -- so a Transcript an OLDER transcibr wrote is still transcibr's, and a
+// generator merely beginning with the same letters is not.
+TRANSCRIPT_PREFIX :: FENCE + "\n" + GENERATOR_KEY + ": \"" + GENERATOR + " "
+
+// Whether these bytes open a Transcript this program wrote. A PREFIX and never
+// a search: a hand-authored note that quotes a Transcript somewhere in its body
+// carries the same bytes, and only a file that opens with them was written here
+// (ADR-0008).
+//
+// Exported from the package that WRITES the bytes, so the question and the
+// answer cannot drift: a reader that kept its own copy of the marker would go on
+// recognising nothing after a renderer change, and refuse every Recording in a
+// corpus for having a stranger's Markdown beside it.
+written_by_transcibr :: proc(head: string) -> bool {
+	return strings.has_prefix(head, TRANSCRIPT_PREFIX)
+}
+
 // A word rather than an empty value or a missing key: those two read as
 // "transcibr forgot" where this reads as "nobody knew" (ADR-0003).
 UNKNOWN :: "unknown"
@@ -237,7 +263,7 @@ write_front_matter :: proc(out: ^strings.Builder, rc: Render_Context, allocator:
 
 	strings.write_string(out, FENCE)
 	strings.write_byte(out, '\n')
-	write_yaml_field(out, "generator", generator)
+	write_yaml_field(out, GENERATOR_KEY, generator)
 	write_yaml_field(out, "source", rc.source_display)
 	write_yaml_field(out, "generated", generated)
 	write_yaml_field(out, "engine", rc.engine_version)

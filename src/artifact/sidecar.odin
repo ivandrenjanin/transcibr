@@ -147,8 +147,8 @@ changed :: proc(recorded, current: Sidecar) -> (answer: Change) {
 
 // This format writes a run of decimal digits with NO SIGN, and `os.stat` really
 // does date real files before 1970. Why the whole record rather than the one
-// field that has an outside: ADR-0024.
-@(private)
+// field that has an outside: ADR-0024. Planning asks it of the Sidecar a
+// Recording WOULD get, which is the only place it is cheap to answer (ADR-0026).
 recordable :: proc(s: Sidecar) -> bool {
 	if s.model_bytes < 0 {
 		return false

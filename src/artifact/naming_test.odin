@@ -70,6 +70,36 @@ the_stem_a_recording_is_named_from_is_the_one_the_shell_uses_too :: proc(t: ^tes
 	}
 }
 
+// The two halves of one cut: whatever a path is, its stem and its extension
+// laid end to end are the name it actually carries.
+@(test)
+a_stem_and_an_extension_are_the_two_halves_of_one_cut :: proc(t: ^testing.T) {
+	testing.expect_value(t, extension_of("C:\\clips\\talk.mp4"), ".mp4")
+	testing.expect_value(t, extension_of("C:\\clips\\talk.tar.gz"), ".gz")
+	testing.expect_value(t, extension_of("D:\\recordings\\2026-08-02"), "")
+	testing.expect_value(t, extension_of("C:\\clips\\.talk"), "")
+	testing.expect_value(t, extension_of("C:\\clips\\"), "")
+	testing.expect_value(t, extension_of(""), "")
+
+	for named in ([?]string {
+			"C:\\clips\\talk.mp4",
+			"C:\\clips\\talk.tar.gz",
+			"D:\\recordings\\2026-08-02",
+			"C:\\clips\\.talk",
+			"talk.mkv",
+			"C:/clips/2026.08/talk",
+		}) {
+		joined := strings.concatenate({stem_of(named), extension_of(named)}, context.allocator)
+		defer delete(joined, context.allocator)
+		testing.expectf(
+			t,
+			strings.has_suffix(named, joined),
+			"%q cut into a stem and an extension that do not add back up to it",
+			named,
+		)
+	}
+}
+
 @(test)
 a_path_that_names_no_file_makes_no_artifacts_and_allocates_nothing :: proc(t: ^testing.T) {
 	for named in ([?]string{"C:\\clips\\", "", "/", "D:/"}) {

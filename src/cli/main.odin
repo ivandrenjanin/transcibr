@@ -7,6 +7,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:time"
+import "transcibr:artifact"
 import "transcibr:transcript"
 import "transcibr:version"
 
@@ -38,6 +39,18 @@ USAGE ::
       transcribe one recording, write its transcript, its retained engine
       output and its sidecar beside the recording, and print the transcript's
       path. Spends GPU time.
+
+  transcibr-cli --plan <folder> --model-file <path>
+                [--profile ` +
+	transcript.PROFILE_CHOICE +
+	`] [--engine-version <version>] [--prompt <text>]
+                [--follow-reparse-points ` +
+	FOLLOW_CHOICE +
+	`]
+      walk the folder and print what each recording found under it would get,
+      and why. Spends no GPU time and writes nothing beside any recording.
+      --engine-version left out means "not asked", not "unknown": a plan that
+      cannot name its engine never reports the engine as having changed.
 
   transcibr-cli --help
       print this and exit.
@@ -71,6 +84,9 @@ main :: proc() {
 	}
 	if os.args[1] == TRANSCRIBE {
 		os.exit(transcribe_one(os.args[1:]))
+	}
+	if os.args[1] == PLAN {
+		os.exit(plan_batch(os.args[1:]))
 	}
 	os.exit(re_render(os.args[1:]))
 }
@@ -230,6 +246,29 @@ read_option :: proc(o: ^Options, name, value: string) -> (ok: bool) {
 		return refuse("unknown option %q.", name)
 	}
 	return true
+}
+
+// The Model, identified once per run, with its refusal already reported. Both
+// commands that spend a Model do exactly this and nothing else with the fault.
+//
+// The Model comes back either way and the CALLER frees it: destroying it has to
+// be deferred where it is used and not where it was read, and a procedure that
+// owned the defer would free it before the run that needs it.
+@(private)
+model_identified :: proc(path: string) -> (identified: artifact.Model, ok: bool) {
+	assert(len(path) > 0, "there is no Model here to identify")
+
+	unidentified: artifact.Model_Fault
+	identified, unidentified = artifact.identify_model(path, context.allocator)
+	if unidentified == .None {
+		return identified, true
+	}
+
+	message := artifact.model_error_message(unidentified, path, context.allocator)
+	defer delete(message, context.allocator)
+	assert(len(message) > 0, "a Model was refused and nothing said why")
+	fmt.eprintln(message)
+	return identified, false
 }
 
 // Hands back `false` so a caller can refuse in the one line it took to notice.
