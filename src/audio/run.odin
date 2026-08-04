@@ -330,7 +330,10 @@ Job :: struct {
 // find.
 //
 // A8: every refusal here is an operating error against this one Recording, and
-// the Batch carries on.
+// the Batch carries on. THAT IS WHY THE CACHE IS NOT CHECKED HERE: a cache that
+// will not open is not a fact about this Recording, it fails every Recording in
+// the Batch identically, and it is `open_cache`'s answer in its own vocabulary.
+// A Batch calls that once -- `sweep_cache` does -- before the first extraction.
 extract :: proc(
 	group: ^child.Job_Object,
 	tools: Tools,
@@ -345,9 +348,6 @@ extract :: proc(
 	assert(len(job.name) > 0, "a Recording with no artifact stem has nowhere to put its audio")
 	assert(allocator.procedure != nil, "an extraction needs an allocator to work in")
 
-	if opening := open_cache(job.cache); opening.fault != .None {
-		return {}, opening
-	}
 	if _, unsettled := settle(job.source, job.planned, MINIMUM_SETTLING_GAP_NS, allocator);
 	   unsettled.fault != .None {
 		return {}, unsettled
@@ -421,26 +421,41 @@ produce :: proc(
 	return Extracted{audio = audio, container_ms = container_ms, audio_ms = audio_ms}, Error{}
 }
 
-// The scratch cache, checked and created.
+// The scratch cache, checked and created. ONCE PER BATCH and never per
+// Recording: what it answers is about the whole cache, its answer is the same
+// for every Recording in the Batch, and a Batch whose cache will not open has
+// nowhere to put any Recording's audio. `extract` does not call it.
 //
-// The ASCII rule first, because it is ADR-0002's and it is about the whole cache
-// rather than about anything in it -- and because a directory happily created
-// under a non-ASCII path is exactly the failure that then shows up three stages
-// later as an Engine that produced nothing.
-@(private)
-open_cache :: proc(cache: string) -> Error {
+// THE RESOLVED PATH IS WHAT IS CHECKED, which is ADR-0002's own wording -- it
+// asks that `doctor` fail "when the *resolved* cache or model path contains a
+// non-ASCII byte" -- and the scenario it names is a non-ASCII Windows account
+// name inside %LOCALAPPDATA%. A relative cache path is perfectly ASCII and
+// resolves under one, so checking the string as handed in answers about a path
+// nothing will ever open.
+//
+// The ASCII rule comes before the directory is created, because a directory
+// happily created under a non-ASCII path is exactly the failure that then shows
+// up three stages later as an Engine that produced nothing.
+open_cache :: proc(cache: string, allocator: mem.Allocator) -> Cache_Fault {
 	assert(len(cache) > 0, "there is no scratch cache here to open")
+	assert(allocator.procedure != nil, "resolving a path needs an allocator to resolve it into")
 
-	if !ascii_only(cache) {
-		return Error{fault = .Cache_Path_Not_Ascii}
+	resolved, unresolvable := os.get_absolute_path(cache, allocator)
+	if unresolvable != nil {
+		return .Unusable
+	}
+	defer delete(resolved, allocator)
+
+	if !ascii_only(resolved) {
+		return .Path_Not_Ascii
 	}
 	if os.make_directory_all(cache) != nil && !os.exists(cache) {
 		// Both halves (A3): a cache that already exists is the ordinary case
 		// and is not a failure, and one that could be created neither now nor
 		// before is.
-		return Error{fault = .Cache_Unusable}
+		return .Unusable
 	}
-	return Error{}
+	return .None
 }
 
 // Sweeps the scratch cache at Batch start, and answers how many files went.
@@ -456,16 +471,17 @@ sweep_cache :: proc(
 	allocator: mem.Allocator,
 ) -> (
 	taken: int,
-	err: Error,
+	fault: Cache_Fault,
 ) {
+	assert(len(cache) > 0, "there is no scratch cache here to sweep")
 	assert(allocator.procedure != nil, "a listing needs an allocator to be read into")
 
-	if opening := open_cache(cache); opening.fault != .None {
+	if opening := open_cache(cache, allocator); opening != .None {
 		return 0, opening
 	}
 	listing, unreadable := os.read_all_directory_by_path(cache, allocator)
 	if unreadable != nil {
-		return 0, Error{fault = .Cache_Unusable}
+		return 0, .Unusable
 	}
 	defer os.file_info_slice_delete(listing, allocator)
 
@@ -480,7 +496,8 @@ sweep_cache :: proc(
 		}
 	}
 	assert(taken <= len(chosen), "the sweep removed more files than it chose")
-	return taken, Error{}
+	assert(taken >= 0, "the sweep removed a negative number of files")
+	return taken, .None
 }
 
 // A directory listing as the sweep sees it: files only, each with its age.

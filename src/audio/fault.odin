@@ -43,27 +43,107 @@ import "transcibr:process"
 //
 // A8 runs through all of it. An exit code, a probe's answer, a produced WAV, a
 // source that vanished mid-Batch, a cache directory that will not list: every
-// one is outside this program, so every one is refused through `Error` and
-// reported against the Recording that caused it. The Batch carries on
-// (ADR-0002).
+// one is outside this program, so every one is refused through a return value
+// and none of them reaches an assertion.
+//
+// TWO VOCABULARIES AND NOT ONE, because they answer about different things and
+// dispose of them differently. `Error` is a Recording's: it names the Recording
+// and the Batch carries on (ADR-0002). `Cache_Fault` is the Batch's: it names
+// the scratch cache, it is answered once before any Recording, and the Batch
+// does not start.
+
+// How the scratch cache itself could not be used.
+//
+// A SECOND VOCABULARY, AND A BATCH-LEVEL ONE. These two used to be members of
+// `Fault` next door, and both of the things `Fault`'s own comment claims about
+// every one of its members were false of them. The culprit is the scratch cache
+// and not a Recording, so rendering one through error_message -- whose one job
+// is documented as NAMING THE RECORDING -- meant handing the cache directory in
+// the Recording's slot, at Batch start, before any Recording exists. And the
+// disposition is not "this Recording fails and the Batch carries on": there is
+// nowhere for ANY Recording's audio to go, so the Batch does not start.
+//
+// ADR-0002 wants this said loudly and once, in `doctor`. THERE IS NO `doctor` IN
+// `src/` YET (issue #14), so what this PR does instead is check it once at Batch
+// start rather than once per Recording, in the vocabulary `doctor` will use when
+// it arrives -- and record the substitution rather than let N identical
+// per-Recording failures stand in for it silently.
+Cache_Fault :: enum u8 {
+	None = 0,
+	// ADR-0002's own refusal, checked on the RESOLVED path (see open_cache) and
+	// before any work rather than where it bites: the Engine cannot open a path
+	// carrying a byte outside ASCII.
+	Path_Not_Ascii,
+	// It could be neither created nor listed, or it would not resolve.
+	Unusable,
+}
+
+// What each cache fault reads as, without the directory's name --
+// cache_error_message supplies that, so no entry here can forget to.
+//
+// An enumerated array for the reason every FAULT table in this repository is
+// one: add a member and leave this alone and the COMPILER refuses the build.
+@(private, rodata)
+CACHE_FAULT := [Cache_Fault]string {
+	// `.None` is the success value and is not a fault. It is the ONLY empty row
+	// in this table, and cache_fault_says refuses it by name.
+	.None           = "",
+	.Path_Not_Ascii = "the scratch cache is under a path the Engine cannot open, because it carries a byte outside ASCII",
+	.Unusable       = "the scratch cache could not be created or listed",
+}
+
+// One cache fault's sentence, checked. The one place the table is read.
+@(private)
+cache_fault_says :: proc(fault: Cache_Fault) -> string {
+	assert(fault != .None, "the success value is not a fault and says nothing")
+
+	says := CACHE_FAULT[fault]
+	assert(len(says) > 0, "a fault was added to Cache_Fault without a row in CACHE_FAULT")
+	return says
+}
+
+// Renders a refused scratch cache as a line, NAMING THE DIRECTORY and saying
+// that the Batch does not start.
+//
+// The path is printed with %q for the reason error_message gives below.
+//
+// The allocator is explicit and never defaulted; free the answer with `delete`
+// and the same one.
+cache_error_message :: proc(
+	fault: Cache_Fault,
+	cache: string,
+	allocator: mem.Allocator,
+) -> string {
+	assert(fault != .None, "there is no message for a scratch cache that opened")
+	assert(
+		allocator.procedure != nil,
+		"the message outlives this procedure and needs an allocator",
+	)
+
+	message := fmt.aprintf(
+		"%q: %s -- the Batch cannot start",
+		cache,
+		cache_fault_says(fault),
+		allocator = allocator,
+	)
+	assert(len(message) > 0, "a refusal rendered as nothing at all")
+	return message
+}
 
 // How a Recording's audio could not be produced.
 //
 // A FOURTH FAULT VOCABULARY IN THIS REPOSITORY, and it is deliberately the small
-// version of the shape the other three carry. `transcibr:child` says the near-
-// clone in it "is the last one" and names the trigger for moving the shape into
-// a package both import; this is that trigger arriving. What is here is the
-// minimum that reports a failure a user can act on -- an enumeration, a table of
-// sentences, one checked reader and one renderer -- and deliberately not the
-// error record with a borrowed culprit or the disposition table, because the
-// culprit is always the Recording, which the renderer is handed, and the
+// version of the shape the other three carry: an enumeration, a table of
+// sentences, one checked reader and one renderer, and deliberately not the error
+// record with a borrowed culprit or the disposition table. Both omissions rest
+// on the same claim, and the claim is now true rather than merely asserted --
+// the culprit is always the Recording, which the renderer is handed, and the
 // disposition is always the same: this Recording fails and the Batch carries on.
+// What made it false was the pair of cache faults above, which have moved out.
+//
+// ADR-0018 records where the debt for the fourth copy actually belongs.
 Fault :: enum u8 {
 	None = 0,
-	// ADR-0002's own refusal, and it is checked before any work rather than
-	// where it bites: the Engine cannot open a path carrying a non-ASCII byte.
-	Cache_Path_Not_Ascii,
-	Cache_Unusable,
 	// The Recording is not there, or will not answer a stat.
 	Source_Unreadable,
 	// Something is still writing it (spec story 52).
@@ -130,8 +210,6 @@ FAULT := [Fault]string {
 	.None                      = "",
 	.Probe_Unreadable          = "",
 	.Audio_Malformed           = "",
-	.Cache_Path_Not_Ascii      = "the scratch cache is under a path the Engine cannot open, because it carries a byte outside ASCII",
-	.Cache_Unusable            = "the scratch cache could not be created or listed",
 	.Source_Unreadable         = "the Recording could not be read",
 	.Still_Being_Written       = "the Recording is still being written to",
 	.Still_Unsettled           = "the Recording could not be shown to have stopped changing",
@@ -219,8 +297,6 @@ error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> s
 			allocator = allocator,
 		)
 	case .None,
-	     .Cache_Path_Not_Ascii,
-	     .Cache_Unusable,
 	     .Source_Unreadable,
 	     .Still_Being_Written,
 	     .Still_Unsettled,

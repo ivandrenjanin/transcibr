@@ -75,6 +75,28 @@ anything — so a decision landing in `src/cli` turns the sweep red. `src/audio`
 and is not listed, so a decision landing in `run.odin` fails nothing at all. What holds the line here
 is review, and review is what it costs.
 
+## The scratch cache is refused in its own vocabulary, and `doctor` is what is missing
+
+`Fault` reports one Recording's failure. Its own comment justifies leaving out the borrowed-culprit
+record and the disposition table on the grounds that "the culprit is always the Recording" and "the
+disposition is always the same". Two of its members made both claims false: `Cache_Path_Not_Ascii`
+and `Cache_Unusable` are facts about the scratch cache, they are the same answer for every Recording
+in the Batch, and they mean the Batch has nowhere to put any audio at all. Rendering one through
+`error_message` — whose one documented job is *naming the Recording* — meant handing the cache
+directory in the Recording's slot, at Batch start, before any Recording exists.
+
+They are now `Cache_Fault`, with a table, a checked reader and a renderer that names the **directory**
+and says the Batch cannot start. `open_cache` and `sweep_cache` answer in it; `extract` does not call
+`open_cache` at all.
+
+**ADR-0002 asks for this loudly and once, in `doctor`, and there is no `doctor` in `src/` yet
+(issue #14).** What this ticket does instead is check it once at Batch start rather than once per
+Recording, in the vocabulary `doctor` will use when it arrives. That is a substitution, and it is
+recorded here rather than left as N identical per-Recording failures standing in for one Batch-level
+one. ADR-0002 also asks that the check be on the **resolved** path, and it now is: the scenario that
+decision names is a non-ASCII Windows account name inside `%LOCALAPPDATA%`, which a perfectly ASCII
+relative cache path resolves straight into.
+
 **It also brings a fourth copy of the fault-report shape**, which `src/child` says out loud is one
 too many: "a third copy is the point at which the shape moves into a package of its own and both of
 these import it". That trigger did **not** fire here — it fired one ticket earlier, and this records
