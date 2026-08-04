@@ -29,8 +29,17 @@ lines_of :: proc(
 	}
 }
 
+// The presence side of the assertion above (rule A3). `delete` through a nil
+// allocator is not a crash: `mem_free_with_size` returns success having freed
+// nothing, so the pair that hands memory back is the one place where a missing
+// allocator is silent.
 @(private)
 free_lines :: proc(lines: ^[dynamic]string, allocator: mem.Allocator) {
+	assert(
+		allocator.procedure != nil,
+		"the lines were cloned through an allocator and have to go back through one",
+	)
+
 	for line in lines {
 		delete(line, allocator)
 	}
