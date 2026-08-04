@@ -17,6 +17,7 @@ Fault :: enum u8 {
 	Not_Recordable,
 	Output_Unreadable,
 	Output_Quarantined,
+	Output_Not_Quarantined,
 	Nothing_Transcribed,
 	Not_Written,
 	Not_Placed,
@@ -113,7 +114,9 @@ rendered_and_placed :: proc(
 }
 
 // Why output that will not parse is quarantined and re-run, while output that
-// parsed and said nothing fails the Recording: ADR-0002.
+// parsed and said nothing fails the Recording: ADR-0002. Why a quarantine that
+// Windows refuses is reported under a fault of its own rather than as the move
+// that did not happen: ADR-0024.
 @(private)
 disposed_of :: proc(
 	output: string,
@@ -124,7 +127,9 @@ disposed_of :: proc(
 
 	switch transcript.disposition_of(parse_err.fault) {
 	case .Quarantine_And_Rerun:
-		quarantine(output, allocator)
+		if !quarantine(output, allocator) {
+			return Error{fault = .Output_Not_Quarantined, parse = parse_err}
+		}
 		return Error{fault = .Output_Quarantined, parse = parse_err}
 	case .Fail_The_Recording:
 		return Error{fault = .Nothing_Transcribed, parse = parse_err}
@@ -203,6 +208,7 @@ wrote :: proc(path: string, bytes: []u8) -> bool {
 	return os.close(handle) == nil
 }
 
+@(require_results)
 quarantine :: proc(path: string, allocator: mem.Allocator) -> bool {
 	assert(len(path) > 0, "there is nothing here to move aside")
 	assert(allocator.procedure != nil, "a quarantine name needs an allocator to be built in")
@@ -224,6 +230,10 @@ fault_says :: proc(fault: Fault) -> string {
 	case .Output_Quarantined:
 		return(
 			"what the Engine left is not what the Engine writes; it has been moved aside and this Recording will be done again from the start" \
+		)
+	case .Output_Not_Quarantined:
+		return(
+			"what the Engine left is not what the Engine writes; it could not be moved aside, and this Recording will be done again from the start over the top of it" \
 		)
 	case .Nothing_Transcribed:
 		return "the Engine transcribed nothing that could be made into a Transcript"
@@ -270,7 +280,7 @@ error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> s
 		which := artifact_says(err.which)
 		assert(len(which) > 0, "an artifact was added to Artifact without a name")
 		message = fmt.aprintf("%q: %s %s", source, which, says, allocator = allocator)
-	case .Output_Quarantined, .Nothing_Transcribed:
+	case .Output_Quarantined, .Output_Not_Quarantined, .Nothing_Transcribed:
 		message = borrowed_message(err, source, says, allocator)
 	case .None, .Named_No_File, .Not_Recordable, .Output_Unreadable:
 		message = fmt.aprintf("%q: %s", source, says, allocator = allocator)

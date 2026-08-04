@@ -262,6 +262,28 @@ engine_output_that_will_not_parse_is_quarantined_and_the_recording_re_run :: pro
 }
 
 @(test)
+engine_output_that_could_not_be_moved_aside_is_not_reported_as_moved_aside :: proc(t: ^testing.T) {
+	b := set_out(t, "unmovable", ENGINE_JSON[:len(ENGINE_JSON) / 2])
+	defer cleared(b)
+
+	aside := quarantined(b.output, context.allocator)
+	defer delete(aside, context.allocator)
+	defer os.remove(aside)
+	testing.expect(t, os.make_directory_all(aside) == nil, "could not block the quarantine name")
+
+	placed, err := completed(b)
+	defer destroy_names(placed, context.allocator)
+
+	testing.expect_value(t, err.fault, Fault.Output_Not_Quarantined)
+	testing.expect(t, os.exists(b.output), "output that could not be moved aside went missing")
+	testing.expect(
+		t,
+		!os.exists(placed[.Sidecar]),
+		"a Sidecar vouched for a Recording whose output would not parse",
+	)
+}
+
+@(test)
 a_second_run_over_output_that_will_not_parse_replaces_the_quarantined_file :: proc(t: ^testing.T) {
 	b := set_out(t, "twice", ENGINE_JSON[:len(ENGINE_JSON) / 2])
 	defer cleared(b)
@@ -368,21 +390,30 @@ a_recording_the_filesystem_dates_before_1970_is_refused_with_nothing_published :
 	)
 }
 
+// Exhaustive, so a Fault added without a reason is a build failure here rather
+// than borrowed_message's assertion firing inside the runner, which takes the
+// whole sweep down instead of naming a case (issue #22).
+@(private)
+reason_for :: proc(fault: Fault) -> transcript.Parse_Error {
+	switch fault {
+	case .Output_Quarantined, .Output_Not_Quarantined:
+		return {fault = .Malformed_Json, json_name = "C:\\cache\\talk.json"}
+	case .Nothing_Transcribed:
+		return {fault = .No_Cues, json_name = "C:\\cache\\talk.json"}
+	case .None, .Named_No_File, .Not_Recordable, .Output_Unreadable, .Not_Written, .Not_Placed:
+		return {}
+	}
+	return {}
+}
+
 @(test)
 every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testing.T) {
 	for fault in Fault {
 		if fault == .None {
 			continue
 		}
-		reason := transcript.Parse_Error{}
-		if fault == .Output_Quarantined || fault == .Nothing_Transcribed {
-			reason = transcript.Parse_Error {
-				fault     = .Malformed_Json if fault == .Output_Quarantined else .No_Cues,
-				json_name = "C:\\cache\\talk.json",
-			}
-		}
 		message := error_message(
-			Error{fault = fault, parse = reason},
+			Error{fault = fault, parse = reason_for(fault)},
 			"C:\\recordings\\talk.mkv",
 			context.allocator,
 		)

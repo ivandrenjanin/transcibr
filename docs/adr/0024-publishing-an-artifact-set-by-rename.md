@@ -83,9 +83,30 @@ A Recording that fails the same way twice quarantines onto an **existing** `.jso
 names that file outright, and `quarantine` is one `os.rename` onto a name that may well already be
 occupied by the previous attempt. A refusal there would convert a re-runnable Recording into a
 permanent failure — the exact shape ADR-0002 exists to prevent. The quarantine is nevertheless
-best-effort and reported the same either way: a move Windows refuses because something still holds
-the file leaves the Recording exactly as re-runnable as it already was, because the next run's Engine
-writes over that name regardless.
+best-effort: a move Windows refuses because something still holds the file leaves the Recording
+exactly as re-runnable as it already was, because the next run's Engine writes over that name
+regardless.
+
+**It is no longer reported the same either way, and that half of this paragraph was wrong.**
+`quarantine` returns a `bool` saying whether the rename happened, and `disposed_of` dropped it — so a
+refused move still answered `Fault.Output_Quarantined`, whose sentence reads *"it has been moved
+aside and this Recording will be done again from the start"*. A user was told a file had moved that
+was still exactly where the Engine left it, and the one value that knew otherwise had been thrown
+away on the line above. Re-runnable is what the *outcome* is; it is not what the sentence said, and a
+program that reports the filesystem wrongly is not made right by the outcome being survivable.
+
+`Fault.Output_Not_Quarantined` reports it. Its sentence keeps the promise the outcome does support
+and drops the claim it does not: the output *"could not be moved aside, and this Recording will be
+done again from the start over the top of it"*.
+`engine_output_that_could_not_be_moved_aside_is_not_reported_as_moved_aside` blocks the `.json.bad`
+name with a **directory** — the same block
+`an_artifact_that_cannot_be_moved_into_place_leaves_no_half_written_file` uses, and a thing a user
+can really have — and then asserts the Engine's output is still where it was and no Sidecar vouches
+for the Recording.
+
+The dropped `bool` is the finding behind CLAUDE.md rule F2 (issue #43). Every procedure in this
+repository that returns anything now carries `@(require_results)`, so the discard that hid this is a
+build failure and a discard that is meant has to be spelled `_ =`.
 
 Every failing path removes its own `.part`. `holds_a_part` in `place_test.odin` is asked after the
 success case, after a blocked publish, and after a refusal, because a temporary left behind is a file
