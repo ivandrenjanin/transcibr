@@ -98,6 +98,21 @@ settling :: proc(first: Reading, second: Reading, minimum_gap_ns: i64) -> Settli
 	// clock they carry is the machine's, and an NTP step or a user setting the
 	// time is outside this program (A8). It held one, and a clock step during a
 	// Batch would have crashed it.
+	//
+	// A STEP FORWARD IS NOT DETECTABLE HERE, and that is stated rather than
+	// worked around. It is arithmetically identical to time passing -- a minute
+	// of clock inserted between two readings a millisecond apart looks exactly
+	// like two readings a minute apart, and a Reading holds no third fact that
+	// could tell them apart. A monotonic tick would, and one is deliberately not
+	// carried: a Batch resumes across a reboot (ADR-0003) and a tick from a
+	// previous boot compares against nothing.
+	//
+	// What bounds the damage is which half of the answer the clock reaches. The
+	// gap decides only how much to make of two readings that AGREE; the proof
+	// that a file is moving is its size and its modification time, and a step in
+	// either direction leaves both of those alone. So the worst a forward step
+	// can do is turn `Too_Soon_To_Tell` into `Settled` on a file nothing was
+	// seen to touch. settling_test.odin pins exactly that reach.
 	if second.taken_ns - first.taken_ns < minimum_gap_ns {
 		return .Too_Soon_To_Tell
 	}

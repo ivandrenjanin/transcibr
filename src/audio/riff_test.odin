@@ -1,5 +1,6 @@
 package audio
 
+import "core:encoding/endian"
 import "core:testing"
 
 // This file is the READ SIDE of what ffmpeg was asked for (CLAUDE.md A4). The
@@ -134,16 +135,17 @@ edited_fixture :: proc() -> (copied: [FFMPEG_WAV_BYTES]u8) {
 	return
 }
 
-// One four-byte little-endian length written into a buffer, spelled out byte by
-// byte so a case edits a chunk length the way the file spells it. Writing only
-// the low byte and leaving the other three is how two cases below first failed:
-// the length they meant to shrink stayed in the thousands.
+// One four-byte little-endian length written into a buffer, so a case edits a
+// chunk length the way the file spells it. Writing only the low byte and leaving
+// the other three is how two cases below first failed: the length they meant to
+// shrink stayed in the thousands.
+//
+// `core:encoding/endian` is the four assignments spelled once, and it reports a
+// buffer too short to hold them rather than writing off the end.
 @(private)
 put_length :: proc(bytes: []u8, at: int, length: u32) {
-	bytes[at] = u8(length)
-	bytes[at + 1] = u8(length >> 8)
-	bytes[at + 2] = u8(length >> 16)
-	bytes[at + 3] = u8(length >> 24)
+	written := endian.put_u32(bytes[at:], .Little, length)
+	assert(written, "a chunk length was written past the end of the buffer")
 }
 
 // ------------------------------------------------------- the negative space --
@@ -268,6 +270,50 @@ odd_chunk_wav :: proc() -> (bytes: [ODD_CHUNK_WAV_BYTES]u8) {
 	copy(bytes[46:], "data")
 	put_length(bytes[:], 50, 4)
 	return
+}
+
+// A WAV carrying TWO `fmt ` chunks, which RIFF permits and ffmpeg does not
+// write. The second says stereo at 48 kHz; everything else is the fixture.
+@(private)
+TWO_FMT_WAV_BYTES :: 72
+@(private)
+two_fmt_wav :: proc() -> (bytes: [TWO_FMT_WAV_BYTES]u8) {
+	whole := edited_fixture()
+	copy(bytes[:], whole[:36]) // RIFF, WAVE and the whole fmt chunk
+	copy(bytes[36:60], whole[12:36]) // and the same fmt chunk over again
+	put_length(bytes[:], 4, TWO_FMT_WAV_BYTES - size_of(Riff_Chunk_Header))
+	// The second one, edited: two channels at 48,000 samples a second, and the
+	// byte rate that goes with them.
+	bytes[46] = 2
+	put_length(bytes[:], 48, 48_000)
+	put_length(bytes[:], 52, 192_000)
+	copy(bytes[60:], "data")
+	put_length(bytes[:], 64, 4)
+	return
+}
+
+@(test)
+the_first_fmt_chunk_is_the_one_that_describes_the_audio :: proc(t: ^testing.T) {
+	// RIFF permits a second `fmt ` chunk and says nothing about which of them
+	// describes the `data` that follows, so the walk has to CHOOSE -- and the
+	// walk was choosing by accident. Each `fmt ` it met overwrote the last, so
+	// the last one before the data chunk won, and this file walked out as stereo
+	// at 48 kHz.
+	//
+	// Nothing downstream was hurt by that, because as_asked_for refuses both
+	// answers. It is pinned anyway: an accident that happens to be safe is not a
+	// decision, and the day a second `fmt ` says something as_asked_for accepts
+	// is the day it matters which one was read.
+	bytes := two_fmt_wav()
+	facts, fault := read_wav_facts(bytes[:], TWO_FMT_WAV_BYTES)
+	testing.expect_value(t, fault, Riff_Fault.None)
+
+	testing.expect_value(t, facts.channels, 1)
+	testing.expect_value(t, facts.samples_per_second, 16000)
+	testing.expect_value(t, facts.bytes_per_second, 32000)
+	// The data chunk is still found, past both of them.
+	testing.expect_value(t, facts.data_offset, 68)
+	testing.expect_value(t, facts.data_bytes, 4)
 }
 
 @(test)

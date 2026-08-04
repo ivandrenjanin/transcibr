@@ -1,6 +1,6 @@
 package audio
 
-import "core:mem"
+import "core:slice"
 import "transcibr:process"
 
 // This file reads back what ffmpeg wrote by WALKING the chunks it wrote, which
@@ -129,10 +129,14 @@ read_wav_facts :: proc(head: []u8, file_bytes: i64) -> (facts: Wav_Facts, fault:
 	assert(file_bytes >= 0, "a file cannot hold a negative number of bytes")
 	assert(i64(len(head)) <= file_bytes, "more head was read than the file was said to hold")
 
-	container, present := chunk_at(head, 0)
-	if !present || len(head) < FIRST_CHUNK {
+	if len(head) < FIRST_CHUNK {
 		return {}, .Head_Too_Short
 	}
+	// Always present after that check, which is the stricter of the two: a form
+	// type takes four bytes more than the chunk header chunk_at bounds itself
+	// against. The assertion is the read side of it (A4), not a second refusal.
+	container, present := chunk_at(head, 0)
+	assert(present, "twelve bytes of head did not hold an eight-byte chunk header")
 	if string(container.id[:]) != "RIFF" {
 		return {}, .Not_Riff
 	}
@@ -154,8 +158,6 @@ read_wav_facts :: proc(head: []u8, file_bytes: i64) -> (facts: Wav_Facts, fault:
 // already been established to be a WAVE.
 @(private)
 walk_chunks :: proc(head: []u8, file_bytes: i64) -> (facts: Wav_Facts, fault: Riff_Fault) {
-	assert(len(head) >= FIRST_CHUNK, "the chunk table was walked before the form type was read")
-
 	found_format := false
 	at := FIRST_CHUNK
 	for {
@@ -176,11 +178,20 @@ walk_chunks :: proc(head: []u8, file_bytes: i64) -> (facts: Wav_Facts, fault: Ri
 
 		switch string(header.id[:]) {
 		case "fmt ":
-			facts, fault = read_fmt(head, payload, length)
-			if fault != .None {
-				return {}, fault
+			// THE FIRST ONE, and never a later one. RIFF permits a second `fmt `
+			// chunk and says nothing about which of them describes the `data`
+			// that follows, so this has to be chosen -- and it was being decided
+			// by accident, each chunk overwriting the last, so the last one
+			// before the data chunk won. The first is what a WAVE reader
+			// conventionally takes, and it is the one that came before the data
+			// it describes.
+			if !found_format {
+				facts, fault = read_fmt(head, payload, length)
+				if fault != .None {
+					return {}, fault
+				}
+				found_format = true
 			}
-			found_format = true
 		case "data":
 			if !found_format {
 				return {}, .No_Fmt_Chunk
@@ -215,14 +226,16 @@ walk_chunks :: proc(head: []u8, file_bytes: i64) -> (facts: Wav_Facts, fault: Ri
 chunk_at :: proc(head: []u8, at: int) -> (header: Riff_Chunk_Header, present: bool) {
 	assert(at >= 0, "a chunk cannot sit at a negative offset")
 
-	if at > len(head) - size_of(Riff_Chunk_Header) {
+	// This procedure's own guard and not slice.to_type's: `head[at:]` slices
+	// before to_type is ever called, and a slice past the end is a panic.
+	if at > len(head) {
 		return {}, false
 	}
-	// A byte copy and not a cast: the buffer is whatever the filesystem handed
-	// back and carries no alignment, and every field is declared
+	// slice.to_type is the guard and the unaligned load together: it refuses a
+	// buffer shorter than the type, and loads without assuming an alignment the
+	// filesystem's own buffer does not carry. Every field is declared
 	// little-endian, which is the order the bytes are already in.
-	mem.copy(&header, raw_data(head[at:]), size_of(Riff_Chunk_Header))
-	return header, true
+	return slice.to_type(head[at:], Riff_Chunk_Header)
 }
 
 // The first sixteen bytes of a `fmt ` payload, decoded.
@@ -231,15 +244,18 @@ read_fmt :: proc(head: []u8, payload: int, length: i64) -> (facts: Wav_Facts, fa
 	assert(payload >= FIRST_CHUNK, "a fmt chunk payload landed inside the RIFF header")
 	assert(length >= 0, "a chunk cannot be a negative number of bytes long")
 
+	assert(payload <= len(head), "a chunk payload that starts past the head was walked to")
+
+	// The CHUNK's own claim, checked before the head's: a `fmt ` chunk shorter
+	// than a PCM body is a malformed file whatever was read, and a head that
+	// stopped short of a well-formed one is a buffer to make bigger.
 	if length < size_of(Wav_Fmt_Body) {
 		return {}, .Short_Fmt_Chunk
 	}
-	if payload + size_of(Wav_Fmt_Body) > len(head) {
+	body, whole := slice.to_type(head[payload:], Wav_Fmt_Body)
+	if !whole {
 		return {}, .Head_Too_Short
 	}
-
-	body: Wav_Fmt_Body
-	mem.copy(&body, raw_data(head[payload:]), size_of(Wav_Fmt_Body))
 	if u16(body.format) != WAVE_FORMAT_PCM {
 		return {}, .Not_Pcm
 	}

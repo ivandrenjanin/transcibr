@@ -164,6 +164,48 @@ a_clock_that_went_backwards_between_two_readings_cannot_tell :: proc(t: ^testing
 }
 
 @(test)
+a_clock_that_stepped_forward_makes_a_gap_look_satisfied_and_the_proof_still_holds :: proc(
+	t: ^testing.T,
+) {
+	// THE TWIN OF THE CASE ABOVE, and the one that cannot be fixed here. A step
+	// forward is arithmetically indistinguishable from time passing: two
+	// readings a millisecond apart with a minute of clock inserted between them
+	// look exactly like two readings a minute apart, and there is no third fact
+	// in a Reading to tell them apart. A monotonic tick would, and a Reading
+	// carries a wall clock on purpose so a Batch can resume across a reboot
+	// (ADR-0003).
+	//
+	// So it is pinned rather than fixed, and what is pinned is how far it
+	// reaches: it can turn `Too_Soon_To_Tell` into `Settled`, and it can do
+	// nothing else.
+	first := first_reading()
+	stepped := first
+	stepped.taken_ns += 60 * SECOND_NS
+	testing.expect_value(t, settling(first, stepped, MINIMUM_SETTLING_GAP_NS), Settling.Settled)
+
+	// The half that holds, and it is the half carrying the weight: what proves a
+	// file is moving is its SIZE and its TIMESTAMP, neither of which a clock step
+	// touches. A Recording that is genuinely still being written is caught with
+	// the clock in any state at all -- the gap only ever decides how much to make
+	// of two readings that AGREE.
+	moved := stepped
+	moved.bytes += 4096
+	testing.expect_value(
+		t,
+		settling(first, moved, MINIMUM_SETTLING_GAP_NS),
+		Settling.Still_Being_Written,
+	)
+
+	touched := stepped
+	touched.modified_ns += SECOND_NS
+	testing.expect_value(
+		t,
+		settling(first, touched, MINIMUM_SETTLING_GAP_NS),
+		Settling.Still_Being_Written,
+	)
+}
+
+@(test)
 the_minimum_gap_outlasts_the_coarsest_timestamp_a_recording_can_carry :: proc(t: ^testing.T) {
 	// FAT and exFAT store a modification time to a two-second granularity, and
 	// SMB servers commonly round to the same. A gap shorter than that can fall
