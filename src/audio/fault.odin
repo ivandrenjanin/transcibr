@@ -204,12 +204,17 @@ Error :: struct {
 // case`.
 @(private, rodata)
 FAULT := [Fault]string {
-	// Three rows are deliberately empty and fault_says refuses each by name:
-	// `.None` is the success value, and the other two carry a reason belonging
-	// to the package that produced it.
+	// `.None` is the success value and is the ONE deliberately empty row, which
+	// fault_says refuses by name.
+	//
+	// The two faults that carry a reason from the package that refused have a
+	// sentence here like every other. They used to be empty rows with an
+	// assertion apiece, which is three mechanisms doing one job -- and the
+	// arrangement `.Durations_Disagree` had shown the way out of all along: a
+	// row of its own, and the detail appended by the arm that has it.
 	.None                      = "",
-	.Probe_Unreadable          = "",
-	.Audio_Malformed           = "",
+	.Probe_Unreadable          = "its container could not be timed",
+	.Audio_Malformed           = "the audio produced from it would not read",
 	.Source_Unreadable         = "the Recording could not be read",
 	.Still_Being_Written       = "the Recording is still being written to",
 	.Still_Unsettled           = "the Recording could not be shown to have stopped changing",
@@ -229,11 +234,6 @@ FAULT := [Fault]string {
 @(private)
 fault_says :: proc(fault: Fault) -> string {
 	assert(fault != .None, "the success value is not a fault and says nothing")
-	assert(
-		fault != .Probe_Unreadable,
-		"a refused probe answer is reported by the package that read it",
-	)
-	assert(fault != .Audio_Malformed, "malformed audio is reported by the walk that refused it")
 
 	says := FAULT[fault]
 	assert(len(says) > 0, "a fault was added to Fault without a row in FAULT")
@@ -261,19 +261,24 @@ error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> s
 		"the message outlives this procedure and needs an allocator",
 	)
 
+	// Every arm reads its sentence out of the table and appends only what it
+	// alone knows. One mechanism, and no fault can be given a message here that
+	// the table does not have a row for.
 	message: string
 	switch err.fault {
 	case .Probe_Unreadable:
 		message = fmt.aprintf(
-			"%q: its container could not be timed (%v)",
+			"%q: %s (%v)",
 			source,
+			fault_says(err.fault),
 			err.probe,
 			allocator = allocator,
 		)
 	case .Audio_Malformed:
 		message = fmt.aprintf(
-			"%q: the audio produced from it would not read (%v)",
+			"%q: %s (%v)",
 			source,
+			fault_says(err.fault),
 			err.riff,
 			allocator = allocator,
 		)

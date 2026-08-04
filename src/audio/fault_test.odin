@@ -2,6 +2,7 @@ package audio
 
 import "core:strings"
 import "core:testing"
+import "transcibr:child"
 
 // The shell half of this package -- running ffprobe and ffmpeg, reading the
 // produced audio back off the disk, deleting what the sweep chose -- has no
@@ -34,6 +35,61 @@ a_cache_path_the_engine_could_not_open_is_refused :: proc(t: ^testing.T) {
 	// The property is CHOSEN and not sanitised for: 8.3 short-name generation
 	// looks like the escape and is a per-volume policy that can be off.
 	testing.expect(t, !ascii_only("D:\\\u5f55\u97f3\\cache"))
+}
+
+// Every fault renders a line naming the Recording and saying what happened.
+//
+// WALKED over the whole enumeration rather than written case by case, which is
+// the half that rots -- the guard the other three fault vocabularies in this
+// repository carry and this one was missing. The compiler already refuses a
+// Fault added without a row in FAULT, because FAULT is an enumerated array and
+// `Unhandled enumerated array case` is a build failure. What nothing caught was
+// a row that is PRESENT and EMPTY: an empty row compiled, passed every test,
+// and was found by fault_says's own assertion in front of a user, on a
+// Recording that was already failing.
+//
+// The emptiness is read off the table BEFORE the render, and not left to
+// fault_says, because a test that trips an assertion takes the whole runner down
+// with it rather than naming a case (issue #22). For the same reason the error
+// handed in carries a real child fault: the two `_Not_Started` arms delegate to
+// `transcibr:child`, whose own renderer asserts it was given something to say.
+//
+// `.None` is skipped BY NAME, so it cannot be skipped by accident. It is the one
+// row in the table that is deliberately empty, and it is the success value.
+@(test)
+every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testing.T) {
+	for fault in Fault {
+		if fault == .None {
+			continue
+		}
+		if !testing.expectf(t, len(FAULT[fault]) > 0, "%v has an empty row in FAULT", fault) {
+			continue
+		}
+
+		err := Error {
+			fault = fault,
+			child = child.Error{fault = .Not_Started},
+			said = 48_000,
+			got = 12_000,
+		}
+		message := error_message(err, "C:\\clips\\one talk.mp4", context.allocator)
+		defer delete(message, context.allocator)
+
+		testing.expectf(
+			t,
+			strings.contains(message, FAULT[fault]),
+			"%v rendered <%s>, which does not carry its own sentence",
+			fault,
+			message,
+		)
+		testing.expectf(
+			t,
+			strings.contains(message, "one talk.mp4"),
+			"%v rendered <%s>, which does not name the Recording",
+			fault,
+			message,
+		)
+	}
 }
 
 // ------------------------------------------- the cache is not a Recording --

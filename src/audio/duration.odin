@@ -52,10 +52,16 @@ DEFAULT_TOLERANCE :: Tolerance {
 	per_mille = 1,
 }
 
-// The largest per-mille a caller may ask for, so that the multiplication below
-// cannot be walked into an overflow by a policy nobody checked. A thousand
-// per-mille is the whole duration, and a tolerance of the whole duration already
-// means the check has been turned off.
+// The largest per-mille a caller may ask for. A POLICY BOUND and not overflow
+// protection, which is what it used to claim: the multiplication it guards
+// overflows an i64 somewhere past a per-mille of 2.5e9 against a container of a
+// thousand hours, which is six orders of magnitude above this. Nothing here is
+// standing between anything and a wrap.
+//
+// What it is is the point past which the check has been turned off. A thousand
+// per-mille is the whole of the container's duration, so a tolerance at this
+// bound already agrees with any audio at all, and one over it is a caller asking
+// for something that cannot mean anything.
 @(private)
 MAX_PER_MILLE :: i64(1000)
 
@@ -76,16 +82,18 @@ allowed_difference_ms :: proc(container_ms: i64, tolerance: Tolerance) -> i64 {
 // extraction that were not looking at the same file. A check written only one
 // way round passes every truncation case and waves the other through.
 //
-// Not an assertion anywhere in here (A8). Both durations come from files
-// transcibr did not write, and a Recording whose two answers disagree fails on
-// its own while the Batch carries on.
+// THE DISAGREEMENT ITSELF IS NEVER AN ASSERTION (A8). Both durations come from
+// files transcibr did not write, so two answers that disagree by any amount at
+// all is an ordinary answer here -- `false` -- and a Recording that fails on its
+// own while the Batch carries on.
+//
+// The two assertions below are not about that. They are the read side of
+// refusals that already happened upstream (A4): a container with no duration was
+// refused by read_probe, and audio of a negative length cannot come out of
+// audio_ms. Both are this package's own state, which is what may be asserted.
 durations_agree :: proc(container_ms: i64, audio_ms: i64, tolerance: Tolerance) -> bool {
 	assert(container_ms > 0, "a container with no duration was never accepted by the probe")
 	assert(audio_ms >= 0, "audio cannot be a negative number of milliseconds long")
 
-	difference := container_ms - audio_ms
-	if difference < 0 {
-		difference = -difference
-	}
-	return difference <= allowed_difference_ms(container_ms, tolerance)
+	return abs(container_ms - audio_ms) <= allowed_difference_ms(container_ms, tolerance)
 }
