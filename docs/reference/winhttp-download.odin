@@ -19,6 +19,16 @@
 //     winhttp.h before using it.
 //   - The Range header set before WinHttpSendRequest survives the redirect;
 //     manual redirect chasing is unnecessary.
+//   - Every string handed to WinHTTP goes through win32.utf8_to_wstring, and
+//     every one read back through win32.wstring_to_utf8_alloc. BOTH default
+//     their allocator to context.temp_allocator, which is thread-local and is
+//     the trap ADR-0010 names these helpers by name for. Written implicitly
+//     here first, and all seven sites read as ordinary calls with nothing to
+//     see. They are spelled out now because this file is copied from: the
+//     conversions below die inside the procedure that makes them, so the temp
+//     allocator is the right answer for THEM and the wrong answer for anything
+//     handed to another worker. The program is unchanged -- the tag on line 1
+//     is what makes the choice visible rather than defaulted.
 //
 // Not yet handled here: resume against a .part file, SHA-256 verification,
 // cancellation, and the fact that redirected CDN URLs expire in about an hour
@@ -93,13 +103,17 @@ crack_url :: proc(
 	uc.dwHostNameLength = win32.DWORD(len(host_buf))
 	uc.lpszUrlPath = cast(win32.wstring)&path_buf[0]
 	uc.dwUrlPathLength = win32.DWORD(len(path_buf))
-	if !WinHttpCrackUrl(win32.utf8_to_wstring(url), 0, 0, &uc) {
+	if !WinHttpCrackUrl(win32.utf8_to_wstring(url, context.temp_allocator), 0, 0, &uc) {
 		fmt.println("CrackUrl FAILED", win32.GetLastError())
 		return uc, false
 	}
 	fmt.printf(
 		"CrackUrl ok: host=%s port=%d\n",
-		win32.wstring_to_utf8_alloc(uc.lpszHostName, int(uc.dwHostNameLength)) or_else "?",
+		win32.wstring_to_utf8_alloc(
+			uc.lpszHostName,
+			int(uc.dwHostNameLength),
+			context.temp_allocator,
+		) or_else "?",
 		uc.nPort,
 	)
 	return uc, true
@@ -111,7 +125,7 @@ crack_url :: proc(
 send_ranged_request :: proc(hRequest: HINTERNET, header: string) -> bool {
 	if !WinHttpAddRequestHeaders(
 		hRequest,
-		win32.utf8_to_wstring(header),
+		win32.utf8_to_wstring(header, context.temp_allocator),
 		max(u32),
 		WINHTTP_ADDREQ_FLAG_ADD,
 	) {
@@ -155,14 +169,18 @@ report_content_range :: proc(hRequest: HINTERNET) {
 	if WinHttpQueryHeaders(
 		hRequest,
 		WINHTTP_QUERY_CUSTOM,
-		win32.utf8_to_wstring("Content-Range"),
+		win32.utf8_to_wstring("Content-Range", context.temp_allocator),
 		&cr_buf[0],
 		&cr_sz,
 		nil,
 	) {
 		fmt.println(
 			"Content-Range =",
-			win32.wstring_to_utf8_alloc(cast(win32.wstring)&cr_buf[0], 256) or_else "?",
+			win32.wstring_to_utf8_alloc(
+				cast(win32.wstring)&cr_buf[0],
+				256,
+				context.temp_allocator,
+			) or_else "?",
 		)
 	} else {
 		fmt.println("no Content-Range header")
@@ -204,7 +222,7 @@ main :: proc() {
 	}
 
 	hSession := WinHttpOpen(
-		win32.utf8_to_wstring("transcibr/0.1"),
+		win32.utf8_to_wstring("transcibr/0.1", context.temp_allocator),
 		WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
 		nil,
 		nil,
@@ -226,7 +244,7 @@ main :: proc() {
 
 	hRequest := WinHttpOpenRequest(
 		hConnect,
-		win32.utf8_to_wstring("GET"),
+		win32.utf8_to_wstring("GET", context.temp_allocator),
 		uc.lpszUrlPath,
 		nil,
 		nil,
