@@ -1638,6 +1638,43 @@ function Assert-OdinResultPolicy {
 	throw "$($bare.Count) procedure(s) hand back an answer nothing obliges the caller to read (CLAUDE.md rule F2):`n$($bare -join "`n")`nPut @(require_results) above the declaration. A caller that means to throw the answer away writes `_ = f(...)`."
 }
 
+# CLAUDE.md rule M2 as a single verdict, beside section 0's and rule F2's, and
+# here for the reason all three are: a rule enforced only at review is a rule that
+# reaches main.
+#
+# ABSENCE is the whole subject, and it is the only failure this has to cover. A
+# misspelled name is `Syntax Error: Invalid vet flag name` and a tag below the
+# package clause is `Lines starting with #+ (file tags) are only allowed before
+# the package line` -- both stop the build on their own, naming the file. A tag
+# that was never written stops nothing: the file compiles, and every call in it
+# that takes its allocator from the context goes unread, because the tag applies
+# to the FILE that carries it and to nothing else.
+#
+# So this is a ratchet and not a sweep. It changes nothing about a tree that
+# already obeys the rule; what it refuses is the file added tomorrow, which is
+# the one direction 65 hand-written lines rot in.
+function Assert-OdinVetTagPolicy {
+	$sources = @(Get-OdinCheckedSource)
+
+	$missing = @()
+	foreach ($source in $sources) {
+		$declared = @(Get-OdinFileVetTag -Text ([System.IO.File]::ReadAllText($source.Path)))
+		foreach ($tag in $OdinFileVetTags) {
+			# Case-SENSITIVE, the way the compiler reads the name. A spelling it
+			# would refuse is not a spelling this may accept.
+			if ($declared -cnotcontains $tag) {
+				$missing += "  - $($source.Name) does not declare $tag"
+			}
+		}
+	}
+	if ($missing.Count -eq 0) {
+		return
+	}
+
+	$line = "#+vet $($OdinFileVetTags -join ' ')"
+	throw "$($missing.Count) file(s) do not declare a +vet tag every .odin file carries (CLAUDE.md rule M2):`n$($missing -join "`n")`nPut ``$line`` above the package clause. The tag is read per FILE: an untagged one compiles with its implicit allocators never looked at, whatever its siblings carry."
+}
+
 # The sweep as a single verdict, for callers that only want it to pass -- which
 # is build.ps1, so that a misformatted file fails the BUILD and not merely a
 # check somebody remembers to run. Rule S1 is a rule; the vet flags beside it

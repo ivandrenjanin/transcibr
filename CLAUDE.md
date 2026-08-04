@@ -225,6 +225,35 @@ for job in w.jobs { job_advance(&job) }
 Do not alias state into convenience locals that outlive a mutation; a slice taken before an `append`
 is stale after it.
 
+### M2. `#+vet explicit-allocators` on the first line of every file
+
+ADR-0010 is the rule: every procedure that allocates takes `allocator: mem.Allocator`, and nothing
+crossing a thread boundary comes from `context.temp_allocator`. The tag is that rule spelled so the
+compiler holds it. A call that lets Odin fill an `allocator` parameter from the context stops
+building:
+
+```
+progress_test.odin(40:2) Error: Parameter 'allocator' of type 'Allocator' must be explicitly provided in procedure call
+	lines_of(&r, "whisper_print_progress_callback: prog", &collected)
+	^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+```
+
+There is no command-line flag for it — `odin build -vet-explicit-allocators` answers `Unknown flag`
+at the pin, so unlike S1's set this one cannot be passed once. It is a **file tag**, it goes above
+the `package` clause, and `scripts\common.ps1` holds the names in `$OdinFileVetTags`. Adding a name
+there is what puts it on every file; do not spell one at a call site.
+
+**The tag is read per file, and that is why `Assert-OdinVetTagPolicy` fails the build over a missing
+one.** Measured: a package holding one tagged file and one untagged sibling compiles clean, with the
+sibling's implicit allocators never looked at. The two ways a tag can be wrong are already loud — a
+misspelled name is `Syntax Error: Invalid vet flag name` and a tag below the `package` clause is
+`Lines starting with #+ (file tags) are only allowed before the package line` — so absence is the
+only silent one, and absence is what the check reads.
+
+A parameter written `allocator := context.allocator` is a default no caller in a tagged file can
+ever take, so it does not appear in this tree; write `allocator: mem.Allocator` and let the call
+site say which allocator it meant.
+
 ## 5. Style
 
 ### S1. Formatting: odinfmt, tabs, the full vet set
