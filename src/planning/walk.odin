@@ -72,6 +72,12 @@ is_a_recording :: proc(path: string) -> bool {
 // recursing, so this bounds a pathological tree and not this program's stack --
 // and it is what bounds a CYCLE once `follow_reparse_points` is turned on, which
 // is the one setting under which a junction can point back up its own tree.
+//
+// A constant and not a field on `Walk`, because no caller varies it and none has
+// a reason to: it is a defence against a pathological tree and not a policy
+// anybody tunes. A knob nothing turns is still a value every caller has to
+// supply, every reader has to check, and every test has to cover at more than
+// one setting -- which is more than the constant it would replace costs.
 MAX_WALK_DEPTH :: 64
 
 // How much of a Markdown file the walk reads to find out who wrote it. What is

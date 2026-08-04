@@ -146,6 +146,21 @@ unrecorded :: proc(found: Found) -> Outcome {
 // probed: a Recording whose size and modification time are unchanged is the same
 // file, and probing every Recording to plan a Batch is the GPU-free half of the
 // work this ticket exists to avoid (ADR-0026).
+//
+// This Sidecar is the right-hand side of a COMPARISON and is the right-hand side
+// of nothing else. Two of its fields are copied out of the record rather than
+// measured -- `container_ms` here, and `engine_version` wherever the Batch names
+// no Engine (see `engine_of`) -- so it describes work that was DONE only by
+// coincidence, and only where nothing has changed. Nothing persists it: `Plan`
+// carries no Sidecar and `--plan` writes nothing at all.
+//
+// So it is not the Sidecar to WRITE after a transcribe, and the next ticket to
+// run a Plan (#12's pipeline, driven by #16) is where that becomes reachable. A
+// worker that recorded a fresh run with this would stamp the PREVIOUS Engine's
+// version onto cues the currently installed one decoded -- the wrong provenance
+// ADR-0003 forbids, and the exact danger ADR-0027 names for this field. What
+// records a run is what that run actually used: `transcript.UNKNOWN` where the
+// Batch named no Engine, and the duration the probe measured.
 @(private)
 current_of :: proc(
 	found: Found,
