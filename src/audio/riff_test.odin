@@ -41,8 +41,10 @@ real_ffmpeg_output_does_not_put_its_data_chunk_at_byte_44 :: proc(t: ^testing.T)
 	facts, fault := read_wav_facts(FFMPEG_WAV, FFMPEG_WAV_BYTES)
 	testing.expect_value(t, fault, Riff_Fault.None)
 
-	// 78 and not 44, which is the criterion this ticket exists for.
-	testing.expect_value(t, facts.data_offset, 78)
+	// 78 and not 44, which is the criterion this ticket exists for, read through
+	// the length the walk came back with. At 44 the four bytes taken for the
+	// `data` length are the middle of the `LIST` chunk's own header, and 6,400 is
+	// not what they say.
 	testing.expect_value(t, facts.data_bytes, 6400)
 }
 
@@ -311,8 +313,8 @@ the_first_fmt_chunk_is_the_one_that_describes_the_audio :: proc(t: ^testing.T) {
 	testing.expect_value(t, facts.channels, 1)
 	testing.expect_value(t, facts.samples_per_second, 16000)
 	testing.expect_value(t, facts.bytes_per_second, 32000)
-	// The data chunk is still found, past both of them.
-	testing.expect_value(t, facts.data_offset, 68)
+	// The data chunk is still found, past both of them: it sits at 68, and a walk
+	// that stopped anywhere short of it would not answer with its length.
 	testing.expect_value(t, facts.data_bytes, 4)
 }
 
@@ -323,8 +325,8 @@ the_pad_byte_after_an_odd_length_chunk_is_stepped_over :: proc(t: ^testing.T) {
 	testing.expect_value(t, fault, Riff_Fault.None)
 
 	// 36 + 8 header + 1 payload + 1 pad = 46, and the data payload eight bytes
-	// past that. A walker that skipped the pad would look for a chunk at 45 and
-	// find nothing at all.
-	testing.expect_value(t, facts.data_offset, 54)
+	// past that, at 54. A walker that skipped the pad would look for a chunk at
+	// 45, read an identifier out of the middle of `data`, and never answer with
+	// its length at all.
 	testing.expect_value(t, facts.data_bytes, 4)
 }

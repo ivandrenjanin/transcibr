@@ -105,14 +105,18 @@ Riff_Fault :: enum u8 {
 // values used as lengths and divisors in this process, never written back out
 // (CLAUDE.md rule T1). The one exception is `data_bytes`, which is a file
 // length and is i64 for the same reason every file length here is.
+//
+// WHERE THE `data` PAYLOAD STARTS IS NOT IN HERE, and it was. Nothing outside a
+// test ever read it: the length of the audio comes from the chunk's own length
+// and the format's byte rate, and no caller in this package reads the samples.
+// What the offset was really doing was proving the walk had landed in the right
+// place, and `data_bytes` proves that on its own -- a walk one byte off reads
+// its length out of the wrong four bytes and cannot answer 6,400 by accident.
 Wav_Facts :: struct {
 	channels:           int,
 	samples_per_second: int,
 	bytes_per_second:   int,
 	bits_per_sample:    int,
-	// Where the audio itself begins -- the `data` chunk's PAYLOAD, past its
-	// eight-byte header.
-	data_offset:        int,
 	data_bytes:         i64,
 }
 
@@ -199,11 +203,6 @@ walk_chunks :: proc(head: []u8, file_bytes: i64) -> (facts: Wav_Facts, fault: Ri
 			if length == 0 {
 				return {}, .Empty_Data_Chunk
 			}
-			// The write-side check on the walk's own arithmetic (A4): the
-			// payload of any chunk sits past the form type, and audio_ms
-			// asserts the read side of the same claim.
-			assert(payload >= FIRST_CHUNK, "a chunk payload landed inside the RIFF header")
-			facts.data_offset = payload
 			facts.data_bytes = length
 			return facts, .None
 		}

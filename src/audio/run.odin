@@ -27,6 +27,22 @@ Tools :: struct {
 	ffprobe: string,
 }
 
+// The length a piece of audio's OWN HEADER works out to, in milliseconds, and
+// never a duration for anything downstream to use.
+//
+// A DISTINCT TYPE AND NOT A NAME, which is rule T2's remedy pointed at something
+// that is not an identifier. The spec is explicit -- "Duration comes from the
+// Engine's startup banner or from a container probe, never from the scratch
+// audio file's header" -- and this was a plain `i64` renamed to say so, which
+// documents the trap without closing it. As a distinct type, handing one to
+// something that wants a duration is a COMPILE ERROR, and the cast at the
+// storage edge is the one place a reader should slow down.
+//
+// What makes it dangerous rather than obviously wrong is that it has come
+// through durations_agree: it is within a second of right, so a Sidecar written
+// from it is wrong by too little for anyone to notice, and wrong permanently.
+Measured_Ms :: distinct i64
+
 // What one Recording's extraction produced, and what the job carries forward.
 Extracted :: struct {
 	// The scratch WAV. OWNED by the caller and freed with `delete` and the
@@ -37,16 +53,9 @@ Extracted :: struct {
 	// estimate keys on it.
 	container_ms: i64,
 	// What the produced WAV's own header works out to -- the MEASUREMENT the
-	// check made, and never a duration for anything downstream to use. The spec
-	// is explicit: "Duration comes from the Engine's startup banner or from a
-	// container probe, never from the scratch audio file's header." It is named
-	// for what it is so a consumer reaching for a duration reaches past it.
-	//
-	// That it has come through durations_agree is exactly what makes it
-	// dangerous rather than safe: it is within a second of right, so a Sidecar
-	// written from it is wrong by too little for anyone to notice, and wrong
-	// permanently.
-	measured_ms:  i64,
+	// check made. Its TYPE is what keeps a consumer reaching for a duration from
+	// reaching this instead; see Measured_Ms above.
+	measured_ms:  Measured_Ms,
 }
 
 // How long ffprobe is given, in milliseconds. Generous against a Recording on a
@@ -116,13 +125,18 @@ read_source :: proc(source: string, allocator: mem.Allocator) -> (reading: Readi
 // mean anything -- which for every Recording but the first in a Batch has
 // already been true for minutes by the time its extraction starts. See
 // settling.odin for what the gap costs and who pays it.
+//
+// THE SETTLED READING IS NOT RETURNED, and its absence is the decision. It was,
+// and the one caller discarded it -- the same defect this file records twenty
+// lines down for `run_bounded`'s exit code, in the file that had just recorded
+// it. A Reading nobody reads is a second thing that can be wrong about which
+// file was looked at.
 settle :: proc(
 	source: string,
 	planned: Reading,
 	gap_ns: i64,
 	allocator: mem.Allocator,
 ) -> (
-	reading: Reading,
 	err: Error,
 ) {
 	assert(gap_ns > 0, "a gap of no time at all says nothing about anything")
@@ -135,7 +149,7 @@ settle :: proc(
 	// along in memory, a reading with no timestamp on it is external input, and
 	// asserting on it crashes the Batch that resume exists for.
 	if planned.taken_ns <= 0 {
-		return {}, Error{fault = .Planned_Reading_Unusable}
+		return Error{fault = .Planned_Reading_Unusable}
 	}
 
 	// SETTLING_ATTEMPTS TIMES AT MOST, and the later looks only where the readings
@@ -151,17 +165,14 @@ settle :: proc(
 	for attempt in 0 ..< SETTLING_ATTEMPTS {
 		now, unreadable := read_source(source, allocator)
 		if unreadable.fault != .None {
-			return {}, unreadable
+			return unreadable
 		}
 		fault, again := settling_fault(
 			settling(planned, now, gap_ns),
 			SETTLING_ATTEMPTS - attempt - 1,
 		)
 		if !again {
-			if fault != .None {
-				return {}, Error{fault = fault}
-			}
-			return now, Error{}
+			return Error{fault = fault}
 		}
 		time.sleep(time.Duration(remaining_gap_ns(planned, now, gap_ns)))
 	}
@@ -341,7 +352,7 @@ check_audio :: proc(
 	container_ms: i64,
 	tolerance: Tolerance,
 ) -> (
-	produced_ms: i64,
+	produced_ms: Measured_Ms,
 	err: Error,
 ) {
 	assert(len(part) > 0, "there is no audio here to check")
@@ -366,11 +377,13 @@ check_audio :: proc(
 		return 0, Error{fault = .Audio_Not_As_Asked_For}
 	}
 
-	produced_ms = audio_ms(facts)
-	if !durations_agree(container_ms, produced_ms, tolerance) {
-		return 0, Error{fault = .Durations_Disagree, said = container_ms, got = produced_ms}
+	measured := audio_ms(facts)
+	if !durations_agree(container_ms, measured, tolerance) {
+		return 0, Error{fault = .Durations_Disagree, said = container_ms, got = measured}
 	}
-	return produced_ms, Error{}
+	// The cast at the storage edge, and the one place a measurement becomes
+	// something a caller can carry (T2).
+	return Measured_Ms(measured), Error{}
 }
 
 // The front of a file, and how long the whole file is.
@@ -455,7 +468,7 @@ extract :: proc(
 	assert(len(job.name) > 0, "a Recording with no artifact stem has nowhere to put its audio")
 	assert(allocator.procedure != nil, "an extraction needs an allocator to work in")
 
-	if _, unsettled := settle(job.source, job.planned, MINIMUM_SETTLING_GAP_NS, allocator);
+	if unsettled := settle(job.source, job.planned, MINIMUM_SETTLING_GAP_NS, allocator);
 	   unsettled.fault != .None {
 		return {}, unsettled
 	}

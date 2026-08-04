@@ -290,7 +290,10 @@ the_head_of_a_real_wav_on_disk_walks_to_its_data_chunk :: proc(t: ^testing.T) {
 
 	facts, malformed := read_wav_facts(head, bytes)
 	testing.expect_value(t, malformed, Riff_Fault.None)
-	testing.expect_value(t, facts.data_offset, 78)
+	// It walked past the `LIST` chunk to the `data` at 78 -- read back through the
+	// length it came home with, which is the only thing that is right at 78 and
+	// wrong everywhere else.
+	testing.expect_value(t, facts.data_bytes, i64(6400))
 	testing.expect(t, as_asked_for(facts), "the fixture off the disk is not what was asked for")
 }
 
@@ -335,7 +338,7 @@ a_recording_looked_at_too_soon_is_looked_at_again_rather_than_refused :: proc(t:
 	testing.expect_value(t, unreadable.fault, Fault.None)
 
 	started := time.tick_now()
-	_, err := settle(source, planned, SETTLING_GAP_NS, context.allocator)
+	err := settle(source, planned, SETTLING_GAP_NS, context.allocator)
 	waited := time.tick_since(started)
 
 	testing.expect_value(t, err.fault, Fault.None)
@@ -371,7 +374,7 @@ a_recording_that_was_never_shown_to_stop_changing_is_refused_not_accepted :: pro
 	testing.expect_value(t, unreadable.fault, Fault.None)
 	planned.taken_ns += i64(time.Hour)
 
-	_, err := settle(source, planned, UNSETTLED_GAP_NS, context.allocator)
+	err := settle(source, planned, UNSETTLED_GAP_NS, context.allocator)
 	testing.expect_value(t, err.fault, Fault.Still_Unsettled)
 }
 
