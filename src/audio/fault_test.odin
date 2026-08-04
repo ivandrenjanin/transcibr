@@ -143,19 +143,21 @@ a_cache_refusal_names_the_cache_directory :: proc(t: ^testing.T) {
 
 @(test)
 every_cache_fault_renders_a_line_a_batch_can_refuse_to_start_with :: proc(t: ^testing.T) {
-	// Walked over the whole enumeration, which is the guard the other three
-	// vocabularies in this repository carry: the compiler already refuses a
-	// member added without a row, and what nothing catches is a row that is
-	// PRESENT and EMPTY.
+	// The same walk as above and NOT the same guard, which is the difference the
+	// two vocabularies are worth spelling. `Fault` reads a table, so what this has
+	// to catch there is a row that is present and EMPTY. Cache_Fault reads an
+	// exhaustive switch, so what is left to catch is an ARM that is present and
+	// empty -- the compiler has the rest of it either way.
 	//
-	// The emptiness is read off the table BEFORE the render rather than left to
-	// cache_fault_says's own assertion, because a test that trips an assertion
+	// Read off cache_fault_says before the render rather than left to
+	// cache_error_message's own assertion, because a test that trips an assertion
 	// takes the whole runner down instead of naming a case (issue #22).
 	for fault in Cache_Fault {
 		if fault == .None {
 			continue
 		}
-		if !testing.expectf(t, len(CACHE_FAULT[fault]) > 0, "%v has an empty row", fault) {
+		says := cache_fault_says(fault)
+		if !testing.expectf(t, len(says) > 0, "%v has no sentence at all", fault) {
 			continue
 		}
 
@@ -163,7 +165,7 @@ every_cache_fault_renders_a_line_a_batch_can_refuse_to_start_with :: proc(t: ^te
 		defer delete(message, context.allocator)
 		testing.expectf(
 			t,
-			strings.contains(message, CACHE_FAULT[fault]),
+			strings.contains(message, says),
 			"%v rendered <%s>, which does not carry its own sentence",
 			fault,
 			message,

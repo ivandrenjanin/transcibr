@@ -64,10 +64,20 @@ import "transcibr:process"
 // nowhere for ANY Recording's audio to go, so the Batch does not start.
 //
 // ADR-0002 wants this said loudly and once, in `doctor`. THERE IS NO `doctor` IN
-// `src/` YET (issue #14), so what this PR does instead is check it once at Batch
+// `src/` YET (issue #13), so what this PR does instead is check it once at Batch
 // start rather than once per Recording, in the vocabulary `doctor` will use when
 // it arrives -- and record the substitution rather than let N identical
 // per-Recording failures stand in for it silently.
+//
+// A SECOND VOCABULARY IS NOT A SECOND COPY OF THE SHAPE. `Fault` below is this
+// repository's fourth copy of it, and ADR-0018 records where that debt belongs;
+// this is deliberately not the fifth. What it carries is an enumeration and one
+// renderer. What it does NOT carry is the rest of the apparatus -- no table of
+// sentences, no checked reader of its own -- because that apparatus is what a
+// nineteen-member vocabulary needs and a two-member one does not. `Riff_Fault`
+// and `process.Probe_Fault` in this same package's reach are bare enumerations
+// their consumers render with `%v`; this one needs a sentence, and that is the
+// whole of the difference.
 Cache_Fault :: enum u8 {
 	None = 0,
 	// ADR-0002's own refusal, checked on the RESOLVED path (see open_cache) and
@@ -81,25 +91,32 @@ Cache_Fault :: enum u8 {
 // What each cache fault reads as, without the directory's name --
 // cache_error_message supplies that, so no entry here can forget to.
 //
-// An enumerated array for the reason every FAULT table in this repository is
-// one: add a member and leave this alone and the COMPILER refuses the build.
-@(private, rodata)
-CACHE_FAULT := [Cache_Fault]string {
-	// `.None` is the success value and is not a fault. It is the ONLY empty row
-	// in this table, and cache_fault_says refuses it by name.
-	.None           = "",
-	.Path_Not_Ascii = "the scratch cache is under a path the Engine cannot open, because it carries a byte outside ASCII",
-	.Unusable       = "the scratch cache could not be created or listed",
-}
-
-// One cache fault's sentence, checked. The one place the table is read.
+// A SWITCH AND NOT AN ENUMERATED ARRAY, which is the whole of what keeps this
+// vocabulary from being a fifth copy of the fault-report shape rather than a
+// second one in this package. The two give the SAME compiler guard -- add a
+// member, leave this alone, and the build fails -- and a table brings a second
+// failure mode a switch does not: a row that is PRESENT and EMPTY, which
+// compiles, passes every test, and is found by the reader's own assertion in
+// front of a user, on a Batch that is already failing. Nineteen sentences are
+// worth a table and a checked reader of their own; two are not.
+//
+// An arm that is present and empty falls out to the empty answer below, which is
+// what cache_error_message asserts on and what fault_test.odin reads before it
+// renders anything.
 @(private)
 cache_fault_says :: proc(fault: Cache_Fault) -> string {
-	assert(fault != .None, "the success value is not a fault and says nothing")
-
-	says := CACHE_FAULT[fault]
-	assert(len(says) > 0, "a fault was added to Cache_Fault without a row in CACHE_FAULT")
-	return says
+	switch fault {
+	case .Path_Not_Ascii:
+		return(
+			"the scratch cache is under a path the Engine cannot open, because it carries a byte outside ASCII" \
+		)
+	case .Unusable:
+		return "the scratch cache could not be created or listed"
+	case .None:
+	// The success value and not a fault. It has no sentence, and
+	// cache_error_message refuses it by name before ever asking for one.
+	}
+	return ""
 }
 
 // Renders a refused scratch cache as a line, NAMING THE DIRECTORY and saying
@@ -120,12 +137,10 @@ cache_error_message :: proc(
 		"the message outlives this procedure and needs an allocator",
 	)
 
-	message := fmt.aprintf(
-		"%q: %s -- the Batch cannot start",
-		cache,
-		cache_fault_says(fault),
-		allocator = allocator,
-	)
+	says := cache_fault_says(fault)
+	assert(len(says) > 0, "a fault was added to Cache_Fault without a sentence")
+
+	message := fmt.aprintf("%q: %s -- the Batch cannot start", cache, says, allocator = allocator)
 	assert(len(message) > 0, "a refusal rendered as nothing at all")
 	return message
 }

@@ -615,16 +615,20 @@ sweep_cache :: proc(
 		return 0, opening
 	}
 	// `core:os` and not a hand-rolled FindFirstFileW walk, which is a decision
-	// with a measured cost. That listing opens a HANDLE per entry to work out
-	// each file's type, and nothing here needs it: the size, the modification
-	// time and the directory and reparse-point attributes all come from the
-	// directory entry itself (see cache_entries). So the open is roughly four
-	// kernel calls and two allocations per file, spent for nothing.
+	// with a measured cost: that listing opens a HANDLE per entry to work out
+	// each file's type, roughly four kernel calls and two allocations apiece.
 	//
-	// It is spent anyway. This runs ONCE per Batch, and a thousand-file cache is
-	// some tens of milliseconds against a Batch measured in hours -- while the
-	// alternative is hand-rolled Win32 in the procedure that deletes files.
-	// Written down so the next person meets a decision rather than an oversight.
+	// IT IS NOT WASTE, which is what this said before. The size, the modification
+	// time and the directory and reparse-point attributes do all come from the
+	// directory entry itself -- but the open is exactly what decides `.Regular`
+	// against `.Undetermined`, and cache_entries keeps both and turns on that
+	// distinction being made at all. A walk that never opened anything would have
+	// to make it some other way.
+	//
+	// What it costs is bounded anyway. This runs ONCE per Batch, and a
+	// thousand-file cache is some tens of milliseconds against a Batch measured in
+	// hours -- while the alternative is hand-rolled Win32 in the procedure that
+	// deletes files.
 	listing, unreadable := os.read_all_directory_by_path(cache, allocator)
 	if unreadable != nil {
 		return 0, .Unusable
@@ -652,6 +656,29 @@ sweep_cache :: proc(
 // the floor, so it is never taken. That is the safe answer to a clock skew or a
 // file copied off a machine running ahead, and it is what falls out of doing the
 // arithmetic in one place rather than clamping it in another.
+//
+// `.Undetermined` IS COUNTED, and what that admits is wider than this once
+// claimed. It said the leftover was "exactly a file nothing could open", and
+// `core:os` does not classify that narrowly: `stat_windows.odin` calls an entry
+// a `.Symlink` for `IO_REPARSE_TAG_SYMLINK` and `IO_REPARSE_TAG_MOUNT_POINT` and
+// for no other tag, so ANY other reparse point on a non-directory falls through
+// to `.Undetermined` the moment its handle will not open. Measured on this
+// machine: `%LOCALAPPDATA%\Microsoft\WindowsApps` lists 39 entries that way --
+// AppExecLinks, size zero, neither symlink nor junction nor directory. The
+// realistic one inside a cache is a cloud-files placeholder whose hydration
+// fails offline.
+//
+// Counting them is still the right answer, and it rests on the part that is not
+// in doubt: the size and the modification time of an `.Undetermined` entry come
+// from the DIRECTORY ENTRY and are exactly as good as a `.Regular` one's. What
+// dropping them cost was measured -- their bytes never entered the total, so a
+// cache dominated by in-flight `.part` files measured well under its ceiling and
+// swept nothing at all, which is the leak the ceiling exists to stop.
+//
+// What bounds the widening is not this filter. It is the floor and the two
+// ceilings in sweep.odin, which an `.Undetermined` entry meets like any other,
+// and the fact that sweep_cache is best effort by construction: it may CHOOSE
+// such a file, `os.remove` may refuse, and it counts what it actually removed.
 @(private)
 cache_entries :: proc(listing: []os.File_Info, allocator: mem.Allocator) -> []Cache_Entry {
 	assert(allocator.procedure != nil, "a listing needs an allocator to be turned into entries")
@@ -660,24 +687,8 @@ cache_entries :: proc(listing: []os.File_Info, allocator: mem.Allocator) -> []Ca
 	entries := make([dynamic]Cache_Entry, 0, len(listing), allocator)
 	for info in listing {
 		// Directories and symbolic links are left alone. The cache holds files
-		// transcibr wrote; anything else in it is somebody else's.
-		//
-		// `.Undetermined` IS COUNTED, and that is the whole of this check rather
-		// than a widening of it. `os.read_all_directory_by_path` opens a handle
-		// per entry and works the type out from that handle, so a file another
-		// process holds without sharing -- an extraction's `.part` while ffmpeg
-		// has it -- cannot be opened and comes back undetermined. Its size and
-		// its modification time come from the directory entry itself and are
-		// perfectly good; the attributes that say "directory" and "reparse
-		// point" come from there too, and they are already decided above. So
-		// what is left undetermined here is exactly "a file nothing could open",
-		// and dropping it meant its bytes never entered the total: a cache
-		// dominated by in-flight `.part` files measured well under its ceiling
-		// and swept nothing at all.
-		//
-		// The sweep may then CHOOSE such a file, and deleting it will fail. That
-		// is already the contract -- sweep_cache is best effort by construction
-		// and counts what it actually removed.
+		// transcibr wrote; anything else in it is somebody else's. `.Undetermined`
+		// is kept, and what that is and what it admits is above.
 		if info.type != .Regular && info.type != .Undetermined {
 			continue
 		}

@@ -99,7 +99,7 @@ and says the Batch cannot start. `open_cache` and `sweep_cache` answer in it; `e
 `open_cache` at all.
 
 **ADR-0002 asks for this loudly and once, in `doctor`, and there is no `doctor` in `src/` yet
-(issue #14).** What this ticket does instead is check it once at Batch start rather than once per
+(issue #13).** What this ticket does instead is check it once at Batch start rather than once per
 Recording, in the vocabulary `doctor` will use when it arrives. That is a substitution, and it is
 recorded here rather than left as N identical per-Recording failures standing in for one Batch-level
 one. ADR-0002 also asks that the check be on the **resolved** path, and it now is: the scenario that
@@ -116,3 +116,13 @@ three copies already in the tree. This is the fourth, and the debt is one ticket
 `src/audio` carries the small version — an enumeration, a table of sentences, one checked reader and
 one renderer, and not the borrowed-culprit record — because the culprit here is always the Recording,
 which the renderer is handed. Moving the shape is its own change and is not this one.
+
+**`Cache_Fault` is a second vocabulary in this package and deliberately not a fifth copy of the
+shape.** The type split above is load-bearing and stays: a Batch-level refusal must not be renderable
+through a procedure whose one documented job is naming a Recording. What does not follow from it is
+the rest of the apparatus. Two members do not earn a table of sentences and a checked reader of their
+own — an exhaustive `switch` gives the identical compiler guard, and it does not bring the one
+failure mode a table has, a row that is *present and empty*, which compiles and is found by the
+reader's own assertion in front of a user. `Riff_Fault` and `process.Probe_Fault` are the shape
+correctly declined: bare enumerations their consumer renders with `%v`. `Cache_Fault` needs a
+sentence and nothing beyond it.
