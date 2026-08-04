@@ -1281,6 +1281,24 @@ function Read-OdinProcedureHeader {
 # length, and not its comments. Get-OdinHiddenProcedure below closes that from
 # the other end by refusing the declaration, so the two checks keep saying
 # something true rather than something narrower than they claim.
+#
+# What is NOT closed is a body that opens and whose column-0 `}` never arrives:
+# the walk below breaks with nothing recorded, so the procedure is DROPPED
+# rather than refused, and a dropped procedure is the same green as a file that
+# never had one. Issue #52 is the refusal, written the way the indented
+# declaration is refused above.
+#
+# The formatter is not what stands between the tree and that shape. It does not
+# have to produce it -- it ACCEPTS it. This is an odinfmt fixed point, and
+# `odin check` exits 0 over it under the full vet set:
+#
+#   escapes :: proc() -> bool {
+#   	// a comment section 0 bans
+#   	return true}
+#
+# so `escapes` breaks section 0 and rule F2 at once and is invisible to both,
+# silently. Long-standing rather than new here: the same shape drops the same
+# way on main.
 function Get-OdinProcedureRange {
 	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
 
