@@ -58,6 +58,12 @@ advancing estimate over a dead child is worse than a frozen bar, because it hide
 the stdout deadlock in ADR-0004, where exactly this combination turns a hang into an apparently
 healthy run. A per-job watchdog treats no bytes on either stream for N minutes as an operating error.
 
+"Either stream" is one stream in practice: ADR-0004 sends stdout to the null device, so the progress
+line is the whole of what a watchdog can see, and that is what forces N to scale with the recording
+below. Issue #32 records what would let it stop scaling — the engine calls `fflush(stdout)` after
+every segment, so a drained stdout is a *denser* liveness signal than the progress line rather than a
+sparser one. Taking it is a decision against ADR-0004 and wants a measurement first.
+
 **N is the recording's own length, floored at what a cold model load costs, and never a fixed number
 of minutes.** This follows from the amendment above and from ADR-0004 together, and issue #9 shipped
 the fixed version first and had to correct it. Every cue goes to stdout, which goes to the null

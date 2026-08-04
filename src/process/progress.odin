@@ -168,6 +168,20 @@ FALLBACK_AFTER_MS :: i64(30_000)
 // one every few per cent -- so the bound is sized against the longest legitimate
 // gap between readings rather than against a byte trickle.
 //
+// AND THAT COST IS REAL RATHER THAN THEORETICAL. Draining standard output
+// instead was declined once on the reasoning that C stdio is fully buffered when
+// standard output is not a terminal, so those 14,468 bytes would reach a pipe in
+// 4 KB blocks -- about one flush per six minutes of audio, SPARSER than a
+// reading. The general property is true and the inference about this binary is
+// false, which is why it is written down here: whisper.cpp v1.9.1 calls
+// fflush(stdout) as the last statement of the per-segment loop in
+// whisper_print_segment_callback, and installs that callback for every
+// invocation whose `-of` is not `-` -- which is every invocation
+// engine_arguments builds. The Engine flushes standard output once per SEGMENT,
+// a few seconds of audio, which is DENSER than a progress line rather than
+// sparser. Issue #32 holds the trade, because taking it is a decision against
+// ADR-0004 and wants a measurement rather than an argument.
+//
 // A minute. The gap between readings is about forty seconds for a three-hour
 // Recording at seventeen times realtime, and the corpus's longest is 168
 // minutes. Beyond that the bar freezes between readings, which is cosmetic: a
@@ -255,7 +269,10 @@ SILENT_AFTER_MS :: i64(5 * 60 * 1000)
 // What it costs is honest: a wedged Engine on a 168-minute Recording is now
 // noticed after 168 minutes rather than five. That is still four times sooner
 // than the run bound would have noticed, and the alternative is not a faster
-// failure but a correct run thrown away.
+// failure but a correct run thrown away. Issue #32 is the one thing that would
+// buy the difference back -- a drained standard output is a byte trickle
+// measured in seconds however long the Recording is, so this bound would not
+// have to scale at all. See QUIET_AFTER_MS for why that is not simply done.
 @(private)
 silent_after_ms :: proc(duration_ms: i64, floor_ms: i64) -> i64 {
 	assert(floor_ms > 0, "a run given no time at all to break its silence")
