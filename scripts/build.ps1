@@ -61,6 +61,13 @@ else {
 Assert-OdinCommentPolicy
 Write-Host '-> no .odin procedure body carries a comment' -ForegroundColor Green
 
+# CLAUDE.md rule F2, in the same place and for the same reason. The attribute
+# itself is what fails the compile at a call site that drops an answer; what
+# nothing else covers is the procedure declared tomorrow without it, and a rule
+# nothing checks is how 221 of them came to be here (issue #43).
+Assert-OdinResultPolicy
+Write-Host '-> every .odin procedure that returns carries @(require_results)' -ForegroundColor Green
+
 New-Item -ItemType Directory -Path $BuildRoot -Force | Out-Null
 
 # Counted as each target is finished, not taken from $OdinTargets afterwards:

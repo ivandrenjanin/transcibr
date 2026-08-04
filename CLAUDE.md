@@ -149,6 +149,47 @@ Counted from the line containing `::` through the closing brace, comments and bl
 procedure that fits on one screen reads as a unit; one that scrolls does not. The limit is
 checkable by machine and has no exceptions without a maintainer decision recorded at the site.
 
+### F2. `@(require_results)` on every procedure that returns anything
+
+If it hands something back, the attribute goes above the declaration. No judgement per procedure
+about whether *this* answer matters: a fault, an `ok`, a count, a rendered line — all of it. A
+caller that means to throw an answer away spells it `_ = f(...)`, which is a discard review can see.
+
+```odin
+// GOOD: a call site that drops the answer does not build.
+@(require_results)
+quarantine :: proc(path: string, allocator: mem.Allocator) -> bool {
+	// ...
+}
+
+// BAD: the only value that knows whether the rename happened, and nothing obliges anyone to read it.
+quarantine :: proc(path: string, allocator: mem.Allocator) -> bool {
+	// ...
+}
+```
+
+**The rule is total because a narrower one cannot be applied without asking somebody.** "Faults
+only" leaves whoever writes the next `-> (value, ok)` deciding what counts as a fault, and
+case-by-case review already produced its answer here: `disposition_of` was left bare *because a
+sibling lacked it* — consistency with a gap, which is how a gap spreads. Measured against this tree
+the total rule costs nothing it should not. All 304 returning procedures carry it, and what that
+found was four dropped answers — one of them the production defect ADR-0024 now records — and not
+one call site that wanted a `_ =`.
+
+**Test files are inside the rule**, and the boundary does not fall between them and production code
+because the failure does not. A helper answering whether a temporary was left behind is a verdict; a
+case that drops it checks nothing and still reports green.
+
+Two halves enforce it and neither is enough alone. The **compiler** refuses a dropped result at the
+call site, and refuses the attribute on a procedure with no results — so it cannot be sprayed wider
+than the rule says, and deleting a procedure's return values fails the build until the attribute
+goes too. What the compiler says nothing about is a procedure declared *without* it, which is how
+221 of them came to be here; `Assert-OdinResultPolicy` in `scripts\common.ps1` fails the build on
+one, reading the same procedure ranges section 0's comment ban reads.
+
+`#optional_ok` is not a lighter version of this and points the other way: it makes dropping an `ok`
+easier, which is the failure the rule exists to stop.
+
 ## 3. Types
 
 ### T1. Explicit widths where the width is meaning

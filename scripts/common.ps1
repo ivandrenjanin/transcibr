@@ -1398,28 +1398,32 @@ function Assert-OdinCommentPolicy {
 # checks ask -- rule F1 learned it by leaving a spike in docs\reference\ growing
 # to 107 lines with nothing looking outside src\.
 #
-# The sweep FAILS when it finds no returning procedure at all, for the fourth
-# time in this file and the same reason: a check that covers nothing reports the
-# same green as one that covered everything.
+# The sweep FAILS when it finds no .odin file, for the fourth time in this file
+# and the same reason: a check that reads nothing reports the same green as one
+# that read everything.
+#
+# It does NOT fail when it finds no RETURNING procedure, and that is where the
+# deny-by-default habit stops. Zero files means discovery is broken; zero
+# returning procedures is an ordinary small program -- `main :: proc()` prints a
+# line and hands nothing back, and every build fixture in scripts\selftest.ps1 is
+# exactly that. Written as a "measured nothing" guard first, this refused six of
+# them, and the refusal was correct about the arithmetic and wrong about the
+# claim. The guard against a vacuous pass belongs where the tree being read is
+# known to have 304 of them, which is the selftest case and not here.
 function Assert-OdinResultPolicy {
 	$sources = @(Get-OdinSource)
 	if ($sources.Count -eq 0) {
 		throw "no .odin files found under $RepoRoot, so this check would pass having read nothing."
 	}
 
-	$read = 0
 	$bare = @()
 	foreach ($source in $sources) {
 		$text = [System.IO.File]::ReadAllText($source.Path)
 		foreach ($procedure in @(Get-OdinResultProcedure -Text $text)) {
-			$read += 1
 			if (-not $procedure.Required) {
 				$bare += "  - $($source.Name):$($procedure.Line) $($procedure.Name)"
 			}
 		}
-	}
-	if ($read -eq 0) {
-		throw "read no returning procedure at all out of $($sources.Count) file(s), so this check measured nothing."
 	}
 	if ($bare.Count -eq 0) {
 		return
