@@ -48,8 +48,12 @@ Fault :: enum u8 {
 // `attributable` is the difference between a procedure an attribute can sit on
 // and one it cannot. `@(require_results)` goes above a `::` declaration; there is
 // nowhere to write it for a procedure literal passed as an argument, and the
-// compiler refuses it on a `:=` binding. Rule F2 may only demand what can be
-// given, so it reads this field rather than assuming every body has a name.
+// compiler refuses it on a `:=` binding. Rules F1 and F2 may only demand what can
+// be given, so they read this field.
+//
+// It is a claim about how the body was DECLARED and never about how it was
+// named: `_ :: proc()` reads as a hole and takes an attribute like anything else,
+// and conflating the two exempted it from both rules.
 Procedure :: struct {
 	name:         string,
 	declared_at:  int,

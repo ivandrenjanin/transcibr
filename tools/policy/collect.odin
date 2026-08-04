@@ -97,6 +97,11 @@ note_declared :: proc(state: ^Walk_State, declaration: ^ast.Value_Decl) {
 	assert(state != nil, "asked to record a declaration into no state at all")
 	assert(declaration != nil, "asked to record no declaration at all")
 
+	assert(
+		len(declaration.values) <= len(declaration.names),
+		"a declaration with more values than names is a parser defect",
+	)
+
 	for value, index in declaration.values {
 		literal, is_literal := value.derived.(^ast.Proc_Lit)
 		if !is_literal {
@@ -105,20 +110,16 @@ note_declared :: proc(state: ^Walk_State, declaration: ^ast.Value_Decl) {
 		if literal.body == nil {
 			continue
 		}
-		if index >= len(declaration.names) {
-			continue
-		}
 		state.named[rawptr(literal)] = true
-		name, is_named := declared_name(declaration.names[index])
 		append(
 			&state.found,
 			Procedure {
-				name = strings.clone(name, state.names),
+				name = strings.clone(declared_name(declaration.names[index]), state.names),
 				declared_at = declaration.pos.line,
 				body_ends = literal.body.end.line,
 				returns = hands_back(literal),
 				annotated = requires_results(declaration),
-				attributable = is_named && !declaration.is_mutable,
+				attributable = !declaration.is_mutable,
 			},
 		)
 	}
@@ -149,21 +150,28 @@ note_literal :: proc(state: ^Walk_State, literal: ^ast.Proc_Lit) {
 	)
 }
 
-// The name a declaration gives one of its values, where that name is an
-// identifier. Anything else -- and `_` is the one this repository writes -- has
-// no name an attribute could be looked up by.
+// The name a declaration gives one of its values.
+//
+// `_` is one of these, and reporting it as one is the point. It reads as a hole,
+// but an attribute sits above it perfectly well -- `@(require_results)` on
+// `_ :: proc() -> bool` compiles clean under the full vet set, measured at the
+// pin -- so rules F1 and F2 have every question about that body they have about
+// any other. Read as nameless it was exempt from both, and the column-zero scan
+// this replaced was not: its regex matched `_` like any other name.
+//
+// What is left unnamed is a value bound to something that is not an identifier at
+// all. There is no spelling to report for one and nothing to look an attribute up
+// by, and whether an attribute may sit there is a question about the `::`, which
+// note_declared reads for itself.
 @(require_results)
-declared_name :: proc(name: ^ast.Expr) -> (spelled: string, is_named: bool) {
+declared_name :: proc(name: ^ast.Expr) -> string {
 	assert(name != nil, "a declaration with a hole where a name goes is a parser defect")
 	identifier, is_identifier := name.derived.(^ast.Ident)
 	if !is_identifier {
-		return ANONYMOUS, false
-	}
-	if identifier.name == "_" {
-		return ANONYMOUS, false
+		return ANONYMOUS
 	}
 	assert(len(identifier.name) > 0, "an identifier spelled with no characters is a parser defect")
-	return identifier.name, true
+	return identifier.name
 }
 
 // Whether a procedure hands anything back.

@@ -337,6 +337,41 @@ a_procedure_literal_has_a_body_but_nothing_to_annotate :: proc(t: ^testing.T) {
 	testing.expect_value(t, bound.attributable, false)
 }
 
+// `_ :: proc()` is a declaration an attribute can sit above: measured at the pin,
+// `@(require_results)` on one compiles clean under the full vet set. So rules F1
+// and F2 have every question about it that they have about any other procedure,
+// and reading it as unattributable exempts it from both -- a hole the column-zero
+// scan this replaced did not have, since its regex matched `_` like any name.
+@(test)
+a_discarded_declaration_is_something_an_attribute_can_sit_on :: proc(t: ^testing.T) {
+	facts := facts_of(t, PROBE + "_ :: proc() -> bool {\n\treturn true\n}\n")
+	defer facts_destroy(facts, context.allocator)
+
+	found := one_procedure(t, facts)
+	testing.expect_value(t, found.name, "_")
+	testing.expect_value(t, found.declared_at, 3)
+	testing.expect_value(t, found.body_ends, 5)
+	testing.expect_value(t, found.returns, true)
+	testing.expect_value(t, found.annotated, false)
+	testing.expect_value(t, found.attributable, true)
+}
+
+// The negative space (rule A3), and the property the line above turns on: what
+// makes a body unattributable is the `:=`, which the compiler refuses an
+// attribute on, and never the spelling of the name in front of it.
+@(test)
+a_discarded_binding_is_not_something_an_attribute_can_sit_on :: proc(t: ^testing.T) {
+	bound := PROBE + "held :: proc() {\n\t_ := proc() -> int {\n\t\treturn 1\n\t}\n}\n"
+	facts := facts_of(t, bound)
+	defer facts_destroy(facts, context.allocator)
+
+	testing.expect_value(t, len(facts.procedures), 2)
+	inner, is_there := procedure_named(facts, "_")
+	testing.expect(t, is_there, "a procedure bound to _ with := was not measured")
+	testing.expect_value(t, inner.returns, true)
+	testing.expect_value(t, inner.attributable, false)
+}
+
 // A foreign block's entries carry no body at all, so they are procedures in name
 // only and none of the four policies has a question about one.
 @(test)
