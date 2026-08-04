@@ -10,6 +10,21 @@ import "transcibr:process"
 // This file starts the Engine, drains what it says while it runs, and reads back
 // what it left. It is kept thin enough to inspect by reading: every branch in it
 // either calls a decision next door or reports what the world said.
+//
+// AND IT IS A NEAR-VERBATIM SECOND COPY OF `transcibr:audio`'s run.odin,
+// deliberately and for now (issue #33). The poll loop, `drain`, `took`, the `Run`
+// enumeration, the `Ending` record and the `stopped`/`finished` pair are that
+// file's shape with a Recording's tracker standing where its settling reading
+// goes; what genuinely differs is what one chunk MEANS to the caller and what a
+// bound expiry is called afterwards.
+//
+// The fix is not in this file. It is lifting the machinery into `transcibr:child`
+// -- which already owns start/wait/stop/read_diagnostics/close and has the only
+// real child suite in this repository -- and that moves three packages at once,
+// so it is its own change and its own review rather than a pass on issue #9.
+// Recorded here rather than in a pull request comment because this is where the
+// next person meets it. A THIRD copy is the point at which this stops being a
+// deferral and starts being the design.
 
 // How long each poll of a running Engine waits before draining again.
 //

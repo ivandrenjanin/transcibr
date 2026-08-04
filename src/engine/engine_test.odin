@@ -31,6 +31,17 @@ import "transcibr:process"
 // #27). Every machine-wide name carries the process id, the shape
 // `lonely_signal` has in `src/child`, so two sweeps in one checkout cannot reach
 // each other's objects.
+//
+// FOUR OF THE HELPERS BELOW ARE THIRD COPIES, and one of them has already
+// drifted (issue #33). `open_group`, `lonely_signal`, `scratch_cache` and
+// `remove_cache` exist here, in `src/child/child_test.odin` and in
+// `src/audio/run_test.odin` -- and `scratch_cache` is NOT the same procedure in
+// all three: this one makes the directory and expects it, `src/audio`'s builds
+// the path and stops. Two names, one comment, different behaviour, which is
+// exactly what duplication costs and it has already been paid once. Odin has no
+// test-only shared package, so the fix is either a `transcibr:testkit` built for
+// the purpose or a decision to keep the copies and say so at every site; both
+// are decisions, and neither belongs in a review pass on issue #9.
 
 // The watchdog a case hands in, with bounds it can actually reach. The shipped
 // program takes process.DEFAULT_WATCH, whose silent bound is five minutes.

@@ -138,6 +138,12 @@ Report :: struct {
 // that is present and EMPTY, which compiles and is found in front of a user.
 // There is no disposition table either: every member here disposes the same way,
 // which is that this Recording fails and the Batch carries on (ADR-0002).
+//
+// Declining the apparatus is not paying the debt down, and the debt is issue #33.
+// The four full copies stay where they are, and what could be shared between them
+// is the RENDERER CONTRACT rather than any vocabulary -- each package's faults
+// are its own and have to stay so. That is the part worth getting wrong slowly:
+// a shared enumeration is a generic error message in front of a user.
 Fault :: enum u8 {
 	None = 0,
 	// The Engine would not start. The reason travels in `Error.child`, which
