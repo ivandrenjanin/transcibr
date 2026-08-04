@@ -53,7 +53,7 @@ next to it, and it goes wrong silently — nothing checks a comment. The package
 package is; each file says what it holds, below its own imports.
 
 **The rule generalises to the two core modules that do not exist yet.** *Planning* and *Worker
-planning* are named in the spec with seams of their own (S2, S5), so they get `src/planning/` and
+planning* are named in the spec with seams of their own (S2, S4), so they get `src/planning/` and
 `src/worker_planning/`, whatever the files inside end up being called. A third package that turns
 out to hold half of one of them is this decision being reopened, not applied.
 
