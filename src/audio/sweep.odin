@@ -80,6 +80,16 @@ DEFAULT_SWEEP_LIMITS :: Sweep_Limits {
 //
 // The caller owns the returned slice and frees it with `delete` and the same
 // allocator. The names inside `entries` are untouched.
+//
+// THE LIMITS ARE ASSERTED AND NOT REFUSED, which is right today and has a
+// trigger. Every `Sweep_Limits` that reaches here is this program's own --
+// DEFAULT_SWEEP_LIMITS, whose one relationship the `#assert` above holds before
+// a test runs, or a value a case built -- so a floor above the age ceiling is
+// corrupt internal state and A8's `assert` is the correct answer. The DAY a
+// settings file supplies these numbers they arrive from outside, and these four
+// assertions become assertions on external input: they have to become a refusal
+// in the Batch's own vocabulary then, next to the one `open_cache` already
+// answers in. Written here rather than left for whoever adds the setting.
 sweep_choice :: proc(
 	entries: []Cache_Entry,
 	limits: Sweep_Limits,

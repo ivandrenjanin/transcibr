@@ -437,6 +437,14 @@ read_head :: proc(path: string, into: []u8) -> (head: []u8, bytes: i64, err: Err
 // against one Recording, and it is still two runs colliding over a name neither
 // agreed to share. `<name>.wav` stays plain: it is the artifact stem, and two
 // workers that both produced it produced the same bytes.
+//
+// WHAT THE PROCESS ID DOES NOT SEPARATE is two workers inside ONE transcibr,
+// which share it. What keeps those apart is `name` -- the artifact stem -- and
+// that rests on no two workers in a Batch ever taking the same Recording. That
+// is the BATCH's guarantee, and nothing in this package enforces it: `extract`
+// is handed a Job and believes it. Said out loud because the two intermediates
+// are named for the process, and it would be easy to read that as the whole
+// answer.
 Job :: struct {
 	source:  string,
 	// The scratch cache, ASCII-only (ADR-0002).
@@ -592,6 +600,15 @@ discard_part :: proc(part: string, fault: Fault) {
 // The ASCII rule comes before the directory is created, because a directory
 // happily created under a non-ASCII path is exactly the failure that then shows
 // up three stages later as an Engine that produced nothing.
+//
+// A CACHE PATH THAT IS NOT VALID UTF-8 ANSWERS `.Unusable` AND NOT
+// `.Path_Not_Ascii`, which is honest and is the less useful of the two
+// sentences: `get_absolute_path` refuses such a path before the ASCII check ever
+// sees it, and NTFS permits an unpaired surrogate in a directory name, so this
+// is a path a user can really have. Both answers stop the Batch and name the
+// directory, so nothing is lost but the reason -- and the reason is the one that
+// tells them what to rename. Left as it is because reaching past
+// `get_absolute_path` means resolving the path by hand.
 open_cache :: proc(cache: string, allocator: mem.Allocator) -> Cache_Fault {
 	assert(len(cache) > 0, "there is no scratch cache here to open")
 	assert(allocator.procedure != nil, "resolving a path needs an allocator to resolve it into")

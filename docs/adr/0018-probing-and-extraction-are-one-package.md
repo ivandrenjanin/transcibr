@@ -77,6 +77,15 @@ scratch cache swept — which is the code that deletes files. What stays hand-ve
 ffmpeg and ffprobe themselves, because a stand-in answering ffprobe's argument list would be a test
 of the stand-in.
 
+**The four tunables sit at four different altitudes, and that is a known shape rather than a
+decision.** `Tolerance` is a defaulted parameter, `Sweep_Limits` a required one, and the settling gap
+and both child bounds are constants hardwired at their call sites. The cost is visible in
+`run_test.odin`, which has to declare a `SHORT_BOUND_MS` of its own and reach for the private
+`run_bounded` to exercise a bound at all — where the two it can hand in, the tolerance and the sweep
+limits, are checked through the public procedure like anything else. Levelling them is a settings
+question and belongs to whatever ticket introduces a settings file; recorded here so that ticket
+meets a shape somebody noticed rather than one nobody did.
+
 **Nothing enforces that, and the ADR is the whole of the enforcement.** This once claimed "the same
 pressure ADR-0009 records for `src/cli`", and the two are not alike. `src/cli` is named in
 `$OdinPackagesWithoutTests`, and `scripts/test.ps1` fails a package named there that collects
