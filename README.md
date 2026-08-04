@@ -3,8 +3,9 @@
 Local transcription tool. Converts video and audio files into text transcripts using Whisper.
 
 > **Status: early implementation.** The specification is in `docs/spec/`. The build and test
-> commands work (see [Building from source](#building-from-source)); `transcibr-cli` currently
-> reports its version and nothing else. There are no releases yet.
+> commands work (see [Building from source](#building-from-source)); `transcibr-cli` already
+> dispatches `--help`, `--plan`, `--from-json` and `--transcribe` -- a full GPU run over one
+> Recording, end to end (`src/cli/main.odin`). There are no releases yet.
 
 ## What it does
 
@@ -105,8 +106,9 @@ through on Windows.
 
 ## Building from source
 
-Four scripts, and CI runs the same four on every push — nothing in the workflow that a developer
-cannot run locally.
+Four scripts a developer runs by hand. CI runs those same four on every push, plus
+`install-pinned-tool.ps1` — twice, once per pinned tool — to fetch what a developer's own machine
+already has; nothing in the workflow does anything those five scripts cannot do locally too.
 
 ```powershell
 .\scripts\build.ps1     # -> build\transcibr-cli.exe   (add -Configuration release for -o:speed)
