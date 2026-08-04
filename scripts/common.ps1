@@ -1038,7 +1038,15 @@ function Write-FileAtomically {
 }
 
 # One fact per line of an Odin file: whether the line BEGINS in ordinary code,
-# and whether its first token opens a comment.
+# and whether a comment OPENS anywhere on it.
+#
+# ANYWHERE, and not at the first token. The reader asked the narrower question
+# once, and `x := 1 // why` passed a check whose refusal reads "N comment(s)
+# inside a procedure body" -- a complete-sounding guarantee over a scan that
+# only ever looked at column one. Where the comment opens is already known: the
+# loop below has to walk past strings and rune literals anyway to keep a raw
+# string's contents from being read as code, so the answer costs nothing beyond
+# reporting it.
 #
 # This is a lexer and not a regex, and the reason is one line in
 # src\transcript\render.odin:
@@ -1066,12 +1074,12 @@ function Get-OdinLineFact {
 
 	foreach ($line in ($Text -split "`r?`n")) {
 		$live = (-not $raw) -and ($depth -eq 0)
-		$trimmed = $line.TrimStart()
-		$facts.Add([pscustomobject]@{
-				Text    = $line
-				Live    = $live
-				Comment = $live -and ($trimmed.StartsWith('//') -or $trimmed.StartsWith('/*'))
-			})
+
+		# Set by the scan below, so the fact is added after it rather than before.
+		# A comment that OPENS on a line the file was already inside a comment on
+		# counts too -- `b */ // c` closes one and opens another, and the second is
+		# a comment nothing else reports.
+		$opens = $false
 
 		$i = 0
 		while ($i -lt $line.Length) {
@@ -1094,8 +1102,8 @@ function Get-OdinLineFact {
 			}
 			# Everything after `//` on this line is comment, including any quote or
 			# backtick in it, so the scan stops rather than reading them as literals.
-			if (($char -eq '/') -and ($next -eq '/')) { break }
-			if (($char -eq '/') -and ($next -eq '*')) { $depth += 1; $i += 2; continue }
+			if (($char -eq '/') -and ($next -eq '/')) { $opens = $true; break }
+			if (($char -eq '/') -and ($next -eq '*')) { $opens = $true; $depth += 1; $i += 2; continue }
 			if ($char -eq '`') { $raw = $true; $i += 1; continue }
 			if (($char -eq '"') -or ($char -eq "'")) {
 				$quote = $char
@@ -1109,6 +1117,12 @@ function Get-OdinLineFact {
 			}
 			$i += 1
 		}
+
+		$facts.Add([pscustomobject]@{
+				Text    = $line
+				Live    = $live
+				Comment = $opens
+			})
 	}
 	return $facts.ToArray()
 }

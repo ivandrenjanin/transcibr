@@ -47,7 +47,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 44
+$ExpectedCaseCount = 45
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -1152,6 +1152,57 @@ Test-Case 'no procedure the format check covers carries a comment in its body' {
 	$overreach = @(Get-OdinBodyComment -Text $documented)
 	if ($overreach.Count -ne 0) {
 		throw "a comment ABOVE a procedure was read as $($overreach.Count) body comment(s)."
+	}
+}
+
+Test-Case 'a comment that follows code on its line is still a comment in the body' {
+	# The gap this case exists to close. The reader asked whether a line BEGAN with
+	# a comment, so `x := 1 // why` passed a check whose refusal reads "N comment(s)
+	# inside a procedure body" -- a complete-sounding guarantee over a partial scan.
+	# That is the failure this repository keeps meeting from the other side: a sweep
+	# exiting 0 having read nothing, a suite announcing all zero cases passed. The
+	# tree carries no trailing comment today, so what this holds is the next one.
+	$trailing = "held :: proc() {`n`tx := 1 // why`n`t_ = x`n}`n"
+	$caught = @(Get-OdinBodyComment -Text $trailing)
+	if (($caught.Count -ne 1) -or ($caught[0].Line -ne 2)) {
+		throw "a trailing line comment read as: $($caught.Count) finding(s) on line(s) $(($caught | ForEach-Object { $_.Line }) -join ', ')"
+	}
+
+	# The same for the block form, which a reader anchored to the first token misses
+	# the same way and which can then run on for the rest of the file.
+	$block = "held :: proc() {`n`tx := 1 /* why */`n`t_ = x`n}`n"
+	$caughtBlock = @(Get-OdinBodyComment -Text $block)
+	if (($caughtBlock.Count -ne 1) -or ($caughtBlock[0].Line -ne 2)) {
+		throw "a trailing block comment read as: $($caughtBlock.Count) finding(s) on line(s) $(($caughtBlock | ForEach-Object { $_.Line }) -join ', ')"
+	}
+
+	# The negative space (rule A3), and the reason widening the reader is not the
+	# same as grepping a line for two slashes. A URL inside a string is not a
+	# comment, and this repository writes strings holding whatever somebody said.
+	$inString = @(
+		'held :: proc() {'
+		"`ts := `"https://example.com`""
+		"`t_ = s"
+		'}'
+	) -join "`n"
+	$fooledByString = @(Get-OdinBodyComment -Text $inString)
+	if ($fooledByString.Count -ne 0) {
+		throw "two slashes inside a string were read as $($fooledByString.Count) body comment(s)."
+	}
+
+	# Nor is a rune literal spelled '/' half of one -- and the escaped-quote rune
+	# beside it is what stops the reader running off the end of the literal and
+	# reading the rest of the line as text inside a string.
+	$runes = @(
+		'held :: proc() {'
+		"`tslash := '/'"
+		"`tquote := '\''"
+		"`t_, _ = slash, quote"
+		'}'
+	) -join "`n"
+	$fooledByRune = @(Get-OdinBodyComment -Text $runes)
+	if ($fooledByRune.Count -ne 0) {
+		throw "rune literals '/' and '\'' were read as $($fooledByRune.Count) body comment(s)."
 	}
 }
 
