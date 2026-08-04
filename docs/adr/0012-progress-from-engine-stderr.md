@@ -51,6 +51,21 @@ advancing estimate over a dead child is worse than a frozen bar, because it hide
 the stdout deadlock in ADR-0004, where exactly this combination turns a hang into an apparently
 healthy run. A per-job watchdog treats no bytes on either stream for N minutes as an operating error.
 
+**N is the recording's own length, floored at what a cold model load costs, and never a fixed number
+of minutes.** This follows from the amendment above and from ADR-0004 together, and issue #9 shipped
+the fixed version first and had to correct it. At most twenty progress lines per recording and eleven
+in the one real capture; every cue on stdout, which goes to the null device — so between two progress
+lines transcibr sees *nothing*, and a run of wall time W carries a legitimate silence of W/11. A
+fixed five minutes therefore fails any healthy run over about ninety minutes of wall time, which is
+the corpus's longest recording on anything slower than 1.7× realtime, and it contradicts the run
+bound in the same file: that one is four times realtime plus a floor, explicitly sized against a
+CPU-only fallback at a quarter of realtime.
+
+The recording's own length clears eleven readings at realtime or faster outright, and clears the
+quarter-of-realtime fallback with a margin of 2.7. A quarter of the length does not: it assumes the
+twenty readings this decision permits rather than the eleven that were measured. Size the watchdog
+against the capture, not against the ceiling.
+
 **Audio duration comes from the engine's own startup banner**, which reports sample count and
 seconds for the file it is about to process, or from the container probe (ADR-0009) — not from the
 scratch WAV's size. The WAV header is not a fixed 44 bytes: ffmpeg's muxer writes a `LIST`/`INFO`

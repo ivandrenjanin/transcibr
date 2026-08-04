@@ -334,7 +334,11 @@ prolonged_silence_on_every_stream_is_an_operating_error :: proc(t: ^testing.T) {
 	// same run, so the ORDER between them is what this pins -- an estimate that
 	// stopped moving at the same instant the run was failed would make the frozen
 	// state unobservable.
-	tr := tracker_start(600_000, STARTED)
+	//
+	// A ONE-MINUTE Recording, so the bound under test is the FLOOR: silent_after_ms
+	// gives a Recording its own length once that is the longer of the two, and the
+	// floor is what a cold Model load costs whatever the Recording is.
+	tr := tracker_start(60_000, STARTED)
 	tracker_heard(&tr, 64, after(60_000))
 
 	frozen := shown(tr, after(60_000 + QUIET_AFTER_MS), FOUR_TIMES)
@@ -347,6 +351,96 @@ prolonged_silence_on_every_stream_is_an_operating_error :: proc(t: ^testing.T) {
 		"a child that has said nothing for five minutes was not noticed",
 	)
 	testing.expect_value(t, gone.from, Progress_Source.Frozen)
+}
+
+// The eleven readings ADR-0012 records, out of one real capture.
+//
+// The capture itself is `src/process/fixtures/engine-stderr.txt` and is read
+// back in engine_test.odin; what is wanted here is only how far apart they fall,
+// which is the watchdog's entire input once ADR-0004 has sent every Cue to the
+// null device.
+@(private)
+FIXTURE_READINGS :: [?]int{10, 21, 27, 33, 42, 52, 64, 75, 85, 94, 100}
+
+// The corpus's longest Recording, as ffmpeg.odin records it: 168 minutes.
+@(private)
+LONGEST_RECORDING_MS :: i64(168 * 60 * 1000)
+
+// Walks one Recording whose Engine takes `wall_ms` over it, feeding each of the
+// fixture's readings where its percentage says it lands and asking after the run
+// every minute in between.
+//
+// NOTHING ARRIVES BETWEEN TWO READINGS, which is the fixture's own shape rather
+// than a pessimism: it holds eleven progress lines with nothing whatever between
+// them, because ADR-0004 sends the Cues the Engine writes during inference to the
+// null device. So the gap between readings is the longest silence a perfectly
+// healthy run produces.
+@(private)
+never_silent_across :: proc(t: ^testing.T, duration_ms: i64, wall_ms: i64) {
+	readings := FIXTURE_READINGS
+	tr := tracker_start(duration_ms, STARTED)
+	next := 0
+	for at := i64(0); at <= wall_ms; at += 60_000 {
+		for next < len(readings) && wall_ms * i64(readings[next]) / 100 <= at {
+			tracker_heard(&tr, 48, after(at))
+			tracker_said(&tr, Engine_Line{says = .Progress, percent = readings[next]}, after(at))
+			next += 1
+		}
+		testing.expectf(
+			t,
+			!shown(tr, after(at), FOUR_TIMES).silent,
+			"a healthy Engine %d ms into a %d ms run was failed for silence",
+			at,
+			wall_ms,
+		)
+	}
+}
+
+@(test)
+the_longest_recording_is_not_failed_between_its_own_readings :: proc(t: ^testing.T) {
+	// AT REALTIME, which is slower than anything measured on a GPU -- 58 times
+	// realtime for this repository's fixture and 17 for ADR-0012's machine -- and
+	// well inside the bound transcribe_bound_ms gives the same Recording.
+	//
+	// Eleven readings across 168 minutes is a gap of over fifteen minutes between
+	// them, and a bound that failed a run after five discarded the whole of the
+	// Engine's work three times over while it was doing exactly what it should.
+	never_silent_across(t, LONGEST_RECORDING_MS, LONGEST_RECORDING_MS)
+}
+
+@(test)
+a_recording_on_the_cpu_only_fallback_is_not_failed_between_its_own_readings :: proc(
+	t: ^testing.T,
+) {
+	// A QUARTER OF REALTIME, which is the speed ENGINE_BOUND_MULTIPLE is sized
+	// against by its own comment. The two bounds in this file have to agree: a run
+	// the bound gives hours to must not be failed for silence by the watchdog in
+	// the same file, on the same Recording, while the Engine is working.
+	never_silent_across(t, LONGEST_RECORDING_MS, LONGEST_RECORDING_MS * ENGINE_BOUND_MULTIPLE)
+}
+
+@(test)
+a_long_recording_is_still_failed_once_its_own_length_of_silence_passes :: proc(t: ^testing.T) {
+	// The positive space of the two cases above (A3). Scaling the bound with the
+	// Recording must not amount to removing it: a wedged Engine still has to be
+	// noticed, and issue #27's rule is that nothing may block forever.
+	//
+	// Three hours, so the bound is the Recording's own length rather than the
+	// floor. At five minutes -- what a Recording of a minute would already have
+	// been failed at -- this one is merely frozen.
+	tr := tracker_start(10_800_000, STARTED)
+	tracker_heard(&tr, 64, after(60_000))
+
+	early := shown(tr, after(60_000 + SILENT_AFTER_MS), FOUR_TIMES)
+	testing.expect(
+		t,
+		!early.silent,
+		"a three-hour Recording was failed on a one-minute one's bound",
+	)
+	testing.expect_value(t, early.from, Progress_Source.Frozen)
+
+	gone := shown(tr, after(60_000 + 10_800_000), FOUR_TIMES)
+	testing.expect(t, gone.silent, "a wedged Engine was never noticed at all")
 }
 
 @(test)

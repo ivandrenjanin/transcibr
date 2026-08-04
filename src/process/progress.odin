@@ -161,16 +161,20 @@ FALLBACK_AFTER_MS :: i64(30_000)
 // minutes. Beyond that the bar freezes between readings, which is cosmetic: a
 // frozen bar is what ADR-0012 asks for over a confident one, and the estimate is
 // floored at the Engine's last reading either way.
+//
+// FIXED WHERE THE FAILING BOUND BELOW IS SCALED, and the asymmetry is the point:
+// what a fixed bound costs here is a bar that stops moving, and what it costs
+// below is a Recording's whole run discarded.
 QUIET_AFTER_MS :: i64(60_000)
 
-// ... and how long before the run is an operating error, in milliseconds.
+// ... and the FLOOR under how long before the run is an operating error, in
+// milliseconds. silent_after_ms below is what a Recording is actually given.
 //
-// Five minutes, which is what the same reasoning gives with the headroom a
-// FAILURE needs rather than a display state. The two legitimate silences to
-// clear are a cold Model load -- 1.6 GB, measured at 1.07 seconds warm and about
-// thirty seconds at fifty megabytes a second cold -- and one gap between
-// readings, at about forty seconds for the longest Recording anyone has
-// measured. This is six times the larger of them.
+// Five minutes, which is what a cold Model load costs before any inference
+// happens at all: 1.6 GB, measured at 1.07 seconds warm and about thirty seconds
+// at fifty megabytes a second cold. That is the one legitimate silence which
+// does NOT scale with the Recording, so it is the one a floor is the right shape
+// for.
 //
 // A Recording that trips it is an operating error and not an assertion (A8): it
 // fails on its own and the Batch carries on (ADR-0002).
@@ -183,6 +187,54 @@ SILENT_AFTER_MS :: i64(5 * 60 * 1000)
 // compiler, because it is a relationship between two constants and not
 // something a test would notice going wrong (A5).
 #assert(QUIET_AFTER_MS < SILENT_AFTER_MS)
+
+// How long nothing may arrive on any stream this program can see before THIS
+// Recording's run is an operating error, in milliseconds.
+//
+// SCALED WITH THE RECORDING, and it has to be, because the two documents this
+// program is built on decide the longest legitimate silence between them and
+// neither of them mentions a clock. ADR-0012 as this PR amends it: at most
+// TWENTY progress lines per Recording, and the one real capture holds ELEVEN.
+// ADR-0004: every Cue goes to the null device, so between two progress lines
+// there is nothing on any stream this program can see. A run of wall time W
+// therefore has a legitimate silence of W/11 in it, measured -- and W is the
+// Recording's length divided by whatever the machine manages.
+//
+// A FIXED FIVE MINUTES FAILED EVERY LONG RUN. The corpus's longest Recording is
+// 168 minutes; at realtime that is eleven readings across 168 minutes, a gap of
+// fifteen, and the run was discarded three times over while the Engine was
+// working perfectly. It could not be right: transcribe_bound_ms gives that same
+// Recording 730 minutes and ENGINE_BOUND_MULTIPLE's own comment says the four is
+// sized "against a CPU-only fallback", so the two bounds in this file contradict
+// each other for every Recording over about ninety minutes.
+//
+// THE RECORDING'S OWN LENGTH, floored. Against the eleven readings that were
+// measured, that clears any machine at realtime or faster outright -- W is then
+// at most the Recording's length and the whole run fits inside one bound, so no
+// gap in it can reach one -- and it clears the quarter-of-realtime CPU fallback
+// the run bound is sized for with a margin of 2.7 (W/11 is 0.36 of the
+// Recording's length there, against a bound of 1.0).
+//
+// A QUARTER of the length -- one reading per five per cent, which is the most
+// ADR-0012 permits rather than what anybody measured -- was the first answer and
+// is wrong for the same reason the fixed one was: at the eleven readings this
+// repository has actually captured, 0.36 is past 0.25 and the CPU fallback fails
+// again. Sizing this against the best case the amendment allows is how the first
+// bound got here.
+//
+// What it costs is honest: a wedged Engine on a 168-minute Recording is now
+// noticed after 168 minutes rather than five. That is still four times sooner
+// than the run bound would have noticed, and the alternative is not a faster
+// failure but a correct run thrown away.
+@(private)
+silent_after_ms :: proc(duration_ms: i64, floor_ms: i64) -> i64 {
+	assert(floor_ms > 0, "a run given no time at all to break its silence")
+	assert(duration_ms >= 0, "a Recording of negative length")
+
+	given := max(floor_ms, duration_ms)
+	assert(given >= floor_ms, "a Recording given less than a cold Model load costs")
+	return given
+}
 
 // The highest the ESTIMATE may ever read.
 //
@@ -391,12 +443,17 @@ shown :: proc(tr: Tracker, now_ns: i64, watch := DEFAULT_WATCH) -> Progress {
 		"a bar that freezes no sooner than the run fails never freezes at all",
 	)
 
+	// The Recording's own bound, and never the handed-in one on its own: that is
+	// the FLOOR, and a Recording longer than it is given its own length. See
+	// silent_after_ms for why a fixed bound cannot be right at both ends of a
+	// corpus whose Recordings run from four minutes to 168.
+	silent_ms := silent_after_ms(tr.duration_ms, watch.silent_ms)
 	quiet_ns := now_ns - tr.last_byte_ns
 	if quiet_ns >= watch.quiet_ms * 1_000_000 {
 		return Progress {
 			percent = tr.said,
 			from = .Frozen,
-			silent = quiet_ns >= watch.silent_ms * 1_000_000,
+			silent = quiet_ns >= silent_ms * 1_000_000,
 		}
 	}
 	if now_ns - tr.last_progress_ns < FALLBACK_AFTER_MS * 1_000_000 {

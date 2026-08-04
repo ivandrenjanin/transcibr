@@ -125,8 +125,23 @@ stand_in :: proc(t: ^testing.T, cache: string, tag: string, body: string) -> str
 }
 
 // The job every case runs, against a cache and a stand-in of its own.
+//
+// `container_ms` IS A CASE'S TO CHOOSE, and two seconds is the default because
+// the watchdog's failing bound is the Recording's own length once that is longer
+// than the floor (process.silent_after_ms). A ten-minute Recording here would
+// mean a case waiting ten minutes to see a silent Engine noticed, which is a
+// sweep nobody runs -- the same reason SHORT_WATCH exists.
 @(private)
-job_in :: proc(cache: string, engine: string) -> (tools: Tools, job: Job) {
+job_in :: proc(
+	cache: string,
+	engine: string,
+	container_ms := i64(2_000),
+) -> (
+	tools: Tools,
+	job: Job,
+) {
+	assert(container_ms > 0, "a Recording nobody could time was handed to a case")
+
 	tools = Tools {
 		engine = engine,
 	}
@@ -138,7 +153,7 @@ job_in :: proc(cache: string, engine: string) -> (tools: Tools, job: Job) {
 		cache        = cache,
 		name         = "lecture",
 		model        = "C:\\nowhere\\model.bin",
-		container_ms = 600_000,
+		container_ms = container_ms,
 	}
 	return tools, job
 }
