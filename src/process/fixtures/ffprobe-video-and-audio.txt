@@ -1,0 +1,3 @@
+codec_type=video
+codec_type=audio
+duration=0.200000
