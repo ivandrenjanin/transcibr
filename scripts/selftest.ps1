@@ -1,4 +1,4 @@
-# Self-test for the build and test commands.
+﻿# Self-test for the build and test commands.
 #
 #   .\scripts\selftest.ps1
 #
@@ -458,6 +458,23 @@ function Get-OdinProcedureLength {
 # either way, and any casing -- [regex]::Matches is case-SENSITIVE, so `-testname`
 # read as no command at all. The dot is what keeps prose about the flag
 # ("-TestName takes <package>.<test>") from reading as a name.
+# The .odin files a case reads, refused when discovery finds none.
+#
+# Five cases below open by asking for them, and every one of them is worthless
+# against an empty answer -- which is this suite's whole subject: a sweep exiting
+# 0 having run nothing, a suite announcing all zero cases passed. Written out per
+# case, the guard was five chances to leave it out of the sixth. The verb is the
+# only part that differed.
+function Get-CaseSource {
+	param([Parameter(Mandatory)] [string] $Having)
+
+	$sources = @(Get-OdinSource)
+	if ($sources.Count -eq 0) {
+		throw "no .odin files under $RepoRoot, so this case would pass having $Having nothing."
+	}
+	return $sources
+}
+
 function Get-DocumentedTestName {
 	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
 
@@ -1044,10 +1061,7 @@ Test-Case 'no procedure the format check covers is over the line limit' {
 	# there from 62 lines to 107 and nothing noticed, because nothing was looking
 	# outside src\. The two scopes are the same scope now, by construction --
 	# Get-OdinSource is what both of them ask.
-	$sources = @(Get-OdinSource)
-	if ($sources.Count -eq 0) {
-		throw "no .odin files under $RepoRoot, so this case would pass having measured nothing."
-	}
+	$sources = @(Get-CaseSource -Having 'measured')
 
 	$measured = @()
 	foreach ($source in $sources) {
@@ -1104,10 +1118,7 @@ Test-Case 'no procedure the format check covers carries a comment in its body' {
 	# learned the hard way: the audit behind the ban was scoped to src\, and
 	# docs\reference\ kept two body comments nobody was looking at. Get-OdinSource
 	# is what both checks ask, so the two scopes are the same scope by construction.
-	$sources = @(Get-OdinSource)
-	if ($sources.Count -eq 0) {
-		throw "no .odin files under $RepoRoot, so this case would pass having read nothing."
-	}
+	$sources = @(Get-CaseSource -Having 'read')
 
 	$found = @()
 	foreach ($source in $sources) {
@@ -1217,10 +1228,7 @@ Test-Case 'every procedure in the tree is declared where the two scans can see i
 	# scan cannot look. The tree has no such declaration today and this case finds
 	# none, which is exactly when a limitation goes unrecorded and turns into a
 	# silent false negative later. Hoist it to column zero, or teach both scans.
-	$sources = @(Get-OdinSource)
-	if ($sources.Count -eq 0) {
-		throw "no .odin files under $RepoRoot, so this case would pass having read nothing."
-	}
+	$sources = @(Get-CaseSource -Having 'read')
 
 	$hidden = @()
 	foreach ($source in $sources) {
@@ -1406,10 +1414,7 @@ Test-Case 'no procedure the format check covers hands back an unrequired answer'
 	# procedure with no results -- so the procedure declared tomorrow that returns
 	# a fault and never carries it is a rule nothing checks. That is the direction
 	# every bare one here arrived from (issue #43).
-	$sources = @(Get-OdinSource)
-	if ($sources.Count -eq 0) {
-		throw "no .odin files under $RepoRoot, so this case would pass having read nothing."
-	}
+	$sources = @(Get-CaseSource -Having 'read')
 
 	$read = 0
 	$annotated = 0
@@ -1615,10 +1620,7 @@ Test-Case 'git checks out every .odin file with the endings the check demands' -
 		Skip-Case -Reason "$RepoRoot is not a git work tree, so there are no checkout rules to ask about"
 	}
 
-	$sources = @(Get-OdinSource)
-	if ($sources.Count -eq 0) {
-		throw "no .odin files under $RepoRoot, so this case would pass having asked about nothing."
-	}
+	$sources = @(Get-CaseSource -Having 'asked about')
 
 	$asked = Read-NativeOutput -Command 'git' -TimeoutSeconds $FixtureTimeoutSeconds `
 		-Arguments (@('-C', $RepoRoot, 'check-attr', 'eol', '--') + @($sources | ForEach-Object { $_.Name }))
