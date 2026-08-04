@@ -53,12 +53,52 @@ else {
 	Write-Host '-> every .odin file is formatted as odinfmt.json says' -ForegroundColor Green
 }
 
-# CLAUDE.md section 0, checked whether or not a formatter was found: this reads
-# the files itself and needs no tool, so there is no configuration in which the
+# THE BOOTSTRAP, and it happens here because this is where it has to.
+#
+# The four source policies below read Odin with tools\policy, an Odin program
+# (ADR-0028), so the checker has to be built before it can be asked about the tree
+# that contains it -- including about its own source, which Get-OdinSource
+# discovers like any other. Resolve-OdinPolicyTool is what builds it: from
+# tools\policy under the same vet set as every target below, or from an
+# already-built one where $env:TRANSCIBR_POLICY names it, which is how
+# scripts\selftest.ps1 runs thirty fixture builds without compiling it thirty
+# times.
+#
+# A checker that does not build stops the build HERE, with the compiler's own
+# diagnostics above and nothing claimed about the tree. The state to avoid is the
+# other one: a build reporting four policy verdicts it never reached.
+#
+# tools\policy carries its own tests and is NOT in $OdinPackagesWithoutTests --
+# it reads Odin, so it can be tested in Odin, and .\scripts\test.ps1 sweeps it
+# like any package under src\.
+$policy = Resolve-OdinPolicyTool
+Write-Host "Policy: $policy"
+
+# READ ONCE, for all four policies below.
+#
+# Each of them reads the tree for itself when it is handed nothing -- a walk for
+# discovery and a child process to read what it found -- which is four of each per
+# build over one tree that cannot change in between. Measured over this
+# repository: 487ms for the four, against 456ms to compile the whole product.
+#
+# Not a memo, and specifically not one keyed on timestamps: see Get-OdinSourceFact
+# for why that is unsafe here. This is one read passed to four callers, so there
+# is nothing cached and nothing to invalidate, and every other caller of the four
+# -- scripts\selftest.ps1's cases -- passes nothing and reads afresh.
+$sources = Get-OdinCheckedSource
+$facts = Get-OdinSourceFact -Sources $sources
+
+# CLAUDE.md rule F1: a hard limit on one procedure, measured from the line
+# carrying `::` through the closing brace.
+Assert-OdinProcedureLength -Facts $facts
+Write-Host "-> no .odin procedure is over $OdinProcedureLineLimit lines" -ForegroundColor Green
+
+# CLAUDE.md section 0, checked whether or not a formatter was found: this needs
+# the checker above and nothing else, so there is no configuration in which the
 # comment ban goes unenforced while the build still runs. Before the compiler,
 # like the check above and for the same reason -- the answer arrives in a second
 # rather than after every target has been linked.
-Assert-OdinCommentPolicy
+Assert-OdinCommentPolicy -Facts $facts
 Write-Host '-> no .odin procedure body carries a comment' -ForegroundColor Green
 
 # CLAUDE.md rule F2, in the same place and for the same reason. The attribute
@@ -66,9 +106,10 @@ Write-Host '-> no .odin procedure body carries a comment' -ForegroundColor Green
 # nothing else covers is the procedure declared tomorrow without it, and a rule
 # nothing checks is the direction every bare one arrived from (issue #43).
 #
-# Order does not carry anything here. Both checks refuse an indented procedure
-# themselves, so neither is complete only because the other ran first.
-Assert-OdinResultPolicy
+# Order does not carry anything here. The read above refuses a file it could not
+# read before any of the four is asked anything, so none of them is complete only
+# because another ran first.
+Assert-OdinResultPolicy -Facts $facts
 Write-Host '-> every .odin procedure that returns carries @(require_results)' -ForegroundColor Green
 
 # CLAUDE.md rule M2, and the one of the four whose absence the compiler cannot
@@ -76,7 +117,7 @@ Write-Host '-> every .odin procedure that returns carries @(require_results)' -F
 # an untagged file builds with its implicit allocators unchecked however many of
 # its siblings carry it. A misspelling or a misplaced tag already fails the
 # compile below and names the file; only a tag nobody wrote is silent.
-Assert-OdinVetTagPolicy
+Assert-OdinVetTagPolicy -Facts $facts
 Write-Host "-> every .odin file declares the #+vet names it is scoped for ($(($OdinFileVetTags | ForEach-Object { $_.Name }) -join ' '))" -ForegroundColor Green
 
 New-Item -ItemType Directory -Path $BuildRoot -Force | Out-Null

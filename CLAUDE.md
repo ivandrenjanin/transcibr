@@ -35,8 +35,9 @@ The operative contract is self-documenting code with comments driven toward mini
 
 Enforced mechanically, repository-wide, and it fails the build: `Assert-OdinCommentPolicy` in
 `scripts\common.ps1` reads every `.odin` file `Get-OdinSource` discovers — `docs\reference\`
-included — and names the file, line and procedure of anything it finds. It is a lexer rather than a
-search, so a `//` inside a raw string is text and not a comment.
+included — and names the file, line and procedure of anything it finds. It reads with
+`core:odin/parser`, through `tools\policy` (ADR-0028), so a `//` inside a raw string is text and not
+a comment, and a procedure declared inside a `when` block is covered like any other.
 
 ## 1. Assertions
 
@@ -149,6 +150,10 @@ Counted from the line containing `::` through the closing brace, comments and bl
 procedure that fits on one screen reads as a unit; one that scrolls does not. The limit is
 checkable by machine and has no exceptions without a maintainer decision recorded at the site.
 
+Checked by machine, and it fails the build: `Assert-OdinProcedureLength` in `scripts\common.ps1`
+reads the same procedure spans section 0 and rule F2 read (ADR-0028) and names the file, line, name
+and length of anything over.
+
 ### F2. `@(require_results)` on every procedure that returns anything
 
 If it hands something back, the attribute goes above the declaration. No judgement per procedure
@@ -182,7 +187,9 @@ attribute on a procedure with no results — so it cannot be sprayed wider than 
 deleting a procedure's return values fails the build until the attribute goes too. What it says
 nothing about is a procedure declared *without* it, which is the direction every bare one here
 arrived from; `Assert-OdinResultPolicy` in `scripts\common.ps1` fails the build on one, reading the
-same procedure ranges rule F1 and section 0 read.
+same procedure spans rule F1 and section 0 read (ADR-0028). It asks only where an attribute can be
+written: a procedure TYPE and a literal passed as an argument are outside the rule because the
+compiler will not let anybody satisfy it there.
 
 `#optional_ok` points the other way: it makes dropping an `ok` easier, which is the failure the rule
 exists to stop.
@@ -422,6 +429,45 @@ process. Switch on `token.kind`, discard the error, and stop on `.EOF`.
 
 `.\scripts\test.ps1 -TestName transcript.parses_real_engine_output_into_cues` is the test that
 catches the integer default against real Engine output.
+
+**`core:odin/parser` carries the same unbounded recursion, and it runs out of stack an order of
+magnitude sooner.** The build reads Odin with it (ADR-0028), so this is not a hypothetical: measured
+at the pin, a debug build overflows on **62 nested parentheses** — `x := (((…1…)))` — where nested
+blocks survive 200 and nested calls 100. The deepest file in this repository reaches 7, so
+`MAX_SOURCE_DEPTH :: 32` in `tools\policy\policy.odin` sits above everything real and below the
+crash — and that is all it is. Where the JSON limit above has a factor of ten between the bound and
+the crash, this one has a factor of two either side, so it is a guard against a pathological file
+rather than a proof. Bound the depth with the tokenizer, as the JSON reader does, and never with a
+byte scan: a scan counting brackets by hand reads the ones in transcribed speech.
+
+**A bracket count bounds bracket shapes and nothing else, so the residual has to name its file.**
+62 parentheses is the shallowest *bracket* overflow, not the shallowest one. A chain of `^` in a type
+carries no bracket at all and overflows at about **eighty** carets with a counted depth of **one**;
+`+` chains and `if`/`else if` chains go at about 1600. A counter over `(`, `[` and `{` cannot be made
+to see any of them without becoming a second model of the grammar, which is the defect ADR-0028 is
+about. Nor does odinfmt cover the gap — it formats the eighty-caret file without complaint and
+survives 400 nested parentheses. So `tools\policy` writes each file's **name before it reads it**
+(`render_file`), and `Get-OdinSourceFact` reports the last name written when the tool exits non-zero.
+The residual is a crash that fails the build naming one file, rather than one that says only that
+something died somewhere in seventy-odd.
+
+**`core:odin/tokenizer` fills its keyword table behind a double-checked lock that never re-checks.**
+Two threads calling `tokenizer.init` for the first time both find `_global_keyword_lut_initialized`
+unset, both take the spin lock, and the second runs `keyword_lut_init` over an already-filled table —
+where its own `assert(entry.kind == .Invalid, name)` fires, inside `core`, on a thread the runner then
+has to kill. One run in three of `tools\policy`'s test sweep died that way, with no summary and no
+report, which is the failure mode issue #22 is about. A single-threaded program never meets it and
+`odin test` runs twelve threads by default, so the table is filled by an `@(init)` before any test
+thread exists. `@(init)` procedures must be `proc "contextless"`, so they build a context of their own
+(rule S3) and cannot call anything that allocates.
+
+**`odin build` does not require the package to be called `main`.** Measured at the pin: a package
+named anything at all builds to an executable as long as it declares `main :: proc()`. That is what
+lets `tools\policy` be `package policy` rather than `package main`, so the test runner reports its
+tests under the name the directory has and
+`.\scripts\test.ps1 -TestName policy.a_body_that_never_closes_at_column_zero_is_read` selects one.
+The runner matches `ODIN_TEST_NAMES` on the ODIN package name, and `test.ps1` picks the package by
+DIRECTORY, so a `package main` in a directory called `policy` can be swept but never focused.
 
 **`core:fmt` pads an integer's width with ZEROS, not spaces.** `fmt_write_padding` picks `'0'` unless
 the verb carried the space flag, and `_pad` calls it on whichever side `-` selects, so `%3d` of 0

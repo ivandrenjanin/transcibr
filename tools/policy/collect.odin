@@ -1,0 +1,389 @@
+#+vet explicit-allocators
+package policy
+
+import "core:mem"
+import "core:odin/ast"
+import "core:slice"
+import "core:strings"
+
+// This file finds things in a parsed file: every procedure with a body, every
+// comment inside one of those bodies, and every `#+vet` name declared above the
+// package clause.
+//
+// The descent is `ast.walk`, the compiler's own walker, called on each top-level
+// statement. Writing a second walk here would put a second model of where a
+// procedure can be declared beside the one the compiler maintains -- which is the
+// defect ADR-0028 is about, reintroduced one language over. What that buys is the
+// row the column-zero scan could never reach: a procedure declared inside a
+// `when` block, nested inside another body, or passed as a literal is found by
+// the same walk as one at column 0, with no special case for any of them.
+//
+// `ast.walk` panics on a node type it does not know, which is why a file that did
+// not parse cleanly is never walked (see parse_into): the tree it would descend
+// carries Bad_Expr and Bad_Stmt nodes, and a walker meeting one it cannot place
+// is a crash rather than a wrong answer.
+
+// What the walk is accumulating, and where it puts things.
+//
+// `named` is what stops a procedure being counted twice. The walk meets the
+// declaration first and records the literal it holds; it then descends into that
+// same literal as a child, and without this it would be recorded again -- once
+// with its name and its attributes, once as an anonymous body.
+Walk_State :: struct {
+	found: [dynamic]Procedure,
+	named: map[rawptr]bool,
+	names: mem.Allocator,
+}
+
+// Every procedure in one file that has a body, in the order the walk meets them:
+// outermost first, so a nested one always follows the procedure it sits in.
+@(require_results)
+collect_procedures :: proc(
+	file: ^ast.File,
+	tree: mem.Allocator,
+	allocator: mem.Allocator,
+) -> []Procedure {
+	assert(file != nil, "asked for the procedures of no file at all")
+	assert(
+		allocator.procedure != nil,
+		"the procedures outlive this walk and need a chosen allocator",
+	)
+
+	state := Walk_State {
+		found = make([dynamic]Procedure, 0, len(file.decls), tree),
+		named = make(map[rawptr]bool, len(file.decls), tree),
+		names = allocator,
+	}
+	walker := ast.Visitor {
+		visit = note_node,
+		data  = &state,
+	}
+	for declaration in file.decls {
+		ast.walk(&walker, declaration)
+	}
+
+	return slice.clone(state.found[:], allocator)
+}
+
+// One node of the walk. Returning the visitor is what carries the descent on into
+// the node's children; returning nil stops it, and nil is only ever the answer to
+// the nil node `ast.walk` passes after a node's children are done.
+@(require_results)
+note_node :: proc(walker: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
+	if node == nil {
+		return nil
+	}
+	assert(walker != nil, "ast.walk called a visit procedure through no visitor")
+	assert(walker.data != nil, "the walk carries no state to record anything into")
+
+	state := (^Walk_State)(walker.data)
+	#partial switch found in node.derived {
+	case ^ast.Value_Decl:
+		note_declared(state, found)
+	case ^ast.Proc_Lit:
+		note_literal(state, found)
+	}
+	return walker
+}
+
+// A procedure declared with a name: `f :: proc() { ... }`, wherever it sits.
+//
+// A declaration whose value is a procedure TYPE rather than a literal is not one
+// of these and is recorded as nothing at all. A type has no body: no length for
+// rule F1, no lines for section 0 to find a comment in, and the compiler REFUSES
+// `@(require_results)` on one, so a demand for it there is a build nobody can
+// make pass.
+note_declared :: proc(state: ^Walk_State, declaration: ^ast.Value_Decl) {
+	assert(state != nil, "asked to record a declaration into no state at all")
+	assert(declaration != nil, "asked to record no declaration at all")
+
+	assert(
+		len(declaration.values) <= len(declaration.names),
+		"a declaration with more values than names is a parser defect",
+	)
+
+	for value, index in declaration.values {
+		literal, is_literal := value.derived.(^ast.Proc_Lit)
+		if !is_literal {
+			continue
+		}
+		if literal.body == nil {
+			continue
+		}
+		state.named[rawptr(literal)] = true
+		append(
+			&state.found,
+			Procedure {
+				name = strings.clone(declared_name(declaration.names[index]), state.names),
+				declared_at = declaration.pos.line,
+				body_ends = literal.body.end.line,
+				returns = hands_back(literal),
+				annotated = requires_results(declaration),
+				attributable = !declaration.is_mutable,
+			},
+		)
+	}
+}
+
+// A procedure with no declaration of its own: a literal passed as an argument or
+// stored in a field. Recorded because its body is a procedure body and section 0
+// is about procedure bodies; never marked attributable, because there is nowhere
+// to write an attribute for one.
+note_literal :: proc(state: ^Walk_State, literal: ^ast.Proc_Lit) {
+	assert(state != nil, "asked to record a literal into no state at all")
+	assert(literal != nil, "asked to record no literal at all")
+
+	if literal.body == nil {
+		return
+	}
+	if state.named[rawptr(literal)] {
+		return
+	}
+	append(
+		&state.found,
+		Procedure {
+			name = strings.clone(ANONYMOUS, state.names),
+			declared_at = literal.pos.line,
+			body_ends = literal.body.end.line,
+			returns = hands_back(literal),
+		},
+	)
+}
+
+// The name a declaration gives one of its values.
+//
+// `_` is one of these, and reporting it as one is the point. It reads as a hole,
+// but an attribute sits above it perfectly well -- `@(require_results)` on
+// `_ :: proc() -> bool` compiles clean under the full vet set, measured at the
+// pin -- so rules F1 and F2 have every question about that body they have about
+// any other. Read as nameless it was exempt from both, and the column-zero scan
+// this replaced was not: its regex matched `_` like any other name.
+//
+// What is left unnamed is a value bound to something that is not an identifier at
+// all. There is no spelling to report for one and nothing to look an attribute up
+// by, and whether an attribute may sit there is a question about the `::`, which
+// note_declared reads for itself.
+@(require_results)
+declared_name :: proc(name: ^ast.Expr) -> string {
+	assert(name != nil, "a declaration with a hole where a name goes is a parser defect")
+	identifier, is_identifier := name.derived.(^ast.Ident)
+	if !is_identifier {
+		return ANONYMOUS
+	}
+	assert(len(identifier.name) > 0, "an identifier spelled with no characters is a parser defect")
+	return identifier.name
+}
+
+// Whether a procedure hands anything back.
+//
+// Read off the results field rather than off a `->` anywhere in the header, which
+// is the case that separates this from a search for two characters: a parameter
+// that is itself a procedure carries its own arrow one level in, and
+// `f :: proc(cb: proc(x: int) -> int)` returns nothing at all.
+@(require_results)
+hands_back :: proc(literal: ^ast.Proc_Lit) -> bool {
+	assert(literal != nil, "asked what no procedure at all hands back")
+	assert(literal.type != nil, "a procedure literal with no type is a parser defect")
+	if literal.type.results == nil {
+		return false
+	}
+	return len(literal.type.results.list) > 0
+}
+
+// Whether `@(require_results)` sits above a declaration.
+//
+// Both spellings arrive here as the same identifier: odinfmt rewrites
+// `@require_results` to the parenthesised form, and the compiler's own
+// core\odin\parser\file_tags.odin writes the bare one, so a reader that knew only
+// one spelling would be right only about files that had been formatted.
+@(require_results)
+requires_results :: proc(declaration: ^ast.Value_Decl) -> bool {
+	assert(declaration != nil, "asked about the attributes of no declaration at all")
+
+	for attribute in declaration.attributes {
+		assert(attribute != nil, "an attribute list holding a hole is a parser defect")
+		for element in attribute.elems {
+			if attribute_name(element) == REQUIRE_RESULTS {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// The name one element of an attribute list is spelled with: `require_results`
+// out of `@(private, require_results)`, and `default_calling_convention` out of
+// `@(default_calling_convention = "std")`.
+@(require_results)
+attribute_name :: proc(element: ^ast.Expr) -> string {
+	assert(element != nil, "an attribute list holding a hole is a parser defect")
+
+	#partial switch named in element.derived {
+	case ^ast.Ident:
+		return named.name
+	case ^ast.Field_Value:
+		assert(named.field != nil, "an attribute with a value and no name is a parser defect")
+		key, is_identifier := named.field.derived.(^ast.Ident)
+		if is_identifier {
+			return key.name
+		}
+	}
+	return ""
+}
+
+// Every comment sitting inside a procedure body, attributed to the innermost
+// procedure that holds it.
+//
+// Every comment in the file arrives here: the parser records each one as it
+// consumes it, whether it documents a declaration, trails code on its line, or
+// sits inside a body. Which of them section 0 is about is decided by position
+// alone, so a comment following code on its line counts exactly as one on a line
+// of its own does.
+@(require_results)
+collect_body_comments :: proc(
+	file: ^ast.File,
+	procedures: []Procedure,
+	tree: mem.Allocator,
+	allocator: mem.Allocator,
+) -> []Body_Comment {
+	assert(file != nil, "asked for the comments of no file at all")
+	assert(
+		allocator.procedure != nil,
+		"the comments outlive this walk and need a chosen allocator",
+	)
+
+	found := make([dynamic]Body_Comment, 0, len(file.comments), tree)
+	for group in file.comments {
+		assert(group != nil, "a comment group that is not there is a parser defect")
+		for comment in group.list {
+			holder, is_inside := innermost(procedures, comment.pos.line)
+			if !is_inside {
+				continue
+			}
+			append(
+				&found,
+				Body_Comment {
+					inside = strings.clone(procedures[holder].name, allocator),
+					line = comment.pos.line,
+					text = one_line(comment.text, allocator),
+				},
+			)
+		}
+	}
+
+	return slice.clone(found[:], allocator)
+}
+
+// Which procedure a line sits inside, innermost first.
+//
+// STRICTLY inside, which is what keeps the comment a procedure is allowed -- the
+// one above it, saying why it exists -- from being read as one inside it. The
+// closing-brace line is excluded at the other end for the same reason.
+@(require_results)
+innermost :: proc(procedures: []Procedure, line: int) -> (holder: int, is_inside: bool) {
+	assert(line > 0, "a line number of zero is not a position in any file")
+
+	holder = -1
+	for procedure, index in procedures {
+		if line <= procedure.declared_at {
+			continue
+		}
+		if line >= procedure.body_ends {
+			continue
+		}
+		if holder < 0 {
+			holder = index
+			is_inside = true
+			continue
+		}
+		if procedure.declared_at > procedures[holder].declared_at {
+			holder = index
+		}
+	}
+
+	if is_inside {
+		assert(holder >= 0, "reported a line as inside a procedure it could not name")
+	}
+	return
+}
+
+// A comment's own text, flattened to one line so it can be reported on one.
+//
+// A block comment runs on for as many lines as it likes and holds whatever
+// somebody wrote in it, tabs included, and the report the build reads is one
+// record per line with tabs between its fields.
+@(require_results)
+one_line :: proc(text: string, allocator: mem.Allocator) -> string {
+	assert(len(text) > 0, "a comment token with no text is a tokenizer defect")
+	assert(
+		allocator.procedure != nil,
+		"the text outlives this procedure and needs a chosen allocator",
+	)
+
+	head := text
+	if cut := strings.index_any(head, "\r\n"); cut >= 0 {
+		head = head[:cut]
+	}
+	head = strings.trim_space(head)
+
+	flattened, rewritten := strings.replace_all(head, "\t", " ", allocator)
+	if rewritten {
+		return flattened
+	}
+	return strings.clone(head, allocator)
+}
+
+// The `#+vet` names one file declares for itself.
+//
+// Read off the file's TAGS, which the parser collects only from above the package
+// clause -- the only place the compiler reads one. A `#+vet` line below the
+// clause is a syntax error the parser refuses the whole file for, and one quoted
+// inside the doc comment above it is a comment and never a tag, so neither can be
+// credited to a file that does not carry it.
+@(require_results)
+collect_vet_tags :: proc(
+	file: ^ast.File,
+	tree: mem.Allocator,
+	allocator: mem.Allocator,
+) -> []string {
+	assert(file != nil, "asked for the vet tags of no file at all")
+	assert(allocator.procedure != nil, "the names outlive this walk and need a chosen allocator")
+
+	found := make([dynamic]string, 0, len(file.tags), tree)
+	for tag in file.tags {
+		names, is_vet := vet_tag_names(tag.text)
+		if !is_vet {
+			continue
+		}
+		for name in strings.fields(names, tree) {
+			append(&found, strings.clone(name, allocator))
+		}
+	}
+
+	return slice.clone(found[:], allocator)
+}
+
+// What a file tag declares, where the tag is a `#+vet` one.
+//
+// The prefix has to be followed by whitespace or by nothing at all: `#+vetted` is
+// not a misspelling of this tag, it is a different tag, and reading its remainder
+// as a list of vet names would credit a file with names nobody wrote.
+@(require_results)
+vet_tag_names :: proc(text: string) -> (names: string, is_vet: bool) {
+	assert(len(text) > 0, "a file tag with no text is a parser defect")
+
+	if !strings.has_prefix(text, VET_TAG) {
+		return "", false
+	}
+	names = text[len(VET_TAG):]
+	if len(names) == 0 {
+		return names, true
+	}
+	if names[0] == ' ' {
+		return names, true
+	}
+	if names[0] == '\t' {
+		return names, true
+	}
+	return "", false
+}
