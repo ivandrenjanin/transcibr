@@ -112,6 +112,7 @@ collision_line :: proc(plan: Plan, allocator: mem.Allocator) -> string {
 	}
 	assert(collision.left < collision.right, "a pair named in the wrong order")
 	assert(len(collision.name) > 0, "a pair that would share an artifact nobody named")
+	assert(collision.right < len(plan.entries), "a pair named outside the plan it was found in")
 
 	return fmt.aprintf(
 		"refused    %q and %q would both be written to %q -- this Batch will not start",

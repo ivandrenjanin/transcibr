@@ -66,6 +66,8 @@ plan_batch :: proc(
 }
 
 destroy_plan :: proc(plan: Plan, allocator: mem.Allocator) {
+	assert(allocator.procedure != nil, "a plan is freed with the allocator that built it")
+
 	if collision, named := plan.collision.?; named {
 		delete(collision.name, allocator)
 	}
@@ -88,6 +90,10 @@ collided :: proc(
 
 	keys := artifact_keys(inventory, allocator)
 	defer destroy_keys(keys, allocator)
+	assert(
+		len(keys) == len(inventory),
+		"a Batch was keyed with more or fewer names than Recordings",
+	)
 
 	order := named_first(keys, allocator)
 	defer delete(order, allocator)
@@ -127,10 +133,11 @@ paired :: proc(
 // A Recording whose path names no file has an EMPTY key and never collides: it
 // is refused on its own account, and two of them are not a pair (ADR-0008).
 @(private)
-artifact_keys :: proc(inventory: []Found, allocator: mem.Allocator) -> []string {
+artifact_keys :: proc(inventory: []Found, allocator: mem.Allocator) -> (keys: []string) {
 	assert(allocator.procedure != nil, "the keys outlive this procedure and need an allocator")
+	defer assert(len(keys) == len(inventory), "a Recording was keyed twice or not at all")
 
-	keys := make([]string, len(inventory), allocator)
+	keys = make([]string, len(inventory), allocator)
 	for found, at in inventory {
 		names, namable := artifact.names_of(found.source, allocator)
 		defer artifact.destroy_names(names, allocator)
@@ -145,6 +152,8 @@ artifact_keys :: proc(inventory: []Found, allocator: mem.Allocator) -> []string 
 
 @(private)
 destroy_keys :: proc(keys: []string, allocator: mem.Allocator) {
+	assert(allocator.procedure != nil, "the keys are freed with the allocator that built them")
+
 	for key in keys {
 		delete(key, allocator)
 	}
@@ -155,10 +164,11 @@ destroy_keys :: proc(keys: []string, allocator: mem.Allocator) {
 // index breaks a tie, so the pair a Batch is refused for is the same pair every
 // time it is planned.
 @(private)
-named_first :: proc(keys: []string, allocator: mem.Allocator) -> []int {
+named_first :: proc(keys: []string, allocator: mem.Allocator) -> (order: []int) {
 	assert(allocator.procedure != nil, "the order outlives this procedure and needs an allocator")
+	defer assert(len(order) == len(keys), "an order that names more or fewer keys than there are")
 
-	order := make([]int, len(keys), allocator)
+	order = make([]int, len(keys), allocator)
 	for &index, at in order {
 		index = at
 	}

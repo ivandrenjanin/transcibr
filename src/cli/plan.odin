@@ -22,6 +22,7 @@ Plan_Options :: struct {
 
 plan_batch :: proc(arguments: []string) -> int {
 	assert(len(arguments) > 0, "no arguments at all is the version banner, settled before this")
+	assert(arguments[0] == PLAN, "main dispatched a command line that does not open with --plan")
 
 	o, ok := read_plan_options(arguments)
 	if !ok {
@@ -71,6 +72,15 @@ report_plan :: proc(o: Plan_Options, identified: artifact.Model) -> int {
 
 @(private)
 print_plan :: proc(plan: planning.Plan, inventory: planning.Inventory) {
+	assert(
+		len(plan.entries) == len(inventory.found),
+		"a plan that lost a Recording on the way here",
+	)
+	assert(
+		len(inventory.found) > 0 || len(inventory.notes) > 0 || len(plan.entries) == 0,
+		"an empty plan over a tree nothing was said about",
+	)
+
 	for entry in plan.entries {
 		line := planning.plan_line(entry, context.allocator)
 		defer delete(line, context.allocator)
@@ -110,6 +120,9 @@ plan_verdict :: proc(plan: planning.Plan, inventory: planning.Inventory, runnabl
 // See CLAUDE.md, Odin notes: core:fmt integer padding.
 @(private)
 walked :: proc(progress: planning.Progress, user: rawptr) {
+	assert(progress.directories > 0, "progress reported before a single directory had been read")
+	assert(progress.recordings >= 0, "a walk reported a negative number of Recordings")
+
 	fmt.eprintf(
 		"\r  walking %d directories, %d Recordings            ",
 		progress.directories,
@@ -156,6 +169,7 @@ read_plan_options :: proc(arguments: []string) -> (o: Plan_Options, ok: bool) {
 @(private)
 read_plan_option :: proc(o: ^Plan_Options, name, value: string) -> (ok: bool) {
 	assert(o != nil, "there is nothing here to read an option into")
+	assert(len(name) > 0, "an option with no name at all reached the reader")
 
 	switch name {
 	case PLAN:

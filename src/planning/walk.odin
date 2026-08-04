@@ -65,6 +65,7 @@ is_a_recording :: proc(path: string) -> bool {
 MAX_WALK_DEPTH :: 64
 
 #assert(MAX_WALK_DEPTH > 0)
+#assert(len(RECORDING_SUFFIXES) > 0)
 
 // What a walk could not do, against the directory it could not do it to. Every
 // one of these is an operating error and none of them is silence: a short file
@@ -116,6 +117,12 @@ Inventory :: struct {
 // exist that nothing looked at, and a caller that reported success over that
 // would be the silently short file list ADR-0009 names.
 left_unlooked_at :: proc(inventory: Inventory) -> (short: Note, yes: bool) {
+	defer assert(
+		!yes || inventory.cancelled || len(inventory.notes) > 0,
+		"an inventory was called partial with nothing to say what was left out",
+	)
+	defer assert(yes || short == .Root_Unreadable, "a whole inventory named a note anyway")
+
 	if inventory.cancelled {
 		return .Root_Unreadable, true
 	}
@@ -139,6 +146,10 @@ discover :: proc(roots: []string, w: Walk, allocator: mem.Allocator) -> (invento
 		inventory.cancelled || len(roots) > 0 || len(inventory.found) == 0,
 		"a walk over no roots at all found something",
 	)
+	defer assert(
+		!inventory.cancelled || w.cancelled != nil,
+		"a walk reported itself cancelled with nothing to cancel it",
+	)
 
 	state := Walking {
 		w         = w,
@@ -156,6 +167,8 @@ discover :: proc(roots: []string, w: Walk, allocator: mem.Allocator) -> (invento
 }
 
 destroy_inventory :: proc(inventory: Inventory, allocator: mem.Allocator) {
+	assert(allocator.procedure != nil, "an inventory is freed with the allocator that built it")
+
 	for entry in inventory.found {
 		delete(entry.source, allocator)
 		destroy_recorded(entry, allocator)
@@ -169,6 +182,8 @@ destroy_inventory :: proc(inventory: Inventory, allocator: mem.Allocator) {
 
 @(private)
 destroy_recorded :: proc(entry: Found, allocator: mem.Allocator) {
+	assert(allocator.procedure != nil, "a Sidecar is freed with the allocator that read it")
+
 	recorded, known := entry.recorded.?
 	if !known {
 		return
@@ -199,6 +214,7 @@ Pending :: struct {
 @(private)
 walk_root :: proc(state: ^Walking, root: string) {
 	assert(state != nil, "there is no walk here to run")
+	assert(state.allocator.procedure != nil, "a walk needs an allocator to read a listing into")
 
 	if len(root) == 0 {
 		note(state, .Root_Unreadable, root)
@@ -239,6 +255,8 @@ abandon :: proc(frontier: [dynamic]Pending, allocator: mem.Allocator) {
 walk_one :: proc(state: ^Walking, pending: Pending, frontier: ^[dynamic]Pending) {
 	assert(state != nil, "there is no walk here to run")
 	assert(frontier != nil, "there is nowhere here to put a sub-directory")
+	assert(len(pending.path) > 0, "a directory with no path at all came off the frontier")
+	assert(pending.depth >= 0, "a directory at a negative depth came off the frontier")
 
 	listing, unreadable := os.read_all_directory_by_path(pending.path, state.allocator)
 	if unreadable != nil {
@@ -269,6 +287,8 @@ took :: proc(
 ) {
 	assert(state != nil, "there is no walk here to run")
 	assert(len(info.fullpath) > 0, "a directory entry with no path at all")
+	assert(frontier != nil, "there is nowhere here to put a sub-directory")
+	assert(pending.depth >= 0, "a directory entry found at a negative depth")
 
 	if !state.w.follow_reparse_points && is_a_reparse_point(info.fullpath, state.allocator) {
 		note(state, .Reparse_Point_Not_Followed, info.fullpath)
@@ -291,6 +311,7 @@ took :: proc(
 descend :: proc(state: ^Walking, path: string, depth: int, frontier: ^[dynamic]Pending) {
 	assert(state != nil, "there is no walk here to run")
 	assert(depth >= 0, "a directory at a negative depth")
+	assert(len(path) > 0, "there is no sub-directory here to descend into")
 
 	if depth + 1 > MAX_WALK_DEPTH {
 		note(state, .Too_Deep, path)
@@ -306,6 +327,7 @@ descend :: proc(state: ^Walking, path: string, depth: int, frontier: ^[dynamic]P
 looked_at :: proc(state: ^Walking, info: os.File_Info, writable: bool) -> (found: Found) {
 	assert(state != nil, "there is no walk here to run")
 	assert(len(info.fullpath) > 0, "a Recording with no path at all")
+	defer assert(len(found.source) > 0, "a Recording was looked at and came back unnamed")
 
 	found = Found {
 		source             = strings.clone(info.fullpath, state.allocator),
@@ -374,6 +396,10 @@ transcript_state :: proc(path: string) -> Transcript_State {
 @(private)
 note :: proc(state: ^Walking, what: Note, path: string) {
 	assert(state != nil, "there is no walk here to report against")
+	assert(
+		len(path) > 0 || what == .Root_Unreadable,
+		"a note against no path at all, from something other than an unspellable root",
+	)
 
 	append(&state.notes, Walk_Note{note = what, path = strings.clone(path, state.allocator)})
 }
@@ -381,6 +407,8 @@ note :: proc(state: ^Walking, what: Note, path: string) {
 @(private)
 report :: proc(state: ^Walking, at: string) {
 	assert(state != nil, "there is no walk here to report on")
+	assert(len(at) > 0, "progress reported from nowhere in particular")
+	assert(state.directories > 0, "progress reported before a single directory had been read")
 
 	if state.w.on_progress == nil {
 		return
@@ -394,8 +422,12 @@ report :: proc(state: ^Walking, at: string) {
 // Read atomically because the flag is written on another thread by design, and
 // a plain read of a value another thread stores is a race whatever the width.
 @(private)
-stopped :: proc(state: ^Walking) -> bool {
+stopped :: proc(state: ^Walking) -> (yes: bool) {
 	assert(state != nil, "there is no walk here to stop")
+	defer assert(
+		!yes || state.w.cancelled != nil,
+		"a walk stopped itself with nothing to have asked it to",
+	)
 
 	if state.w.cancelled == nil {
 		return false
