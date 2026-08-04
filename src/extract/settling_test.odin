@@ -135,6 +135,35 @@ a_source_that_changed_is_still_being_written_however_soon_it_was_read :: proc(t:
 }
 
 @(test)
+a_clock_that_went_backwards_between_two_readings_cannot_tell :: proc(t: ^testing.T) {
+	// An NTP step or a user setting the machine's time, which is outside this
+	// program and may not crash it (A8). A Reading carries a wall clock rather
+	// than a monotonic tick on purpose -- a Batch resumes across a reboot
+	// (ADR-0003) and a tick from a previous boot compares against nothing -- so
+	// this is a live path and not a hypothetical.
+	first := first_reading()
+	second := first
+	second.taken_ns -= 60 * SECOND_NS
+
+	testing.expect_value(
+		t,
+		settling(first, second, MINIMUM_SETTLING_GAP_NS),
+		Settling.Too_Soon_To_Tell,
+	)
+
+	// And a clock that went backwards does not hide a file that MOVED, which
+	// is the half that matters: the proof is the size and the timestamp, and
+	// the gap only says how much weight to give their not having changed.
+	grew := second
+	grew.bytes += 4096
+	testing.expect_value(
+		t,
+		settling(first, grew, MINIMUM_SETTLING_GAP_NS),
+		Settling.Still_Being_Written,
+	)
+}
+
+@(test)
 the_minimum_gap_outlasts_the_coarsest_timestamp_a_recording_can_carry :: proc(t: ^testing.T) {
 	// FAT and exFAT store a modification time to a two-second granularity, and
 	// SMB servers commonly round to the same. A gap shorter than that can fall

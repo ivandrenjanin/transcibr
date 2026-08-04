@@ -120,7 +120,10 @@ settle :: proc(
 	// Waited out below.
 	}
 
-	time.sleep(time.Duration(gap_ns - (now.taken_ns - planned.taken_ns)))
+	// Clamped to the whole gap, never more. `now` and `planned` carry a wall
+	// clock, and a clock that stepped backwards between them makes the
+	// arithmetic ask for a longer wait than the gap ever was.
+	time.sleep(time.Duration(min(gap_ns, gap_ns - (now.taken_ns - planned.taken_ns))))
 	again, vanished := read_source(source, allocator)
 	if vanished.fault != .None {
 		return {}, vanished

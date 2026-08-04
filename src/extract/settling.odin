@@ -74,7 +74,6 @@ MINIMUM_SETTLING_GAP_NS :: i64(3_000_000_000)
 // being this package's own -- taken in order, by the caller, from the same
 // path.
 settling :: proc(first: Reading, second: Reading, minimum_gap_ns: i64) -> Settling {
-	assert(second.taken_ns >= first.taken_ns, "two readings of a source were taken out of order")
 	assert(minimum_gap_ns > 0, "a gap of no time at all says nothing about anything")
 
 	// CHECKED FIRST, and the order is the decision rather than a detail. A
@@ -92,6 +91,13 @@ settling :: proc(first: Reading, second: Reading, minimum_gap_ns: i64) -> Settli
 		return .Still_Being_Written
 	}
 
+	// A gap that reads as NEGATIVE is a clock that went backwards between the
+	// two readings, and it answers the same way an unmeasurably short one does.
+	// NOT an assertion, though "a reading taken before the one before it" looks
+	// like corrupt internal state: the readings are this package's, but the
+	// clock they carry is the machine's, and an NTP step or a user setting the
+	// time is outside this program (A8). It held one, and a clock step during a
+	// Batch would have crashed it.
 	if second.taken_ns - first.taken_ns < minimum_gap_ns {
 		return .Too_Soon_To_Tell
 	}
