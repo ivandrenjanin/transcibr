@@ -389,11 +389,18 @@ a ceiling on the DIGIT COUNT tested BEFORE the first multiplication rather than 
 after the wrap has already happened. The ceiling is `MAX_NATURAL_DIGITS :: 12`, with
 `#assert(MAX_NATURAL_DIGITS < 19)` holding it below the width at which i64 could wrap at all.
 
-The ceiling belongs to the CONSUMER and not to the reader, so expect it to become a parameter the
-moment a second consumer wants a different one — a nanosecond moment needs the full nineteen digits
-where a percentage needs two. Nineteen is the interesting bound, because that is where the digit-count
-check stops being slack over i64 and becomes the thing actually standing between a long literal and a
-wrap. Whatever the ceiling, the check goes before the multiplication.
+The ceiling belongs to the CONSUMER and not to the reader, and it already reads that way:
+`read_natural(text: string, max_digits := MAX_NATURAL_DIGITS)` takes it as a parameter, for the day a
+second consumer wants a different one — a nanosecond moment would need the full nineteen digits where
+a percentage needs two. Nothing has asked for nineteen yet; both call sites in `src\process\engine.odin`
+take the default.
+
+What actually stands between a long literal and a wrap is not the digit-count ceiling at all: it is
+the per-digit range check inside the loop, `value > (max(i64) - i64(digit - '0')) / 10`, run before
+every multiplication — and it holds at nineteen digits exactly as it does at twelve, because a
+19-digit run can still exceed `max(i64)` and the check is what refuses that, not the count. The
+ceiling is a separate, POLICY limit on top of it: rejecting an implausibly long run on sight rather
+than reading all nineteen digits of it correctly and then range-checking the answer.
 
 The parser leaks on several of its error paths: an object key parsed just before the value after it
 fails is never inserted into the object, so the cleanup that walks that object never frees it, and a
@@ -486,15 +493,17 @@ outright with `Unhandled enumerated array case`. It does *not* quietly grow a ro
 value — which is what this repository believed until somebody checked, and what run-time assertions on
 every read had been placed to catch. A `switch` left alone the same way fails the same way. So a
 missing entry is a build failure under either shape, and the choice between them is not a safety
-argument. Issue #33 is the ticket that stops it being re-litigated per package; four packages carry a
-fault vocabulary and they do not have to agree on shape.
+argument. Issue #33 is the ticket that stops it being re-litigated per package; six packages carry a
+fault vocabulary (`src\audio`, `src\child`, `src\engine`, `src\process`, `src\transcript`,
+`src\artifact`) and they do not have to agree on shape.
 
 What neither shape refuses is an entry written present and EMPTY. The table makes that the shape of a
 hurried edit — `.New_Fault = {}` compiles — while a `switch` arm has to be spelled out before it will
 build at all, so an empty one there is deliberate. That is the whole of the difference, and it is why
-`src\engine` and `src\audio`'s `fault_says` are switches while `src\process` and `src\child` keep
-tables. `transcibr:audio` writes one deliberately empty row, for the success value its renderer
-refuses by name.
+`src\engine`'s `fault_says` is a switch while `src\audio`, `src\process` and `src\child` keep tables
+for theirs. `transcibr:audio`'s table writes one deliberately empty row, for the success value its
+renderer refuses by name — and carries a second, smaller vocabulary of its own, `Cache_Fault`, whose
+two members earn the switch shape instead of a fifth table (ADR-0018).
 
 Catch the empty entry by WALKING the enumeration in a test (`src\audio\fault_test.odin`) and never by
 asserting in the renderer. The assertion fires on the first report of that fault, which is a Recording
