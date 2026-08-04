@@ -37,17 +37,28 @@ message: `a_recording_whose_scratch_paths_the_engine_cannot_open_never_starts_on
 `Björn interview` and asserts that a marker file the stand-in child writes on its first line never
 appears.
 
-## It does not cost nothing, and the claim that it did was wrong
+## It does not cost nothing, and which caller pays decides how much
 
-The refusal is cheap relative to the Engine, not cheap absolutely. In `transcibr-cli` the order is
-`open_cache`, then `identify_model`, then `stem_of`, then `extract_one` — an ffprobe of the container
-and a **full ffmpeg extraction** — and only then `engine.transcribe`, which is where
-`openable_by_the_engine` runs. So what has already been spent by the time this check fires is one
-complete pass over the Recording.
+The refusal is cheap relative to the Engine, not cheap absolutely. The order is `open_cache`, then
+`identify_model`, then `stem_of`, then `extract_one` — an ffprobe of the container and a **full ffmpeg
+extraction** — and only then `engine.transcribe`, which is where `openable_by_the_engine` runs. Where
+the offending byte arrives **intact**, one complete pass over the Recording has been spent by the time
+this check fires. That is the caller which hands its paths over in process: the window ADR-0004
+promises.
+
+It is **not** what `transcibr-cli` does with a Recording named on its own command line, and the
+section below is why. That argv arrives ANSI-mangled, so the bytes are already `?` by the time
+anything looks — and `extract_one`'s first act is `audio.read_source`, whose first act is `os.stat`
+(`src/audio/run.odin`). A path carrying `?` where the name was does not exist, so the Recording is
+refused as `Source_Unreadable` before ffprobe starts, never reaching the ASCII rule and never paying
+for a pass. The wrong reason, and cheaply: the same defect the argv section records, seen from the
+cost side.
 
 The check that costs nothing is the Model's, which `transcibr:artifact` makes once at Batch start,
 before any Recording is touched. Recorded because the source comment claimed the per-Recording check
-cost nothing, and a reader who believes that will move it later rather than earlier.
+cost nothing, and a reader who believes that will move it later rather than earlier — and because the
+first correction of it over-generalised in the other direction, billing `transcibr-cli` for a pass it
+never makes.
 
 ## Two checks on the cache coexist, and neither subsumes the other
 
@@ -86,7 +97,7 @@ outside ASCII produces the same silent nothing at exit code zero, so a check tha
 covers the failure not at all.
 
 `every_path_one_invocation_is_handed_is_checked_and_not_just_the_prefix` spoils them one at a time:
-the Model as `C:\models\ggml-large-v3-türkçe.bin`, the audio as `C:\nowhere\录音.wav`. Each spoiling
+the Model as `C:\models\ggml-large-v3-türkce.bin`, the audio as `C:\nowhere\录音.wav`. Each spoiling
 must answer `Fault.Path_Not_Ascii` and must leave the marker file absent.
 
 It is three `if`s and not one conjunction, which is rule S2's own remedy: every case is visible, and
@@ -148,8 +159,9 @@ the escape and is a per-volume policy that can be off, and does not apply retroa
 directory that already exists — so there is no automatic way out, and the program says rename rather
 than doing it.
 
-That refusal is paid after a probe and a full extraction, per the correction above; the Recording
-costs one pass before it is told no.
+Where the name reaches the check intact, that refusal is paid after a probe and a full extraction, per
+the correction above; the Recording costs one pass before it is told no. Named on `transcibr-cli`'s
+command line it costs nothing and is told the wrong thing, which is worse.
 
 Three checks over one predicate, spread across three packages, with a visible overlap between two of
 them. It reads as duplication, and the last reader to act on that reading wrote the misreading into a
