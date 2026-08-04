@@ -1184,13 +1184,27 @@ function Resolve-OdinPolicyTool {
 		return $built
 	}
 
-	$arguments = @('build', $OdinPolicyPackage, $OdinCollection, "-out:$built") + $OdinVetFlags
-	$run = Invoke-NativeCommand -Command (Resolve-OdinCompiler) -Arguments $arguments -TimeoutSeconds $OdinCommandTimeoutSeconds
-	if ($run.TimedOut) {
-		throw "odin did not finish building the policy tool from $OdinPolicyPackage within $OdinCommandTimeoutSeconds seconds and was killed, so the four source policies could not run."
+	# Linked beside its destination and RENAMED into place, for the reason
+	# Write-FileAtomically stages a formatted file. A link killed part way --
+	# by the ceiling above, or by anything else -- otherwise leaves a partial
+	# .exe that is NEWER than every source it was built from, which
+	# Test-OdinPolicyToolStale then reads as current forever. Every later build
+	# tries to run it and dies on "%1 is not a valid Win32 application", and no
+	# rebuild is ever attempted.
+	$staged = Join-Path $BuildRoot "$([System.IO.Path]::GetFileNameWithoutExtension($OdinPolicyBinary)).$PID-$([System.Guid]::NewGuid().ToString('N')).exe"
+	$arguments = @('build', $OdinPolicyPackage, $OdinCollection, "-out:$staged") + $OdinVetFlags
+	try {
+		$run = Invoke-NativeCommand -Command (Resolve-OdinCompiler) -Arguments $arguments -TimeoutSeconds $OdinCommandTimeoutSeconds
+		if ($run.TimedOut) {
+			throw "odin did not finish building the policy tool from $OdinPolicyPackage within $OdinCommandTimeoutSeconds seconds and was killed, so the four source policies could not run."
+		}
+		if ($run.ExitCode -ne 0) {
+			throw "odin exited $($run.ExitCode) building the policy tool from $OdinPolicyPackage, so the four source policies could not run. Its diagnostics are above."
+		}
+		Move-Item -LiteralPath $staged -Destination $built -Force
 	}
-	if ($run.ExitCode -ne 0) {
-		throw "odin exited $($run.ExitCode) building the policy tool from $OdinPolicyPackage, so the four source policies could not run. Its diagnostics are above."
+	finally {
+		Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
 	}
 
 	$script:OdinPolicyTool = $built
@@ -1235,6 +1249,15 @@ function Get-OdinSourceFact {
 	try {
 		[System.IO.File]::WriteAllLines($request, [string[]] @($Sources | ForEach-Object { $_.Path }))
 		$run = Read-NativeOutput -Command $tool -Arguments @($request) -TimeoutSeconds $OdinCommandTimeoutSeconds
+	}
+	catch {
+		# A tool that will not START, which is what a truncated or half-written
+		# binary looks like. Windows answers "%1 is not a valid Win32
+		# application" and .NET raises it here naming neither the file nor a way
+		# out -- and the state does not clear itself, because a partial write is
+		# newer than the sources it came from and Test-OdinPolicyToolStale reads
+		# that as current. So: which file, and what to do about it.
+		throw "the policy tool at $tool could not be started, so the source policies have nothing to check: $($_.Exception.Message) A truncated or half-written binary is what that looks like -- delete it and build again, or point `$env:$OdinPolicyOverride at one that runs."
 	}
 	finally {
 		Remove-Item -LiteralPath $request -Force -ErrorAction SilentlyContinue
