@@ -17,6 +17,8 @@ import "core:testing"
 @(private)
 SECOND_NS :: i64(1_000_000_000)
 @(private)
+MILLISECOND_NS :: SECOND_NS / 1000
+@(private)
 first_reading :: proc() -> Reading {
 	return Reading{bytes = 104_857_600, modified_ns = 500 * SECOND_NS, taken_ns = 900 * SECOND_NS}
 }
@@ -240,10 +242,62 @@ a_gap_already_outlasted_is_no_wait_at_all_rather_than_a_negative_one :: proc(t: 
 	exactly.taken_ns += MINIMUM_SETTLING_GAP_NS
 	testing.expect_value(t, remaining_gap_ns(first, exactly, MINIMUM_SETTLING_GAP_NS), 0)
 
-	// And one nanosecond short of it leaves one nanosecond.
+	// And one nanosecond short of it leaves the smallest wait there is, which is
+	// one MILLISECOND and not one nanosecond -- see the case below.
 	one_short := first
 	one_short.taken_ns += MINIMUM_SETTLING_GAP_NS - 1
-	testing.expect_value(t, remaining_gap_ns(first, one_short, MINIMUM_SETTLING_GAP_NS), 1)
+	testing.expect_value(
+		t,
+		remaining_gap_ns(first, one_short, MINIMUM_SETTLING_GAP_NS),
+		MILLISECOND_NS,
+	)
+}
+
+@(test)
+a_wait_is_a_whole_number_of_milliseconds_because_the_sleep_it_feeds_truncates :: proc(
+	t: ^testing.T,
+) {
+	// FOUND BY A RUNNING CASE, on the first run of the one in run_test.odin that
+	// takes this wait for real. `time.sleep` on Windows is
+	// `Sleep(DWORD(d / Millisecond))` -- integer division, so it TRUNCATES. A wait
+	// of 1,999,700 microseconds sleeps 1,999 milliseconds and comes back three
+	// tenths of a millisecond early; the reading taken then is still inside the
+	// gap, `settling` answers `Too_Soon_To_Tell` a second time, and `settle`
+	// refuses a Recording nothing was ever wrong with as `.Still_Unsettled`.
+	//
+	// That is the exact failure the second look exists to prevent, and it lands on
+	// every Batch's FIRST Recording and no other -- the only one whose planning
+	// reading is still inside the gap when its extraction starts.
+	first := first_reading()
+	second := first
+	second.taken_ns += 300_000
+
+	// Three tenths of a millisecond spent out of two seconds leaves
+	// 1,999,700,000 nanoseconds, and the whole two seconds once it is rounded up
+	// to something the sleep can express.
+	testing.expect_value(t, remaining_gap_ns(first, second, 2 * SECOND_NS), 2 * SECOND_NS)
+
+	// The property rather than the one worked example: no wait this answers can
+	// be truncated to nothing.
+	for spent in ([]i64{1, 300_000, MILLISECOND_NS, MILLISECOND_NS + 1, SECOND_NS - 1}) {
+		spent_at := first
+		spent_at.taken_ns += spent
+		left := remaining_gap_ns(first, spent_at, MINIMUM_SETTLING_GAP_NS)
+		testing.expectf(
+			t,
+			left % MILLISECOND_NS == 0,
+			"%d nanoseconds in, the wait is %d, which a millisecond sleep cannot express",
+			spent,
+			left,
+		)
+		testing.expectf(
+			t,
+			left + spent >= MINIMUM_SETTLING_GAP_NS,
+			"%d nanoseconds in, waiting %d more still lands inside the gap",
+			spent,
+			left,
+		)
+	}
 }
 
 @(test)

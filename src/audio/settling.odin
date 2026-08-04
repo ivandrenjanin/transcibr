@@ -120,8 +120,15 @@ settling_fault :: proc(outcome: Settling, attempts_left: int) -> (fault: Fault, 
 	unreachable()
 }
 
+// The granularity every wait here is rounded up to, in nanoseconds.
+//
+// A MILLISECOND, and it is the sleep on the other end of this rather than a
+// taste. See remaining_gap_ns.
+@(private)
+SLEEP_GRANULARITY_NS :: i64(1_000_000)
+
 // How long is left of the gap before a Recording is worth reading again, in
-// nanoseconds.
+// nanoseconds, as a whole number of milliseconds.
 //
 // The other side of the same clock-step guard `settling` carries, and it is HERE
 // rather than inline in run.odin for the reason ADR-0018 gives: a decision that
@@ -133,16 +140,31 @@ settling_fault :: proc(outcome: Settling, attempts_left: int) -> (fault: Fault, 
 // readings makes `waited` negative, and subtracting it would ask for a longer
 // wait than the gap ever was. Never less than nothing: a gap already outlasted
 // is a wait of zero and not a negative duration to hand to a sleep.
+//
+// AND NEVER A FRACTION OF A MILLISECOND, which is a fix and not a tidiness.
+// `time.sleep` on Windows is `Sleep(DWORD(d / Millisecond))` -- integer
+// division, so it TRUNCATES, and a wait of 1,999,700 microseconds sleeps 1,999
+// milliseconds and comes back three tenths of a millisecond early. The reading
+// taken then is still inside the gap, `settling` answers `Too_Soon_To_Tell` a
+// second time, and `settle` refuses a Recording nothing was ever wrong with as
+// `.Still_Unsettled` -- the exact failure the second look exists to prevent,
+// landing on every Batch's FIRST Recording and no other, since it is the only
+// one whose planning reading is still inside the gap when its extraction starts.
+//
+// Found by a running case rather than reasoned about: the case in run_test.odin
+// that takes this wait for real came back red the first time it ran.
 remaining_gap_ns :: proc(first: Reading, second: Reading, minimum_gap_ns: i64) -> i64 {
 	assert(minimum_gap_ns > 0, "a gap of no time at all says nothing about anything")
 
 	waited := second.taken_ns - first.taken_ns
-	if waited < 0 {
-		return minimum_gap_ns
+	left := minimum_gap_ns
+	if waited >= 0 {
+		left = max(0, minimum_gap_ns - waited)
 	}
-	left := max(0, minimum_gap_ns - waited)
-	assert(left <= minimum_gap_ns, "more of the gap is left than the gap ever was")
-	return left
+	// Rounded UP, so that a wait the sleep would truncate to nothing is a whole
+	// millisecond instead. Waiting a fraction of a millisecond longer than the
+	// gap costs nothing; waiting a fraction less costs the Recording.
+	return (left + SLEEP_GRANULARITY_NS - 1) / SLEEP_GRANULARITY_NS * SLEEP_GRANULARITY_NS
 }
 
 // What two readings of one Recording say.
