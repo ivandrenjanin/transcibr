@@ -7,10 +7,16 @@ import "core:time"
 import "transcibr:child"
 import "transcibr:process"
 
-// This file drives the two children and the filesystem. It is the whole of what
-// ADR-0009 says will never have a unit test, kept thin enough to inspect by
-// reading: every branch in it either calls a decision next door or reports what
-// the world said.
+// This file drives the two children and the filesystem, and is kept thin enough
+// to inspect by reading: every branch in it either calls a decision next door or
+// reports what the world said.
+//
+// ADR-0009 says the pipeline and the subprocess layer will never have UNIT
+// tests, and that is about the decisions -- there are none here to unit-test.
+// What run_test.odin does instead is what `src/child` already does: start real
+// children under real bounds and sweep a real directory. The part that needs
+// ffmpeg and ffprobe themselves is verified by hand and recorded in the pull
+// request.
 
 // Where the two executables are. Handed in rather than resolved here: which
 // ffmpeg a Batch runs is a settings question and one ADR-0013 answers with a
@@ -620,9 +626,26 @@ cache_entries :: proc(listing: []os.File_Info, allocator: mem.Allocator) -> []Ca
 	now := time.time_to_unix_nano(time.now())
 	entries := make([dynamic]Cache_Entry, 0, len(listing), allocator)
 	for info in listing {
-		// Directories and everything else are left alone. The cache holds
-		// files transcibr wrote; anything else in it is somebody else's.
-		if info.type != .Regular {
+		// Directories and symbolic links are left alone. The cache holds files
+		// transcibr wrote; anything else in it is somebody else's.
+		//
+		// `.Undetermined` IS COUNTED, and that is the whole of this check rather
+		// than a widening of it. `os.read_all_directory_by_path` opens a handle
+		// per entry and works the type out from that handle, so a file another
+		// process holds without sharing -- an extraction's `.part` while ffmpeg
+		// has it -- cannot be opened and comes back undetermined. Its size and
+		// its modification time come from the directory entry itself and are
+		// perfectly good; the attributes that say "directory" and "reparse
+		// point" come from there too, and they are already decided above. So
+		// what is left undetermined here is exactly "a file nothing could open",
+		// and dropping it meant its bytes never entered the total: a cache
+		// dominated by in-flight `.part` files measured well under its ceiling
+		// and swept nothing at all.
+		//
+		// The sweep may then CHOOSE such a file, and deleting it will fail. That
+		// is already the contract -- sweep_cache is best effort by construction
+		// and counts what it actually removed.
+		if info.type != .Regular && info.type != .Undetermined {
 			continue
 		}
 		append(
@@ -634,5 +657,9 @@ cache_entries :: proc(listing: []os.File_Info, allocator: mem.Allocator) -> []Ca
 			},
 		)
 	}
+	// Shrunk to what was kept, so the slice handed back is the whole of its own
+	// allocation: `delete` frees `len` items and this was made at `cap`.
+	shrink(&entries)
+	assert(len(entries) <= len(listing), "the cache holds more entries than the listing named")
 	return entries[:]
 }

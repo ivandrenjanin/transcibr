@@ -66,7 +66,16 @@ a case can produce and a clock and a filesystem cannot.
 `src/audio` is the first package in this repository where the pure and the impure sit side by side,
 and the file split is what keeps them apart: `riff.odin`, `duration.odin`, `settling.odin` and
 `sweep.odin` are pure and carry the suite; `run.odin` runs the children and touches the disk. A
-decision that turns up in `run.odin` belongs in one of the four beside it.
+decision that turns up in `run.odin` belongs in one of the four beside it — the clock-step clamp on
+how long to wait for a Recording to settle turned up there once and is `remaining_gap_ns` in
+`settling.odin` now, with cases of its own.
+
+`run.odin` is not *untested*, which ADR-0009 is sometimes read as licensing. It has no **unit** tests
+because it holds no decisions to unit-test, and `run_test.odin` covers what `src/child` already
+showed can be covered: children started under a bound and stopped when it runs out, and a real
+scratch cache swept — which is the code that deletes files. What stays hand-verified is what needs
+ffmpeg and ffprobe themselves, because a stand-in answering ffprobe's argument list would be a test
+of the stand-in.
 
 **Nothing enforces that, and the ADR is the whole of the enforcement.** This once claimed "the same
 pressure ADR-0009 records for `src/cli`", and the two are not alike. `src/cli` is named in

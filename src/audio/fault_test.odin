@@ -4,15 +4,12 @@ import "core:strings"
 import "core:testing"
 import "transcibr:child"
 
-// The shell half of this package -- running ffprobe and ffmpeg, reading the
-// produced audio back off the disk, deleting what the sweep chose -- has no
-// cases here, and that is ADR-0009's ceiling stated rather than an omission:
-// "the pipeline, the subprocess layer, the Win32 window and the GPU path will
-// never have unit tests". Every DECISION it makes is a pure procedure with its
-// own suite next door; what is left is the wiring, and the wiring is verified by
-// hand against real media, recorded in the pull request.
+// The two fault vocabularies this package refuses in, and the one pure decision
+// that lives in the shell file beside them.
 //
-// One decision in that file is pure, and it is here.
+// The shell half's own cases -- real children under a bound, a real cache swept
+// -- are in run_test.odin. What is left to hand verification there is what needs
+// ffmpeg and ffprobe themselves.
 
 @(test)
 a_cache_path_transcibr_can_direct_the_engine_at_is_accepted :: proc(t: ^testing.T) {
