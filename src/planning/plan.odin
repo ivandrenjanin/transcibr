@@ -68,10 +68,12 @@ decide :: proc(found: Found, settings: Settings) -> (outcome: Outcome) {
 		(outcome.change != .None) == (outcome.reason == .Settings_Changed),
 		"a decision names a changed setting it was not made for, or hides the one it was",
 	)
-	defer assert(
-		outcome.decision != .Skip || outcome.reason == .Up_To_Date,
-		"a Recording was skipped for a reason that is not that it is done",
-	)
+	defer if outcome.decision == .Skip {
+		assert(
+			outcome.reason == .Up_To_Date,
+			"a Recording was skipped for a reason that is not that it is done",
+		)
+	}
 
 	recorded, known := found.recorded.?
 	current := current_of(found, settings, recorded, known)

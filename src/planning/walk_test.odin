@@ -113,8 +113,26 @@ what_counts_as_a_recording_is_decided_on_the_extension_alone :: proc(t: ^testing
 			"interview.m4a",
 			"lecture.Wav",
 			"call.opus",
+			"camcorder.m2ts",
+			"camcorder.mts",
 		}) {
 		testing.expectf(t, is_a_recording(named), "%q was not taken for a Recording", named)
+	}
+}
+
+// A dry run pointed at a source checkout planned a Transcript for every file in
+// it, because the extension is all this test has and `.ts` is TypeScript as
+// often as it is a transport stream. The same container is still found under
+// `.m2ts` and `.mts`, which nothing else uses.
+@(test)
+an_extension_a_source_tree_uses_is_never_taken_for_a_recording :: proc(t: ^testing.T) {
+	for named in ([?]string {
+			"C:\\src\\app\\main.ts",
+			"C:\\src\\app\\component.tsx",
+			"C:\\src\\app\\main.js",
+			"C:\\src\\walk.odin",
+		}) {
+		testing.expectf(t, !is_a_recording(named), "%q was taken for a Recording", named)
 	}
 }
 

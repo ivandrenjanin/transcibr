@@ -1,25 +1,26 @@
-package planning
+package transcript
 
 import "core:testing"
 import "core:time"
-import "transcibr:transcript"
 
-// The marker is a claim about what `transcibr:transcript` writes, and this is
-// what stops it going stale: a renderer that moved the generator field turns
-// THIS red rather than turning every Transcript on disk into a stranger.
+// `TRANSCRIPT_PREFIX` is a claim about what `write_front_matter` writes, and
+// this is what stops it going stale: a renderer that moved the generator field
+// turns THIS red rather than turning every Transcript on disk into a stranger,
+// which would silently refuse every Recording in a corpus for having a
+// stranger's Markdown beside it (ADR-0026).
 @(test)
 what_the_renderer_actually_writes_is_what_this_package_recognises :: proc(t: ^testing.T) {
-	rendered := transcript.render_markdown(
-		[]transcript.Paragraph{{start = 0, end = 1_000, text = "hello"}},
-		transcript.Render_Context {
+	rendered := render_markdown(
+		[]Paragraph{{start = 0, end = 1_000, text = "hello"}},
+		Render_Context {
 			now = time.unix(1_754_000_000, 0),
 			source_display = "C:\\clips\\talk.mp4",
 			engine_version = "whisper.cpp 1.9.1",
 			model = "ggml-large-v3-turbo",
 			language = "en",
-			profile = transcript.DEFAULT_PROFILE,
+			profile = DEFAULT_PROFILE,
 		},
-		transcript.ANCHOR_INTERVAL_MS,
+		ANCHOR_INTERVAL_MS,
 		context.allocator,
 	)
 	defer delete(rendered, context.allocator)
@@ -43,6 +44,9 @@ a_transcript_transcibr_wrote_is_recognised_by_its_own_first_bytes :: proc(t: ^te
 	)
 }
 
+// The marker stops at the space `version.banner` writes before the number, so a
+// Transcript an OLDER transcibr wrote is still transcibr's -- and a generator
+// merely beginning with the same letters is not.
 @(test)
 a_markdown_file_transcibr_did_not_write_is_never_taken_for_a_transcript :: proc(t: ^testing.T) {
 	for stranger in ([?]string {

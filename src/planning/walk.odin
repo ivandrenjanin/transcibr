@@ -8,6 +8,7 @@ import "core:sync"
 import win32 "core:sys/windows"
 import "core:time"
 import "transcibr:artifact"
+import "transcibr:transcript"
 
 // Discovery: the shell half of this package. Walking a tree is I/O and cannot be
 // anything else (ADR-0009), so what is decided here is kept to what a case can
@@ -16,6 +17,13 @@ import "transcibr:artifact"
 // Containers ffmpeg reads and a Recording plausibly arrives in. A walk that
 // probed every file to find out would spend an ffprobe per README in the tree,
 // which is the GPU-free cost this ticket exists to keep down.
+//
+// `.ts` is NOT here and its absence is the decision. It is MPEG transport
+// stream and it is also TypeScript, and the extension is all this test has: a
+// dry run pointed at a source checkout planned a Transcript for every file in
+// it. `.m2ts` and `.mts` are the same container under names nothing else uses,
+// so a real transport stream is still found under either -- and a `.ts`
+// Recording is the list being wrong rather than the rule (ADR-0026).
 @(private, rodata)
 RECORDING_SUFFIXES := [?]string {
 	".mp4",
@@ -28,8 +36,8 @@ RECORDING_SUFFIXES := [?]string {
 	".flv",
 	".mpg",
 	".mpeg",
-	".ts",
 	".m2ts",
+	".mts",
 	".3gp",
 	".mp3",
 	".m4a",
@@ -61,11 +69,21 @@ is_a_recording :: proc(path: string) -> bool {
 
 // Deep enough for any archive somebody points at and far short of anything that
 // costs a thread its stack. The walk keeps its own frontier rather than
-// recursing, so this bounds a pathological tree and not this program's stack.
+// recursing, so this bounds a pathological tree and not this program's stack --
+// and it is what bounds a CYCLE once `follow_reparse_points` is turned on, which
+// is the one setting under which a junction can point back up its own tree.
 MAX_WALK_DEPTH :: 64
+
+// How much of a Markdown file the walk reads to find out who wrote it. What is
+// being asked is never what the file says, so the read stops just past the
+// answer -- a Transcript is megabytes and a Batch holds hundreds. The question
+// itself is `transcibr:transcript`'s, because that package writes the bytes and
+// a second copy of them here would go stale in silence (ADR-0026).
+TRANSCRIPT_HEAD_BYTES :: 128
 
 #assert(MAX_WALK_DEPTH > 0)
 #assert(len(RECORDING_SUFFIXES) > 0)
+#assert(TRANSCRIPT_HEAD_BYTES > len(transcript.TRANSCRIPT_PREFIX))
 
 // What a walk could not do, against the directory it could not do it to. Every
 // one of these is an operating error and none of them is silence: a short file
@@ -122,13 +140,13 @@ Inventory :: struct {
 // and a `Note` with no absent value answered its own zero -- `Root_Unreadable`,
 // printed at a user over a tree the walk had been reading perfectly well.
 left_unlooked_at :: proc(inventory: Inventory) -> (short: Maybe(Walk_Note), yes: bool) {
-	defer if yes {
+	defer if !yes {
+		assert(short == nil, "a whole inventory named a note anyway")
+	} else if !inventory.cancelled {
 		assert(
-			inventory.cancelled || len(inventory.notes) > 0,
+			len(inventory.notes) > 0,
 			"an inventory was called partial with nothing to say what was left out",
 		)
-	} else {
-		assert(short == nil, "a whole inventory named a note anyway")
 	}
 
 	if inventory.cancelled {
@@ -150,14 +168,12 @@ discover :: proc(roots: []string, w: Walk, allocator: mem.Allocator) -> (invento
 		allocator.procedure != nil,
 		"the inventory outlives this procedure and needs an allocator",
 	)
-	defer assert(
-		inventory.cancelled || len(roots) > 0 || len(inventory.found) == 0,
-		"a walk over no roots at all found something",
-	)
-	defer assert(
-		!inventory.cancelled || w.cancelled != nil,
-		"a walk reported itself cancelled with nothing to cancel it",
-	)
+	defer if len(roots) == 0 {
+		assert(len(inventory.found) == 0, "a walk over no roots at all found something")
+	}
+	defer if inventory.cancelled {
+		assert(w.cancelled != nil, "a walk reported itself cancelled with nothing to cancel it")
+	}
 
 	state := Walking {
 		w         = w,
@@ -471,7 +487,7 @@ transcript_state :: proc(path: string) -> Transcript_State {
 	}
 	assert(read <= len(head), "more of a Transcript came back than there was room for it")
 
-	if written_by_transcibr(string(head[:read])) {
+	if transcript.written_by_transcibr(string(head[:read])) {
 		return .Transcibrs
 	}
 	return .Foreign
@@ -480,10 +496,9 @@ transcript_state :: proc(path: string) -> Transcript_State {
 @(private)
 note :: proc(state: ^Walking, what: Note, path: string) {
 	assert(state != nil, "there is no walk here to report against")
-	assert(
-		len(path) > 0 || what == .Root_Unreadable,
-		"a note against no path at all, from something other than an unspellable root",
-	)
+	if what != .Root_Unreadable {
+		assert(len(path) > 0, "a note against no path at all, from something under a root")
+	}
 
 	append(&state.notes, Walk_Note{note = what, path = strings.clone(path, state.allocator)})
 }
@@ -508,10 +523,9 @@ report :: proc(state: ^Walking, at: string) {
 @(private)
 stopped :: proc(state: ^Walking) -> (yes: bool) {
 	assert(state != nil, "there is no walk here to stop")
-	defer assert(
-		!yes || state.w.cancelled != nil,
-		"a walk stopped itself with nothing to have asked it to",
-	)
+	defer if yes {
+		assert(state.w.cancelled != nil, "a walk stopped itself with nothing to have asked it to")
+	}
 
 	if state.w.cancelled == nil {
 		return false
@@ -552,8 +566,10 @@ enumerable :: proc(w: Walk, path: string, allocator: mem.Allocator) -> bool {
 	assert(len(path) > 0, "there is nothing here to enumerate")
 	assert(allocator.procedure != nil, "asking about a path needs an allocator to widen it")
 
-	if !w.follow_reparse_points && is_a_reparse_point(path, allocator) {
-		return false
+	if !w.follow_reparse_points {
+		if is_a_reparse_point(path, allocator) {
+			return false
+		}
 	}
 	return os.is_dir(path)
 }

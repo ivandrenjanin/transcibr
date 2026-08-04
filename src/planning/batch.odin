@@ -1,7 +1,6 @@
 package planning
 
 import "core:mem"
-import "core:slice"
 import "core:strings"
 import "transcibr:artifact"
 
@@ -86,6 +85,11 @@ destroy_plan :: proc(plan: Plan, allocator: mem.Allocator) {
 // Folded, because NTFS is case-insensitive by default: `INTERVIEW.md` and
 // `interview.md` are one file, and a plan that told them apart would hand two
 // Recordings one output path on the filesystem this program runs on.
+//
+// A map from the folded name to the FIRST Recording that claimed it, walked in
+// the inventory's own order. The pair a Batch is refused for is therefore the
+// same pair every time it is planned, and `left < right` holds by construction
+// rather than by a comparator that had to break a tie to make it so.
 @(private)
 collided :: proc(
 	inventory: []Found,
@@ -95,24 +99,28 @@ collided :: proc(
 	yes: bool,
 ) {
 	assert(allocator.procedure != nil, "the names outlive this procedure and need an allocator")
-	defer assert(!yes || collision.left < collision.right, "a pair named in the wrong order")
+	defer if yes {
+		assert(collision.left < collision.right, "a pair named in the wrong order")
+	}
 
-	keys := artifact_keys(inventory, allocator)
-	defer destroy_keys(keys, allocator)
-	assert(
-		len(keys) == len(inventory),
-		"a Batch was keyed with more or fewer names than Recordings",
-	)
+	claimed := make(map[string]int, len(inventory), allocator)
+	defer {
+		for key in claimed {
+			delete(key, allocator)
+		}
+		delete(claimed)
+	}
 
-	order := named_first(keys, allocator)
-	defer delete(order, allocator)
-
-	for at in 1 ..< len(order) {
-		previous, current := order[at - 1], order[at]
-		if len(keys[current]) == 0 || keys[previous] != keys[current] {
+	for found, at in inventory {
+		key, namable := artifact_key(found.source, allocator)
+		if !namable {
 			continue
 		}
-		return paired(inventory, min(previous, current), max(previous, current), allocator), true
+		if first, taken := claimed[key]; taken {
+			delete(key, allocator)
+			return paired(inventory, first, at, allocator), true
+		}
+		claimed[key] = at
 	}
 	return {}, false
 }
@@ -139,56 +147,18 @@ paired :: proc(
 	}
 }
 
-// A Recording whose path names no file has an EMPTY key and never collides: it
-// is refused on its own account, and two of them are not a pair (ADR-0008).
+// A Recording whose path names no file has NO key and never collides: it is
+// refused on its own account, and two of them are not a pair (ADR-0008). The
+// answer is owned; free it with `delete` and the same allocator.
 @(private)
-artifact_keys :: proc(inventory: []Found, allocator: mem.Allocator) -> (keys: []string) {
-	assert(allocator.procedure != nil, "the keys outlive this procedure and need an allocator")
-	defer assert(len(keys) == len(inventory), "a Recording was keyed twice or not at all")
+artifact_key :: proc(source: string, allocator: mem.Allocator) -> (key: string, namable: bool) {
+	assert(len(source) > 0, "there is no Recording here to name an artifact for")
+	assert(allocator.procedure != nil, "the key outlives this procedure and needs an allocator")
 
-	keys = make([]string, len(inventory), allocator)
-	for found, at in inventory {
-		names, namable := artifact.names_of(found.source, allocator)
-		defer artifact.destroy_names(names, allocator)
-		if !namable {
-			keys[at] = ""
-			continue
-		}
-		keys[at] = strings.to_lower(names[.Transcript], allocator)
+	names, named := artifact.names_of(source, allocator)
+	defer artifact.destroy_names(names, allocator)
+	if !named {
+		return "", false
 	}
-	return keys
-}
-
-@(private)
-destroy_keys :: proc(keys: []string, allocator: mem.Allocator) {
-	assert(allocator.procedure != nil, "the keys are freed with the allocator that built them")
-
-	for key in keys {
-		delete(key, allocator)
-	}
-	delete(keys, allocator)
-}
-
-// Indices into `keys`, sorted so that equal keys stand next to each other. The
-// index breaks a tie, so the pair a Batch is refused for is the same pair every
-// time it is planned.
-@(private)
-named_first :: proc(keys: []string, allocator: mem.Allocator) -> (order: []int) {
-	assert(allocator.procedure != nil, "the order outlives this procedure and needs an allocator")
-	defer assert(len(order) == len(keys), "an order that names more or fewer keys than there are")
-
-	order = make([]int, len(keys), allocator)
-	for &index, at in order {
-		index = at
-	}
-
-	sorted := keys
-	slice.sort_by_with_data(order, proc(left: int, right: int, keys: rawptr) -> bool {
-			named := (^[]string)(keys)^
-			if named[left] != named[right] {
-				return named[left] < named[right]
-			}
-			return left < right
-		}, &sorted)
-	return order
+	return strings.to_lower(names[.Transcript], allocator), true
 }

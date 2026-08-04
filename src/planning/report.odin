@@ -15,6 +15,11 @@ import "core:strings"
 
 // A switch and not a table, so an arm has to be spelled out before this will
 // build at all. See CLAUDE.md, Odin notes: enumerated arrays and switches.
+//
+// Private like every other `*_says` in this repository: what leaves this package
+// is a whole LINE, so nothing outside can assemble one of its own out of the
+// pieces and have it drift from the one the suite holds.
+@(private)
 decision_says :: proc(decision: Decision) -> string {
 	switch decision {
 	case .Transcribe:
@@ -29,6 +34,7 @@ decision_says :: proc(decision: Decision) -> string {
 	return ""
 }
 
+@(private)
 reason_says :: proc(reason: Reason) -> string {
 	switch reason {
 	case .Nothing_Recorded:
@@ -53,6 +59,7 @@ reason_says :: proc(reason: Reason) -> string {
 	return ""
 }
 
+@(private)
 note_says :: proc(what: Note) -> string {
 	switch what {
 	case .Root_Unreadable:

@@ -33,12 +33,10 @@ plan_batch :: proc(arguments: []string) -> int {
 		return USAGE_ERROR
 	}
 
-	identified, unidentified := artifact.identify_model(o.model, context.allocator)
+	fmt.eprintfln("  identifying %s", o.model)
+	identified, named := model_identified(o.model)
 	defer artifact.destroy_model(identified, context.allocator)
-	if unidentified != .None {
-		message := artifact.model_error_message(unidentified, o.model, context.allocator)
-		defer delete(message, context.allocator)
-		fmt.eprintln(message)
+	if !named {
 		return OPERATING_ERROR
 	}
 	return report_plan(o, identified)
