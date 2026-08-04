@@ -41,10 +41,16 @@ real_ffmpeg_output_does_not_put_its_data_chunk_at_byte_44 :: proc(t: ^testing.T)
 	facts, fault := read_wav_facts(FFMPEG_WAV, FFMPEG_WAV_BYTES)
 	testing.expect_value(t, fault, Riff_Fault.None)
 
-	// 78 and not 44, which is the criterion this ticket exists for, read through
-	// the length the walk came back with. At 44 the four bytes taken for the
-	// `data` length are the middle of the `LIST` chunk's own header, and 6,400 is
-	// not what they say.
+	// 78 and not 44, which is the criterion this ticket exists for. THIS is the
+	// pin rule A5 is about, and the reason the number lives in an assertion
+	// rather than in the comment above it: the day ffmpeg's version string
+	// changes length the payload moves and every other number below holds, so
+	// this line is the only one that goes red and sends the next reader to a hex
+	// dump.
+	testing.expect_value(t, facts.data_offset, 78)
+	// And read back a second way, through the length the walk came home with. At
+	// 44 the four bytes taken for the `data` length are the middle of the `LIST`
+	// chunk's own header, and 6,400 is not what they say.
 	testing.expect_value(t, facts.data_bytes, 6400)
 }
 
