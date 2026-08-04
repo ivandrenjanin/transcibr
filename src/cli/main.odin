@@ -31,9 +31,13 @@ USAGE ::
 
   transcibr-cli --transcribe <recording> --model-file <path>
                 --engine-exe <path> --cache <directory>
+                [--profile ` +
+	transcript.PROFILE_CHOICE +
+	`] [--engine-version <version>]
                 [--ffmpeg <path>] [--ffprobe <path>]
-      transcribe one recording and print the path of the engine output it
-      left in the cache. Spends GPU time.
+      transcribe one recording, write its transcript, its retained engine
+      output and its sidecar beside the recording, and print the transcript's
+      path. Spends GPU time.
 
   transcibr-cli --help
       print this and exit.
@@ -53,6 +57,7 @@ HELP :: "--help"
 USAGE_ERROR :: 2
 OPERATING_ERROR :: 1
 
+// Why this binary's own argv arrives mangled: ADR-0025, issue #35.
 main :: proc() {
 	assert(len(os.args) > 0, "a process started with no argv at all, not even its own name")
 

@@ -47,6 +47,17 @@ engine_arguments :: proc(job: Engine_Job, allocator: mem.Allocator) -> (argument
 	return arguments
 }
 
+// Why a path outside ASCII is refused before the Engine is started, and why the
+// rule sits beside this argument list rather than beside ffmpeg's: ADR-0025.
+ascii_only :: proc(path: string) -> bool {
+	for at in 0 ..< len(path) {
+		if path[at] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
 // The caller owns the answer and frees it with `delete` and the same allocator.
 engine_output_path :: proc(prefix: string, allocator: mem.Allocator) -> string {
 	assert(len(prefix) > 0, "a prefix of nothing names the extension and nothing else")
@@ -141,14 +152,18 @@ read_progress :: proc(line: string) -> (said: Engine_Line, ok: bool) {
 
 // Why not `strconv.parse_int`, which takes `_` and a sign and overflows in silence:
 // CLAUDE.md, Odin notes.
-@(private)
-read_natural :: proc(text: string) -> (value: i64, ok: bool) {
-	if len(text) == 0 || len(text) > MAX_NATURAL_DIGITS {
+read_natural :: proc(text: string, max_digits := MAX_NATURAL_DIGITS) -> (value: i64, ok: bool) {
+	assert(max_digits > 0, "a number of no digits at all is not a number")
+
+	if len(text) == 0 || len(text) > max_digits {
 		return 0, false
 	}
 	for at in 0 ..< len(text) {
 		digit := text[at]
 		if digit < '0' || digit > '9' {
+			return 0, false
+		}
+		if value > (max(i64) - i64(digit - '0')) / 10 {
 			return 0, false
 		}
 		value = value * 10 + i64(digit - '0')
@@ -160,7 +175,6 @@ read_natural :: proc(text: string) -> (value: i64, ok: bool) {
 // Twelve, because what is read here is multiplied by a thousand downstream: the
 // product stays under 10^15 and nowhere near i64's ceiling, so a number too large to
 // be meant is refused on its value rather than wrapped into a plausible small one.
-@(private)
 MAX_NATURAL_DIGITS :: 12
 
 #assert(MAX_NATURAL_DIGITS < 19)

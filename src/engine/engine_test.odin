@@ -519,3 +519,78 @@ every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testin
 		)
 	}
 }
+
+@(private)
+marker_in :: proc(cache: string) -> string {
+	return fmt.aprintf("%s\\started.txt", cache, allocator = context.allocator)
+}
+
+@(test)
+a_recording_whose_scratch_paths_the_engine_cannot_open_never_starts_one :: proc(t: ^testing.T) {
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	cache := scratch_cache(t, "not-ascii")
+	defer delete(cache, context.allocator)
+	defer remove_cache(cache)
+
+	marker := marker_in(cache)
+	defer delete(marker, context.allocator)
+	executable := stand_in(
+		t,
+		cache,
+		"not-ascii",
+		fmt.tprintf(">\"%s\" echo yes\r\n>\"%%PREFIX%%.json\" echo {{}}", marker),
+	)
+	defer delete(executable, context.allocator)
+
+	tools, job := job_in(cache, executable)
+	job.name = "Bj\u00f6rn interview"
+
+	produced, err := transcribe(&group, tools, job, Report{}, context.allocator, SHORT_LIMITS)
+	defer delete(produced.output, context.allocator)
+
+	testing.expect_value(t, err.fault, Fault.Path_Not_Ascii)
+	testing.expect(t, !os.exists(marker), "the Engine was started with a path it cannot open")
+}
+
+@(test)
+every_path_one_invocation_is_handed_is_checked_and_not_just_the_prefix :: proc(t: ^testing.T) {
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	cache := scratch_cache(t, "each-path")
+	defer delete(cache, context.allocator)
+	defer remove_cache(cache)
+
+	marker := marker_in(cache)
+	defer delete(marker, context.allocator)
+	executable := stand_in(
+		t,
+		cache,
+		"each-path",
+		fmt.tprintf(">\"%s\" echo yes\r\n>\"%%PREFIX%%.json\" echo {{}}", marker),
+	)
+	defer delete(executable, context.allocator)
+
+	for spoiled in ([?]int{0, 1}) {
+		tools, job := job_in(cache, executable)
+		if spoiled == 0 {
+			job.model = "C:\\models\\ggml-large-v3-t\u00fcrkce.bin"
+		} else {
+			job.audio = "C:\\nowhere\\\u5f55\u97f3.wav"
+		}
+
+		produced, err := transcribe(&group, tools, job, Report{}, context.allocator, SHORT_LIMITS)
+		defer delete(produced.output, context.allocator)
+
+		testing.expectf(t, err.fault == Fault.Path_Not_Ascii, "path %d was handed over", spoiled)
+		testing.expectf(t, !os.exists(marker), "path %d started the Engine anyway", spoiled)
+	}
+}

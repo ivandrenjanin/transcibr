@@ -309,3 +309,17 @@ the_lines_the_engine_writes_around_its_progress_read_as_nothing :: proc(t: ^test
 		testing.expectf(t, said.says == .Nothing, "%q read as something", line)
 	}
 }
+
+@(test)
+a_path_transcibr_can_direct_the_engine_at_is_accepted :: proc(t: ^testing.T) {
+	testing.expect(t, ascii_only("C:\\Users\\drenj\\AppData\\Local\\transcibr\\cache"))
+	testing.expect(t, ascii_only("C:\\models\\ggml-large-v3.bin"))
+	testing.expect(t, ascii_only(""))
+}
+
+@(test)
+a_path_the_engine_could_not_open_is_refused :: proc(t: ^testing.T) {
+	testing.expect(t, !ascii_only("C:\\Users\\Bj\u00f6rn\\AppData\\Local\\transcibr\\cache"))
+	testing.expect(t, !ascii_only("D:\\\u5f55\u97f3\\cache"))
+	testing.expect(t, !ascii_only("C:\\models\\ggml-large-v3-t\u00fcrkce.bin"))
+}

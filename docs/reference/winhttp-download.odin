@@ -183,12 +183,14 @@ drain_body :: proc(hRequest: HINTERNET) -> (total: int) {
 	return total
 }
 
+// The spike end to end, and the three WinHttp handles stay in here with their
+// defers rather than moving into openers of their own: a handle closed by the
+// procedure that opened it is closed before the next call needs it, and the
+// session, connection and request are each an argument to the one after.
 main :: proc() {
 	URL :: "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-cublas-12.4.0-bin-x64.zip"
 	RANGE :: "Range: bytes=1000-1099\r\n"
 
-	// The three handles stay here, and so do their defers: a handle closed by
-	// the procedure that opened it is closed before the next call needs it.
 	host_buf: [256]u16
 	path_buf: [1024]u16
 	uc, cracked := crack_url(URL, host_buf[:], path_buf[:])

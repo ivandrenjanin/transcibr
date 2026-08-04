@@ -69,6 +69,9 @@ transcribe :: proc(
 
 	prefix := fmt.aprintf("%s\\%s", job.cache, job.name, allocator = allocator)
 	defer delete(prefix, allocator)
+	if !openable_by_the_engine(job, prefix) {
+		return {}, Error{fault = .Path_Not_Ascii}
+	}
 	arguments := process.engine_arguments(
 		process.Engine_Job{model = job.model, audio = job.audio, prefix = prefix},
 		allocator,
@@ -88,6 +91,23 @@ transcribe :: proc(
 		return {}, Error{fault = missing}
 	}
 	return Transcribed{output = output, duration_ms = ending.duration_ms}, Error{}
+}
+
+// Why all three paths, and why this does not subsume `open_cache`: ADR-0025.
+@(private)
+openable_by_the_engine :: proc(job: Job, prefix: string) -> bool {
+	assert(len(prefix) > 0, "the Engine was given nowhere to write its output")
+
+	if !process.ascii_only(job.model) {
+		return false
+	}
+	if !process.ascii_only(job.audio) {
+		return false
+	}
+	if !process.ascii_only(prefix) {
+		return false
+	}
+	return true
 }
 
 @(private)

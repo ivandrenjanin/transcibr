@@ -4,18 +4,6 @@ import "core:strings"
 import "core:testing"
 import "transcibr:child"
 
-@(test)
-a_cache_path_transcibr_can_direct_the_engine_at_is_accepted :: proc(t: ^testing.T) {
-	testing.expect(t, ascii_only("C:\\Users\\drenj\\AppData\\Local\\transcibr\\cache"))
-	testing.expect(t, ascii_only(""))
-}
-
-@(test)
-a_cache_path_the_engine_could_not_open_is_refused :: proc(t: ^testing.T) {
-	testing.expect(t, !ascii_only("C:\\Users\\Bj\u00f6rn\\AppData\\Local\\transcibr\\cache"))
-	testing.expect(t, !ascii_only("D:\\\u5f55\u97f3\\cache"))
-}
-
 // See CLAUDE.md, Odin notes: enumerated arrays and switches. `.None` is skipped
 // by name because it is the deliberately empty row.
 @(test)

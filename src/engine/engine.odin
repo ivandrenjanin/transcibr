@@ -48,6 +48,8 @@ Report :: struct {
 // Odin notes (issue #33).
 Fault :: enum u8 {
 	None = 0,
+	// Why this is refused before the child starts, and per-Recording: ADR-0025.
+	Path_Not_Ascii,
 	Not_Started,
 	Did_Not_Finish,
 	Went_Silent,
@@ -67,6 +69,10 @@ Error :: struct {
 @(private)
 fault_says :: proc(fault: Fault) -> string {
 	switch fault {
+	case .Path_Not_Ascii:
+		return(
+			"one of the paths this Recording would have handed the Engine carries a byte outside ASCII, which the Engine cannot open" \
+		)
 	case .Not_Started:
 		return "the Engine could not be started"
 	case .Did_Not_Finish:

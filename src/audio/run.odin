@@ -398,7 +398,7 @@ open_cache :: proc(cache: string, allocator: mem.Allocator) -> Cache_Fault {
 	}
 	defer delete(resolved, allocator)
 
-	if !ascii_only(resolved) {
+	if !process.ascii_only(resolved) {
 		return .Path_Not_Ascii
 	}
 	if os.make_directory_all(cache) != nil && !os.exists(cache) {

@@ -1,4 +1,4 @@
-# A child is spawned with the handles it may inherit named, and no loop over one is unbounded
+# A child is spawned with the handles it may inherit named, and every loop over one is bounded except `src/audio`'s, which is recorded here
 
 Every child is created with a `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` naming **exactly two handles** —
 its own null device and the write end of its own diagnostic pipe — and every loop that reads one has
@@ -253,7 +253,16 @@ not to the smallest value that passes.
 **`src/audio`'s drain is a known live gap**, stated here rather than left to be discovered. It is
 recorded as a consequence and not as a defect because the exposure is bounded by what ffmpeg emits
 at `-loglevel error`, and because closing it properly is the lift into `transcibr:child` (issue #33)
-rather than a third copy of the same twenty lines.
+rather than a third copy of the same twenty lines. It is a busy spin and not a wedge:
+`child.read_diagnostics` never blocks — `PeekNamedPipe` guards the `ReadFile` and returns on
+`waiting == 0` — so the loop burns a core rather than hanging, which is why this is a consequence
+and not a stop-everything defect.
+
+Issue #33 carries both halves as acceptance criteria, and the title of this decision names the gap
+so that neither can be lost to a title nobody re-reads: the lifted drain keeps `MAX_DRAIN_BYTES`,
+and the audio path gains the flood-plus-bound test it does not have. `src/engine/engine_test.odin`
+has that test; `src/audio/run_test.odin` has no equivalent, so today nothing would go red if the
+ceiling were dropped from the copy that has one.
 
 ## What reopens this
 

@@ -204,14 +204,3 @@ error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> s
 	assert(len(message) > 0, "a refusal rendered as nothing at all")
 	return message
 }
-
-// The Engine reads argv in the system ANSI code page (ADR-0002); ffmpeg does
-// not, so the check is on the whole cache rather than beside the Engine.
-ascii_only :: proc(path: string) -> bool {
-	for at in 0 ..< len(path) {
-		if path[at] >= 0x80 {
-			return false
-		}
-	}
-	return true
-}

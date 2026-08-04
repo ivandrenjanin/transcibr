@@ -29,6 +29,15 @@ Every rule here earned its place in a working codebase. Review enforces all of t
 vet flags enforce S1 and S2 on every build. Examples are retargeted to this repository; where an
 example and the linked original differ, the rule is the same and the linked document is canonical.
 
+## 0. Comment policy
+
+The operative contract is self-documenting code with comments driven toward minimal. Comments are banned inside procedure bodies. IF a comment is needed, it must be a comment that explains why the code is doing what it is doing, not a comment that repeats the code's logic.
+
+Enforced mechanically, repository-wide, and it fails the build: `Assert-OdinCommentPolicy` in
+`scripts\common.ps1` reads every `.odin` file `Get-OdinSource` discovers — `docs\reference\`
+included — and names the file, line and procedure of anything it finds. It is a lexer rather than a
+search, so a `//` inside a raw string is text and not a comment.
+
 ## 1. Assertions
 
 Assertions detect programmer errors. Operating errors (a malformed SRT, a missing video, a
