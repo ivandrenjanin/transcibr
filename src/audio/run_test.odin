@@ -68,6 +68,11 @@ UNSETTLED_GAP_NS :: i64(50_000_000)
 
 // A scratch cache of this run's own. The caller frees the path and removes the
 // directory.
+//
+// THE PATH AND NOT THE DIRECTORY: this one only names a place, because the
+// procedures under test make it. `src/engine`'s procedure of the same name, with
+// the same comment, DOES make it -- one name, two behaviours, which is what the
+// third copy of these helpers has already cost (issue #33).
 @(private)
 scratch_cache :: proc(t: ^testing.T, tag: string) -> string {
 	directory := os.get_env("TEMP", context.allocator)

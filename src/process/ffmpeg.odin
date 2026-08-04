@@ -183,11 +183,34 @@ read_duration :: proc(value: string) -> (duration_ms: i64, fault: Probe_Fault) {
 	if math.is_nan(seconds) || math.is_inf(seconds) {
 		return 0, .Duration_Unreadable
 	}
+	rounded, usable := milliseconds_of(seconds)
+	if !usable {
+		return 0, .Duration_Not_Positive
+	}
+	// The write side of read_probe's own assertion (A4) is that refusal, and NOT
+	// a second `assert(rounded > 0)` after it. There was one, two lines below the
+	// `if` that makes it unreachable: an assertion a reader discharges by looking
+	// up is documentation with a runtime cost, and rule A6 asks for the opposite
+	// -- an assert where the condition is critical and SURPRISING.
+	return rounded, .None
+}
+
+// A number of seconds as whole milliseconds, or a refusal.
+//
+// SHARED BY THE TWO SOURCES A DURATION MAY COME FROM, which is the reason it has
+// a name: ffprobe's `duration=` above and the Engine's own startup banner in
+// engine.odin are the spec's two, and a rounding or a ceiling that held in one
+// and not the other would make the two disagree about the same Recording by an
+// amount nobody could account for. NaN and infinity are refused by each caller
+// before this, because each has its own word for a number it could not read at
+// all.
+@(private)
+milliseconds_of :: proc(seconds: f64) -> (duration_ms: i64, ok: bool) {
 	// Bounded, not yet judged: what this stops is the multiplication below
 	// walking into a cast no standard defines. Whether the duration is usable
 	// is decided on the rounded value.
 	if seconds < 0 || seconds > f64(LONGEST_CONTAINER_MS) / 1000 {
-		return 0, .Duration_Not_Positive
+		return 0, false
 	}
 
 	// Rounded rather than truncated: ffprobe prints six decimals, and 0.2
@@ -202,14 +225,9 @@ read_duration :: proc(value: string) -> (duration_ms: i64, fault: Probe_Fault) {
 	// this program (A8) and a Batch that dies on one degenerate container
 	// instead of failing that Recording and carrying on (ADR-0002).
 	if rounded <= 0 {
-		return 0, .Duration_Not_Positive
+		return 0, false
 	}
-	// The write side of read_probe's own assertion (A4) is that refusal, and NOT
-	// a second `assert(rounded > 0)` after it. There was one, two lines below the
-	// `if` that makes it unreachable: an assertion a reader discharges by looking
-	// up is documentation with a runtime cost, and rule A6 asks for the opposite
-	// -- an assert where the condition is critical and SURPRISING.
-	return rounded, .None
+	return rounded, true
 }
 
 // The arguments ffprobe is started with to time one Recording.
