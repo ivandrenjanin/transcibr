@@ -174,6 +174,16 @@ every_change_plan_line_renders_reads_as_words_and_never_as_its_identifier :: pro
 			change,
 			line,
 		)
+
+		if change != .None {
+			testing.expectf(
+				t,
+				strings.contains(line, change_says(change)),
+				"%v rendered <%s>, which does not carry its own words",
+				change,
+				line,
+			)
+		}
 	}
 }
 
