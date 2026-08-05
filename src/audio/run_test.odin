@@ -3,7 +3,6 @@ package audio
 
 import "core:fmt"
 import "core:os"
-import "core:strings"
 import win32 "core:sys/windows"
 import "core:testing"
 import "core:time"
@@ -13,18 +12,10 @@ import "transcibr:testkit"
 @(private)
 CMD :: "cmd.exe"
 
-@(private)
-RUN_BOUND_MS :: i64(60_000)
-
 // Far shorter than the child that has to outlive it, so the case that wants a
 // stopped child measures the bound rather than the child's patience.
 @(private)
 SHORT_BOUND_MS :: i64(500)
-
-// Generous against the few seconds ADR-0020 measured for a real stop, so this
-// only fires if the bound was never reached at all.
-@(private)
-FLOOD_STOP_SLACK :: 5 * time.Second
 
 // The child ends itself whatever this suite does or fails to do.
 @(private)
@@ -61,20 +52,18 @@ aged_file :: proc(
 	return path
 }
 
-// Kept local rather than moved into transcibr:testkit: testkit carries no
-// dependency on transcibr:child, on purpose, because src/child/child_test.odin
-// is itself part of that package and could not import a testkit that imported
-// it back. audio and engine each keep this same handful of lines rather than
-// the one package gaining a cycle only child's own suite would hit.
+// Spelled the same way at all three call sites (transcibr:testkit's own
+// header explains why this one is not among them): child_test.odin is part of
+// package child, and a testkit that imported child could not be imported back
+// by child's own tests without a cycle.
 @(private)
 @(require_results)
 open_group :: proc(t: ^testing.T) -> (group: child.Job_Object, ok: bool) {
-	err: child.Error
-	group, err = child.job_object_open()
+	opened, err := child.job_object_open()
 	if !testing.expectf(t, err.fault == .None, "no job object: %v", err.fault) {
-		return group, false
+		return {}, false
 	}
-	return group, true
+	return opened, true
 }
 
 @(test)
@@ -288,109 +277,33 @@ the_one_failure_that_leaves_a_part_behind_is_an_ffmpeg_that_would_not_stop :: pr
 	}
 }
 
-@(test)
-a_child_that_exits_inside_its_bound_ran_to_completion :: proc(t: ^testing.T) {
-	group, ok := open_group(t)
-	defer child.job_object_close(&group)
-	if !ok {
-		return
-	}
-
-	ending, err := child.run_bounded(
-		&group,
-		CMD,
-		{"/c", "exit 3"},
-		RUN_BOUND_MS,
-		context.allocator,
-	)
-	testing.expect_value(t, err.fault, child.Fault.None)
-	testing.expect_value(t, ending, child.Run.Finished)
-}
-
-@(test)
-a_child_that_outlives_its_bound_is_stopped_rather_than_waited_for :: proc(t: ^testing.T) {
-	signal := testkit.lonely_signal("Audio", "bound", context.allocator)
-	defer delete(signal, context.allocator)
-	command := fmt.aprintf(
-		"waitfor /t %d %s",
-		LONGER_SECONDS,
-		signal,
-		allocator = context.allocator,
-	)
-	defer delete(command, context.allocator)
-
-	group, ok := open_group(t)
-	defer child.job_object_close(&group)
-	if !ok {
-		return
-	}
-
-	ending, err := child.run_bounded(
-		&group,
-		CMD,
-		{"/c", command},
-		SHORT_BOUND_MS,
-		context.allocator,
-	)
-	testing.expect_value(t, err.fault, child.Fault.None)
-	testing.expect_value(t, ending, child.Run.Stopped)
-}
-
-@(test)
-a_child_that_will_not_start_is_reported_rather_than_asserted :: proc(t: ^testing.T) {
-	group, ok := open_group(t)
-	defer child.job_object_close(&group)
-	if !ok {
-		return
-	}
-
-	ending, err := child.run_bounded(
-		&group,
-		"transcibr-no-such-executable.exe",
-		{},
-		RUN_BOUND_MS,
-		context.allocator,
-	)
-	testing.expect_value(t, ending, child.Run.Not_Started)
-	testing.expect_value(t, err.fault, child.Fault.Not_Started)
-
-	message := error_message(
-		Error{fault = .Extraction_Not_Started, child = err},
-		"C:\\clips\\one.mp4",
-		context.allocator,
-	)
-	defer delete(message, context.allocator)
-	testing.expect(t, len(message) > 0, "a refusal rendered as nothing at all")
-}
-
 // The caller frees the path; remove_cache takes the file.
 @(private)
 @(require_results)
 flood_file :: proc(t: ^testing.T, cache: string, bytes: int) -> string {
-	assert(bytes > 0, "a flood of nothing at all floods nothing")
-
 	path := fmt.aprintf("%s\\flood.txt", cache, allocator = context.allocator)
-	written := strings.builder_make(context.allocator)
-	defer strings.builder_destroy(&written)
-	for strings.builder_len(written) < bytes {
-		strings.write_string(&written, "ffmpeg: a line this reader has no reading for\r\n")
-	}
-
-	testing.expect(
+	_ = testkit.write_flood(
 		t,
-		os.write_entire_file(path, written.buf[:]) == nil,
-		"could not write the flood ffmpeg types",
+		path,
+		bytes,
+		"ffmpeg: a line this reader has no reading for\r\n",
+		context.allocator,
 	)
 	return path
 }
 
-// ADR-0020 records that this suite had no equivalent to
-// engine.an_engine_that_floods_its_diagnostic_stream_is_still_stopped_at_its_bound,
-// so nothing here went red when src/audio/run.odin's drain was the one copy of
-// the two with no ceiling on it. Both halves are the claim: the flood is
-// drained, and the bound is still honoured despite it.
+// Proves the bound is still reached despite a flood, not that a single drain
+// has a ceiling at all: mutating child.MAX_DRAIN_BYTES away leaves this
+// green, because an unbounded drain still runs out of flood to read and hands
+// control back the same way. Only
+// child.a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood pins the
+// ceiling itself. What this fulfils is the ticket's own acceptance criterion
+// (issue #33): before it, nothing here went red when src/audio/run.odin's
+// drain was the one copy of the two with no ceiling on it at all.
 @(test)
-a_child_that_floods_its_diagnostic_stream_is_still_stopped_at_its_bound :: proc(t: ^testing.T) {
+a_flood_on_the_diagnostic_stream_does_not_stop_the_bound_from_being_reached :: proc(
+	t: ^testing.T,
+) {
 	cache := testkit.scratch_cache(t, "audio", "flood", context.allocator)
 	defer delete(cache, context.allocator)
 	defer testkit.remove_cache(cache, context.allocator)
@@ -400,13 +313,7 @@ a_child_that_floods_its_diagnostic_stream_is_still_stopped_at_its_bound :: proc(
 	defer delete(flood, context.allocator)
 	signal := testkit.lonely_signal("Audio", "flood", context.allocator)
 	defer delete(signal, context.allocator)
-	command := fmt.aprintf(
-		"type %s 1>&2 & waitfor /t %d %s",
-		flood,
-		LONGER_SECONDS,
-		signal,
-		allocator = context.allocator,
-	)
+	command := testkit.flood_type_command(flood, LONGER_SECONDS, signal, context.allocator)
 	defer delete(command, context.allocator)
 
 	group, ok := open_group(t)
@@ -429,7 +336,7 @@ a_child_that_floods_its_diagnostic_stream_is_still_stopped_at_its_bound :: proc(
 	testing.expect_value(t, ending, child.Run.Stopped)
 	testing.expect(
 		t,
-		elapsed < time.Duration(SHORT_BOUND_MS) * time.Millisecond + FLOOD_STOP_SLACK,
+		elapsed < time.Duration(SHORT_BOUND_MS) * time.Millisecond + testkit.FLOOD_STOP_SLACK,
 		"the flood delayed the bound from being reached at all",
 	)
 }

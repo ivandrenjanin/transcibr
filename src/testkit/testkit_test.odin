@@ -64,3 +64,52 @@ lonely_signal_names_differ_by_scope_and_by_tag :: proc(t: ^testing.T) {
 	)
 	testing.expect(t, first != third, "two cases in one package got the same signal name")
 }
+
+@(test)
+write_flood_writes_at_least_the_bytes_it_was_asked_for :: proc(t: ^testing.T) {
+	cache := made_scratch_cache(t, "testkit", "flood", context.allocator)
+	defer delete(cache, context.allocator)
+	defer remove_cache(cache, context.allocator)
+
+	path := fmt.aprintf("%s\\flood.txt", cache, allocator = context.allocator)
+	defer delete(path, context.allocator)
+
+	testing.expect(
+		t,
+		write_flood(t, path, 100, "a line this case has no reading for\r\n", context.allocator),
+		"write_flood reported a failure writing its own fixture",
+	)
+
+	written, unreadable := os.read_entire_file(path, context.allocator)
+	defer delete(written, context.allocator)
+	if !testing.expect(t, unreadable == nil, "write_flood did not leave a file behind") {
+		return
+	}
+	testing.expect(
+		t,
+		len(written) >= 100,
+		"write_flood stopped short of the bytes it was asked for",
+	)
+	testing.expect(
+		t,
+		strings.starts_with(string(written), "a line this case has no reading for"),
+		"write_flood did not write the filler line it was given",
+	)
+}
+
+@(test)
+flood_type_command_names_the_file_the_wait_and_the_signal :: proc(t: ^testing.T) {
+	command := flood_type_command("C:\\cache\\flood.txt", 25, "NoSignal", context.allocator)
+	defer delete(command, context.allocator)
+
+	testing.expect(
+		t,
+		strings.contains(command, "type C:\\cache\\flood.txt"),
+		"flood_type_command did not type the path it was given",
+	)
+	testing.expect(
+		t,
+		strings.contains(command, "waitfor /t 25 NoSignal"),
+		"flood_type_command did not wait on the signal it was given",
+	)
+}

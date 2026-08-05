@@ -17,10 +17,20 @@ CHILD_RUN_BOUND_MS :: i64(60_000)
 @(private)
 CHILD_SHORT_BOUND_MS :: i64(500)
 
-// Generous against the few seconds ADR-0020 measured for a real stop, so this
-// only fires if the bound was never reached at all.
+// Not measuring anything a test asserts on, so ordinary Sleep quantization is
+// fine here: this only has to be generous enough that `cmd.exe` has actually
+// started running `type` before the first drain looks at the pipe.
 @(private)
-FLOOD_STOP_SLACK :: 5 * time.Second
+CHILD_STARTUP_HEAD_START :: 100 * time.Millisecond
+
+// Gives the spawned `type` a head start on filling the pipe, so the first
+// drain a caller runs afterward finds a steady trickle waiting rather than
+// reading the pipe as momentarily empty and returning before a ceiling is
+// ever reached.
+@(private)
+let_the_flood_start_filling_the_pipe :: proc() {
+	time.sleep(CHILD_STARTUP_HEAD_START)
+}
 
 @(test)
 a_child_that_exits_inside_its_bound_ran_to_completion :: proc(t: ^testing.T) {
@@ -186,6 +196,8 @@ a_run_hands_every_chunk_and_the_end_of_stream_to_its_callbacks :: proc(t: ^testi
 @(private)
 @(require_results)
 always_stop :: proc(elapsed_ns: i64, user: rawptr) -> bool {
+	assert(elapsed_ns > 0, "a poll arrived before the child's clock could have started")
+
 	return true
 }
 
@@ -245,37 +257,34 @@ flood_command :: proc(
 	assert(minimum_bytes > 0, "a flood of nothing at all floods nothing")
 
 	path = scratch_path(t, name, allocator)
-	written := strings.builder_make(allocator)
-	defer strings.builder_destroy(&written)
-	for strings.builder_len(written) < minimum_bytes {
-		strings.write_string(&written, "a line this test has no reading for\r\n")
-	}
-	if !testing.expect(
+	if !testkit.write_flood(
 		t,
-		os.write_entire_file(path, written.buf[:]) == nil,
-		"could not write the flood this case types",
+		path,
+		minimum_bytes,
+		"a line this test has no reading for\r\n",
+		allocator,
 	) {
 		return path, ""
 	}
 
 	signal := testkit.lonely_signal("Child", name, allocator)
 	defer delete(signal, allocator)
-	command = fmt.aprintf(
-		"type %s 1>&2 & waitfor /t %d %s",
-		path,
-		LONGER_SECONDS,
-		signal,
-		allocator = allocator,
-	)
+	command = testkit.flood_type_command(path, LONGER_SECONDS, signal, allocator)
 	return path, command
 }
 
-// Both halves are the claim (ADR-0020): the flood is drained, meaning the poll
-// loop was handed back control rather than left spinning inside one drain, and
-// the bound is still honoured within a few seconds of stop overhead rather
-// than the 25-second waitfor this child would otherwise sit in.
+// The poll loop regains control despite a flood, so the bound is reached
+// within a few seconds of stop overhead rather than the 25-second waitfor this
+// child would otherwise sit in -- both halves of that are the claim. It does
+// NOT discriminate whether a single drain has a ceiling at all: mutating
+// MAX_DRAIN_BYTES away leaves this green, because an unbounded drain still
+// runs out of flood to read and hands control back the same way. Only
+// a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood, below, pins
+// the ceiling itself.
 @(test)
-a_flooding_child_is_drained_and_still_stopped_at_its_bound :: proc(t: ^testing.T) {
+a_flood_on_the_diagnostic_stream_does_not_stop_the_bound_from_being_reached :: proc(
+	t: ^testing.T,
+) {
 	path, command := flood_command(t, "flood", 1 << 20, context.allocator)
 	defer delete(path, context.allocator)
 	defer os.remove(path)
@@ -310,7 +319,8 @@ a_flooding_child_is_drained_and_still_stopped_at_its_bound :: proc(t: ^testing.T
 	testing.expect_value(t, ending, Run.Stopped)
 	testing.expect(
 		t,
-		elapsed < time.Duration(CHILD_SHORT_BOUND_MS) * time.Millisecond + FLOOD_STOP_SLACK,
+		elapsed <
+		time.Duration(CHILD_SHORT_BOUND_MS) * time.Millisecond + testkit.FLOOD_STOP_SLACK,
 		"the flood delayed the bound from being reached at all",
 	)
 
@@ -320,6 +330,29 @@ a_flooding_child_is_drained_and_still_stopped_at_its_bound :: proc(t: ^testing.T
 	}
 	testing.expect(t, total > 0, "the flood was never drained at all")
 }
+
+// Sleep is quantized to Windows' default timer resolution -- measured in this
+// suite at 3.70-3.79s for 256 chunks nominally costing 512ms at 2ms each,
+// 7.4x, which is the 15.625ms granularity divided by 2ms -- unless something
+// else on the machine has already lowered it with timeBeginPeriod, in which
+// case the nominal 2ms holds instead and the margin this delay exists to give
+// the flooding child shrinks by the same 7.4x with it. A busy wait reads the
+// same monotonic clock this suite times its bounds with, rather than asking
+// the scheduler for a wake-up, so the two-millisecond gap holds regardless of
+// what else on the machine touches the system timer.
+@(private)
+spin_for :: proc(minimum: time.Duration) {
+	assert(minimum > 0, "a spin with no minimum duration would spin forever or not at all")
+
+	started := time.tick_now()
+	for time.tick_since(started) < minimum {}
+}
+
+// A quarter of what MAX_DRAIN_BYTES/DRAIN_BYTES iterations would need to add
+// up to the ceiling at all -- see slow_collect_chunk below for what it holds
+// the pipe open for.
+@(private)
+SLOW_CHUNK_DELAY :: 2 * time.Millisecond
 
 // A pipe holds at most DIAGNOSTIC_PIPE_BYTES (64 KiB), so nothing a real child
 // writes can hand a single, unthrottled read loop much more than that at once
@@ -335,7 +368,7 @@ a_flooding_child_is_drained_and_still_stopped_at_its_bound :: proc(t: ^testing.T
 @(private)
 slow_collect_chunk :: proc(chunk: string, elapsed_ns: i64, user: rawptr) {
 	collect_chunk(chunk, elapsed_ns, user)
-	time.sleep(2 * time.Millisecond)
+	spin_for(SLOW_CHUNK_DELAY)
 }
 
 @(test)
@@ -360,7 +393,7 @@ a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood :: proc(t: ^testing
 		return
 	}
 
-	time.sleep(100 * time.Millisecond)
+	let_the_flood_start_filling_the_pipe()
 
 	collected := Collected {
 		chunks = make([dynamic]string, context.allocator),

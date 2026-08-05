@@ -103,21 +103,21 @@ scratch_path :: proc(t: ^testing.T, name: string, allocator: mem.Allocator) -> s
 // The caller still writes its own `defer job_object_close(&group)`: the object
 // has to outlive this procedure.
 //
-// Copied rather than shared through transcibr:testkit: this file is part of
-// package child, and a version of this procedure in testkit would need
-// job_object_open from transcibr:child -- which package child cannot import
-// back through testkit without a cycle. audio and engine keep their own
-// copies of the same few lines rather than the one package gaining a cycle
-// only child's own suite would hit.
+// Copied rather than shared through transcibr:testkit, and the reason is one-
+// way and not the cycle testkit's own header might suggest at a glance: this
+// file is part of package child, so a testkit that imported
+// transcibr:child -- to share job_object_open -- could not be imported back
+// here without a cycle. audio and engine are not package child and could
+// share a copy between themselves; they keep their own here, spelled the same
+// way, mostly for symmetry with this one.
 @(private)
 @(require_results)
 open_group :: proc(t: ^testing.T) -> (group: Job_Object, ok: bool) {
-	err: Error
-	group, err = job_object_open()
+	opened, err := job_object_open()
 	if !testing.expectf(t, err.fault == .None, "no job object: %v", err.fault) {
-		return group, false
+		return {}, false
 	}
-	return group, true
+	return opened, true
 }
 
 // `waitfor /t` returns on its own when nobody signals it, and nothing here ever
