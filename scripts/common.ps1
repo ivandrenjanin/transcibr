@@ -1702,9 +1702,13 @@ function Assert-OdinNetworkConfinement {
 		# before. That error guards only the two-argument revert. A revert to
 		# the ORIGINAL bug -- plain, one-argument `.Contains($OdinNetworkCodeName)`,
 		# ordinal case-sensitive -- throws nothing at all; it resolves to a
-		# normal true-or-false. Nothing here catches that regression -- the
-		# self-test case 'the canonical Win32 spelling outside its one allowed
-		# file fails the build' is what does.
+		# normal true-or-false. Nothing here catches that regression -- a
+		# self-test case that plants `WinHttpOpen`, the canonical Win32
+		# capitalisation, outside the one allowed file is what does. Not named
+		# here: the test-name pin (selftest.ps1:803-825) discovers `-TestName`
+		# examples from CLAUDE.md, README.md and test.ps1 only, and this case's
+		# English-sentence name is outside that mechanism entirely -- naming it
+		# here would drift silently the moment it is renamed.
 		# OrdinalIgnoreCase over the plain overload: see above.
 		$text = [System.IO.File]::ReadAllText($source.Path)
 		if ($text.IndexOf($OdinNetworkCodeName, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {

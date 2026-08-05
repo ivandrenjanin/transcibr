@@ -95,9 +95,9 @@ is review, and review is what it costs.
 
 ## The scratch cache is refused in its own vocabulary, and `doctor` is what is missing
 
-`Fault` reports one Recording's failure. Its own comment justifies leaving out the borrowed-culprit
-record and the disposition table on the grounds that "the culprit is always the Recording" and "the
-disposition is always the same". Two of its members made both claims false: `Cache_Path_Not_Ascii`
+`Fault` reports one Recording's failure, and deliberately carries neither the borrowed-culprit record
+nor the disposition table: the culprit is always the Recording, and the disposition is always the
+same. Two of its members made both claims false: `Cache_Path_Not_Ascii`
 and `Cache_Unusable` are facts about the scratch cache, they are the same answer for every Recording
 in the Batch, and they mean the Batch has nowhere to put any audio at all. Rendering one through
 `error_message` — whose one documented job is *naming the Recording* — meant handing the cache

@@ -77,9 +77,10 @@ Write-Host "Policy: $policy"
 # READ ONCE, for all five checks below.
 #
 # Each of them reads the tree for itself when it is handed nothing -- a walk for
-# discovery and a child process to read what it found -- which is four of each per
-# build over one tree that cannot change in between. Measured over this
-# repository: 487ms for the four, against 456ms to compile the whole product.
+# discovery and a child process to read what it found -- which is five walks and
+# four child processes per build over one tree that cannot change in between.
+# Measured over this repository before the fifth joined them: 487ms for the
+# four, against 456ms to compile the whole product.
 #
 # Not a memo, and specifically not one keyed on timestamps: see Get-OdinSourceFact
 # for why that is unsafe here. $sources has two direct callers, and $facts four more, so there
