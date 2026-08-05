@@ -4,6 +4,7 @@ package artifact
 import "core:fmt"
 import "core:mem"
 import "core:os"
+import "transcibr:child"
 import "transcibr:transcript"
 
 Artifact :: enum u8 {
@@ -36,6 +37,13 @@ Error :: struct {
 // path names no file; free them with destroy_names and the same allocator.
 //
 // Why the whole record is validated before the first artifact lands: ADR-0024.
+//
+// Reading `output` is bounded even though it is a path this program built
+// from the Recording's own stem and never one it discovered: a Recording
+// named exactly a reserved Windows device cannot exist, since Win32 refuses
+// to create one, but the read still has to survive a stalled network share
+// or scratch cache the same way a hand-typed `--from-json` path does. Issue
+// #27; the ceiling itself is `child.READ_BOUND_MS`.
 @(require_results)
 complete :: proc(
 	source: string,
@@ -69,8 +77,8 @@ complete :: proc(
 		return names, Error{fault = .Not_Recordable}
 	}
 
-	json_bytes, unreadable := os.read_entire_file_from_path(output, allocator)
-	if unreadable != nil {
+	json_bytes, unreadable := child.read_bounded(output, child.READ_BOUND_MS, allocator)
+	if unreadable.fault != .None {
 		return names, Error{fault = .Output_Unreadable}
 	}
 	defer delete(json_bytes, allocator)
