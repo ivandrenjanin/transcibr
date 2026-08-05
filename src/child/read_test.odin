@@ -7,6 +7,7 @@ import "core:os"
 import "core:strings"
 import win32 "core:sys/windows"
 import "core:testing"
+import "core:thread"
 import "core:time"
 import "transcibr:testkit"
 
@@ -100,6 +101,53 @@ a_read_that_cannot_finish_is_abandoned_at_its_bound :: proc(t: ^testing.T) {
 		"the read ran %v past its %d ms bound instead of being abandoned at it",
 		elapsed,
 		READ_SHORT_BOUND_MS,
+	)
+}
+
+@(private)
+Instant_Job :: struct {
+	done: bool,
+}
+
+@(private)
+instant_worker :: proc(data: rawptr) {
+	job := (^Instant_Job)(data)
+	assert(job != nil, "an instant-finishing thread was started with no job to mark")
+	job.done = true
+}
+
+// Finding 2 of the PR #64 review: `await_or_abandon`'s wait phase used to be
+// a poll loop that checked `thread.is_done` once before its first sleep and
+// slept READ_POLL -- quantized by Windows to roughly 15.6 ms -- on every
+// iteration after. A thread finishing in microseconds still cost at least
+// one of those sleeps in practice, because `CreateThread`'s own scheduling
+// latency almost always beats this loop to that first check. Measured
+// against 150 Recordings through the public `--plan` seam: about 85 ms
+// before this wait phase existed at all, 7,573 ms with the poll loop in
+// place, back under 200 ms with `win32.WaitForSingleObject` in its place.
+// This case pins the mechanism directly rather than the CLI's timing: a
+// thread that finishes on its own, waited on immediately after it starts,
+// must not cost this a whole poll interval to notice.
+@(test)
+await_or_abandon_notices_a_finished_thread_without_waiting_for_a_poll :: proc(t: ^testing.T) {
+	job: Instant_Job
+	th := thread.create_and_start_with_data(&job, instant_worker)
+	if !testing.expect(t, th != nil, "a thread this case needed to start would not start") {
+		return
+	}
+
+	started := time.tick_now()
+	wait := await_or_abandon(th, READ_TEST_RUN_BOUND_MS)
+	elapsed := time.tick_since(started)
+	thread.destroy(th)
+
+	testing.expect_value(t, wait, Wait.Finished)
+	testing.expect(t, job.done, "a thread reported finished had not actually run its worker")
+	testing.expectf(
+		t,
+		elapsed < READ_POLL,
+		"waiting for an already-finishing thread took %v, at least one poll's worth of sleep rather than an exact wait",
+		elapsed,
 	)
 }
 

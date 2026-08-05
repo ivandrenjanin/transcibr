@@ -247,8 +247,14 @@ with each other on whether they hang, and a network share or a named pipe with n
 block by the identical mechanism without naming anything reserved at all.
 
 `child.read_bounded` (`src/child/read.odin`) answers this the same way `run_bounded` answers a child
-that will not exit: poll a wall-clock ceiling, and past it, cancel and join whatever has not finished
-(see below). `READ_BOUND_MS :: 30_000` sits beside `STOP_BOUND_MS` for the same reason the two are the
+that will not exit: wait up to a wall-clock ceiling, and past it, cancel and join whatever has not
+finished (see below). Waiting up to the ceiling is one exact `win32.WaitForSingleObject` call and not a
+poll loop — an earlier version of this bound polled `thread.is_done` every `READ_POLL`, and because
+Windows quantizes `time.sleep` to its own roughly 15.6 ms timer period, that cost at least one
+quantized sleep on very nearly every call, healthy reads included: measured over 150 Recordings through
+the public `--plan` seam, 85 ms before this bound existed at all against 7,573 ms with the poll loop in
+front of it (PR #64's second review, finding 2). `READ_BOUND_MS :: 30_000` sits beside `STOP_BOUND_MS`
+for the same reason the two are the
 same order of magnitude — both answer "how long does transcibr wait for something outside it to
 answer" — and is grounded rather than assumed: the committed fixture is 2,335 bytes of Engine JSON for
 30,356 ms of audio, and scaled to the corpus's longest Recording (168 minutes, `docs/spec/`) at the
@@ -264,9 +270,26 @@ ask "is there anything to read" without blocking, but that answer does not exist
 works uniformly across every device a path can name. Overlapped I/O (`FILE_FLAG_OVERLAPPED` plus
 `GetOverlappedResultEx` and a timeout) was considered and rejected for the same reason a blacklist
 was: console handles do not reliably honour it, so the one motivating case would still block. The read
-therefore runs on its own thread, and what this package polls is *that thread*, through
-`thread.is_done` — the identical poll-a-ceiling shape as `run_bounded`, aimed at a thread instead of a
-process.
+therefore runs on its own thread, and what this package waits on is *that thread's own Win32 handle*,
+through `win32.WaitForSingleObject(t.win32_thread, bound_ms)` — an exact wait rather than a poll,
+because a signalled handle wakes the call the instant the thread exits.
+
+**`await_or_abandon` reaches `t.win32_thread`, a field `core:thread` never meant to hand out.**
+`Thread_Os_Specific` (`core:thread`'s Windows-only file) is declared `#+private`, and `Thread` embeds
+it with `using specific: Thread_Os_Specific`. `#+private` in Odin restricts the *identifier*
+`Thread_Os_Specific` to `core:thread` — it says nothing about the fields `using` promotes onto
+`Thread` itself, which stays a public type. So `t.win32_thread` compiles from outside the package,
+today, on this compiler pin, without `core:thread` ever deciding to export a Win32 handle. Nothing
+enforces that this keeps compiling: a future `core:thread` that renames the field, drops the `using`,
+or moves the promotion behind its own `#+private` boundary turns `t.win32_thread` into an unresolved
+identifier — a compile error naming this file, not a silent wrong answer, because there is no
+`win32_thread`-shaped fallback for the compiler to reach for instead. That is the whole of why this is
+recorded rather than fixed: the fix would be vendoring or reimplementing `core:thread`'s Windows
+thread creation, which trades a loud, bounded risk (a build break, fixed by reading whatever
+`core:thread` renamed the field to) for a maintenance burden with no expiry. `CancelSynchronousIo`
+needs this exact handle for the identical reason — see below — so the reliance is not new with
+`WaitForSingleObject`, only newly load-bearing for the bound itself rather than only for cancelling
+past it (PR #64's second review, finding 6).
 
 **A read that hits its bound is cancelled and joined, not simply abandoned.** The first version of
 this ADR abandoned a read thread outright past its bound, on the reasoning that `stop` already

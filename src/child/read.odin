@@ -6,6 +6,7 @@ import "core:fmt"
 import "core:mem"
 import "core:os"
 import "core:strings"
+import win32 "core:sys/windows"
 import "core:thread"
 import "core:time"
 
@@ -52,9 +53,13 @@ CANCEL_BOUND_MS :: i64(5_000)
 #assert(CANCEL_BOUND_MS > 0)
 #assert(CANCEL_BOUND_MS < READ_BOUND_MS)
 
-// Fine enough that a short bound in a test is not spent entirely on
-// granularity, and far too coarse to matter against a read actually worth
-// waiting on.
+// The cancellation phase's own poll, and nothing else's: `await_or_abandon`
+// waits for `bound_ms` with one exact `win32.WaitForSingleObject` rather
+// than a loop, so this interval is only ever spent asking
+// `win32.CancelSynchronousIo` again after a bound has already been missed.
+// Fine enough that a short CANCEL_BOUND_MS in a test is not spent entirely
+// on granularity, and far too coarse to matter against a cancellation that
+// is itself measured in single-digit milliseconds.
 @(private)
 READ_POLL :: 10 * time.Millisecond
 
@@ -99,20 +104,45 @@ Wait :: enum u8 {
 // down. A caller whose worker writes into memory that might outlive it this
 // way needs that memory on a heap nothing but process exit ever reclaims,
 // the way `job_allocator` is for a Read_Job.
+//
+// Waiting for `t` reaches `t.win32_thread`, a `#+private` field of
+// `core:thread`'s `Thread_Os_Specific` that `Thread`'s own `using specific:`
+// promotes onto `Thread` -- `#+private` restricts the identifier
+// `Thread_Os_Specific`, not the field name the promotion reaches through,
+// which is why this compiles without `core:thread` exporting it on
+// purpose. An upstream rename is a loud build break here and never a
+// silent wrong, and this program is Windows-only, so the exposure is
+// bounded; see ADR-0020 for what breaks if it moves.
+//
+// `bound_ms` is spent in one `win32.WaitForSingleObject` call and not a poll
+// loop: `WaitForSingleObject` returns the instant `t`'s handle signals,
+// where a poll loop can only notice as often as it sleeps, and Windows
+// quantizes `time.sleep` to its own roughly 15.6 ms timer period. Multiplied
+// by every bounded read and directory listing a walk of hundreds of
+// Recordings makes, that quantization is what took a 150-Recording `--plan`
+// from tens of milliseconds to 7.5 seconds before this fix (PR #64's second
+// review, finding 2) -- `core:thread`'s own `Thread.flags` is set `.Done`
+// before the thread's win32 handle can ever signal (see
+// `__windows_thread_entry_proc`), so a `.Finished` this way is exactly as
+// safe to trust as the polled `thread.is_done` it replaces. Only past the
+// bound does this package poll at all: cancellation has no handle to wait
+// on, only `thread.is_done` to ask again after each
+// `win32.CancelSynchronousIo`.
 @(require_results)
 await_or_abandon :: proc(t: ^thread.Thread, bound_ms: i64) -> Wait {
 	assert(t != nil, "there is no thread here to wait for")
 	assert(bound_ms > 0, "a wait for no time at all cannot tell a wedge from a fast answer")
+	assert(
+		bound_ms <= i64(max(win32.DWORD)),
+		"a bound this large cannot be expressed to WaitForSingleObject",
+	)
 
-	started := time.tick_now()
-	for {
-		if thread.is_done(t) {
-			return .Finished
-		}
-		if i64(time.duration_milliseconds(time.tick_since(started))) > bound_ms {
-			break
-		}
-		time.sleep(READ_POLL)
+	switch win32.WaitForSingleObject(t.win32_thread, win32.DWORD(bound_ms)) {
+	case win32.WAIT_OBJECT_0:
+		return .Finished
+	case win32.WAIT_TIMEOUT, win32.WAIT_FAILED:
+	case:
+		unreachable()
 	}
 
 	cancelling := time.tick_now()

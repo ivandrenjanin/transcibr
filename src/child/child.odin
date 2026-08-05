@@ -7,8 +7,10 @@
 // on something outside its control, and for reclaiming what was waited on
 // rather than abandoning it: `run_bounded` polls a process the way `stop`
 // already does, and `read.odin`'s `Wait` / `await_or_abandon` is the same
-// poll-then-cancel-then-join shape aimed at a thread instead, for a blocking
-// read this package cannot otherwise interrupt (issue #27). A caller
+// wait-then-cancel-then-join shape aimed at a thread instead -- an exact
+// `win32.WaitForSingleObject` rather than a poll for the wait itself, and a
+// bounded poll only once cancellation is in progress -- for a blocking read
+// this package cannot otherwise interrupt (issue #27). A caller
 // elsewhere in the tree with its own blocking call to bound -- `artifact`'s
 // Model hash, `planning`'s directory and Sidecar reads -- calls
 // `await_or_abandon` directly rather than re-deriving the Win32 cancellation
