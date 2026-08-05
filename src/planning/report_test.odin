@@ -1,6 +1,7 @@
 #+vet explicit-allocators
 package planning
 
+import "core:fmt"
 import "core:strings"
 import "core:testing"
 import "transcibr:artifact"
@@ -132,10 +133,48 @@ a_recording_re_done_for_its_settings_names_the_setting_that_changed :: proc(t: ^
 
 	testing.expectf(
 		t,
-		strings.contains(line, "Model"),
+		strings.contains(line, "the Model"),
 		"a Recording re-done for its Model does not say so: <%s>",
 		line,
 	)
+}
+
+// The walking counterpart to `a_recording_re_done_for_its_settings_names_the_setting_that_changed`:
+// every member of `artifact.Change`, not only `.Model`, renders as words a user
+// reads rather than the raw enum spelling `%v` would have produced.
+@(test)
+every_change_plan_line_renders_reads_as_words_and_never_as_its_identifier :: proc(t: ^testing.T) {
+	for change in artifact.Change {
+		line := plan_line(
+			Entry {
+				found = Found{source = "C:\\clips\\talk.mp4"},
+				outcome = Outcome {
+					decision = .Transcribe,
+					reason = .Settings_Changed,
+					change = change,
+				},
+			},
+			context.allocator,
+		)
+		defer delete(line, context.allocator)
+
+		testing.expectf(
+			t,
+			!strings.contains(line, "_"),
+			"%v rendered <%s>, which still carries an underscore",
+			change,
+			line,
+		)
+
+		raw := fmt.tprintf("(%v)", change)
+		testing.expectf(
+			t,
+			!strings.contains(line, raw),
+			"%v rendered its own identifier verbatim: <%s>",
+			change,
+			line,
+		)
+	}
 }
 
 @(test)

@@ -4,6 +4,7 @@ package planning
 import "core:fmt"
 import "core:mem"
 import "core:strings"
+import "transcibr:artifact"
 
 // What a dry run prints. Here rather than in `src/cli`, because that package is
 // named in `$OdinPackagesWithoutTests` and a sentence nothing can turn red is a
@@ -66,6 +67,30 @@ reason_says :: proc(reason: Reason) -> string {
 
 @(private)
 @(require_results)
+change_says :: proc(change: artifact.Change) -> string {
+	switch change {
+	case .None:
+		return "nothing"
+	case .Source:
+		return "the Recording itself"
+	case .Engine_Version:
+		return "the Engine version"
+	case .Model:
+		return "the Model"
+	case .Beam:
+		return "the beam width"
+	case .Prompt:
+		return "the prompt"
+	case .Container_Duration:
+		return "the container's duration"
+	case .Merge_Profile:
+		return "the Merge Profile"
+	}
+	return ""
+}
+
+@(private)
+@(require_results)
 note_says :: proc(what: Note) -> string {
 	switch what {
 	case .Root_Unreadable:
@@ -95,12 +120,14 @@ plan_line :: proc(entry: Entry, allocator: mem.Allocator) -> (line: string) {
 	if entry.outcome.change == .None {
 		return fmt.aprintf("%-10s %q: %s", does, entry.found.source, says, allocator = allocator)
 	}
+	changed := change_says(entry.outcome.change)
+	assert(len(changed) > 0, "a member was added to Change without words")
 	return fmt.aprintf(
-		"%-10s %q: %s (%v)",
+		"%-10s %q: %s (%s)",
 		does,
 		entry.found.source,
 		says,
-		entry.outcome.change,
+		changed,
 		allocator = allocator,
 	)
 }
