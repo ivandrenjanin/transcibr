@@ -181,26 +181,42 @@ read_transcribe_options :: proc(arguments: []string) -> (o: Transcribe_Options, 
 @(private)
 defaulted :: proc(o: ^Transcribe_Options) {
 	assert(o != nil, "there is nothing here to put a default into")
+
+	defaulted_tools(&o.tools, &o.engine_version)
+}
+
+// The three defaults `--transcribe` and `--batch` put back identically once
+// their own command lines have been read in full (PR #67's review, finding
+// 2) -- `--extract-workers` and `--queue-depth` stay `--batch`'s own, since
+// `--transcribe` has neither.
+@(private)
+defaulted_tools :: proc(tools: ^audio.Tools, engine_version: ^string) {
+	assert(tools != nil, "there is nowhere here to put a Tools default into")
+	assert(engine_version != nil, "there is nowhere here to put an Engine default into")
 	defer {
-		assert(len(o.tools.ffmpeg) > 0, "a default that was put back is still empty")
-		assert(len(o.tools.ffprobe) > 0, "a default that was put back is still empty")
-		assert(len(o.engine_version) > 0, "a default that was put back is still empty")
+		assert(len(tools.ffmpeg) > 0, "a default that was put back is still empty")
+		assert(len(tools.ffprobe) > 0, "a default that was put back is still empty")
+		assert(len(engine_version^) > 0, "a default that was put back is still empty")
 	}
 
-	if len(o.tools.ffmpeg) == 0 {
-		o.tools.ffmpeg = FFMPEG
+	if len(tools.ffmpeg) == 0 {
+		tools.ffmpeg = FFMPEG
 	}
-	if len(o.tools.ffprobe) == 0 {
-		o.tools.ffprobe = FFPROBE
+	if len(tools.ffprobe) == 0 {
+		tools.ffprobe = FFPROBE
 	}
-	if len(o.engine_version) == 0 {
-		o.engine_version = transcript.UNKNOWN
+	if len(engine_version^) == 0 {
+		engine_version^ = transcript.UNKNOWN
 	}
 }
 
 // `--model-file` and `--engine-exe`, because `--model` and `--engine` are already
 // the provenance fields a Transcript records next door -- one spelling meaning a
 // path here and a name there ends up recorded as the model it was made with.
+//
+// `--transcribe`'s own case is TRANSCRIBE alone; everything else falls
+// through to `read_common_option`, the grammar `--batch` reads the identical
+// way (PR #67's review, finding 2).
 @(private)
 @(require_results)
 read_transcribe_option :: proc(o: ^Transcribe_Options, name, value: string) -> (ok: bool) {
@@ -209,26 +225,69 @@ read_transcribe_option :: proc(o: ^Transcribe_Options, name, value: string) -> (
 	switch name {
 	case TRANSCRIBE:
 		o.source = value
+	case:
+		return read_common_option(
+			&o.model,
+			&o.engine,
+			&o.cache,
+			&o.tools,
+			&o.engine_version,
+			&o.prompt,
+			&o.profile,
+			name,
+			value,
+		)
+	}
+	return true
+}
+
+// `--model-file`, `--engine-exe`, `--cache`, `--ffmpeg`, `--ffprobe`,
+// `--engine-version`, `--prompt` and `--profile`: the whole of what
+// `--transcribe` and `--batch` read identically, once `--prompt` closed PR
+// #67's review finding 1 and made the two grammars agree on an eighth case
+// as well as the first seven. `--plan` shares only a few of these fields --
+// it names no Engine path, no scratch cache and no ffmpeg -- and keeps its
+// own smaller switch rather than pass nil pointers through here for options
+// its own grammar must still refuse (A8).
+@(private)
+@(require_results)
+read_common_option :: proc(
+	model: ^string,
+	engine: ^string,
+	cache: ^string,
+	tools: ^audio.Tools,
+	engine_version: ^string,
+	prompt: ^string,
+	profile: ^transcript.Merge_Profile,
+	name: string,
+	value: string,
+) -> (
+	ok: bool,
+) {
+	assert(model != nil, "there is nowhere here to read a Model path into")
+	assert(engine != nil, "there is nowhere here to read an Engine path into")
+
+	switch name {
 	case "--model-file":
-		o.model = value
+		model^ = value
 	case "--engine-exe":
-		o.engine = value
+		engine^ = value
 	case "--cache":
-		o.cache = value
+		cache^ = value
 	case "--ffmpeg":
-		o.tools.ffmpeg = value
+		tools.ffmpeg = value
 	case "--ffprobe":
-		o.tools.ffprobe = value
+		tools.ffprobe = value
 	case "--engine-version":
-		o.engine_version = value
+		engine_version^ = value
 	case "--prompt":
-		o.prompt = value
+		prompt^ = value
 	case "--profile":
-		profile, known := transcript.profile_named(value)
+		named, known := transcript.profile_named(value)
 		if !known {
 			return refuse("no merge profile called %q.", value)
 		}
-		o.profile = profile
+		profile^ = named
 	case:
 		return refuse("unknown option %q.", name)
 	}

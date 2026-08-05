@@ -140,25 +140,15 @@ planned_and_run :: proc(
 ) -> int {
 	assert(group != nil, "a child started outside a job object outlives transcibr")
 
-	inventory := planning.discover(
-		[]string{o.root},
-		planning.Walk{on_progress = walked, follow_reparse_points = o.follow},
-		context.allocator,
+	inventory, plan, runnable := planned(
+		o.root,
+		identified,
+		o.engine_version,
+		o.prompt,
+		o.profile,
+		o.follow,
 	)
 	defer planning.destroy_inventory(inventory, context.allocator)
-	fmt.eprintln()
-
-	plan, runnable := planning.plan_batch(
-		inventory,
-		planning.Settings {
-			engine_version = o.engine_version,
-			model = identified,
-			beam = artifact.ENGINE_DEFAULT_BEAM,
-			merge_profile = transcript.profile_name(o.profile),
-			prompt = o.prompt,
-		},
-		context.allocator,
-	)
 	defer planning.destroy_plan(plan, context.allocator)
 	if !runnable {
 		print_plan(plan, inventory)
@@ -287,6 +277,10 @@ read_batch_options :: proc(arguments: []string) -> (o: Batch_Options, ok: bool) 
 	return o, true
 }
 
+// `--batch`'s own cases are BATCH, the worker-count pair and
+// `--follow-reparse-points`; everything else falls through to
+// `read_common_option`, the grammar `--transcribe` reads the identical way
+// (PR #67's review, finding 2).
 @(private)
 @(require_results)
 read_batch_option :: proc(o: ^Batch_Options, name, value: string) -> (ok: bool) {
@@ -295,34 +289,24 @@ read_batch_option :: proc(o: ^Batch_Options, name, value: string) -> (ok: bool) 
 	switch name {
 	case BATCH:
 		o.root = value
-	case "--model-file":
-		o.model = value
-	case "--engine-exe":
-		o.engine = value
-	case "--cache":
-		o.cache = value
-	case "--ffmpeg":
-		o.tools.ffmpeg = value
-	case "--ffprobe":
-		o.tools.ffprobe = value
-	case "--engine-version":
-		o.engine_version = value
-	case "--prompt":
-		o.prompt = value
 	case "--extract-workers":
 		return read_batch_worker_option(&o.extract_workers, "--extract-workers", value)
 	case "--queue-depth":
 		return read_batch_worker_option(&o.queue_depth, "--queue-depth", value)
-	case "--profile":
-		profile, known := transcript.profile_named(value)
-		if !known {
-			return refuse("no merge profile called %q.", value)
-		}
-		o.profile = profile
 	case "--follow-reparse-points":
-		return read_batch_follow_option(o, value)
+		return read_follow(&o.follow, value)
 	case:
-		return refuse("unknown option %q.", name)
+		return read_common_option(
+			&o.model,
+			&o.engine,
+			&o.cache,
+			&o.tools,
+			&o.engine_version,
+			&o.prompt,
+			&o.profile,
+			name,
+			value,
+		)
 	}
 	return true
 }
@@ -345,22 +329,6 @@ read_batch_worker_option :: proc(into: ^int, name, value: string) -> (ok: bool) 
 	return true
 }
 
-@(private)
-@(require_results)
-read_batch_follow_option :: proc(o: ^Batch_Options, value: string) -> (ok: bool) {
-	assert(o != nil, "there is nothing here to read an option into")
-
-	switch value {
-	case FOLLOW_YES:
-		o.follow = true
-	case FOLLOW_NO:
-		o.follow = false
-	case:
-		return refuse("--follow-reparse-points takes %s, not %q.", FOLLOW_CHOICE, value)
-	}
-	return true
-}
-
 // Called AFTER the loop that reads the command line, matching
 // `transcribe.odin`'s own `defaulted`: `--ffmpeg ""` is an ordinary shell
 // invocation with an unset variable in it, and a default set only before the
@@ -369,22 +337,11 @@ read_batch_follow_option :: proc(o: ^Batch_Options, value: string) -> (ok: bool)
 defaulted_batch :: proc(o: ^Batch_Options) {
 	assert(o != nil, "there is nothing here to put a default into")
 	defer {
-		assert(len(o.tools.ffmpeg) > 0, "a default that was put back is still empty")
-		assert(len(o.tools.ffprobe) > 0, "a default that was put back is still empty")
-		assert(len(o.engine_version) > 0, "a default that was put back is still empty")
 		assert(o.extract_workers > 0, "a default that was put back is still zero")
 		assert(o.queue_depth > 0, "a default that was put back is still zero")
 	}
 
-	if len(o.tools.ffmpeg) == 0 {
-		o.tools.ffmpeg = FFMPEG
-	}
-	if len(o.tools.ffprobe) == 0 {
-		o.tools.ffprobe = FFPROBE
-	}
-	if len(o.engine_version) == 0 {
-		o.engine_version = transcript.UNKNOWN
-	}
+	defaulted_tools(&o.tools, &o.engine_version)
 	if o.extract_workers == 0 {
 		o.extract_workers = DEFAULT_EXTRACT_WORKERS
 	}

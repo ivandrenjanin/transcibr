@@ -21,6 +21,25 @@ FOLLOW_YES :: "yes"
 FOLLOW_NO :: "no"
 FOLLOW_CHOICE :: FOLLOW_YES + "|" + FOLLOW_NO
 
+// `--plan` and `--batch` read `--follow-reparse-points` the identical way
+// (PR #67's review, finding 3); `--transcribe` names one Recording rather
+// than a folder to walk and has no such option at all.
+@(private)
+@(require_results)
+read_follow :: proc(into: ^bool, value: string) -> (ok: bool) {
+	assert(into != nil, "there is nowhere here to read --follow-reparse-points into")
+
+	switch value {
+	case FOLLOW_YES:
+		into^ = true
+	case FOLLOW_NO:
+		into^ = false
+	case:
+		return refuse("--follow-reparse-points takes %s, not %q.", FOLLOW_CHOICE, value)
+	}
+	return true
+}
+
 // `engine_version` is NOTHING where the command line did not name one, and is
 // never defaulted to UNKNOWN here. `transcibr:planning` is what decides what an
 // unnamed Engine means, because this package collects no tests and a decision
@@ -59,29 +78,65 @@ report_plan :: proc(o: Plan_Options, identified: artifact.Model) -> int {
 	assert(len(o.root) > 0, "there is no folder here to walk")
 	assert(len(identified.digest) > 0, "a Model nobody identified reached the plan")
 
-	inventory := planning.discover(
-		[]string{o.root},
-		planning.Walk{on_progress = walked, follow_reparse_points = o.follow},
-		context.allocator,
+	inventory, plan, runnable := planned(
+		o.root,
+		identified,
+		o.engine_version,
+		o.prompt,
+		o.profile,
+		o.follow,
 	)
 	defer planning.destroy_inventory(inventory, context.allocator)
-	fmt.eprintln()
-
-	plan, runnable := planning.plan_batch(
-		inventory,
-		planning.Settings {
-			engine_version = o.engine_version,
-			model = identified,
-			beam = artifact.ENGINE_DEFAULT_BEAM,
-			merge_profile = transcript.profile_name(o.profile),
-			prompt = o.prompt,
-		},
-		context.allocator,
-	)
 	defer planning.destroy_plan(plan, context.allocator)
 
 	print_plan(plan, inventory)
 	return plan_verdict(plan, inventory, runnable)
+}
+
+// The walk and the plan it settles into, and nothing decided about either --
+// `--plan` reports both unconditionally and `--batch` (`planned_and_run`,
+// `src/cli/batch.odin`) only when `runnable` says no, so neither belongs
+// inside this procedure (PR #67's review, finding 4). What both callers
+// build `planning.Settings` from is exactly these six arguments, so a field
+// added there is a signature both call sites fail to compile against until
+// it is threaded through -- never a silent mismatch between what `--plan`
+// predicted and what `--batch` actually did.
+@(private)
+@(require_results)
+planned :: proc(
+	root: string,
+	identified: artifact.Model,
+	engine_version: Maybe(string),
+	prompt: string,
+	profile: transcript.Merge_Profile,
+	follow: bool,
+) -> (
+	inventory: planning.Inventory,
+	plan: planning.Plan,
+	runnable: bool,
+) {
+	assert(len(root) > 0, "there is no folder here to walk")
+	assert(len(identified.digest) > 0, "a Model nobody identified reached the plan")
+
+	inventory = planning.discover(
+		[]string{root},
+		planning.Walk{on_progress = walked, follow_reparse_points = follow},
+		context.allocator,
+	)
+	fmt.eprintln()
+
+	plan, runnable = planning.plan_batch(
+		inventory,
+		planning.Settings {
+			engine_version = engine_version,
+			model = identified,
+			beam = artifact.ENGINE_DEFAULT_BEAM,
+			merge_profile = transcript.profile_name(profile),
+			prompt = prompt,
+		},
+		context.allocator,
+	)
+	return
 }
 
 @(private)
@@ -194,14 +249,7 @@ read_plan_option :: proc(o: ^Plan_Options, name, value: string) -> (ok: bool) {
 	case "--prompt":
 		o.prompt = value
 	case "--follow-reparse-points":
-		switch value {
-		case FOLLOW_YES:
-			o.follow = true
-		case FOLLOW_NO:
-			o.follow = false
-		case:
-			return refuse("--follow-reparse-points takes %s, not %q.", FOLLOW_CHOICE, value)
-		}
+		return read_follow(&o.follow, value)
 	case "--profile":
 		profile, known := transcript.profile_named(value)
 		if !known {
