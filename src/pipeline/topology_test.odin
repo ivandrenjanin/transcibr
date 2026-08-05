@@ -13,6 +13,7 @@ package pipeline
 // holds production code to: a gate that never opens must fail the case, not
 // hang the runner.
 
+import "base:runtime"
 import "core:sync/chan"
 import "core:testing"
 import "core:thread"
@@ -220,7 +221,6 @@ run_box_driver :: proc(box: ^Run_Box) {
 start_batch :: proc(box: ^Run_Box) -> ^thread.Thread {
 	assert(box != nil, "there is no box here to run a Batch into")
 
-	context.allocator = context.allocator
 	return thread.create_and_start_with_poly_data(box, run_box_driver)
 }
 
@@ -449,6 +449,65 @@ closing_the_extract_queue_still_delivers_every_job_already_buffered :: proc(t: ^
 			i,
 		)
 	}
+}
+
+// A gate one job entered and this case never releases, sized against
+// `UNSTOPPABLE_JOIN_BOUND_MS` so the extraction Worker `close_and_join` gives
+// up on is genuinely still inside `fake_extract` when `run_batch` returns --
+// the reviewer's own probe (finding 1 of PR #67's review), pinned as a case
+// rather than left as instrumentation. `child.await_or_abandon`'s own
+// escalation adds a further five seconds on top before it gives up, so this
+// case's own bound (`join_batch`'s second argument, below) carries margin
+// for that.
+@(private)
+UNSTOPPABLE_JOIN_BOUND_MS :: i64(200)
+
+// `gate` is deliberately never destroyed: the extraction Worker stays parked
+// inside `chan.recv(gate.proceed)` for the rest of this process's life, the
+// same leaked-thread shape `child.pipe_with_no_writer`'s cases already accept
+// (CLAUDE.md, Odin notes -- a thread this package cannot safely stop keeps
+// whatever it was reading from). Destroying the gate here, the way every
+// other case in this file does, would free a channel that worker can still
+// call `chan.recv` on -- the identical hazard `run_batch`'s own
+// `shut_down_and_settle` now guards `transcribe_queue` against. Built on
+// `runtime.heap_allocator()` rather than `context.allocator` for the same
+// reason `child`'s own abandoned-read jobs are (CLAUDE.md, Odin notes): a
+// leak this case means is not one the tracked allocator should report.
+@(test)
+a_stage_that_never_returns_is_reported_abandoned_and_never_asserted :: proc(t: ^testing.T) {
+	gate := make_gate(1, runtime.heap_allocator())
+
+	jobs := []Fake_Job {
+		{id = 0, extract_ok = true, transcribe_ok = true, extract_gate = gate, gated = true},
+	}
+	config := Config {
+		extract_workers = 1,
+		queue_depth     = 1,
+		join_bound_ms   = UNSTOPPABLE_JOIN_BOUND_MS,
+	}
+
+	box := Run_Box {
+		jobs   = jobs,
+		stages = FAKE_STAGES,
+		config = config,
+	}
+	driver := start_batch(&box)
+
+	_, entered := await_entry(t, gate)
+	if !testing.expect(t, entered, "the Stage this case abandons never even started") {
+		return
+	}
+
+	joined := join_batch(t, driver, UNSTOPPABLE_JOIN_BOUND_MS + 8_000)
+	if !testing.expect(
+		t,
+		joined,
+		"run_batch itself did not return -- an abandoned worker took the whole Batch down with it",
+	) {
+		return
+	}
+
+	testing.expect_value(t, box.results[0], Terminal.Stage_Abandoned)
 }
 
 @(test)
