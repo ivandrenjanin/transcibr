@@ -421,6 +421,17 @@ directory_finished :: proc(
 	return
 }
 
+// The error path frees `cloned[:i]` through `os.file_info_slice_delete`
+// alone, and never `cloned` again after it: `file_info_slice_delete` ends
+// with `delete(infos, allocator)`, which frees the pointer `raw_data`
+// carries -- the same pointer `cloned` itself has, since slicing from the
+// front leaves the base address untouched. A second `delete(cloned,
+// allocator)` after that freed the same block twice, corruption a normal
+// heap does not report until some unrelated allocation reuses the address
+// (PR #64's second review, finding 1). `zz_probe_clone_listing_error_path`
+// in walk_test.odin proves it with an allocator that answers
+// `.Out_Of_Memory` partway through cloning, rather than waiting for a real
+// out-of-memory condition to reach it.
 @(private)
 @(require_results)
 clone_listing :: proc(
@@ -437,7 +448,6 @@ clone_listing :: proc(
 		one, err := os.file_info_clone(info, allocator)
 		if err != nil {
 			os.file_info_slice_delete(cloned[:i], allocator)
-			delete(cloned, allocator)
 			return nil, false
 		}
 		cloned[i] = one

@@ -2,6 +2,7 @@
 package planning
 
 import "core:fmt"
+import "core:mem"
 import "core:os"
 import "core:slice"
 import "core:strings"
@@ -811,4 +812,85 @@ a_directory_listing_within_its_bound_returns_every_entry :: proc(t: ^testing.T) 
 
 	testing.expect(t, ok, "a directory listing within its bound was reported as unreadable")
 	testing.expect_value(t, len(listing), 2)
+}
+
+// A wrapper allocator that answers `.Out_Of_Memory` once `remaining`
+// allocations have been handed out, and defers to `backing` for everything
+// else -- freeing, resizing, querying. What `clone_listing`'s error path
+// (Finding 1 of PR #64's second review) needs is a way to reach
+// `os.file_info_clone`'s own allocation failure without a real
+// out-of-memory condition on the machine running the suite, the same
+// technique the review itself used.
+@(private)
+Failing_Allocator :: struct {
+	backing:   mem.Allocator,
+	remaining: int,
+}
+
+@(private)
+@(require_results)
+fails_after_proc :: proc(
+	allocator_data: rawptr,
+	mode: mem.Allocator_Mode,
+	size, alignment: int,
+	old_memory: rawptr,
+	old_size: int,
+	loc := #caller_location,
+) -> (
+	[]byte,
+	mem.Allocator_Error,
+) {
+	fa := (^Failing_Allocator)(allocator_data)
+	assert(fa != nil, "a probe allocator call arrived with no state behind it")
+
+	if mode == .Alloc || mode == .Alloc_Non_Zeroed {
+		if fa.remaining <= 0 {
+			return nil, .Out_Of_Memory
+		}
+		fa.remaining -= 1
+	}
+	return fa.backing.procedure(fa.backing.data, mode, size, alignment, old_memory, old_size, loc)
+}
+
+@(private)
+@(require_results)
+fails_after :: proc(
+	fa: ^Failing_Allocator,
+	remaining: int,
+	backing: mem.Allocator,
+) -> mem.Allocator {
+	assert(fa != nil, "there is no state here to run a probe allocator through")
+	assert(remaining >= 0, "a probe cannot fail before it has done anything")
+
+	fa.backing = backing
+	fa.remaining = remaining
+	return mem.Allocator{procedure = fails_after_proc, data = fa}
+}
+
+// Finding 1 of PR #64's second review: clone_listing's error path freed its
+// own backing slice twice -- os.file_info_slice_delete(cloned[:i], allocator)
+// already frees it, and a second delete(cloned, allocator) right after freed
+// the same pointer again. Two entries clone successfully (the initial `make`
+// and the first file_info_clone) before the probe answers .Out_Of_Memory on
+// the third, landing the failure mid-listing rather than at either end of
+// it. scripts\test.ps1 runs with ODIN_TEST_FAIL_ON_BAD_MEMORY set, so this
+// case fails with a reported bad free against the unfixed clone_listing and
+// is clean against the fix.
+@(test)
+a_listing_that_cannot_be_cloned_under_memory_pressure_frees_what_it_cloned_exactly_once :: proc(
+	t: ^testing.T,
+) {
+	listing := []os.File_Info {
+		{fullpath = "C:\\clips\\a.mp4"},
+		{fullpath = "C:\\clips\\b.mp4"},
+		{fullpath = "C:\\clips\\c.mp4"},
+	}
+
+	fa: Failing_Allocator
+	probe := fails_after(&fa, 2, context.allocator)
+
+	cloned, ok := clone_listing(listing, probe)
+
+	testing.expect(t, !ok, "cloning under memory pressure was reported as succeeding")
+	testing.expect(t, cloned == nil, "a failed clone still handed back a partial listing")
 }
