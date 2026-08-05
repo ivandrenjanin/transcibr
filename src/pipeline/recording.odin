@@ -118,6 +118,7 @@ transcribe_and_place :: proc(extracted: Recording_Extracted) -> bool {
 			name = job.name,
 			model = job.model.path,
 			container_ms = extracted.extracted.container_ms,
+			prompt = job.prompt,
 		},
 		job.report,
 		job.allocator,

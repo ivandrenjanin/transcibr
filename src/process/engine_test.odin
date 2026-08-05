@@ -111,6 +111,81 @@ the_engine_is_pointed_at_a_prefix_and_appends_the_extension_itself :: proc(t: ^t
 	testing.expect_value(t, produced, "C:\\cache\\lecture.json")
 }
 
+// The failure scenario PR #67's round-2 review named directly: `--prompt` is
+// recorded in a Sidecar but never reaches the Engine unless this passes.
+@(test)
+a_job_with_a_prompt_gets_the_flag_and_its_own_text :: proc(t: ^testing.T) {
+	arguments := engine_arguments(
+		Engine_Job {
+			model = "m.bin",
+			audio = "a.wav",
+			prefix = "out",
+			prompt = "Kubernetes, Grafana, Prometheus",
+		},
+		context.allocator,
+	)
+	defer delete(arguments, context.allocator)
+
+	testing.expect_value(t, len(arguments), 10)
+	flagged := false
+	for argument, at in arguments {
+		if argument == "--prompt" {
+			flagged = true
+			testing.expectf(
+				t,
+				at + 1 < len(arguments) && arguments[at + 1] == "Kubernetes, Grafana, Prometheus",
+				"--prompt was not immediately followed by the Job's own prompt",
+			)
+		}
+	}
+	testing.expect(t, flagged, "a Job carrying a prompt produced no --prompt flag at all")
+}
+
+@(test)
+a_job_with_no_prompt_gets_no_prompt_flag_at_all :: proc(t: ^testing.T) {
+	arguments := engine_arguments(
+		Engine_Job{model = "m.bin", audio = "a.wav", prefix = "out"},
+		context.allocator,
+	)
+	defer delete(arguments, context.allocator)
+
+	testing.expect_value(t, len(arguments), 8)
+	for argument in arguments {
+		testing.expect(t, argument != "--prompt", "an unset prompt still produced a --prompt flag")
+	}
+}
+
+// A prompt is free text a user typed, and goes through the same command-line
+// quoting every other argument does -- spaces, quotes, trailing backslashes,
+// tabs and non-ASCII among them, the exact cases `command_line_test.odin`
+// already measured `build_command_line` against.
+@(test)
+a_prompt_goes_through_the_same_quoting_every_argument_gets :: proc(t: ^testing.T) {
+	cases := make([dynamic]string, 0, context.allocator)
+	defer delete(cases)
+	append(&cases, ..WHITESPACE_CASES)
+	append(&cases, ..QUOTE_AND_BACKSLASH_CASES)
+	append(&cases, ..NON_ASCII_CASES)
+
+	for prompt, i in cases {
+		arguments := engine_arguments(
+			Engine_Job{model = "m.bin", audio = "a.wav", prefix = "out", prompt = prompt},
+			context.allocator,
+		)
+		defer delete(arguments, context.allocator)
+
+		if !testing.expectf(
+			t,
+			len(arguments) == 10 && arguments[8] == "--prompt" && arguments[9] == prompt,
+			"prompt case %d: the --prompt pair was not built as expected",
+			i,
+		) {
+			continue
+		}
+		expect_round_trip(t, EXE, arguments, tprint_case("engine-prompt", i, "round-trip"))
+	}
+}
+
 @(test)
 the_real_engine_output_reports_one_duration_and_no_other :: proc(t: ^testing.T) {
 	r: Line_Reader
