@@ -80,6 +80,39 @@ pipe_with_no_writer :: proc(
 	return path, server, true
 }
 
+// Finding 5 of PR #64's third review: `await_or_abandon`'s own guard used to
+// read `bound_ms <= i64(max(win32.DWORD))`, which ADMITS `max(win32.DWORD)`
+// -- and `core:sys/windows` defines `INFINITE :: ~DWORD(0)`, bit-identical
+// to `max(win32.DWORD)`, so that admitted value means an unbounded
+// `WaitForSingleObject`, the exact defect issue #27 exists to abolish.
+// Checked here rather than by calling `await_or_abandon` with the forbidden
+// value: that would trip the assert the fix installs, and CLAUDE.md forbids
+// a test that deliberately trips one (issue #22 -- the runner hangs rather
+// than reporting a clean failure).
+@(test)
+infinite_itself_is_bit_identical_to_the_dword_maximum :: proc(t: ^testing.T) {
+	testing.expect_value(t, u32(win32.INFINITE), max(win32.DWORD))
+}
+
+@(test)
+a_bound_of_infinite_itself_is_not_expressible_to_wait_for_single_object :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		bound_expressible(i64(max(win32.DWORD)) - 1),
+		"a bound one below the DWORD maximum was refused as inexpressible",
+	)
+	testing.expect(
+		t,
+		!bound_expressible(i64(max(win32.DWORD))),
+		"a bound bit-identical to INFINITE was accepted as an expressible wait",
+	)
+	testing.expect(
+		t,
+		!bound_expressible(i64(max(win32.DWORD)) + 1),
+		"a bound past the DWORD maximum was accepted as an expressible wait",
+	)
+}
+
 @(test)
 a_read_that_cannot_finish_is_abandoned_at_its_bound :: proc(t: ^testing.T) {
 	path, server, ok := pipe_with_no_writer(t, "abandoned", context.allocator)
@@ -128,6 +161,21 @@ instant_worker :: proc(data: rawptr) {
 // This case pins the mechanism directly rather than the CLI's timing: a
 // thread that finishes on its own, waited on immediately after it starts,
 // must not cost this a whole poll interval to notice.
+//
+// Finding 4 of PR #64's third review: `elapsed < READ_POLL` (10 ms) gave
+// only about 2x margin against real scheduling noise. Instrumented under
+// this package's full concurrent sweep -- the load `windows-latest`'s four
+// vCPUs actually run this case under, twelve `odin test` threads alongside
+// the 8 MiB flood write and the 25 abandoned reads elsewhere in this file --
+// `elapsed` measured 502 us, 3.37 ms and 5.12 ms, the last of those already
+// half the old budget. What this case exists to catch is a regression back
+// to the ORIGINAL poll loop, whose floor was Windows' own timer
+// quantization -- about 15.6 ms for even a single sleep -- and not READ_-
+// POLL's literal value, so a wider margin loses no discrimination against
+// the regression this case is for.
+@(private)
+INSTANT_WAIT_BOUND :: 25 * time.Millisecond
+
 @(test)
 await_or_abandon_notices_a_finished_thread_without_waiting_for_a_poll :: proc(t: ^testing.T) {
 	job: Instant_Job
@@ -145,7 +193,7 @@ await_or_abandon_notices_a_finished_thread_without_waiting_for_a_poll :: proc(t:
 	testing.expect(t, job.done, "a thread reported finished had not actually run its worker")
 	testing.expectf(
 		t,
-		elapsed < READ_POLL,
+		elapsed < INSTANT_WAIT_BOUND,
 		"waiting for an already-finishing thread took %v, at least one poll's worth of sleep rather than an exact wait",
 		elapsed,
 	)
@@ -195,13 +243,31 @@ transcibr_thread_count :: proc() -> (n: int, counted: bool) {
 // at `ROUNDS` large enough that signal dwarfs whatever a handful of sibling
 // threads starting or stopping during this case's wall-clock window could
 // produce, only a real leak can clear `TOLERANCE`.
+//
+// Finding 2 of PR #64's third review: `ROUNDS :: 25` made that "large enough"
+// claim true only against a leak on EVERY round. Mutating `await_or_abandon`
+// to skip `CancelSynchronousIo` on one call in four -- a partial regression,
+// not the totally-unfixed original -- leaked 6 threads at 25 rounds, which
+// `TOLERANCE :: 8` absorbed as noise: the case reported PASS over a real
+// leak. The signal a partial leak produces scales with `ROUNDS`, the same
+// way the fully-broken signal already did; `TOLERANCE` does not, because it
+// bounds a handful of SIBLING threads whose count has nothing to do with how
+// many rounds this case itself runs. `ROUNDS :: 100` is the fix: a 1-in-4
+// leak now leaks roughly 25 threads, more than three times `TOLERANCE`,
+// while a clean run's own delta does not move at all (the reviewer measured
+// `TOLERANCE = 0` passing clean at both 25 and 200 rounds, so this is
+// margin against sibling noise and not against the read path's own cost).
+// Proven by mutation directly: with the skip-one-in-four change above and
+// `ROUNDS :: 25`, this case passed; with the identical mutation and
+// `ROUNDS :: 100`, it failed with "abandoning 100 reads left ~25 thread(s)
+// behind" -- the report this case exists to make impossible to miss.
 @(private)
-ROUNDS :: 25
+ROUNDS :: 100
 
 // However many of its own threads a sibling case in this package's suite
 // might transiently hold across this case's window -- comfortably above
-// that, and comfortably below what a real per-round leak reaches at
-// `ROUNDS`, which is `ROUNDS` itself.
+// that, and comfortably below what even a PARTIAL per-round leak reaches at
+// `ROUNDS :: 100`.
 @(private)
 TOLERANCE :: 8
 

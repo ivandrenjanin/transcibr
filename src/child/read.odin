@@ -90,6 +90,23 @@ Wait :: enum u8 {
 	Unstoppable,
 }
 
+// Whether `bound_ms` can be handed to `WaitForSingleObject` without meaning
+// something this package never intends: `core:sys/windows` defines
+// `INFINITE :: ~DWORD(0)`, which is bit-identical to `max(win32.DWORD)`, so
+// a guard that ADMITS `bound_ms == max(win32.DWORD)` admits an unbounded
+// wait -- the exact defect issue #27 exists to abolish, previously let
+// through by `bound_ms <= i64(max(win32.DWORD))` (PR #64's third review,
+// finding 5). No caller passes that value today, but `await_or_abandon` is
+// public API and a future caller that computes a bound (issue #12's
+// pipeline) is not a caller this package controls. Pulled out of the assert
+// it guards so the boundary can be proven without tripping it -- CLAUDE.md
+// forbids a test that deliberately trips an assertion (issue #22).
+@(private)
+@(require_results)
+bound_expressible :: proc(bound_ms: i64) -> bool {
+	return bound_ms < i64(max(win32.DWORD))
+}
+
 // The generic engine behind every bounded blocking call in this tree, not
 // only a read: wait up to `bound_ms` for `t` to finish, and if it has not,
 // ask `win32.CancelSynchronousIo` to unblock whatever synchronous Win32 call
@@ -128,19 +145,29 @@ Wait :: enum u8 {
 // bound does this package poll at all: cancellation has no handle to wait
 // on, only `thread.is_done` to ask again after each
 // `win32.CancelSynchronousIo`.
+//
+// `WAIT_FAILED` answers `.Unstoppable` directly rather than falling into the
+// cancel loop below: the wait itself errored rather than timing out, so
+// `t.win32_thread` is not known blocked at all, and unlike a real timeout,
+// this was never actually waited for `bound_ms` in the first place -- there
+// is nothing measured here that makes `CancelSynchronousIo` or a poll of it
+// any more trustworthy against a handle whose own wait already failed (PR
+// #64's third review, finding 8).
 @(require_results)
 await_or_abandon :: proc(t: ^thread.Thread, bound_ms: i64) -> Wait {
 	assert(t != nil, "there is no thread here to wait for")
 	assert(bound_ms > 0, "a wait for no time at all cannot tell a wedge from a fast answer")
 	assert(
-		bound_ms <= i64(max(win32.DWORD)),
-		"a bound this large cannot be expressed to WaitForSingleObject",
+		bound_expressible(bound_ms),
+		"a bound this large cannot be expressed to WaitForSingleObject without meaning INFINITE",
 	)
 
 	switch win32.WaitForSingleObject(t.win32_thread, win32.DWORD(bound_ms)) {
 	case win32.WAIT_OBJECT_0:
 		return .Finished
-	case win32.WAIT_TIMEOUT, win32.WAIT_FAILED:
+	case win32.WAIT_TIMEOUT:
+	case win32.WAIT_FAILED:
+		return .Unstoppable
 	case:
 		unreachable()
 	}
