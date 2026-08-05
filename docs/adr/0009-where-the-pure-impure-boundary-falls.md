@@ -10,7 +10,7 @@ test-first discipline possible at all.
 
 Three places the boundary is easy to get wrong, and where it actually sits:
 
-**`plan_jobs` does not enumerate anything.** It cannot: walking a directory tree is I/O. It receives
+**`plan_batch` does not enumerate anything.** It cannot: walking a directory tree is I/O. It receives
 a finished list of paths and returns a plan — which recordings to process, which to skip, and the
 reason for each. Discovery is the shell's job: recursive, off the UI thread, cancellable, streaming
 its results, refusing to follow reparse points by default, and reporting a failed sub-directory
@@ -18,7 +18,7 @@ enumeration as an operating error rather than as an empty result. A silently sho
 one discovery failure a user cannot detect.
 
 **Probing a recording with `ffprobe` is allowed, because it happens in the shell.** The concern that
-probing would make discovery impure is misplaced — `plan_jobs` still receives a finished list. Probing
+probing would make discovery impure is misplaced — `plan_batch` still receives a finished list. Probing
 once per recording at job start buys detection of a truncated container, a still-being-written file,
 and a mid-file decode failure, any of which otherwise yields a transcript that ends mid-sentence and
 is marked complete forever. It also supplies a true duration instead of one derived circularly from

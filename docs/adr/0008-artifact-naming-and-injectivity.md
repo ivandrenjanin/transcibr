@@ -1,7 +1,7 @@
-# Artifacts replace the source extension, and `plan_jobs` asserts the mapping is injective
+# Artifacts replace the source extension, and `plan_batch` asserts the mapping is injective
 
 A recording at `<dir>/<stem>.<ext>` produces `<dir>/<stem>.md` and its retained engine JSON and
-sidecar under the same stem. `plan_jobs` — pure, and already the test-first surface — asserts that
+sidecar under the same stem. `plan_batch` — pure, and already the test-first surface — asserts that
 the set of planned artifact paths is exactly as large as the set of jobs, and fails **the plan**,
 naming the offending pair, when it is not.
 

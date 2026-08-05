@@ -44,6 +44,16 @@ required or shipped; a 401 means the repository is unavailable, and the UI must 
 asking the user to log in.
 
 **The single-file rule is the point.** It makes the README's network guarantee auditable by
-`grep -r winhttp src/` rather than by trusting a promise. Add a CI check that fails the build if the
-name appears outside that directory — otherwise network calls will spread and the guarantee will
-quietly become false.
+`grep -ri --include=*.odin -r winhttp src/` rather than by trusting a promise. `Assert-OdinNetworkConfinement` in
+`scripts\common.ps1` is that CI check, landed in issue #58: it fails `build.ps1` if the name `winhttp`
+appears, in any case, anywhere under `src\` outside `src/net/winhttp.odin` itself — the one **file**,
+not merely a directory that happens to hold only it today — so a second file added beside it that
+also spells the name still fails the build.
+
+**What it does not catch: a second file that touches the network without spelling the name.** The
+gate matches a literal substring, not a call graph. Reproduced directly (issue #58, round 2 of
+review): with `src/net/winhttp.odin` wrapping `WinHttpOpen` in an exported `open`, a second file
+`src/net/download.odin` holding nothing but `fetch :: proc() { _ = open() }` — calling the wrapper,
+never spelling `winhttp` itself — passes `build.ps1` clean. Once `src/net` is a package, a sibling
+calls in unqualified and an importer writes `import "transcibr:net"`; neither spells the name either.
+The gate confines where the literal name may appear, not where a call into the wrapper may originate.

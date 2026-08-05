@@ -2,7 +2,7 @@
 
 Each completed recording gets a small sidecar written last and only on success, carrying the engine
 version, model path and hash, beam size, merge profile, prompt, source size and mtime, and container
-duration. `plan_jobs` classifies a recording as done only when the artifact exists *and* the
+duration. `plan_batch` classifies a recording as done only when the artifact exists *and* the
 recorded settings match the current ones.
 
 Presence-only resume looks simpler and is wrong. The model is user-selectable per batch: a user who

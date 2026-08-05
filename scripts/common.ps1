@@ -1608,6 +1608,121 @@ function Assert-OdinVetTagPolicy {
 	throw "$($missing.Count) file(s) do not declare a +vet name their scope requires (CLAUDE.md rule M2):`n$($missing -join "`n")`nPut it on a ``#+vet`` line above the package clause. The tag is read per FILE: an untagged one compiles with its implicit allocators never looked at, whatever its siblings carry."
 }
 
+# README.md's Network access section, made true rather than merely corrected
+# (issue #58): all network code lives in one file, `src/net/winhttp.odin`,
+# and the build fails the moment the name appears, in any case, in any .odin
+# file anywhere under `src\` outside that one. `grep -ri --include=*.odin -r
+# winhttp src/` is the audit that sentence names, and this is that audit,
+# read straight off the same file list the four policies above already
+# discovered.
+#
+# Case-INSENSITIVE, unlike a plain `grep winhttp` with no `-i`. A
+# case-sensitive match refuses the spelling nobody writes -- `winhttp`, all
+# lowercase -- and admits the one the Win32 headers actually use:
+# `WinHttpOpen`, `Winhttp.lib`. Measured: a file under `src\` declaring
+# `foreign import Winhttp "system:Winhttp.lib"` and a `WinHttpOpen` binding
+# passed this gate while the comparison below was ordinal case-sensitive --
+# real network code, in the spelling every caller of the real API actually
+# writes. Nothing in the name relies on case meaning anything, so refusing
+# it case-insensitively costs nothing a legitimate file would ever say.
+#
+# Not answered by tools\policy. ADR-0028's whole argument is that a
+# STRUCTURAL question -- where a procedure begins, whether `//` sits inside a
+# raw string -- needs the compiler's own parser to answer safely. This is not
+# one of those: it is a literal substring, and reading it with the parser
+# would be the second model of Odin ADR-0028 exists to avoid, applied to a
+# question that never needed one.
+#
+# Deny-by-default over the file's raw text, deliberately, not by oversight:
+# the match below is a plain substring (see .IndexOf), so it fires from
+# inside a `//` comment or a string literal exactly as it does from a live
+# call, foreign import, or identifier. Measured: a file under `src\` holding
+# nothing but the top-level comment `// Unlike WinHTTP, ffmpeg is driven as a
+# child process.` -- no network code at all -- fails this gate. That is the
+# traded cost, taken on purpose: distinguishing prose from code needs the
+# same parser ADR-0028 already argues against reaching for over a literal
+# substring (the paragraph above), and refusing every spelling everywhere is
+# what keeps this a one-line check instead of a second model of Odin. There
+# is no escape hatch. A comment under `src\` that needs to name the Win32 API
+# says "the system HTTP API" instead of the word this gate refuses;
+# `docs/reference/winhttp-download.odin` is outside `src\` and free to spell
+# it.
+#
+# `src/net/winhttp.odin` does not exist yet -- issue #14 is what adds it --
+# so today this refuses the name EVERYWHERE under src\, which is the correct
+# verdict for a tree carrying no network code at all. The day the file lands,
+# the one path below starts being read and every other one goes on being
+# refused.
+$OdinNetworkCodeName = 'winhttp'
+$OdinNetworkCodeFile = Join-Path $SrcRoot (Join-Path 'net' 'winhttp.odin')
+
+# Forward-slashed and relative to $RepoRoot -- `src/net/winhttp.odin` -- so
+# every message below spells the one allowed file by reading this rather than
+# by writing the path out again. One copy, the way $OdinNetworkCodeFile
+# itself is one copy of the absolute path it is built from.
+$OdinNetworkCodeRelativeName = Get-RelativeName -Path $OdinNetworkCodeFile -Root $RepoRoot
+
+function Assert-OdinNetworkConfinement {
+	param(
+		# Repository-wide, like the four policies above, and filtered to src\
+		# below: the claim is about src\ and not about tools\ or
+		# docs\reference\, which is what `grep -ri winhttp src/` itself would
+		# have been scoped to.
+		[object[]] $Sources = @(Get-OdinCheckedSource)
+	)
+
+	# $source.Name is already relative to $RepoRoot and forward-slashed --
+	# Get-OdinSource built it with Get-RelativeName, the same guard against a
+	# sibling directory that merely starts with the same letters (src-generated,
+	# srcfoo) reading as "under src\" by raw prefix. Filtering on it here reuses
+	# that guard instead of repeating it over $source.Path.
+	$underSrc = [System.Collections.Generic.List[object]]::new()
+	foreach ($source in $Sources) {
+		if ($source.Name.StartsWith('src/', [System.StringComparison]::OrdinalIgnoreCase)) {
+			$underSrc.Add($source)
+		}
+	}
+	if ($underSrc.Count -eq 0) {
+		throw "none of the $($Sources.Count) file(s) checked are under src\, so the network confinement claim (README.md, Network access) would pass having examined nothing there."
+	}
+
+	$stray = [System.Collections.Generic.List[string]]::new()
+	foreach ($source in $underSrc) {
+		if ($source.Name.Equals($OdinNetworkCodeRelativeName, [System.StringComparison]::OrdinalIgnoreCase)) {
+			continue
+		}
+		# .IndexOf rather than -match: the claim is about a literal name and
+		# not a pattern, and there is nothing in "winhttp" for a regex engine
+		# to mean differently -- but nothing here should rely on that staying
+		# true. Not .Contains: Windows PowerShell 5.1 runs on a .NET Framework
+		# whose String.Contains has no StringComparison overload at all, so a
+		# revert to the two-argument form throws "Cannot find an overload for
+		# 'Contains' and the argument count: '2'" at run time -- PowerShell has
+		# no compile step, so this is caught the moment the line runs, not
+		# before. That error guards only the two-argument revert. A revert to
+		# the ORIGINAL bug -- plain, one-argument `.Contains($OdinNetworkCodeName)`,
+		# ordinal case-sensitive -- throws nothing at all; it resolves to a
+		# normal true-or-false. Nothing here catches that regression -- a
+		# self-test case that plants `WinHttpOpen`, the canonical Win32
+		# capitalisation, outside the one allowed file is what does. Not named
+		# here: the test-name pin (selftest.ps1:803-825) discovers `-TestName`
+		# examples from CLAUDE.md, README.md and test.ps1 only, and this case's
+		# English-sentence name is outside that mechanism entirely -- naming it
+		# here would drift silently the moment it is renamed.
+		# OrdinalIgnoreCase over the plain overload: see above.
+		$text = [System.IO.File]::ReadAllText($source.Path)
+		if ($text.IndexOf($OdinNetworkCodeName, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+			$stray.Add($source.Name)
+		}
+	}
+	if ($stray.Count -eq 0) {
+		return
+	}
+
+	$named = ($stray | ForEach-Object { "  - $_" }) -join "`n"
+	throw "'$OdinNetworkCodeName' appears outside $OdinNetworkCodeRelativeName in $($stray.Count) file(s):`n$named`nAll network code must live in that one file (README.md, Network access)."
+}
+
 # The sweep as a single verdict, for callers that only want it to pass -- which
 # is build.ps1, so that a misformatted file fails the BUILD and not merely a
 # check somebody remembers to run. Rule S1 is a rule; the vet flags beside it

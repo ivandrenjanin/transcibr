@@ -74,7 +74,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 62
+$ExpectedCaseCount = 67
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -501,23 +501,29 @@ function Get-CaseSource {
 
 # A rule and its enforcement, pinned to each other.
 #
-# This is the defect that produced the first of the four cases below: the
+# This is the defect that produced the first of the five cases below: the
 # comment ban was applied to 53 files by a branch that also deleted the section
 # stating it, so the tree arrived shaped by a rule written down nowhere and the
 # next contributor could not learn it existed. A check with no policy behind it
 # is a check somebody deletes as unexplained.
 #
 # Written three times before somebody counted -- once per policy, which is once
-# per chance to leave it out of the fourth, and the same count Get-OdinCheckedSource
+# per chance to leave it out of the next one added -- and the network-confinement
+# claim below is now its fifth caller, the same count Get-OdinCheckedSource
 # reached for the same reason. $Enforcer is the only part that differed between
 # them beyond the claims themselves.
 function Assert-PolicyClaim {
 	param(
 		[Parameter(Mandatory)] [string] $Enforcer,
-		[Parameter(Mandatory)] [string[]] $Claims
+		[Parameter(Mandatory)] [string[]] $Claims,
+		# CLAUDE.md by default -- every case here until issue #58's network claim,
+		# which is stated in README.md instead. One parameter rather than a second
+		# procedure: the two differ only in which file is read, and a second copy
+		# is a second place for the "does not carry" message to drift from this one.
+		[string] $Document = 'CLAUDE.md'
 	)
 
-	$policy = Join-Path $RepoRoot 'CLAUDE.md'
+	$policy = Join-Path $RepoRoot $Document
 	if (-not (Test-Path -LiteralPath $policy)) {
 		throw "no $policy, so the rule $Enforcer enforces is stated nowhere."
 	}
@@ -525,7 +531,7 @@ function Assert-PolicyClaim {
 	$text = [System.IO.File]::ReadAllText($policy)
 	foreach ($claim in $Claims) {
 		if (-not $text.Contains($claim)) {
-			throw "CLAUDE.md does not carry '$claim', but scripts\common.ps1 fails the build over it."
+			throw "$Document does not carry '$claim', but scripts\common.ps1 fails the build over it."
 		}
 	}
 }
@@ -1911,6 +1917,118 @@ Test-Case 'the vet tag rule the build enforces is written down' {
 			'per file'
 			'Get-OdinRequiredVetTag'
 		) + @($OdinFileVetTags | ForEach-Object { $_.Name }))
+}
+
+# ------------------------------------------------- cases for the network gate --
+#
+# README.md's Network access section (issue #58): all network code lives in
+# one file, src/net/winhttp.odin, and the build fails the moment the name
+# appears, in any case, anywhere else under src\. Nothing checked that until
+# now -- src/net does not exist yet, so today's tree passes vacuously, and
+# the cases below are what stand between that and the claim quietly going
+# false: the day issue #14 lands a second file that mentions the name, the
+# day somebody spells it in a different case, and the day a caller hands the
+# check a source list with nothing under src\ at all.
+
+# The path split once, rather than four fixture bodies each spelling
+# 'src', 'net' and 'winhttp.odin' as their own literals: if issue #14 ever
+# names the real file something else, these cases move with it instead of
+# quietly testing a path nothing checks any more.
+$NetworkFixtureRelativePath = $OdinNetworkCodeRelativeName.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+$NetworkFixtureMatchPath = [regex]::Escape($OdinNetworkCodeRelativeName)
+
+Test-Case 'the word winhttp outside its one allowed file fails the build' {
+	$repo = New-FixtureRepo 'build-stray-winhttp'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+
+	# Anywhere but src/net/winhttp.odin is the claim's whole subject, so this
+	# plants the name in an unrelated package rather than in a plausible-looking
+	# rival of the real one.
+	$dir = Join-Path (Join-Path $repo 'src') 'other'
+	New-Item -ItemType Directory -Path $dir -Force | Out-Null
+	Write-FixtureSource -Path (Join-Path $dir 'other.odin') -Text "$FixtureVetTags`npackage other`n`nSTRAY :: `"winhttp`"`n"
+
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Fails -Matching "'winhttp' appears outside $NetworkFixtureMatchPath"
+	# The FILE and not merely the count, for the reason every other checker here
+	# names one: a claim somebody has to go and search the tree for is a claim
+	# nobody checks by hand either.
+	Assert-Result -Result $result -Fails -Matching 'src/other/other\.odin'
+}
+
+Test-Case 'the canonical Win32 spelling outside its one allowed file fails the build' {
+	# Finding from an adversarial review of this gate (issue #58): planting
+	# `WinHttpOpen` -- the Win32 headers' own capitalisation, not the all-
+	# lowercase spelling nobody writes -- passed build.ps1 while the match
+	# was ordinal case-sensitive. This is the case that goes green again if
+	# the comparison reverts to a plain `.Contains` with no comparer.
+	$repo = New-FixtureRepo 'build-real-spelling-winhttp'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+
+	$dir = Join-Path (Join-Path $repo 'src') 'probe'
+	New-Item -ItemType Directory -Path $dir -Force | Out-Null
+	Write-FixtureSource -Path (Join-Path $dir 'probe.odin') -Text "$FixtureVetTags`npackage probe`n`nENTRY_POINT :: `"WinHttpOpen`"`n"
+
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Fails -Matching "'winhttp' appears outside $NetworkFixtureMatchPath"
+	Assert-Result -Result $result -Fails -Matching 'src/probe/probe\.odin'
+}
+
+Test-Case 'the word winhttp inside its one allowed file does not fail the build' {
+	# The negative space (rule A3): a check that refused every file containing
+	# the name would pass the case above for the wrong reason. This is the one
+	# place the name is allowed, and a build naming it there still has to finish.
+	$repo = New-FixtureRepo 'build-allowed-winhttp'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+
+	$fixturePath = Join-Path $repo $NetworkFixtureRelativePath
+	New-Item -ItemType Directory -Path (Split-Path -Parent $fixturePath) -Force | Out-Null
+	Write-FixtureSource -Path $fixturePath -Text "$FixtureVetTags`npackage net`n`nWINHTTP :: `"WinHttpOpen`"`n"
+
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Matching "is confined to $NetworkFixtureMatchPath"
+	Assert-Result -Result $result -Matching 'Built 1 target'
+}
+
+Test-Case 'network confinement over a source list with nothing under src refuses to pass' {
+	# Sibling defect to Assert-OdinProcedureLength's own "measured nothing"
+	# guard (common.ps1, rule F1): Get-OdinCheckedSource refuses an empty list
+	# repository-wide, but nothing guarded the src\-filtered subset the network
+	# confinement claim is actually about, so a $Sources list holding real
+	# files -- none of them under src\ -- reported the same green as a real
+	# sweep. In-process rather than through a fixture build: no ordinary
+	# checkout can produce a src\ with no .odin files in it at all, so the
+	# only way to exercise this is to hand the function a source list a real
+	# discovery would never produce, the way Get-OdinRequiredVetTag's own
+	# cases hand it a fabricated $Tags.
+	$outsideSrc = @([pscustomobject]@{
+			Path = Join-Path $OdinPolicyPackage 'policy.odin'
+			Name = 'tools/policy/policy.odin'
+		})
+	$refused = ''
+	try {
+		Assert-OdinNetworkConfinement -Sources $outsideSrc
+	} catch {
+		$refused = "$_"
+	}
+	if ($refused -notmatch 'under src\\') {
+		throw "a source list with nothing under src\ did not refuse: '$refused'"
+	}
+}
+
+Test-Case 'the network confinement claim README makes is written down' {
+	# The 'grep -ri --include=*.odin -r winhttp src/' claim used to be pinned
+	# verbatim; narrowed to the bare 'is the whole audit' the day README's
+	# audit command grew '-i' and '--include=*.odin' and nobody re-pinned the
+	# new wording, this case passed a README reverted to the case-SENSITIVE
+	# `grep -r winhttp src/` -- the exact command whose case-blindness was the
+	# defect Assert-OdinNetworkConfinement exists to close. The '-i' below is
+	# the token that regression needs pinned; 'is the whole audit' alone does
+	# not see it move.
+	Assert-PolicyClaim -Document 'README.md' -Enforcer 'Assert-OdinNetworkConfinement' -Claims @(
+		'grep -ri --include=*.odin -r winhttp src/` is the whole audit'
+		'Assert-OdinNetworkConfinement'
+	)
 }
 
 Test-Case 'git checks out every .odin file with the endings the check demands' -MaySkip {

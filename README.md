@@ -3,8 +3,9 @@
 Local transcription tool. Converts video and audio files into text transcripts using Whisper.
 
 > **Status: early implementation.** The specification is in `docs/spec/`. The build and test
-> commands work (see [Building from source](#building-from-source)); `transcibr-cli` currently
-> reports its version and nothing else. There are no releases yet.
+> commands work (see [Building from source](#building-from-source)); `transcibr-cli` already
+> dispatches `--help`, `--plan`, `--from-json` and `--transcribe` -- a full GPU run over one
+> Recording, end to end (`src/cli/main.odin`). There are no releases yet.
 
 ## What it does
 
@@ -81,8 +82,12 @@ deleted rather than used.
 identically.
 
 This is structural, not a promise: all network code lives in one file, `src/net/winhttp.odin`,
-called from exactly two places. `grep -r winhttp src/` is the whole audit, and CI fails the build if
-the name appears anywhere else.
+called from exactly two places. `grep -ri --include=*.odin -r winhttp src/` is the whole audit —
+case-insensitive, because a case-sensitive grep refuses the spelling nobody writes and admits
+`WinHttpOpen`, the Win32 headers' own capitalisation — and it is not merely run by hand:
+`Assert-OdinNetworkConfinement` in `scripts\common.ps1` fails `build.ps1` -- and so CI, which runs
+nothing else -- the moment the name appears, in any case, in any `.odin` file anywhere under `src\`
+outside that one.
 
 ## Requirements and installation
 
@@ -104,8 +109,9 @@ through on Windows.
 
 ## Building from source
 
-Four scripts, and CI runs the same four on every push — nothing in the workflow that a developer
-cannot run locally.
+Four scripts a developer runs by hand. CI runs those same four on every push, plus
+`install-pinned-tool.ps1` — twice, once per pinned tool — to fetch what a developer's own machine
+already has; nothing in the workflow does anything those five scripts cannot do locally too.
 
 ```powershell
 .\scripts\build.ps1     # -> build\transcibr-cli.exe   (add -Configuration release for -o:speed)
@@ -115,10 +121,11 @@ cannot run locally.
 ```
 
 `build.ps1` also builds `tools\policy`, a small Odin program that reads the repository's own source
-with `core:odin/parser` and answers the four source rules the build enforces — the line limit, the
+with `core:odin/parser` and answers four of the source rules the build enforces — the line limit, the
 comment ban, `@(require_results)`, and the `#+vet` tags. It is not part of transcibr and ships with
 nothing; ADR-0028 records why the build reads Odin with the compiler's parser rather than with a
-text scan of its own.
+text scan of its own. The fifth rule, network confinement (see [Network access](#network-access)),
+answers a literal substring and needs no parser, so it is not one of `tools\policy`'s.
 
 The command-line binary re-renders a transcript from retained engine output, without touching the
 GPU — which is what makes tuning the paragraphing cost seconds instead of hours:

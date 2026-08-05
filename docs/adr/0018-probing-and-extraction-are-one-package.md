@@ -95,15 +95,15 @@ is review, and review is what it costs.
 
 ## The scratch cache is refused in its own vocabulary, and `doctor` is what is missing
 
-`Fault` reports one Recording's failure. Its own comment justifies leaving out the borrowed-culprit
-record and the disposition table on the grounds that "the culprit is always the Recording" and "the
-disposition is always the same". Two of its members made both claims false: `Cache_Path_Not_Ascii`
+`Fault` reports one Recording's failure, and deliberately carries neither the borrowed-culprit record
+nor the disposition table: the culprit is always the Recording, and the disposition is always the
+same. Two of its members made both claims false: `Cache_Path_Not_Ascii`
 and `Cache_Unusable` are facts about the scratch cache, they are the same answer for every Recording
 in the Batch, and they mean the Batch has nowhere to put any audio at all. Rendering one through
 `error_message` — whose one documented job is *naming the Recording* — meant handing the cache
 directory in the Recording's slot, at Batch start, before any Recording exists.
 
-They are now `Cache_Fault`, with a table, a checked reader and a renderer that names the **directory**
+They are now `Cache_Fault`, with a switch, a checked reader and a renderer that names the **directory**
 and says the Batch cannot start. `open_cache` and `sweep_cache` answer in it; `extract` does not call
 `open_cache` at all.
 
@@ -115,12 +115,15 @@ one. ADR-0002 also asks that the check be on the **resolved** path, and it now i
 decision names is a non-ASCII Windows account name inside `%LOCALAPPDATA%`, which a perfectly ASCII
 relative cache path resolves straight into.
 
-**It also brings a fourth copy of the fault-report shape**, which `src/child` says out loud is one
-too many: "a third copy is the point at which the shape moves into a package of its own and both of
-these import it". That trigger did **not** fire here — it fired one ticket earlier, and this records
-that rather than claiming the credit: `src/transcript/engine_json.odin` got its `FAULT` table on
-2026-08-03, and `src/child`'s "THE SECOND COPY IS THE LAST ONE" was written sixteen hours later with
-three copies already in the tree. This is the fourth, and the debt is one ticket older than it looks.
+**Built the same way, `Cache_Fault` would have been a fifth copy of the fault-report shape**, one too
+many by the rule this ADR states here and nowhere else: "a third copy is the point at which the shape
+moves into a package of its own and both of these import it." That sentence is not a `src/child`
+comment the tree once carried and the comment ban later removed — `git log -S` for it, and for "THE
+SECOND COPY IS THE LAST ONE", turns up only this document's own revisions. An earlier draft of this
+paragraph attributed both quotes to `src/child`; that attribution does not survive checking against
+`git log` and is corrected here rather than restated. `src/transcript/engine_json.odin` got its
+`FAULT` table on 2026-08-03, and `src/audio`'s own `Fault`/`FAULT` — declared in this same file,
+alongside `Cache_Fault` — is the fourth copy of the shape.
 
 `src/audio` carries the small version — an enumeration, a table of sentences, one checked reader and
 one renderer, and not the borrowed-culprit record — because the culprit here is always the Recording,

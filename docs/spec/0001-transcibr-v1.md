@@ -214,7 +214,7 @@ spawning and termination, downloading, artifact storage, logging, settings persi
 - One input file per Engine invocation.
 - Child **stdout goes to the null device, never a pipe** — the Engine writes every Cue to stdout
   during inference and an undrained pipe deadlocks it. Only stderr is piped (ADR-0004).
-- Beam search stays at the Engine default; there is no batch-size setting to reduce (ADR-0013 context;
+- Beam search stays at the Engine default; there is no batch-size setting to reduce (ADR-0012 context;
   see README scope table).
 - Voice activity detection is not used (ADR-0005).
 
