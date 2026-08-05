@@ -51,6 +51,14 @@ Run_Callbacks :: struct {
 // before this reports Finished -- an Engine's last percentage arrives this
 // way. A caller with none, such as audio's silent extraction, pays one extra
 // pipe check for the same guarantee rather than a second shape.
+//
+// The bound check below reads the clock fresh after `wait` rather than
+// reusing the value `on_poll` read before it: a stale value lets a stop
+// overshoot by a whole extra POLL_MS -- one drain plus two polls, the shape
+// main's engine loop had -- where a fresh read caps both callers at one
+// drain plus one poll, the shape main's audio loop had. One extra
+// QueryPerformanceCounter call every 250 ms buys the tighter bound for both;
+// see ADR-0020.
 @(require_results)
 run_bounded :: proc(
 	group: ^Job_Object,
@@ -79,8 +87,7 @@ run_bounded :: proc(
 		if !drain_bounded(&c, started, callbacks) {
 			return halt(&c), Error{}
 		}
-		elapsed := elapsed_ns(started)
-		if callbacks.on_poll != nil && callbacks.on_poll(elapsed, callbacks.user) {
+		if callbacks.on_poll != nil && callbacks.on_poll(elapsed_ns(started), callbacks.user) {
 			return halt(&c), Error{}
 		}
 		if wait(&c, POLL_MS) {
@@ -90,7 +97,7 @@ run_bounded :: proc(
 			}
 			return .Finished, Error{}
 		}
-		if elapsed / i64(time.Millisecond) > bound_ms {
+		if i64(time.duration_milliseconds(time.tick_since(started))) > bound_ms {
 			return halt(&c), Error{}
 		}
 	}

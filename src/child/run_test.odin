@@ -350,7 +350,10 @@ spin_for :: proc(minimum: time.Duration) {
 
 // A quarter of what MAX_DRAIN_BYTES/DRAIN_BYTES iterations would need to add
 // up to the ceiling at all -- see slow_collect_chunk below for what it holds
-// the pipe open for.
+// the pipe open for. It is also the margin spin_for's busy wait depends on:
+// the child must be scheduled at least once per SLOW_CHUNK_DELAY to keep
+// feeding the pipe, and 2ms sits 10-100x above the measured failure cliff --
+// 200us passed 3 of 3 runs, 20us failed 1 of 3.
 @(private)
 SLOW_CHUNK_DELAY :: 2 * time.Millisecond
 
