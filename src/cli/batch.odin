@@ -41,7 +41,7 @@ Batch_Options :: struct {
 	model:           string,
 	engine:          string,
 	cache:           string,
-	engine_version:  string,
+	engine_version:  Maybe(string),
 	prompt:          string,
 	profile:         transcript.Merge_Profile,
 	follow:          bool,
@@ -178,7 +178,7 @@ run_the_batch :: proc(
 			cache = o.cache,
 			model = identified,
 			prompt = o.prompt,
-			engine_version = o.engine_version,
+			engine_version = pipeline.settled_engine_version(o.engine_version),
 			profile = o.profile,
 			config = pipeline.Config {
 				extract_workers = o.extract_workers,
@@ -241,7 +241,6 @@ read_batch_options :: proc(arguments: []string) -> (o: Batch_Options, ok: bool) 
 			len(o.tools.ffprobe) > 0,
 			"accepted a command line that unset ffprobe's own default",
 		)
-		assert(len(o.engine_version) > 0, "an Engine nobody named is UNKNOWN, never empty")
 		assert(
 			o.extract_workers > 0,
 			"accepted a command line that unset its worker-count default",
@@ -341,7 +340,7 @@ defaulted_batch :: proc(o: ^Batch_Options) {
 		assert(o.queue_depth > 0, "a default that was put back is still zero")
 	}
 
-	defaulted_tools(&o.tools, &o.engine_version)
+	defaulted_tools(&o.tools)
 	if o.extract_workers == 0 {
 		o.extract_workers = DEFAULT_EXTRACT_WORKERS
 	}

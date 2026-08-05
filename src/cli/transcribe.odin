@@ -24,7 +24,7 @@ Transcribe_Options :: struct {
 	model:          string,
 	engine:         string,
 	cache:          string,
-	engine_version: string,
+	engine_version: Maybe(string),
 	prompt:         string,
 	profile:        transcript.Merge_Profile,
 	tools:          audio.Tools,
@@ -95,7 +95,7 @@ run_one :: proc(
 		o.cache,
 		identified,
 		o.prompt,
-		o.engine_version,
+		pipeline.settled_engine_version(o.engine_version),
 		o.profile,
 		engine.Report{on_progress = show},
 	)
@@ -143,7 +143,6 @@ read_transcribe_options :: proc(arguments: []string) -> (o: Transcribe_Options, 
 			len(o.tools.ffprobe) > 0,
 			"accepted a command line that unset ffprobe's own default",
 		)
-		assert(len(o.engine_version) > 0, "an Engine nobody named is UNKNOWN, never empty")
 	} else {
 		assert(len(o.source) == 0, "refused a command line and kept what it asked for")
 	}
@@ -182,21 +181,23 @@ read_transcribe_options :: proc(arguments: []string) -> (o: Transcribe_Options, 
 defaulted :: proc(o: ^Transcribe_Options) {
 	assert(o != nil, "there is nothing here to put a default into")
 
-	defaulted_tools(&o.tools, &o.engine_version)
+	defaulted_tools(&o.tools)
 }
 
-// The three defaults `--transcribe` and `--batch` put back identically once
+// The two defaults `--transcribe` and `--batch` put back identically once
 // their own command lines have been read in full (PR #67's review, finding
 // 2) -- `--extract-workers` and `--queue-depth` stay `--batch`'s own, since
-// `--transcribe` has neither.
+// `--transcribe` has neither. `engine_version` is no longer defaulted here:
+// it stays `Maybe(string)`, absent where the command line named none, and
+// forwarded that way into planning -- `pipeline.settled_engine_version` is
+// where UNKNOWN is decided, and only for the Sidecar this run actually
+// records (issue #70).
 @(private)
-defaulted_tools :: proc(tools: ^audio.Tools, engine_version: ^string) {
+defaulted_tools :: proc(tools: ^audio.Tools) {
 	assert(tools != nil, "there is nowhere here to put a Tools default into")
-	assert(engine_version != nil, "there is nowhere here to put an Engine default into")
 	defer {
 		assert(len(tools.ffmpeg) > 0, "a default that was put back is still empty")
 		assert(len(tools.ffprobe) > 0, "a default that was put back is still empty")
-		assert(len(engine_version^) > 0, "a default that was put back is still empty")
 	}
 
 	if len(tools.ffmpeg) == 0 {
@@ -204,9 +205,6 @@ defaulted_tools :: proc(tools: ^audio.Tools, engine_version: ^string) {
 	}
 	if len(tools.ffprobe) == 0 {
 		tools.ffprobe = FFPROBE
-	}
-	if len(engine_version^) == 0 {
-		engine_version^ = transcript.UNKNOWN
 	}
 }
 
@@ -256,7 +254,7 @@ read_common_option :: proc(
 	engine_exe: ^string,
 	cache: ^string,
 	tools: ^audio.Tools,
-	engine_version: ^string,
+	engine_version: ^Maybe(string),
 	prompt: ^string,
 	profile: ^transcript.Merge_Profile,
 	name: string,
