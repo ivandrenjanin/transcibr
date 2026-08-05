@@ -3,11 +3,10 @@ package engine
 
 import "core:fmt"
 import "core:os"
-import "core:strings"
-import win32 "core:sys/windows"
 import "core:testing"
 import "transcibr:child"
 import "transcibr:process"
+import "transcibr:testkit"
 
 // The shell half, against real children and a real scratch cache. Every child
 // here is bounded; see ADR-0020.
@@ -54,52 +53,6 @@ EXPIRING_LIMITS :: Limits {
 @(private)
 LONGER_SECONDS :: 25
 
-// `waitfor` names are machine-wide, so a name carries the process id and no two
-// runs can release each other's children.
-@(private)
-@(require_results)
-lonely_signal :: proc(tag: string) -> string {
-	assert(len(tag) > 0, "a signal name shared by two cases is a signal one of them cannot have")
-
-	return fmt.aprintf(
-		"transcibrEngineNoSignal%d%s",
-		win32.GetCurrentProcessId(),
-		tag,
-		allocator = context.allocator,
-	)
-}
-
-// The caller frees the path and removes the directory.
-@(private)
-@(require_results)
-scratch_cache :: proc(t: ^testing.T, tag: string) -> string {
-	directory := os.get_env("TEMP", context.allocator)
-	defer delete(directory, context.allocator)
-	testing.expect(t, len(directory) > 0, "TEMP names nowhere to put a scratch cache")
-
-	cache := fmt.aprintf(
-		"%s\\transcibr-engine-%d-%s",
-		directory,
-		os.get_pid(),
-		tag,
-		allocator = context.allocator,
-	)
-	testing.expect(t, os.make_directory_all(cache) == nil, "could not make a scratch cache")
-	return cache
-}
-
-@(private)
-remove_cache :: proc(cache: string) {
-	listing, unreadable := os.read_all_directory_by_path(cache, context.allocator)
-	if unreadable == nil {
-		defer os.file_info_slice_delete(listing, context.allocator)
-		for info in listing {
-			os.remove(info.fullpath)
-		}
-	}
-	os.remove(cache)
-}
-
 // It walks its own arguments for `-of` rather than being handed the path, so the
 // file transcibr goes back to afterwards must be the one the Engine was told to
 // write.
@@ -128,19 +81,13 @@ stand_in :: proc(t: ^testing.T, cache: string, tag: string, body: string) -> str
 @(private)
 @(require_results)
 flood_file :: proc(t: ^testing.T, cache: string, tag: string, bytes: int) -> string {
-	assert(bytes > 0, "a flood of nothing at all floods nothing")
-
 	path := fmt.aprintf("%s\\flood-%s.txt", cache, tag, allocator = context.allocator)
-	written := strings.builder_make(context.allocator)
-	defer strings.builder_destroy(&written)
-	for strings.builder_len(written) < bytes {
-		strings.write_string(&written, "whisper: a line this reader has no reading for\r\n")
-	}
-
-	testing.expect(
+	_ = testkit.write_flood(
 		t,
-		os.write_entire_file(path, written.buf[:]) == nil,
-		"could not write the flood the stand-in types",
+		path,
+		bytes,
+		"whisper: a line this reader has no reading for\r\n",
+		context.allocator,
 	)
 	return path
 }
@@ -173,6 +120,10 @@ job_in :: proc(
 	return tools, job
 }
 
+// Spelled the same way at all three call sites (transcibr:testkit's own
+// header explains why this one is not among them): child_test.odin is part of
+// package child, and a testkit that imported child could not be imported back
+// by child's own tests without a cycle.
 @(private)
 @(require_results)
 open_group :: proc(t: ^testing.T) -> (group: child.Job_Object, ok: bool) {
@@ -204,9 +155,9 @@ a_stand_in_engine_that_reports_progress_drives_the_display :: proc(t: ^testing.T
 		return
 	}
 
-	cache := scratch_cache(t, "reports")
+	cache := testkit.made_scratch_cache(t, "engine", "reports", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 
 	executable := stand_in(
 		t,
@@ -254,9 +205,9 @@ an_engine_that_produced_nothing_is_a_failure_whatever_it_exited_with :: proc(t: 
 		return
 	}
 
-	cache := scratch_cache(t, "nothing")
+	cache := testkit.made_scratch_cache(t, "engine", "nothing", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 
 	executable := stand_in(
 		t,
@@ -281,9 +232,9 @@ an_engine_that_produced_an_empty_file_is_a_failure :: proc(t: ^testing.T) {
 		return
 	}
 
-	cache := scratch_cache(t, "empty")
+	cache := testkit.made_scratch_cache(t, "engine", "empty", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 
 	executable := stand_in(t, cache, "empty", "type nul > \"%PREFIX%.json\"")
 	defer delete(executable, context.allocator)
@@ -303,11 +254,11 @@ an_engine_that_says_nothing_at_all_is_stopped_before_its_bound_runs_out :: proc(
 		return
 	}
 
-	cache := scratch_cache(t, "silent")
+	cache := testkit.made_scratch_cache(t, "engine", "silent", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 
-	name := lonely_signal("silent")
+	name := testkit.lonely_signal("Engine", "silent", context.allocator)
 	defer delete(name, context.allocator)
 	executable := stand_in(
 		t,
@@ -345,11 +296,11 @@ an_engine_whose_progress_format_this_reader_cannot_read_still_drives_the_display
 		return
 	}
 
-	cache := scratch_cache(t, "estimate")
+	cache := testkit.made_scratch_cache(t, "engine", "estimate", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 
-	name := lonely_signal("estimate")
+	name := testkit.lonely_signal("Engine", "estimate", context.allocator)
 	defer delete(name, context.allocator)
 	executable := stand_in(
 		t,
@@ -409,11 +360,11 @@ an_engine_that_outlives_its_bound_is_stopped_and_told_apart_from_a_silent_one ::
 		return
 	}
 
-	cache := scratch_cache(t, "bound")
+	cache := testkit.made_scratch_cache(t, "engine", "bound", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 
-	name := lonely_signal("bound")
+	name := testkit.lonely_signal("Engine", "bound", context.allocator)
 	defer delete(name, context.allocator)
 	executable := stand_in(
 		t,
@@ -430,6 +381,12 @@ an_engine_that_outlives_its_bound_is_stopped_and_told_apart_from_a_silent_one ::
 	testing.expect_value(t, err.fault, Fault.Did_Not_Finish)
 }
 
+// Proves the bound is still reached despite a flood, not that a single drain
+// has a ceiling at all: mutating MAX_DRAIN_BYTES away leaves this green,
+// because an unbounded drain still runs out of flood to read and hands
+// control back the same way. Only
+// child.a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood pins the
+// ceiling itself.
 @(test)
 an_engine_that_floods_its_diagnostic_stream_is_still_stopped_at_its_bound :: proc(t: ^testing.T) {
 	group, ok := open_group(t)
@@ -438,13 +395,13 @@ an_engine_that_floods_its_diagnostic_stream_is_still_stopped_at_its_bound :: pro
 		return
 	}
 
-	cache := scratch_cache(t, "flood")
+	cache := testkit.made_scratch_cache(t, "engine", "flood", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 
 	flood := flood_file(t, cache, "flood", 1 << 20)
 	defer delete(flood, context.allocator)
-	name := lonely_signal("flood")
+	name := testkit.lonely_signal("Engine", "flood", context.allocator)
 	defer delete(name, context.allocator)
 	executable := stand_in(
 		t,
@@ -459,6 +416,73 @@ an_engine_that_floods_its_diagnostic_stream_is_still_stopped_at_its_bound :: pro
 	defer delete(produced.output, context.allocator)
 
 	testing.expect_value(t, err.fault, Fault.Did_Not_Finish)
+}
+
+// This run carries two readings: 10%, terminated with \r\n, which
+// watched_chunk turns into a reading the ordinary way, and the trailing 77%
+// written with no terminator at all, which is exactly what a
+// process.Line_Reader is still holding when end of stream arrives. Nothing
+// terminated the second one, so watched_chunk never turns it into a reading
+// on its own; watched_end is what flushes it through process.last_line and
+// tracker_said, which is the only path that trailing percentage has to the
+// display at all. Because both readings arrive, watched.highest landing on
+// 77 and not 10 is what proves watched_end ran.
+@(test)
+an_engine_that_exits_mid_line_still_hands_over_its_last_reading :: proc(t: ^testing.T) {
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	cache := testkit.made_scratch_cache(t, "engine", "midline", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	trailer := fmt.aprintf("%s\\trailer.txt", cache, allocator = context.allocator)
+	defer delete(trailer, context.allocator)
+	trailing_line := "whisper_print_progress_callback: progress = 77%"
+	if !testing.expect(
+		t,
+		os.write_entire_file(trailer, transmute([]u8)trailing_line) == nil,
+		"could not write the unterminated trailer this case types",
+	) {
+		return
+	}
+
+	executable := stand_in(
+		t,
+		cache,
+		"midline",
+		fmt.tprintf(
+			">&2 echo whisper_print_progress_callback: progress = 10%%%%\r\n" +
+			">\"%%PREFIX%%.json\" echo {{}}\r\n" +
+			"type \"%s\" 1>&2",
+			trailer,
+		),
+	)
+	defer delete(executable, context.allocator)
+
+	watched := Watched {
+		seen = make([dynamic]process.Progress, context.allocator),
+	}
+	defer delete(watched.seen)
+
+	tools, job := job_in(cache, executable)
+	produced, err := transcribe(
+		&group,
+		tools,
+		job,
+		Report{on_progress = note, user = &watched},
+		context.allocator,
+		SHORT_LIMITS,
+	)
+	defer delete(produced.output, context.allocator)
+	if !testing.expectf(t, err.fault == .None, "the Engine failed: %v", err.fault) {
+		return
+	}
+
+	testing.expect_value(t, watched.highest, 77)
 }
 
 @(test)
@@ -481,6 +505,22 @@ every_way_a_run_can_end_is_the_fault_that_names_it :: proc(t: ^testing.T) {
 	testing.expect_value(t, refused(Ending{run = .Finished}).fault, Fault.None)
 }
 
+// An Unstoppable Engine is still the caller's only record of how long it ran
+// and whether it had gone silent -- both already measured by the time stop
+// was even tried, and neither has anywhere else to go.
+@(test)
+an_unstoppable_run_still_carries_what_it_measured :: proc(t: ^testing.T) {
+	watch_state := Watch_State {
+		tracker = process.Tracker{duration_ms = 4_200},
+		silent = true,
+	}
+	ending := ending_for(.Unstoppable, watch_state, child.Error{})
+
+	testing.expect_value(t, ending.run, child.Run.Unstoppable)
+	testing.expect_value(t, ending.duration_ms, i64(4_200))
+	testing.expect_value(t, ending.silent, true)
+}
+
 @(test)
 an_executable_that_is_not_there_is_reported_and_not_asserted :: proc(t: ^testing.T) {
 	group, ok := open_group(t)
@@ -489,9 +529,9 @@ an_executable_that_is_not_there_is_reported_and_not_asserted :: proc(t: ^testing
 		return
 	}
 
-	cache := scratch_cache(t, "absent")
+	cache := testkit.made_scratch_cache(t, "engine", "absent", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 
 	tools, job := job_in(cache, "C:\\nowhere\\no-such-engine.exe")
 	produced, err := transcribe(&group, tools, job, Report{}, context.allocator, SHORT_LIMITS)
@@ -542,9 +582,9 @@ a_recording_whose_scratch_paths_the_engine_cannot_open_never_starts_one :: proc(
 		return
 	}
 
-	cache := scratch_cache(t, "not-ascii")
+	cache := testkit.made_scratch_cache(t, "engine", "not-ascii", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 
 	marker := marker_in(cache)
 	defer delete(marker, context.allocator)
@@ -574,9 +614,9 @@ every_path_one_invocation_is_handed_is_checked_and_not_just_the_prefix :: proc(t
 		return
 	}
 
-	cache := scratch_cache(t, "each-path")
+	cache := testkit.made_scratch_cache(t, "engine", "each-path", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 
 	marker := marker_in(cache)
 	defer delete(marker, context.allocator)

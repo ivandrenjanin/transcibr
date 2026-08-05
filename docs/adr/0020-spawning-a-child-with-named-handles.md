@@ -1,4 +1,4 @@
-# A child is spawned with the handles it may inherit named, and every loop over one is bounded except `src/audio`'s, which is recorded here
+# A child is spawned with the handles it may inherit named, and every loop over one is bounded
 
 Every child is created with a `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` naming **exactly two handles** —
 its own null device and the write end of its own diagnostic pipe — and every loop that reads one has
@@ -108,17 +108,24 @@ quarter of a second, and the child is not stopped dead with nothing to show for 
 `#assert(MAX_DRAIN_BYTES > DRAIN_BYTES)` holds the relationship in checked code rather than in this
 paragraph.
 
-`an_engine_that_floods_its_diagnostic_stream_is_still_stopped_at_its_bound` pins it: a stand-in that
-types a **1 MiB** flood file to stderr and then waits, run under `EXPIRING_LIMITS` whose `bound_ms`
-is **500**, and required to come back `Fault.Did_Not_Finish`. Both halves are the claim — the flood
-is drained *and* the bound is still honoured.
+`an_engine_that_floods_its_diagnostic_stream_is_still_stopped_at_its_bound` exercises it: a stand-in
+that types a **1 MiB** flood file to stderr and then waits, run under `EXPIRING_LIMITS` whose
+`bound_ms` is **500**, and required to come back `Fault.Did_Not_Finish`. **It does not pin the
+ceiling** — mutating `MAX_DRAIN_BYTES` away leaves it green, because an unbounded drain still runs
+out of flood to read and hands control back the same way, which is a distinction found only by
+mutating the code and watching what stays green. What it proves is the other half: that a flood on
+the diagnostic stream does not stop the bound from being reached.
+`child.a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood` is the one case in the tree that
+pins `MAX_DRAIN_BYTES` itself, by holding the pipe fed with a steady trickle for long enough that the
+ceiling, and not the flood running out, is what ends the drain.
 
-**This reasoning has a live second consumer.** `src/audio/run.odin`'s `drain` is still the unbounded
-shape, discarding what ffmpeg says at `-loglevel error` in a `for {}` with no ceiling. It is a
-smaller exposure — ffmpeg says almost nothing unless a Recording fails to decode, and then it says a
-line per frame — but it is the same loop, and the two files are a near-verbatim copy of one another
-pending the lift into `transcibr:child` (issue #33). Whichever change closes that duplication takes
-the ceiling with it.
+**This reasoning had a live second consumer, closed by issue #33.** `src/audio/run.odin` used to
+carry its own `drain`, an unbounded shape discarding what ffmpeg says at `-loglevel error` in a
+`for {}` with no ceiling — a smaller exposure than the Engine's, since ffmpeg says almost nothing
+unless a Recording fails to decode, but the same loop and a near-verbatim copy of the Engine's own.
+The lift moved both copies into `transcibr:child.run_bounded`, which `src/audio/run.odin` and
+`src/engine/run.odin` both call today; `src/audio/run.odin` has no drain of its own left to
+duplicate.
 
 ## Every child the suite starts is bounded, as a rule rather than a habit
 
@@ -250,26 +257,33 @@ that succeeds, three for a file to come free, half a second for a stop that must
 figures are small because each was cut to the smallest value that still fails its measured impostor,
 not to the smallest value that passes.
 
-**`src/audio`'s drain is a known live gap**, stated here rather than left to be discovered. It is
-recorded as a consequence and not as a defect because the exposure is bounded by what ffmpeg emits
-at `-loglevel error`, and because closing it properly is the lift into `transcibr:child` (issue #33)
-rather than a third copy of the same twenty lines. It is a busy spin and not a wedge:
-`child.read_diagnostics` never blocks — `PeekNamedPipe` guards the `ReadFile` and returns on
-`waiting == 0` — so the loop burns a core rather than hanging, which is why this is a consequence
-and not a stop-everything defect.
+**`src/audio`'s drain was a known live gap, closed by issue #33.** `src/audio/run.odin` no longer
+carries a drain of its own — it calls `child.run_bounded`, the same procedure
+`src/engine/run.odin` calls, so the ceiling is shared rather than duplicated. What was true of the
+gap while it stood is still true of the shared drain today: it is a busy spin and not a wedge —
+`child.read_diagnostics` never blocks, `PeekNamedPipe` guards the `ReadFile` and returns on
+`waiting == 0` — so the loop burns a core rather than hanging.
 
-Issue #33 carries both halves as acceptance criteria, and the title of this decision names the gap
-so that neither can be lost to a title nobody re-reads: the lifted drain keeps `MAX_DRAIN_BYTES`,
-and the audio path gains the flood-plus-bound test it does not have. `src/engine/engine_test.odin`
-has that test; `src/audio/run_test.odin` has no equivalent, so today nothing would go red if the
-ceiling were dropped from the copy that has one.
+Issue #33 carried both halves as acceptance criteria. The lifted drain keeps `MAX_DRAIN_BYTES`, and
+`src/audio/run_test.odin` now carries
+`a_flood_on_the_diagnostic_stream_does_not_stop_the_bound_from_being_reached`, the case
+`src/child/run_test.odin` gained from the same lift under the same name. Neither one, nor
+`src/engine/engine_test.odin`'s own copy, discriminates the ceiling itself — see above —
+`child.a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood` is the one case that does, and
+it is the one that goes red if `MAX_DRAIN_BYTES` is dropped.
 
 ## What reopens this
 
 A measured flood that reaches the megabyte ceiling on a real Engine and matters — meaning progress
 falls behind by more than a poll on material a user would actually transcribe. A machine on which a
 grandchild survives a real `TerminateJobObject`, which would turn this ADR's stated non-claim into a
-claim and change what the second wait is for. A third consumer of the poll-and-drain shape appearing
-before issue #33 lifts it, which is the point at which the duplication stops being a deferral. And
-the windowed binary of issue #15 existing, which is the first moment the console-window criterion
-can be automated at the level it is actually stated.
+claim and change what the second wait is for. And the windowed binary of issue #15 existing, which is
+the first moment the console-window criterion can be automated at the level it is actually stated.
+
+Issue #33's lift moved before a third caller existed, so the "third consumer" trigger this ADR
+originally recorded no longer applies the way it was written: `src/audio/run.odin` and
+`src/engine/run.odin` already share one copy in `transcibr:child`, and a future caller — issue #12's
+pipeline is the one named — adds a third by calling `child.run_bounded` directly, not by writing a
+third copy. What the lift did not resolve is `on_poll`'s `-> bool` signature collapsing three
+distinct stops into one `.Stopped` — recorded where it is fully stated, at `watched_poll` in
+`src/engine/run.odin`.
