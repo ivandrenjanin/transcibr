@@ -46,6 +46,11 @@ Run_Callbacks :: struct {
 	on_poll:  proc(elapsed_ns: i64, user: rawptr) -> bool,
 }
 
+// The drain after `wait` succeeds is not optional for a caller with
+// callbacks: it is what lets `on_end` see a trailing, unterminated line
+// before this reports Finished -- an Engine's last percentage arrives this
+// way. A caller with none, such as audio's silent extraction, pays one extra
+// pipe check for the same guarantee rather than a second shape.
 @(require_results)
 run_bounded :: proc(
 	group: ^Job_Object,
@@ -74,7 +79,8 @@ run_bounded :: proc(
 		if !drain_bounded(&c, started, callbacks) {
 			return halt(&c), Error{}
 		}
-		if callbacks.on_poll != nil && callbacks.on_poll(elapsed_ns(started), callbacks.user) {
+		elapsed := elapsed_ns(started)
+		if callbacks.on_poll != nil && callbacks.on_poll(elapsed, callbacks.user) {
 			return halt(&c), Error{}
 		}
 		if wait(&c, POLL_MS) {
@@ -84,7 +90,7 @@ run_bounded :: proc(
 			}
 			return .Finished, Error{}
 		}
-		if i64(time.duration_milliseconds(time.tick_since(started))) > bound_ms {
+		if elapsed / i64(time.Millisecond) > bound_ms {
 			return halt(&c), Error{}
 		}
 	}
