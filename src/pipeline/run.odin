@@ -234,7 +234,15 @@ admit_jobs :: proc(
 // A `nil` entry is a worker this tier never managed to start (thread creation
 // failed under resource exhaustion, an operating condition and not a
 // programmer error -- A8, finding 9 of PR #67's review) and is skipped rather
-// than handed to `await_or_abandon`, which asserts its thread is non-nil.
+// than handed to `await_or_abandon`, which asserts its thread is non-nil. A
+// tier with at least one thread that did start is running at reduced
+// capacity and stays "joined" once every started thread has genuinely
+// stopped; a tier where EVERY entry is nil never started at all, so nothing
+// here will ever drain its own queue, and reporting that tier "joined
+// cleanly" is what let `settle_results` assert a Terminal into existence for
+// a job nothing ever touched (finding 3 of PR #67's round-2 review) -- the
+// one-Worker transcription tier hits this on every entry, since it has no
+// second thread for "at least one started" to fall back on.
 @(private)
 @(require_results)
 close_and_join :: proc(
@@ -248,10 +256,12 @@ close_and_join :: proc(
 	assert(closed_now, "a worker tier's queue was already closed before its own shutdown began")
 
 	all_joined := true
+	any_started := false
 	for t in threads {
 		if t == nil {
 			continue
 		}
+		any_started = true
 		switch child.await_or_abandon(t, bound_ms) {
 		case .Finished, .Stopped:
 			thread.destroy(t)
@@ -259,7 +269,7 @@ close_and_join :: proc(
 			all_joined = false
 		}
 	}
-	return all_joined
+	return all_joined && any_started
 }
 
 // `working` is copied into the caller's own `results` here, and only here:

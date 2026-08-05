@@ -510,6 +510,53 @@ a_stage_that_never_returns_is_reported_abandoned_and_never_asserted :: proc(t: ^
 	testing.expect_value(t, box.results[0], Terminal.Stage_Abandoned)
 }
 
+// A worker tier close_and_join is handed is never empty (spawn_extract_workers
+// and spawn_transcribe_worker both always return one entry per worker asked
+// for), but an entry can be `nil` -- thread creation failing under resource
+// exhaustion, an operating condition and not a programmer error (A8). A `nil`
+// among several started threads is a tier running at reduced capacity and is
+// tolerated; a tier where NOTHING started is a tier that will never drain its
+// own queue, which close_and_join must report as unclean rather than as
+// joined (finding 3 of PR #67's round-2 review) -- the one-Worker
+// transcription tier is exactly this case whenever its single thread is nil.
+@(test)
+close_and_join_reports_unclean_when_every_thread_in_a_tier_never_started :: proc(t: ^testing.T) {
+	queue, err := chan.create(chan.Chan(Indexed(Fake_Job)), 1, context.allocator)
+	if !testing.expect_value(t, err, runtime.Allocator_Error.None) {
+		return
+	}
+	defer chan.destroy(queue)
+
+	clean := close_and_join(queue, []^thread.Thread{nil}, JOIN_BOUND_MS)
+	testing.expect(
+		t,
+		!clean,
+		"a tier whose only thread never started was reported as having joined cleanly",
+	)
+}
+
+@(test)
+close_and_join_still_tolerates_a_partial_nil_among_started_threads :: proc(t: ^testing.T) {
+	queue, err := chan.create(chan.Chan(Indexed(Fake_Job)), 1, context.allocator)
+	if !testing.expect_value(t, err, runtime.Allocator_Error.None) {
+		return
+	}
+	defer chan.destroy(queue)
+
+	finishes_immediately :: proc() {}
+	started := thread.create_and_start(finishes_immediately)
+	if !testing.expect(t, started != nil, "could not start a real thread for this case") {
+		return
+	}
+
+	clean := close_and_join(queue, []^thread.Thread{started, nil}, JOIN_BOUND_MS)
+	testing.expect(
+		t,
+		clean,
+		"a tier with at least one thread that genuinely started and finished was reported unclean",
+	)
+}
+
 @(test)
 every_job_reaches_a_terminal_state_success_and_failure_alike :: proc(t: ^testing.T) {
 	jobs := []Fake_Job {
