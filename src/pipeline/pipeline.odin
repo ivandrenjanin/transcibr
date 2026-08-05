@@ -25,6 +25,21 @@ Config :: struct {
 	join_bound_ms:   i64,
 }
 
+// ADR-0006's own bounds on a real Batch, asserted by `run_recordings` rather
+// than merely intended: at most two extraction Workers, and a queue depth of
+// at most two. `run_batch` itself stays generic -- a topology test drives it
+// at whatever depth its own invariant needs, `closing_the_extract_queue_-`
+// `still_delivers_every_job_already_buffered` among them -- so these bounds
+// are asserted at the one caller ADR-0006 is actually about, and enforced
+// before that at the command line (`src/cli/batch.odin`'s `read_worker_-`
+// `count`), so a value outside them is refused rather than reaching an
+// assertion at all (A8).
+MAX_EXTRACT_WORKERS :: 2
+MAX_QUEUE_DEPTH :: 2
+
+#assert(MAX_EXTRACT_WORKERS > 0)
+#assert(MAX_QUEUE_DEPTH > 0)
+
 // Every job passes through exactly one of these on the way out. `Unset` is the
 // zero value and never a real answer -- see `run_batch`'s own postcondition --
 // the same pattern `process.Disposition` already carries for the identical
@@ -37,6 +52,11 @@ Terminal :: enum u8 {
 	Not_Admitted,
 	Extract_Queue_Send_Failed,
 	Transcribe_Queue_Send_Failed,
+	// A Stage `close_and_join` gave up on rather than a Stage that answered --
+	// the job's own outcome is genuinely unknown, so it is reported as failed
+	// against its Recording (A8) and never asserted (finding 1 of PR #67's
+	// review).
+	Stage_Abandoned,
 }
 
 // The two Stages a caller supplies, and the two cleanup hooks for a Job or an
@@ -81,8 +101,6 @@ Counters :: struct {
 	lock:                       sync.Mutex,
 	active_extractions:         int,
 	active_transcriptions:      int,
-	extract_queue_depth:        int,
-	transcribe_queue_depth:     int,
 	max_active_extractions:     int,
 	max_active_transcriptions:  int,
 	max_extract_queue_depth:    int,
@@ -102,12 +120,30 @@ bump :: proc(c: ^Counters, which: Metric, delta: int) {
 	case .Transcribe_Active:
 		c.active_transcriptions += delta
 		c.max_active_transcriptions = max(c.max_active_transcriptions, c.active_transcriptions)
+	case .Extract_Depth, .Transcribe_Depth:
+		unreachable()
+	}
+}
+
+// The channel's own occupancy right after a successful send, read through
+// `core:sync/chan`'s own mutex (`chan.len`) rather than kept by a second,
+// separately-incremented counter. A counter bumped after `chan.send` returns
+// can both over- and under-report against a concurrent `recv`: this can do
+// neither, because there is nothing here to race -- `true_len` already IS the
+// truth at the instant this runs (finding 2 of PR #67's review).
+@(private)
+record_depth :: proc(c: ^Counters, which: Metric, true_len: int) {
+	assert(c != nil, "there is no counters block here to record a depth into")
+	assert(true_len >= 0, "a channel cannot hold a negative number of jobs")
+
+	sync.guard(&c.lock)
+	switch which {
 	case .Extract_Depth:
-		c.extract_queue_depth += delta
-		c.max_extract_queue_depth = max(c.max_extract_queue_depth, c.extract_queue_depth)
+		c.max_extract_queue_depth = max(c.max_extract_queue_depth, true_len)
 	case .Transcribe_Depth:
-		c.transcribe_queue_depth += delta
-		c.max_transcribe_queue_depth = max(c.max_transcribe_queue_depth, c.transcribe_queue_depth)
+		c.max_transcribe_queue_depth = max(c.max_transcribe_queue_depth, true_len)
+	case .Extract_Active, .Transcribe_Active:
+		unreachable()
 	}
 }
 

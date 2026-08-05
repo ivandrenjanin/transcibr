@@ -23,25 +23,15 @@ queue_send :: proc(
 ) -> bool {
 	ok := chan.send(c, item)
 	if ok {
-		bump(counters, which, 1)
+		record_depth(counters, which, chan.len(c))
 	}
 	return ok
 }
 
 @(private)
 @(require_results)
-queue_recv :: proc(
-	c: chan.Chan(Indexed($T)),
-	counters: ^Counters,
-	which: Metric,
-) -> (
-	item: Indexed(T),
-	ok: bool,
-) {
+queue_recv :: proc(c: chan.Chan(Indexed($T))) -> (item: Indexed(T), ok: bool) {
 	item, ok = chan.recv(c)
-	if ok {
-		bump(counters, which, -1)
-	}
 	return
 }
 
@@ -50,7 +40,7 @@ Extract_Worker_State :: struct($Job, $Extracted: typeid) {
 	extract_queue:    chan.Chan(Indexed(Job)),
 	transcribe_queue: chan.Chan(Indexed(Extracted)),
 	stages:           ^Stages(Job, Extracted),
-	results:          []Terminal,
+	working:          []Terminal,
 	counters:         ^Counters,
 }
 
@@ -59,16 +49,19 @@ Extract_Worker_State :: struct($Job, $Extracted: typeid) {
 // -- so a Job already admitted when the Batch is asked to stop still reaches
 // extraction, and this loop is what carries that through to the second queue.
 //
-// Run through `run_extract_worker` on its own thread; it does not read
-// `state` after handing it off, so it never mutates one still reachable from
-// a worker `spawn_extract_workers` had to abandon.
+// `working` is `run_batch`'s own heap-owned buffer and never the slice it
+// hands back to its own caller (see `settle_results`): a Stage this loop is
+// still inside when `close_and_join` gives up on it goes on writing here after
+// `run_batch` has already returned, and here is memory nobody frees out from
+// under it (finding 1 of PR #67's review).
 @(private)
 extract_worker_body :: proc(state: ^Extract_Worker_State($Job, $Extracted)) {
 	assert(state != nil, "an extraction worker was started with no state to run")
+	defer free(state, runtime.heap_allocator())
 	assert(state.stages.extract != nil, "an extraction worker was started with no Stage to run")
 
 	for {
-		item, ok := queue_recv(state.extract_queue, state.counters, .Extract_Depth)
+		item, ok := queue_recv(state.extract_queue)
 		if !ok {
 			return
 		}
@@ -77,7 +70,7 @@ extract_worker_body :: proc(state: ^Extract_Worker_State($Job, $Extracted)) {
 		extracted, extracted_ok := state.stages.extract(item.value)
 		bump(state.counters, .Extract_Active, -1)
 		if !extracted_ok {
-			state.results[item.index] = .Extraction_Failed
+			state.working[item.index] = .Extraction_Failed
 			continue
 		}
 
@@ -89,7 +82,7 @@ extract_worker_body :: proc(state: ^Extract_Worker_State($Job, $Extracted)) {
 			continue
 		}
 		state.stages.discard(extracted)
-		state.results[item.index] = .Transcribe_Queue_Send_Failed
+		state.working[item.index] = .Transcribe_Queue_Send_Failed
 	}
 }
 
@@ -97,20 +90,21 @@ extract_worker_body :: proc(state: ^Extract_Worker_State($Job, $Extracted)) {
 Transcribe_Worker_State :: struct($Job, $Extracted: typeid) {
 	transcribe_queue: chan.Chan(Indexed(Extracted)),
 	stages:           ^Stages(Job, Extracted),
-	results:          []Terminal,
+	working:          []Terminal,
 	counters:         ^Counters,
 }
 
 @(private)
 transcribe_worker_body :: proc(state: ^Transcribe_Worker_State($Job, $Extracted)) {
 	assert(state != nil, "a transcription worker was started with no state to run")
+	defer free(state, runtime.heap_allocator())
 	assert(
 		state.stages.transcribe != nil,
 		"a transcription worker was started with no Stage to run",
 	)
 
 	for {
-		item, ok := queue_recv(state.transcribe_queue, state.counters, .Transcribe_Depth)
+		item, ok := queue_recv(state.transcribe_queue)
 		if !ok {
 			return
 		}
@@ -118,7 +112,7 @@ transcribe_worker_body :: proc(state: ^Transcribe_Worker_State($Job, $Extracted)
 		bump(state.counters, .Transcribe_Active, 1)
 		transcribed := state.stages.transcribe(item.value)
 		bump(state.counters, .Transcribe_Active, -1)
-		state.results[item.index] = .Transcribed if transcribed else .Transcription_Failed
+		state.working[item.index] = .Transcribed if transcribed else .Transcription_Failed
 	}
 }
 
@@ -135,7 +129,7 @@ spawn_extract_workers :: proc(
 	extract_queue: chan.Chan(Indexed($Job)),
 	transcribe_queue: chan.Chan(Indexed($Extracted)),
 	stages: ^Stages(Job, Extracted),
-	results: []Terminal,
+	working: []Terminal,
 	counters: ^Counters,
 ) -> []^thread.Thread {
 	assert(count > 0, "a pipeline with no extraction workers admits nothing")
@@ -151,10 +145,14 @@ spawn_extract_workers :: proc(
 			extract_queue    = extract_queue,
 			transcribe_queue = transcribe_queue,
 			stages           = stages,
-			results          = results,
+			working          = working,
 			counters         = counters,
 		}
-		threads[i] = thread.create_and_start_with_poly_data(state, run_extract_worker)
+		t := thread.create_and_start_with_poly_data(state, run_extract_worker)
+		if t == nil {
+			free(state, runtime.heap_allocator())
+		}
+		threads[i] = t
 	}
 	return threads
 }
@@ -164,7 +162,7 @@ spawn_extract_workers :: proc(
 spawn_transcribe_worker :: proc(
 	transcribe_queue: chan.Chan(Indexed($Extracted)),
 	stages: ^Stages($Job, Extracted),
-	results: []Terminal,
+	working: []Terminal,
 	counters: ^Counters,
 ) -> ^thread.Thread {
 	run_transcribe_worker :: proc(state: ^Transcribe_Worker_State(Job, Extracted)) {
@@ -175,10 +173,14 @@ spawn_transcribe_worker :: proc(
 	state^ = Transcribe_Worker_State(Job, Extracted) {
 		transcribe_queue = transcribe_queue,
 		stages           = stages,
-		results          = results,
+		working          = working,
 		counters         = counters,
 	}
-	return thread.create_and_start_with_poly_data(state, run_transcribe_worker)
+	t := thread.create_and_start_with_poly_data(state, run_transcribe_worker)
+	if t == nil {
+		free(state, runtime.heap_allocator())
+	}
+	return t
 }
 
 // A Job that will never reach a Stage -- cancelled before it was admitted, or
@@ -189,13 +191,13 @@ spawn_transcribe_worker :: proc(
 admit_jobs :: proc(
 	jobs: []$Job,
 	extract_queue: chan.Chan(Indexed(Job)),
-	results: []Terminal,
+	working: []Terminal,
 	counters: ^Counters,
 	cancelled: ^bool,
 	stages: ^Stages(Job, $Extracted),
 ) {
 	assert(
-		len(jobs) == len(results),
+		len(jobs) == len(working),
 		"a Batch was admitted with more or fewer jobs than it has results for",
 	)
 
@@ -211,12 +213,12 @@ admit_jobs :: proc(
 			counters,
 			.Extract_Depth,
 		) {
-			results[i] = .Extract_Queue_Send_Failed
+			working[i] = .Extract_Queue_Send_Failed
 			stages.abandon_job(job)
 		}
 	}
 	for i in stopped_at ..< len(jobs) {
-		results[i] = .Not_Admitted
+		working[i] = .Not_Admitted
 		stages.abandon_job(jobs[i])
 	}
 }
@@ -228,6 +230,11 @@ admit_jobs :: proc(
 // and a bound sized against that Stage's own internal bound (Config.join_-
 // `bound_ms`) is what makes `.Unstoppable` here mean a genuine wedge rather
 // than a Stage still legitimately working.
+//
+// A `nil` entry is a worker this tier never managed to start (thread creation
+// failed under resource exhaustion, an operating condition and not a
+// programmer error -- A8, finding 9 of PR #67's review) and is skipped rather
+// than handed to `await_or_abandon`, which asserts its thread is non-nil.
 @(private)
 @(require_results)
 close_and_join :: proc(
@@ -242,6 +249,9 @@ close_and_join :: proc(
 
 	all_joined := true
 	for t in threads {
+		if t == nil {
+			continue
+		}
 		switch child.await_or_abandon(t, bound_ms) {
 		case .Finished, .Stopped:
 			thread.destroy(t)
@@ -252,11 +262,165 @@ close_and_join :: proc(
 	return all_joined
 }
 
+// `working` is copied into the caller's own `results` here, and only here:
+// every write a worker thread makes lands on `working`, never on `results`
+// directly, so a Stage `close_and_join` gave up on can go on writing after
+// this returns without ever touching memory the caller might already have
+// freed (finding 1 of PR #67's review). An index still `.Unset` once every
+// worker has genuinely joined is `run_batch`'s own postcondition and stays an
+// assertion; one still `.Unset` because some Stage never came back within its
+// bound is the operating condition A8 asks for -- reported as
+// `.Stage_Abandoned` against that Recording, and the Batch goes on rather
+// than crashing.
+//
+// Reading `working` here while an abandoned worker may still be writing it is
+// a benign race and not a memory hazard: `working` is never freed while
+// `clean` is false (the caller leaks it deliberately, the same precedent
+// issue #27 set for `child.Read_Job.bytes`), and `Terminal` is one byte, so
+// there is no tearing to observe -- only a value that may still be `.Unset`
+// a moment before the abandoned worker finally writes it, which is exactly
+// the case `.Stage_Abandoned` is for.
+@(private)
+settle_results :: proc(results: []Terminal, working: []Terminal, clean: bool) {
+	assert(
+		len(results) == len(working),
+		"a Batch's own results and working buffers drifted apart in length",
+	)
+
+	for status, i in working {
+		results[i] = status
+	}
+	if clean {
+		for status in results {
+			assert(
+				status != .Unset,
+				"a job never reached a terminal state though every worker joined cleanly",
+			)
+		}
+		return
+	}
+	for &status in results {
+		if status == .Unset {
+			status = .Stage_Abandoned
+		}
+	}
+}
+
+// A queue that could not even be created is a resource this Batch ran out of,
+// not a programmer error (A8, finding 9 of PR #67's review): every Job is
+// refused up front, directly into the caller's own `results` -- no worker
+// tier was ever spawned here, so nothing crosses a thread boundary and
+// `results` is safe to write synchronously. `chan.destroy` is nil-safe (see
+// `core:sync/chan`'s own `destroy`), so the queue that failed to create and
+// the one that came through both go through the same call unconditionally.
+@(private)
+@(require_results)
+queues_unavailable :: proc(
+	jobs: []$Job,
+	results: []Terminal,
+	stages: ^Stages(Job, $Extracted),
+	counters: ^Counters,
+	extract_queue: chan.Chan(Indexed(Job)),
+	transcribe_queue: chan.Chan(Indexed(Extracted)),
+) -> Observed {
+	assert(
+		len(jobs) == len(results),
+		"a Batch was refused more or fewer Jobs than it has results for",
+	)
+
+	for job, i in jobs {
+		results[i] = .Extract_Queue_Send_Failed
+		stages.abandon_job(job)
+	}
+	chan.destroy(extract_queue)
+	chan.destroy(transcribe_queue)
+	free(stages, runtime.heap_allocator())
+	free(counters, runtime.heap_allocator())
+	return Observed{}
+}
+
+// Both channels or neither: `run_batch` never runs a Batch through one
+// channel it could create and one it could not. `queues_unavailable` settles
+// `results` and frees `stages`/`counters` on the failure path, so `run_batch`
+// itself only has a length to decide.
+@(private)
+@(require_results)
+open_queues :: proc(
+	jobs: []$Job,
+	results: []Terminal,
+	stages: ^Stages(Job, $Extracted),
+	counters: ^Counters,
+	depth: int,
+	allocator: mem.Allocator,
+) -> (
+	extract_queue: chan.Chan(Indexed(Job)),
+	transcribe_queue: chan.Chan(Indexed(Extracted)),
+	observed: Observed,
+	ok: bool,
+) {
+	extract_err, transcribe_err: runtime.Allocator_Error
+	extract_queue, extract_err = chan.create(chan.Chan(Indexed(Job)), depth, allocator)
+	transcribe_queue, transcribe_err = chan.create(chan.Chan(Indexed(Extracted)), depth, allocator)
+	if extract_err == .None && transcribe_err == .None {
+		return extract_queue, transcribe_queue, Observed{}, true
+	}
+	observed = queues_unavailable(jobs, results, stages, counters, extract_queue, transcribe_queue)
+	return extract_queue, transcribe_queue, observed, false
+}
+
+// Close and join both tiers, in ADR-0006's order, then decide what every
+// buffer this Batch owns gets to become: `transcribe_queue` is written by
+// BOTH tiers (extraction sends into it, transcription receives from it), so
+// it is only ever destroyed once both have actually joined -- destroying it
+// while an extraction worker `close_and_join` gave up on might still be
+// blocked sending into it is the identical hazard `settle_results` guards
+// `working` against, just against a queue rather than a slice.
+@(private)
+@(require_results)
+shut_down_and_settle :: proc(
+	extract_queue: chan.Chan(Indexed($Job)),
+	extract_threads: []^thread.Thread,
+	transcribe_queue: chan.Chan(Indexed($Extracted)),
+	transcribe_thread: ^thread.Thread,
+	stages: ^Stages(Job, Extracted),
+	counters: ^Counters,
+	results: []Terminal,
+	working: []Terminal,
+	bound_ms: i64,
+) -> Observed {
+	extract_clean := close_and_join(extract_queue, extract_threads, bound_ms)
+
+	transcribe_threads := []^thread.Thread{transcribe_thread}
+	assert(
+		len(transcribe_threads) == 1,
+		"ADR-0006's one transcription Worker is asserted, not merely intended",
+	)
+	transcribe_clean := close_and_join(transcribe_queue, transcribe_threads, bound_ms)
+	delete(extract_threads, runtime.heap_allocator())
+
+	observed := observed_of(counters)
+	clean := extract_clean && transcribe_clean
+	if extract_clean {
+		chan.destroy(extract_queue)
+	}
+	if clean {
+		chan.destroy(transcribe_queue)
+		free(stages, runtime.heap_allocator())
+		free(counters, runtime.heap_allocator())
+	}
+
+	settle_results(results, working, clean)
+	if clean {
+		delete(working, runtime.heap_allocator())
+	}
+	return observed
+}
+
 // Job count, worker configuration and fake Stages in, observed concurrency
 // out (S4, docs/spec/0001-transcibr-v1.md). `results` and `observed` answer
 // together: every index of the first is a terminal Terminal by the time this
-// returns, asserted below, and the second is what a topology test checks its
-// invariants against.
+// returns, asserted in `settle_results`, and the second is what a topology
+// test checks its invariants against.
 @(require_results)
 run_batch :: proc(
 	jobs: []$Job,
@@ -277,50 +441,46 @@ run_batch :: proc(
 	assert(allocator.procedure != nil, "the results outlive this procedure and need an allocator")
 
 	results = make([]Terminal, len(jobs), allocator)
+	working := make([]Terminal, len(jobs), runtime.heap_allocator())
 	counters := new(Counters, runtime.heap_allocator())
 	stages_box := new(Stages(Job, Extracted), runtime.heap_allocator())
 	stages_box^ = stages
 
-	extract_queue, _ := chan.create(chan.Chan(Indexed(Job)), config.queue_depth, allocator)
-	transcribe_queue, _ := chan.create(
-		chan.Chan(Indexed(Extracted)),
+	extract_queue, transcribe_queue, early_observed, opened := open_queues(
+		jobs,
+		results,
+		stages_box,
+		counters,
 		config.queue_depth,
 		allocator,
 	)
+	if !opened {
+		observed = early_observed
+		delete(working, runtime.heap_allocator())
+		return
+	}
 
 	extract_threads := spawn_extract_workers(
 		config.extract_workers,
 		extract_queue,
 		transcribe_queue,
 		stages_box,
-		results,
+		working,
 		counters,
 	)
-	transcribe_thread := spawn_transcribe_worker(transcribe_queue, stages_box, results, counters)
+	transcribe_thread := spawn_transcribe_worker(transcribe_queue, stages_box, working, counters)
+	admit_jobs(jobs, extract_queue, working, counters, cancelled, stages_box)
 
-	admit_jobs(jobs, extract_queue, results, counters, cancelled, stages_box)
-
-	extract_clean := close_and_join(extract_queue, extract_threads, config.join_bound_ms)
-	transcribe_clean := close_and_join(
+	observed = shut_down_and_settle(
+		extract_queue,
+		extract_threads,
 		transcribe_queue,
-		[]^thread.Thread{transcribe_thread},
+		transcribe_thread,
+		stages_box,
+		counters,
+		results,
+		working,
 		config.join_bound_ms,
 	)
-	delete(extract_threads, runtime.heap_allocator())
-
-	observed = observed_of(counters)
-	if extract_clean {
-		chan.destroy(extract_queue)
-	}
-	if transcribe_clean {
-		chan.destroy(transcribe_queue)
-	}
-	if extract_clean && transcribe_clean {
-		free(stages_box, runtime.heap_allocator())
-		free(counters, runtime.heap_allocator())
-	}
-	for status in results {
-		assert(status != .Unset, "a job never reached a terminal state")
-	}
 	return
 }
