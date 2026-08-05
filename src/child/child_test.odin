@@ -9,6 +9,7 @@ import win32 "core:sys/windows"
 import "core:testing"
 import "core:time"
 import "transcibr:process"
+import "transcibr:testkit"
 
 // A second `foreign import` of Kernel32 under a second name, because one name
 // cannot be bound twice in one package.
@@ -101,6 +102,13 @@ scratch_path :: proc(t: ^testing.T, name: string, allocator: mem.Allocator) -> s
 
 // The caller still writes its own `defer job_object_close(&group)`: the object
 // has to outlive this procedure.
+//
+// Copied rather than shared through transcibr:testkit: this file is part of
+// package child, and a version of this procedure in testkit would need
+// job_object_open from transcibr:child -- which package child cannot import
+// back through testkit without a cycle. audio and engine keep their own
+// copies of the same few lines rather than the one package gaining a cycle
+// only child's own suite would hit.
 @(private)
 @(require_results)
 open_group :: proc(t: ^testing.T) -> (group: Job_Object, ok: bool) {
@@ -110,23 +118,6 @@ open_group :: proc(t: ^testing.T) -> (group: Job_Object, ok: bool) {
 		return group, false
 	}
 	return group, true
-}
-
-// MEASURED: `waitfor` registers its signal name machine-wide, and a second
-// instance asking for a name already registered fails at once. Five cases
-// sharing one name turned a different case red on each concurrent run.
-@(private)
-@(require_results)
-lonely_signal :: proc(tag: string, allocator: mem.Allocator) -> string {
-	assert(len(tag) > 0, "a signal name shared by two cases is a signal one of them cannot have")
-	assert(allocator.procedure != nil, "the name outlives this procedure and needs an allocator")
-
-	return fmt.aprintf(
-		"transcibrNoSignal%d%s",
-		win32.GetCurrentProcessId(),
-		tag,
-		allocator = allocator,
-	)
 }
 
 // `waitfor /t` returns on its own when nobody signals it, and nothing here ever
@@ -139,7 +130,7 @@ stays_alive :: proc(seconds: int, tag: string, allocator: mem.Allocator) -> stri
 		"the command line outlives this procedure and needs an allocator",
 	)
 
-	name := lonely_signal(tag, allocator)
+	name := testkit.lonely_signal("Child", tag, allocator)
 	defer delete(name, allocator)
 
 	return fmt.aprintf("waitfor /t %d %s", seconds, name, allocator = allocator)
@@ -632,7 +623,7 @@ a_stopped_child_has_let_go_of_the_file_it_held :: proc(t: ^testing.T) {
 		return
 	}
 
-	name := lonely_signal("heldopen", context.allocator)
+	name := testkit.lonely_signal("Child", "heldopen", context.allocator)
 	defer delete(name, context.allocator)
 	block := fmt.aprintf("%s)", name, allocator = context.allocator)
 	defer delete(block, context.allocator)
@@ -704,7 +695,7 @@ stop_is_false_while_something_the_child_started_is_still_running :: proc(t: ^tes
 		return
 	}
 
-	name := lonely_signal("outlived", context.allocator)
+	name := testkit.lonely_signal("Child", "outlived", context.allocator)
 	defer delete(name, context.allocator)
 	seconds := fmt.aprintf("%d", LONGER_SECONDS, allocator = context.allocator)
 	defer delete(seconds, context.allocator)

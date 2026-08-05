@@ -4,10 +4,10 @@ package engine
 import "core:fmt"
 import "core:os"
 import "core:strings"
-import win32 "core:sys/windows"
 import "core:testing"
 import "transcibr:child"
 import "transcibr:process"
+import "transcibr:testkit"
 
 // The shell half, against real children and a real scratch cache. Every child
 // here is bounded; see ADR-0020.
@@ -53,52 +53,6 @@ EXPIRING_LIMITS :: Limits {
 
 @(private)
 LONGER_SECONDS :: 25
-
-// `waitfor` names are machine-wide, so a name carries the process id and no two
-// runs can release each other's children.
-@(private)
-@(require_results)
-lonely_signal :: proc(tag: string) -> string {
-	assert(len(tag) > 0, "a signal name shared by two cases is a signal one of them cannot have")
-
-	return fmt.aprintf(
-		"transcibrEngineNoSignal%d%s",
-		win32.GetCurrentProcessId(),
-		tag,
-		allocator = context.allocator,
-	)
-}
-
-// The caller frees the path and removes the directory.
-@(private)
-@(require_results)
-scratch_cache :: proc(t: ^testing.T, tag: string) -> string {
-	directory := os.get_env("TEMP", context.allocator)
-	defer delete(directory, context.allocator)
-	testing.expect(t, len(directory) > 0, "TEMP names nowhere to put a scratch cache")
-
-	cache := fmt.aprintf(
-		"%s\\transcibr-engine-%d-%s",
-		directory,
-		os.get_pid(),
-		tag,
-		allocator = context.allocator,
-	)
-	testing.expect(t, os.make_directory_all(cache) == nil, "could not make a scratch cache")
-	return cache
-}
-
-@(private)
-remove_cache :: proc(cache: string) {
-	listing, unreadable := os.read_all_directory_by_path(cache, context.allocator)
-	if unreadable == nil {
-		defer os.file_info_slice_delete(listing, context.allocator)
-		for info in listing {
-			os.remove(info.fullpath)
-		}
-	}
-	os.remove(cache)
-}
 
 // It walks its own arguments for `-of` rather than being handed the path, so the
 // file transcibr goes back to afterwards must be the one the Engine was told to
@@ -173,6 +127,11 @@ job_in :: proc(
 	return tools, job
 }
 
+// Kept local rather than moved into transcibr:testkit: testkit carries no
+// dependency on transcibr:child, on purpose, because src/child/child_test.odin
+// is itself part of that package and could not import a testkit that imported
+// it back. audio and engine each keep this same handful of lines rather than
+// the one package gaining a cycle only child's own suite would hit.
 @(private)
 @(require_results)
 open_group :: proc(t: ^testing.T) -> (group: child.Job_Object, ok: bool) {
@@ -204,9 +163,9 @@ a_stand_in_engine_that_reports_progress_drives_the_display :: proc(t: ^testing.T
 		return
 	}
 
-	cache := scratch_cache(t, "reports")
+	cache := testkit.made_scratch_cache(t, "engine", "reports", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 
 	executable := stand_in(
 		t,
@@ -254,9 +213,9 @@ an_engine_that_produced_nothing_is_a_failure_whatever_it_exited_with :: proc(t: 
 		return
 	}
 
-	cache := scratch_cache(t, "nothing")
+	cache := testkit.made_scratch_cache(t, "engine", "nothing", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 
 	executable := stand_in(
 		t,
@@ -281,9 +240,9 @@ an_engine_that_produced_an_empty_file_is_a_failure :: proc(t: ^testing.T) {
 		return
 	}
 
-	cache := scratch_cache(t, "empty")
+	cache := testkit.made_scratch_cache(t, "engine", "empty", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 
 	executable := stand_in(t, cache, "empty", "type nul > \"%PREFIX%.json\"")
 	defer delete(executable, context.allocator)
@@ -303,11 +262,11 @@ an_engine_that_says_nothing_at_all_is_stopped_before_its_bound_runs_out :: proc(
 		return
 	}
 
-	cache := scratch_cache(t, "silent")
+	cache := testkit.made_scratch_cache(t, "engine", "silent", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 
-	name := lonely_signal("silent")
+	name := testkit.lonely_signal("Engine", "silent", context.allocator)
 	defer delete(name, context.allocator)
 	executable := stand_in(
 		t,
@@ -345,11 +304,11 @@ an_engine_whose_progress_format_this_reader_cannot_read_still_drives_the_display
 		return
 	}
 
-	cache := scratch_cache(t, "estimate")
+	cache := testkit.made_scratch_cache(t, "engine", "estimate", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 
-	name := lonely_signal("estimate")
+	name := testkit.lonely_signal("Engine", "estimate", context.allocator)
 	defer delete(name, context.allocator)
 	executable := stand_in(
 		t,
@@ -409,11 +368,11 @@ an_engine_that_outlives_its_bound_is_stopped_and_told_apart_from_a_silent_one ::
 		return
 	}
 
-	cache := scratch_cache(t, "bound")
+	cache := testkit.made_scratch_cache(t, "engine", "bound", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 
-	name := lonely_signal("bound")
+	name := testkit.lonely_signal("Engine", "bound", context.allocator)
 	defer delete(name, context.allocator)
 	executable := stand_in(
 		t,
@@ -438,13 +397,13 @@ an_engine_that_floods_its_diagnostic_stream_is_still_stopped_at_its_bound :: pro
 		return
 	}
 
-	cache := scratch_cache(t, "flood")
+	cache := testkit.made_scratch_cache(t, "engine", "flood", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 
 	flood := flood_file(t, cache, "flood", 1 << 20)
 	defer delete(flood, context.allocator)
-	name := lonely_signal("flood")
+	name := testkit.lonely_signal("Engine", "flood", context.allocator)
 	defer delete(name, context.allocator)
 	executable := stand_in(
 		t,
@@ -489,9 +448,9 @@ an_executable_that_is_not_there_is_reported_and_not_asserted :: proc(t: ^testing
 		return
 	}
 
-	cache := scratch_cache(t, "absent")
+	cache := testkit.made_scratch_cache(t, "engine", "absent", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 
 	tools, job := job_in(cache, "C:\\nowhere\\no-such-engine.exe")
 	produced, err := transcribe(&group, tools, job, Report{}, context.allocator, SHORT_LIMITS)
@@ -542,9 +501,9 @@ a_recording_whose_scratch_paths_the_engine_cannot_open_never_starts_one :: proc(
 		return
 	}
 
-	cache := scratch_cache(t, "not-ascii")
+	cache := testkit.made_scratch_cache(t, "engine", "not-ascii", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 
 	marker := marker_in(cache)
 	defer delete(marker, context.allocator)
@@ -574,9 +533,9 @@ every_path_one_invocation_is_handed_is_checked_and_not_just_the_prefix :: proc(t
 		return
 	}
 
-	cache := scratch_cache(t, "each-path")
+	cache := testkit.made_scratch_cache(t, "engine", "each-path", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 
 	marker := marker_in(cache)
 	defer delete(marker, context.allocator)

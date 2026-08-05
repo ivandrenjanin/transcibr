@@ -8,6 +8,7 @@ import win32 "core:sys/windows"
 import "core:testing"
 import "core:time"
 import "transcibr:child"
+import "transcibr:testkit"
 
 @(private)
 CMD :: "cmd.exe"
@@ -37,38 +38,6 @@ SETTLING_GAP_NS :: i64(2_000_000_000)
 @(private)
 UNSETTLED_GAP_NS :: i64(50_000_000)
 
-// Names a place and does not create it -- the procedures under test do that.
-// The caller frees the path and removes the directory.
-@(private)
-@(require_results)
-scratch_cache :: proc(t: ^testing.T, tag: string) -> string {
-	directory := os.get_env("TEMP", context.allocator)
-	defer delete(directory, context.allocator)
-	testing.expect(t, len(directory) > 0, "TEMP names nowhere to put a scratch cache")
-
-	return fmt.aprintf(
-		"%s\\transcibr-audio-%d-%s",
-		directory,
-		os.get_pid(),
-		tag,
-		allocator = context.allocator,
-	)
-}
-
-// Best effort: a case that failed half-way should not fail a second time on the
-// way out.
-@(private)
-remove_cache :: proc(cache: string) {
-	listing, unreadable := os.read_all_directory_by_path(cache, context.allocator)
-	if unreadable == nil {
-		defer os.file_info_slice_delete(listing, context.allocator)
-		for info in listing {
-			os.remove(info.fullpath)
-		}
-	}
-	os.remove(cache)
-}
-
 // The caller frees the path. The age is set and never waited for, which is what
 // makes any of this a case at all: the sweep's ceilings are days and its floor
 // is an hour.
@@ -92,23 +61,11 @@ aged_file :: proc(
 	return path
 }
 
-// `waitfor` registers its signal name machine-wide, and a second instance asking
-// for a name already registered fails at once -- so cases that share one name
-// make a different one red on each run. The process id keeps two sweeps apart;
-// the tag keeps two cases apart.
-@(private)
-@(require_results)
-lonely_signal :: proc(tag: string) -> string {
-	assert(len(tag) > 0, "a signal name shared by two cases is a signal one of them cannot have")
-
-	return fmt.aprintf(
-		"transcibrAudioNoSignal%d%s",
-		os.get_pid(),
-		tag,
-		allocator = context.allocator,
-	)
-}
-
+// Kept local rather than moved into transcibr:testkit: testkit carries no
+// dependency on transcibr:child, on purpose, because src/child/child_test.odin
+// is itself part of that package and could not import a testkit that imported
+// it back. audio and engine each keep this same handful of lines rather than
+// the one package gaining a cycle only child's own suite would hit.
 @(private)
 @(require_results)
 open_group :: proc(t: ^testing.T) -> (group: child.Job_Object, ok: bool) {
@@ -122,9 +79,9 @@ open_group :: proc(t: ^testing.T) -> (group: child.Job_Object, ok: bool) {
 
 @(test)
 a_sweep_of_a_real_cache_takes_what_it_chose_and_nothing_else :: proc(t: ^testing.T) {
-	cache := scratch_cache(t, "sweep")
+	cache := testkit.scratch_cache(t, "audio", "sweep", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
 
 	stale := aged_file(t, cache, "stale.wav", 1024, 30 * 24 * time.Hour)
@@ -147,9 +104,9 @@ a_sweep_leaves_a_directory_in_the_cache_alone :: proc(t: ^testing.T) {
 		spare_age_ns = 0,
 	}
 
-	cache := scratch_cache(t, "directory")
+	cache := testkit.scratch_cache(t, "audio", "directory", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
 
 	inner := fmt.aprintf("%s\\somebody-elses", cache, allocator = context.allocator)
@@ -169,9 +126,9 @@ a_sweep_leaves_a_directory_in_the_cache_alone :: proc(t: ^testing.T) {
 
 @(test)
 a_cache_file_nothing_can_open_still_counts_towards_the_size_ceiling :: proc(t: ^testing.T) {
-	cache := scratch_cache(t, "held")
+	cache := testkit.scratch_cache(t, "audio", "held", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
 
 	held := aged_file(t, cache, "held.bin", 2048, 30 * 24 * time.Hour)
@@ -229,9 +186,9 @@ a_cache_under_a_path_the_engine_cannot_open_is_refused_before_it_is_created :: p
 
 @(test)
 the_head_of_a_real_wav_on_disk_walks_to_its_data_chunk :: proc(t: ^testing.T) {
-	cache := scratch_cache(t, "head")
+	cache := testkit.scratch_cache(t, "audio", "head", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
 
 	path := fmt.aprintf("%s\\audio.wav", cache, allocator = context.allocator)
@@ -252,7 +209,7 @@ the_head_of_a_real_wav_on_disk_walks_to_its_data_chunk :: proc(t: ^testing.T) {
 
 @(test)
 a_head_read_from_a_file_that_is_not_there_is_refused :: proc(t: ^testing.T) {
-	cache := scratch_cache(t, "missing")
+	cache := testkit.scratch_cache(t, "audio", "missing", context.allocator)
 	defer delete(cache, context.allocator)
 	path := fmt.aprintf("%s\\never-written.wav", cache, allocator = context.allocator)
 	defer delete(path, context.allocator)
@@ -264,9 +221,9 @@ a_head_read_from_a_file_that_is_not_there_is_refused :: proc(t: ^testing.T) {
 
 @(test)
 a_recording_looked_at_too_soon_is_looked_at_again_rather_than_refused :: proc(t: ^testing.T) {
-	cache := scratch_cache(t, "settle")
+	cache := testkit.scratch_cache(t, "audio", "settle", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
 
 	source := aged_file(t, cache, "source.mp4", 4096, 0)
@@ -289,9 +246,9 @@ a_recording_looked_at_too_soon_is_looked_at_again_rather_than_refused :: proc(t:
 
 @(test)
 a_recording_that_was_never_shown_to_stop_changing_is_refused_not_accepted :: proc(t: ^testing.T) {
-	cache := scratch_cache(t, "unsettled")
+	cache := testkit.scratch_cache(t, "audio", "unsettled", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
 
 	source := aged_file(t, cache, "source.mp4", 4096, 0)
@@ -307,9 +264,9 @@ a_recording_that_was_never_shown_to_stop_changing_is_refused_not_accepted :: pro
 
 @(test)
 the_one_failure_that_leaves_a_part_behind_is_an_ffmpeg_that_would_not_stop :: proc(t: ^testing.T) {
-	cache := scratch_cache(t, "part")
+	cache := testkit.scratch_cache(t, "audio", "part", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
 
 	part := fmt.aprintf("%s\\one.wav.part", cache, allocator = context.allocator)
@@ -352,7 +309,7 @@ a_child_that_exits_inside_its_bound_ran_to_completion :: proc(t: ^testing.T) {
 
 @(test)
 a_child_that_outlives_its_bound_is_stopped_rather_than_waited_for :: proc(t: ^testing.T) {
-	signal := lonely_signal("bound")
+	signal := testkit.lonely_signal("Audio", "bound", context.allocator)
 	defer delete(signal, context.allocator)
 	command := fmt.aprintf(
 		"waitfor /t %d %s",
@@ -434,14 +391,14 @@ flood_file :: proc(t: ^testing.T, cache: string, bytes: int) -> string {
 // drained, and the bound is still honoured despite it.
 @(test)
 a_child_that_floods_its_diagnostic_stream_is_still_stopped_at_its_bound :: proc(t: ^testing.T) {
-	cache := scratch_cache(t, "flood")
+	cache := testkit.scratch_cache(t, "audio", "flood", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache)
+	defer testkit.remove_cache(cache, context.allocator)
 	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
 
 	flood := flood_file(t, cache, 1 << 20)
 	defer delete(flood, context.allocator)
-	signal := lonely_signal("flood")
+	signal := testkit.lonely_signal("Audio", "flood", context.allocator)
 	defer delete(signal, context.allocator)
 	command := fmt.aprintf(
 		"type %s 1>&2 & waitfor /t %d %s",

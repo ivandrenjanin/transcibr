@@ -7,6 +7,7 @@ import "core:os"
 import "core:strings"
 import "core:testing"
 import "core:time"
+import "transcibr:testkit"
 
 @(private)
 CHILD_RUN_BOUND_MS :: i64(60_000)
@@ -42,7 +43,7 @@ a_child_that_exits_inside_its_bound_ran_to_completion :: proc(t: ^testing.T) {
 
 @(test)
 a_child_that_outlives_its_bound_is_stopped_rather_than_waited_for :: proc(t: ^testing.T) {
-	signal := lonely_signal("boundedrun", context.allocator)
+	signal := testkit.lonely_signal("Child", "boundedrun", context.allocator)
 	defer delete(signal, context.allocator)
 	command := fmt.aprintf(
 		"waitfor /t %d %s",
@@ -190,7 +191,7 @@ always_stop :: proc(elapsed_ns: i64, user: rawptr) -> bool {
 
 @(test)
 a_run_stops_early_when_its_own_callback_asks_it_to :: proc(t: ^testing.T) {
-	signal := lonely_signal("earlystop", context.allocator)
+	signal := testkit.lonely_signal("Child", "earlystop", context.allocator)
 	defer delete(signal, context.allocator)
 	command := fmt.aprintf(
 		"waitfor /t %d %s",
@@ -257,7 +258,7 @@ flood_command :: proc(
 		return path, ""
 	}
 
-	signal := lonely_signal(name, allocator)
+	signal := testkit.lonely_signal("Child", name, allocator)
 	defer delete(signal, allocator)
 	command = fmt.aprintf(
 		"type %s 1>&2 & waitfor /t %d %s",
