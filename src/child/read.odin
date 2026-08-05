@@ -14,20 +14,43 @@ import "core:time"
 // device -- CON, AUX, COM1 -- whose read never returns even with stdin from
 // the null device, and a stalled network share or a named pipe with nobody
 // writing to it block the identical way (issue #27). Nothing about a blocked
-// ReadFile can be polled or cancelled from outside it, so the read runs on
-// its own thread and this package polls THAT the way run_bounded polls a
-// child: a ceiling, and abandon whatever has not finished inside it rather
-// than wait on it forever.
+// ReadFile can be polled from outside it, so the read runs on its own thread
+// and this package polls THAT the way run_bounded polls a child: a ceiling,
+// and past it, `win32.CancelSynchronousIo` asks the thread's own blocked call
+// to return before anything is ever left to leak -- see `Wait` below for what
+// happens when that does not work.
 
 // Order of magnitude alongside STOP_BOUND_MS, on purpose: both answer "how
-// long transcibr waits for something outside it to answer". The largest
-// thing this reads is a multi-megabyte Engine output, which comes back in
-// well under a second even off a slow disk -- thirty seconds is margin
-// against a stalled network share, not against a file this size taking that
-// long to read.
+// long transcibr waits for something outside it to answer". Grounded rather
+// than assumed: the committed fixture (`transcibr:transcript`'s
+// `engine-output.json`) is 2,335 bytes for 30,356 ms of audio -- about 77
+// bytes of Engine JSON per second transcribed. Scaled to the corpus's longest
+// Recording, 168 minutes (docs/spec/0001-transcibr-v1.md), at the SAME
+// segment density that gives about 760 KiB; a Recording segmented several
+// times denser than the fixture -- short, choppy phrases throughout -- still
+// lands in the low megabytes. Even a pessimistic 8 MiB has only to average
+// 267 KiB/s over thirty seconds to land inside the bound, which is well
+// below what "slow but still answering" means for a share -- a share slower
+// than that is the wedge this bound exists to abandon, not a Recording it
+// should have finished with.
+// `a_worst_case_sized_engine_output_reads_well_within_its_bound` in
+// read_test.odin is what pins this against real disk I/O, using
+// READ_BOUND_MS itself rather than a shortened stand-in.
 READ_BOUND_MS :: i64(30_000)
 
 #assert(READ_BOUND_MS > 0)
+
+// Deliberately smaller than READ_BOUND_MS: once cancellation is requested,
+// the thread only has to let its already-blocked call return with an error,
+// not finish the read it was abandoned for not finishing. Measured against
+// eight reads blocked on a named pipe nobody was writing to, cancelled and
+// joined together: 6.5 ms total, thread count back at its exact baseline.
+// Five seconds is margin against a slower machine, not the expected cost.
+@(private)
+CANCEL_BOUND_MS :: i64(5_000)
+
+#assert(CANCEL_BOUND_MS > 0)
+#assert(CANCEL_BOUND_MS < READ_BOUND_MS)
 
 // Fine enough that a short bound in a test is not spent entirely on
 // granularity, and far too coarse to matter against a read actually worth
@@ -51,6 +74,58 @@ Read_Error :: struct {
 	os_error: os.Error,
 }
 
+// What waiting on a thread this package cannot otherwise poll came to. The
+// vocabulary matches `Run` in run.odin on purpose, one layer down: `Finished`
+// is a natural end, `Stopped` is one this package asked for and got, and
+// `Unstoppable` is the one case nothing here could end -- the same three
+// shapes `stop` in child.odin already reports for a whole process.
+Wait :: enum u8 {
+	Finished,
+	Stopped,
+	Unstoppable,
+}
+
+// The generic engine behind every bounded blocking call in this tree, not
+// only a read: wait up to `bound_ms` for `t` to finish, and if it has not,
+// ask `win32.CancelSynchronousIo` to unblock whatever synchronous Win32 call
+// it is inside and give it `CANCEL_BOUND_MS` more to actually stop before
+// giving up on it for good.
+//
+// `.Finished` and `.Stopped` both mean `t` is done and safe to
+// `thread.destroy`, and whatever its worker was writing into is safe to
+// read. `.Unstoppable` means the opposite: neither `t` nor what its worker
+// was writing into may be touched again -- FALSE MEANS SOMETHING MAY STILL
+// BE HOLDING IT, the same contract `stop` documents for a child, one layer
+// down. A caller whose worker writes into memory that might outlive it this
+// way needs that memory on a heap nothing but process exit ever reclaims,
+// the way `job_allocator` is for a Read_Job.
+@(require_results)
+await_or_abandon :: proc(t: ^thread.Thread, bound_ms: i64) -> Wait {
+	assert(t != nil, "there is no thread here to wait for")
+	assert(bound_ms > 0, "a wait for no time at all cannot tell a wedge from a fast answer")
+
+	started := time.tick_now()
+	for {
+		if thread.is_done(t) {
+			return .Finished
+		}
+		if i64(time.duration_milliseconds(time.tick_since(started))) > bound_ms {
+			break
+		}
+		time.sleep(READ_POLL)
+	}
+
+	cancelling := time.tick_now()
+	for !thread.is_done(t) {
+		if i64(time.duration_milliseconds(time.tick_since(cancelling))) > CANCEL_BOUND_MS {
+			return .Unstoppable
+		}
+		_ = CancelSynchronousIo(t.win32_thread)
+		time.sleep(READ_POLL)
+	}
+	return .Stopped
+}
+
 @(private)
 Read_Job :: struct {
 	path:     string,
@@ -70,8 +145,8 @@ Read_Job :: struct {
 // thread might still touch after its caller has stopped waiting on it goes
 // through this fixed, always-valid heap instead -- `finished` is where a
 // completed read's answer crosses back onto the caller's own allocator, and
-// `read_bounded` is why nothing here is freed when a read is abandoned
-// instead.
+// `release_job` is why nothing here is freed while a read is genuinely
+// abandoned instead.
 @(private)
 @(require_results)
 job_allocator :: proc() -> mem.Allocator {
@@ -87,16 +162,19 @@ read_worker :: proc(data: rawptr) {
 	job.bytes, job.os_error = os.read_entire_file_from_path(job.path, job_allocator())
 }
 
-// Abandoned past its bound rather than joined: nothing may free `job`, or
-// the path or bytes it owns, while the thread reading into it might still be
-// running -- the same FALSE-MEANS-SOMETHING-MAY-STILL-BE-HOLDING-IT contract
-// `stop` carries for a child (child.odin). A read abandoned this way leaks
-// one Read_Job, its path, and whatever bytes the thread eventually reads,
-// all on `job_allocator`'s heap and never on the caller's own: accepted for
-// the reason `Unstoppable` is accepted elsewhere in this package -- there is
-// no safe way to reclaim memory a thread may still be writing into, short of
-// TerminateThread, which CLAUDE.md's own notes on this repository's test
-// runner already found abandons locks mid-use.
+// Read past its bound and then stopped rather than simply waited on: this
+// package cannot poll a blocked `ReadFile` any other way, so the read runs
+// on its own thread and `await_or_abandon` is what brings that thread back
+// under control. `.Unstoppable` -- measured to not happen against a reserved
+// device name, a stalled share or a named pipe with no writer, all of which
+// answer `win32.CancelSynchronousIo` inside single-digit milliseconds -- is
+// the one path that still leaks: one `Read_Job`, its cloned path, and
+// whatever bytes its thread eventually reads, all on `job_allocator`'s heap
+// and never on the caller's own, for the reason `Unstoppable` is accepted
+// elsewhere in this package -- there is no safe way to reclaim memory a
+// thread may still be writing into, short of `TerminateThread`, which
+// CLAUDE.md's own notes on this repository's test runner already found
+// abandons locks mid-use.
 @(require_results)
 read_bounded :: proc(
 	path: string,
@@ -138,16 +216,31 @@ await_bounded :: proc(
 	assert(t != nil, "there is no thread here to wait for")
 	assert(job != nil, "there is no job here to wait for an answer from")
 
-	started := time.tick_now()
-	for {
-		if thread.is_done(t) {
-			return finished(t, job, allocator)
-		}
-		if i64(time.duration_milliseconds(time.tick_since(started))) > bound_ms {
-			return nil, Read_Error{fault = .Did_Not_Finish}
-		}
-		time.sleep(READ_POLL)
+	switch await_or_abandon(t, bound_ms) {
+	case .Finished:
+		return finished(t, job, allocator)
+	case .Stopped:
+		release_job(t, job)
+		return nil, Read_Error{fault = .Did_Not_Finish}
+	case .Unstoppable:
+		return nil, Read_Error{fault = .Did_Not_Finish}
 	}
+	unreachable()
+}
+
+// Frees everything a Read_Job and its thread hold, on the allocator they were
+// given out on -- shared by a read that finished on its own and one this
+// package had to cancel, since both are equally safe to reclaim once
+// `thread.is_done` is true.
+@(private)
+release_job :: proc(t: ^thread.Thread, job: ^Read_Job) {
+	assert(t != nil, "there is no thread here to release")
+	assert(job != nil, "there is no job here to release")
+
+	delete(job.bytes, job_allocator())
+	delete(job.path, job_allocator())
+	free(job, job_allocator())
+	thread.destroy(t)
 }
 
 // Where a completed read's answer crosses from `job_allocator`'s heap onto
@@ -172,10 +265,7 @@ finished :: proc(
 		bytes = make([]u8, len(job.bytes), allocator)
 		copy(bytes, job.bytes)
 	}
-	delete(job.bytes, job_allocator())
-	delete(job.path, job_allocator())
-	free(job, job_allocator())
-	thread.destroy(t)
+	release_job(t, job)
 
 	if os_error != nil {
 		return nil, Read_Error{fault = .Unreadable, os_error = os_error}

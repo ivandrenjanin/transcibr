@@ -20,6 +20,13 @@ foreign kernel32 {
 	InitializeProcThreadAttributeList :: proc(lpAttributeList: LPPROC_THREAD_ATTRIBUTE_LIST, dwAttributeCount: win32.DWORD, dwFlags: win32.DWORD, lpSize: ^win32.SIZE_T) -> win32.BOOL ---
 	UpdateProcThreadAttribute :: proc(lpAttributeList: LPPROC_THREAD_ATTRIBUTE_LIST, dwFlags: win32.DWORD, Attribute: win32.DWORD_PTR, lpValue: win32.PVOID, cbSize: win32.SIZE_T, lpPreviousValue: win32.PVOID, lpReturnSize: ^win32.SIZE_T) -> win32.BOOL ---
 	DeleteProcThreadAttributeList :: proc(lpAttributeList: LPPROC_THREAD_ATTRIBUTE_LIST) ---
+
+	// Cancels a synchronous I/O call blocked on the named thread from outside
+	// it -- the one Win32 primitive that reaches into a `ReadFile` a bounded
+	// read is stuck in and makes it return rather than block forever. See
+	// `await_or_abandon` in read.odin for the measurement that proves this
+	// actually reclaims the thread.
+	CancelSynchronousIo :: proc(hThread: win32.HANDLE) -> win32.BOOL ---
 }
 
 // Opaque: Windows says how many bytes it needs and no field is ever read.

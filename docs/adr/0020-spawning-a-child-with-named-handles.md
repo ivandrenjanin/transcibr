@@ -247,11 +247,16 @@ with each other on whether they hang, and a network share or a named pipe with n
 block by the identical mechanism without naming anything reserved at all.
 
 `child.read_bounded` (`src/child/read.odin`) answers this the same way `run_bounded` answers a child
-that will not exit: poll a wall-clock ceiling, and abandon whatever has not finished inside it.
-`READ_BOUND_MS :: 30_000` sits beside `STOP_BOUND_MS` for the same reason the two are the same order
-of magnitude — both answer "how long does transcibr wait for something outside it to answer", and the
-largest thing a bounded read here reads, a multi-megabyte Engine output, comes back in well under a
-second even off a slow disk.
+that will not exit: poll a wall-clock ceiling, and past it, cancel and join whatever has not finished
+(see below). `READ_BOUND_MS :: 30_000` sits beside `STOP_BOUND_MS` for the same reason the two are the
+same order of magnitude — both answer "how long does transcibr wait for something outside it to
+answer" — and is grounded rather than assumed: the committed fixture is 2,335 bytes of Engine JSON for
+30,356 ms of audio, and scaled to the corpus's longest Recording (168 minutes, `docs/spec/`) at the
+same segment density that comes to about 760 KiB. Even a pessimistic 8 MiB, several times denser than
+the fixture, only needs 267 KiB/s sustained over the bound to land inside it — well below what "slow
+but still answering" means for a share. `child.a_worst_case_sized_engine_output_reads_well_within_its_bound`
+pins this against real disk I/O, using `READ_BOUND_MS` itself rather than a shortened stand-in, which
+the ceiling test below does not.
 
 **A read cannot be polled the way a child's diagnostic pipe is.** `PeekNamedPipe` lets `drain_bounded`
 ask "is there anything to read" without blocking, but that answer does not exist for an arbitrary
@@ -263,26 +268,43 @@ therefore runs on its own thread, and what this package polls is *that thread*, 
 `thread.is_done` — the identical poll-a-ceiling shape as `run_bounded`, aimed at a thread instead of a
 process.
 
-**A read that hits its bound is abandoned, never `TerminateThread`d.** `stop` already establishes that
-a child past its bound is asked to end and, failing that, left running rather than trusted to a
-forceful stop of its own process tree; a read follows the same rule one level down. CLAUDE.md's own
-notes on this repository's test runner found `TerminateThread` abandons whatever locks the thread held
-mid-use — measured, not assumed, against this very toolchain — so a read thread that will not finish
-is simply never joined. Its `Read_Job`, the path it read, and whatever bytes it eventually reads all
-stay allocated until the process exits: the same accepted cost `Unstoppable` already carries for a
-child, moved down to a thread and a heap block instead of a process and a job object.
+**A read that hits its bound is cancelled and joined, not simply abandoned.** The first version of
+this ADR abandoned a read thread outright past its bound, on the reasoning that `stop` already
+accepts a child left running rather than forced, and `TerminateThread` abandons whatever locks the
+thread held mid-use (CLAUDE.md's own notes on this repository's test runner, measured against this
+toolchain). Review of the PR that first shipped this (PR #64, before it merged) found that reasoning
+understated its own cost by an order of magnitude and pointed at a fix: `CancelSynchronousIo`
+(`src/child/win32.odin`) is the Win32 primitive built for exactly this — it cancels a *pending
+synchronous* I/O call on another thread from outside it, without `TerminateThread`'s lock-abandonment
+hazard, because the target thread's own blocked syscall is what returns, carrying `ERROR_-`
+`OPERATION_ABORTED`, rather than the thread being cut off mid-instruction.
 
-**That leak cannot sit on the caller's own allocator.** The caller's `allocator` argument is, under
-`odin test`, a per-test tracking allocator torn down the moment the test that started the read
-returns — and in general this package cannot know how long any caller-supplied allocator stays valid
-past the call it was given to. `job_allocator` (`runtime.heap_allocator`) is a fixed, always-valid
-heap used for everything a read thread might still be touching after its caller has stopped waiting on
-it; `finished` copies a completed read's answer onto the caller's own allocator before handing it
-back, so the normal path still costs one extra copy but still returns memory the caller's own
-`delete` can free. Measured: without this split, the abandoned-read test below reported three leaks
-— the `Read_Job`, its cloned path, and the `Thread` bookkeeping `core:thread` itself allocates — every
-time it ran, because `odin test`'s tracking allocator has no way to know an abandonment was
-deliberate.
+**What the original design missed, measured with `CreateToolhelp32Snapshot`:** eight reads abandoned
+against a named pipe nobody was writing to took this process's own thread count from 5 to 13 — exactly
++1 per read, retained for the life of the process. That is at minimum four heap blocks per abandoned
+read (`Read_Job`, its cloned path, whatever bytes were read so far, and the `Thread` struct
+`core:thread` itself allocates — the fourth already named in the PR body but not in this ADR's prose),
+a live OS thread and its default 1 MiB reserved stack, the Win32 thread handle (closed only by `_join`,
+which abandonment skips), and — because the thread is blocked *inside* `os.read_entire_file_from_path`,
+after the file has been opened — an open Win32 file handle on the wedged path, which collides directly
+with issue #12's stale-file sweep and `artifact.quarantine`: `os.rename` is refused by Windows while
+another handle still holds the file open.
+
+`await_or_abandon` (`src/child/read.odin`) is the fix: past `bound_ms`, it calls
+`CancelSynchronousIo(t.win32_thread)` in a short poll loop (`CANCEL_BOUND_MS`, 5 s — measured against
+eight concurrent cancellations joining in 6.5 ms total, so five seconds is margin and not the expected
+cost) until the thread reports done, then joins it exactly as a read that finished on its own is
+joined. **Cancel, then join, then free — the same terminate/wait/close discipline `stop` already uses
+for a whole child, one layer down, with no leak in the case this ADR's own measurement exercises.**
+Only if a thread will not stop even once asked — a case nothing measured here has produced — does it
+fall back to the original abandonment, on `job_allocator`'s heap, for the process's remaining life;
+`Wait` (`.Finished` / `.Stopped` / `.Unstoppable`) is what names the three outcomes, deliberately
+matching `Run`'s own vocabulary for a process one layer up.
+
+`child.abandoning_a_read_repeatedly_does_not_accumulate_threads` is what pins the fix: five abandoned
+reads, run one after another through the public `read_bounded` seam, must not leave this process's own
+thread count any higher than its baseline — measured with the identical `CreateToolhelp32Snapshot`
+technique the review used, so the claim and the proof use the same instrument.
 
 `child.a_read_that_cannot_finish_is_abandoned_at_its_bound` is the case that discriminates the bound
 itself, and it does not depend on a Windows device name: it opens a named pipe server end
@@ -292,6 +314,14 @@ a `ReadFile` by the same mechanism `CON` does, on any filesystem. **Mutating the
 timeout** — measured directly, with `-TestName` and a short `-TimeoutSeconds` rather than the sweep's
 default ten minutes, specifically so proving the negative could not itself become the next hang this
 ADR is about.
+
+**The same `await_or_abandon` is now the general mechanism for bounding any blocking call transcibr
+does not control, not only a read.** `src/artifact/model.odin`'s `digest_of_bounded` bounds hashing a
+`--model-file`, and `src/planning/walk.odin`'s `directory_listing_bounded` and
+`transcript_state_bounded` bound a directory listing and a Transcript-head read discovery makes —
+issue #27's read half was not fully closed by the Engine-output and `--from-json` reads alone, and
+these three are the ones reachable from hand-typed input and the walk. `src/child/child.odin`'s
+package doc was widened to say so.
 
 ## Consequences
 
@@ -330,15 +360,17 @@ Issue #33 carried both halves as acceptance criteria. The lifted drain keeps `MA
 `child.a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood` is the one case that does, and
 it is the one that goes red if `MAX_DRAIN_BYTES` is dropped.
 
-**A read abandoned at its bound leaks one heap block for as long as the process runs**, not just a
-Windows handle: `child.read_bounded`'s `Read_Job`, its cloned path and whatever bytes its thread
-eventually reads all stay allocated on `job_allocator`'s heap rather than the caller's own. That is
-the same trade `Unstoppable` already makes for a child that will not stop, carried one layer further
-down — there is no safe way to reclaim memory a thread might still be writing into, and the alternative,
-`TerminateThread`, is the exact hazard CLAUDE.md's notes on this repository's own test runner already
-measured. Issue #27 is the ticket that added it; `src/cli/main.odin`'s `--from-json` and
-`src/artifact/place.odin`'s Engine-output read are its first two callers, covering a hand-typed path
-and one this program built from a Recording's own stem respectively.
+**A read that misses its bound is cancelled and joined, reclaiming its thread, stack, thread handle,
+file handle and every heap block it held** — measured with `CreateToolhelp32Snapshot` returning to
+its exact baseline after five abandoned reads. Only a thread that will not stop even once
+`CancelSynchronousIo` asks it to — a case nothing measured here has produced — falls back to the
+original trade: `Read_Job`, its cloned path and whatever bytes its thread eventually reads stay
+allocated on `job_allocator`'s heap rather than the caller's own, for as long as the process runs,
+the same trade `Unstoppable` already makes for a child that will not stop. Issue #27 is the ticket
+that added the bound; its callers now cover a hand-typed path (`src/cli/main.odin`'s `--from-json`),
+one this program built from a Recording's own stem (`src/artifact/place.odin`'s Engine-output read),
+a `--model-file` hash (`src/artifact/model.odin`), and the directory listing, Sidecar and
+Transcript-head reads discovery makes (`src/planning/walk.odin`).
 
 ## What reopens this
 
@@ -347,6 +379,11 @@ falls behind by more than a poll on material a user would actually transcribe. A
 grandchild survives a real `TerminateJobObject`, which would turn this ADR's stated non-claim into a
 claim and change what the second wait is for. And the windowed binary of issue #15 existing, which is
 the first moment the console-window criterion can be automated at the level it is actually stated.
+
+A resource `CancelSynchronousIo` genuinely cannot unblock — nothing measured here has produced one,
+against a reserved console device or a named pipe with no writer — which would turn `await_or_abandon`'s
+`.Unstoppable` branch from a documented fallback into the common case rather than the rare one, and
+make the leak this section used to describe as unconditional the live risk again.
 
 Issue #33's lift moved before a third caller existed, so the "third consumer" trigger this ADR
 originally recorded no longer applies the way it was written: `src/audio/run.odin` and

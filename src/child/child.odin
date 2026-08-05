@@ -2,6 +2,18 @@
 // Package child starts the child processes transcibr drives, reads what they say
 // while they run, and stops them without leaving anything behind. One spawner,
 // used by both binaries (ADR-0004).
+//
+// It also owns the one mechanism transcibr has for bounding any blocking wait
+// on something outside its control, and for reclaiming what was waited on
+// rather than abandoning it: `run_bounded` polls a process the way `stop`
+// already does, and `read.odin`'s `Wait` / `await_or_abandon` is the same
+// poll-then-cancel-then-join shape aimed at a thread instead, for a blocking
+// read this package cannot otherwise interrupt (issue #27). A caller
+// elsewhere in the tree with its own blocking call to bound -- `artifact`'s
+// Model hash, `planning`'s directory and Sidecar reads -- calls
+// `await_or_abandon` directly rather than re-deriving the Win32 cancellation
+// it depends on; that is a widening of what this package is FOR, not an
+// import of convenience (see ADR-0020's placement note).
 package child
 
 import "core:fmt"
