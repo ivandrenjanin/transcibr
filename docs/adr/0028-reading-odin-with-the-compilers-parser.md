@@ -1,8 +1,10 @@
 # The build reads Odin with the compiler's parser, not with a scan of its own
 
-The four checks that read Odin source — rule F1's line limit, section 0's comment ban, rule F2's
+Four of the checks that read Odin source — rule F1's line limit, section 0's comment ban, rule F2's
 `@(require_results)` and rule M2's `#+vet` tags — answer from `core:odin/parser` and `core:odin/ast`,
-through `tools\policy`, an Odin program the build compiles before it runs the checks.
+through `tools\policy`, an Odin program the build compiles before it runs the checks. A fifth,
+`Assert-OdinNetworkConfinement`, also reads Odin source and does not: it answers a literal substring
+(issue #58), which needs no grammar, so it is not part of what this decision is about.
 
 This reverses a recorded position. PR #51 built one shared column-zero text scan in
 `scripts\common.ps1` and refused this migration as out of scope, and that refusal was reviewed and

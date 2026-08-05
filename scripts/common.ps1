@@ -1609,11 +1609,22 @@ function Assert-OdinVetTagPolicy {
 }
 
 # README.md's Network access section, made true rather than merely corrected
-# (issue #58): "all network code lives in one file, src/net/winhttp.odin ...
-# and CI fails the build if the name appears anywhere else." `grep -r winhttp
-# src/` is the audit that sentence names, and this is that audit -- literal
-# and case-sensitive, the way grep runs with no flag of its own, read straight
-# off the same file list the four policies above already discovered.
+# (issue #58): all network code lives in one file, `src/net/winhttp.odin`,
+# and the build fails the moment the name appears, in any case, in any .odin
+# file anywhere under `src\` outside that one. `grep -ri --include=*.odin -r
+# winhttp src/` is the audit that sentence names, and this is that audit,
+# read straight off the same file list the four policies above already
+# discovered.
+#
+# Case-INSENSITIVE, unlike a plain `grep winhttp` with no `-i`. A
+# case-sensitive match refuses the spelling nobody writes -- `winhttp`, all
+# lowercase -- and admits the one the Win32 headers actually use:
+# `WinHttpOpen`, `Winhttp.lib`. Measured: a file under `src\` declaring
+# `foreign import Winhttp "system:Winhttp.lib"` and a `WinHttpOpen` binding
+# passed this gate while the comparison below was ordinal case-sensitive --
+# real network code, in the spelling every caller of the real API actually
+# writes. Nothing in the name relies on case meaning anything, so refusing
+# it case-insensitively costs nothing a legitimate file would ever say.
 #
 # Not answered by tools\policy. ADR-0028's whole argument is that a
 # STRUCTURAL question -- where a procedure begins, whether `//` sits inside a
@@ -1627,40 +1638,55 @@ function Assert-OdinVetTagPolicy {
 # verdict for a tree carrying no network code at all. The day the file lands,
 # the one path below starts being read and every other one goes on being
 # refused.
-$NetworkCodeName = 'winhttp'
-$NetworkCodeFile = Join-Path $SrcRoot (Join-Path 'net' 'winhttp.odin')
+$OdinNetworkCodeName = 'winhttp'
+$OdinNetworkCodeFile = Join-Path $SrcRoot (Join-Path 'net' 'winhttp.odin')
+
+# Forward-slashed and relative to $RepoRoot -- `src/net/winhttp.odin` -- so
+# every message below spells the one allowed file by reading this rather than
+# by writing the path out again. One copy, the way $OdinNetworkCodeFile
+# itself is one copy of the absolute path it is built from.
+$OdinNetworkCodeRelativeName = Get-RelativeName -Path $OdinNetworkCodeFile -Root $RepoRoot
 
 function Assert-OdinNetworkConfinement {
 	param(
 		# Repository-wide, like the four policies above, and filtered to src\
-		# here: the claim is about src\ and not about tools\ or
-		# docs\reference\, which is what `grep -r winhttp src/` itself would
+		# below: the claim is about src\ and not about tools\ or
+		# docs\reference\, which is what `grep -ri winhttp src/` itself would
 		# have been scoped to.
 		[object[]] $Sources = @(Get-OdinCheckedSource)
 	)
 
-	# The separator after $SrcRoot is not decoration: without it a sibling
-	# directory that merely starts with the same letters -- src-generated,
-	# srcfoo -- would read as "under src\" by raw string prefix. Get-RelativeName
-	# guards the identical seam for the identical reason.
-	$srcPrefix = $SrcRoot + [System.IO.Path]::DirectorySeparatorChar
+	# $source.Name is already relative to $RepoRoot and forward-slashed --
+	# Get-OdinSource built it with Get-RelativeName, the same guard against a
+	# sibling directory that merely starts with the same letters (src-generated,
+	# srcfoo) reading as "under src\" by raw prefix. Filtering on it here reuses
+	# that guard instead of repeating it over $source.Path.
+	$underSrc = [System.Collections.Generic.List[object]]::new()
+	foreach ($source in $Sources) {
+		if ($source.Name.StartsWith('src/', [System.StringComparison]::OrdinalIgnoreCase)) {
+			$underSrc.Add($source)
+		}
+	}
+	if ($underSrc.Count -eq 0) {
+		throw "none of the $($Sources.Count) file(s) checked are under src\, so the network confinement claim (README.md, Network access) would pass having examined nothing there."
+	}
 
 	$stray = [System.Collections.Generic.List[string]]::new()
-	foreach ($source in $Sources) {
-		if (-not $source.Path.StartsWith($srcPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+	foreach ($source in $underSrc) {
+		if ($source.Name.Equals($OdinNetworkCodeRelativeName, [System.StringComparison]::OrdinalIgnoreCase)) {
 			continue
 		}
-		if ($source.Path.Equals($NetworkCodeFile, [System.StringComparison]::OrdinalIgnoreCase)) {
-			continue
-		}
-		# .Contains rather than -match: the claim is about the literal name a
-		# plain grep finds with no -i, and a regex engine reading "winhttp" as
-		# a pattern rather than a literal is one more thing that could
-		# disagree with what grep would say -- there is nothing in the name
-		# for a pattern to mean differently, but nothing here should rely on
-		# that staying true.
+		# .IndexOf rather than -match: the claim is about a literal name and
+		# not a pattern, and there is nothing in "winhttp" for a regex engine
+		# to mean differently -- but nothing here should rely on that staying
+		# true. Not .Contains: Windows PowerShell 5.1 runs on a .NET Framework
+		# whose String.Contains has no StringComparison overload at all, so
+		# that call does not fail to match case-insensitively -- it fails to
+		# compile, every time, which is louder than the bug this replaces but
+		# still worth naming so nobody "fixes" it back to .Contains.
+		# OrdinalIgnoreCase over the plain overload: see above.
 		$text = [System.IO.File]::ReadAllText($source.Path)
-		if ($text.Contains($NetworkCodeName)) {
+		if ($text.IndexOf($OdinNetworkCodeName, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
 			$stray.Add($source.Name)
 		}
 	}
@@ -1669,7 +1695,7 @@ function Assert-OdinNetworkConfinement {
 	}
 
 	$named = ($stray | ForEach-Object { "  - $_" }) -join "`n"
-	throw "'$NetworkCodeName' appears outside src/net/winhttp.odin in $($stray.Count) file(s):`n$named`nAll network code must live in that one file (README.md, Network access)."
+	throw "'$OdinNetworkCodeName' appears outside $OdinNetworkCodeRelativeName in $($stray.Count) file(s):`n$named`nAll network code must live in that one file (README.md, Network access)."
 }
 
 # The sweep as a single verdict, for callers that only want it to pass -- which

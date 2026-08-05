@@ -125,7 +125,7 @@ Write-Host "-> every .odin file declares the #+vet names it is scoped for ($(($O
 # policies: it answers a literal substring rather than a structural question,
 # so it reads the sources directly rather than through tools\policy's facts.
 Assert-OdinNetworkConfinement -Sources $sources
-Write-Host "-> '$NetworkCodeName' is confined to src/net/winhttp.odin, if it appears in src\ at all" -ForegroundColor Green
+Write-Host "-> '$OdinNetworkCodeName' is confined to $OdinNetworkCodeRelativeName, if it appears in src\ at all" -ForegroundColor Green
 
 New-Item -ItemType Directory -Path $BuildRoot -Force | Out-Null
 
