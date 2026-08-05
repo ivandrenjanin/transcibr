@@ -60,23 +60,13 @@ destroy_recording_arena :: proc(job: Recording_Job) {
 	free(job.arena, runtime.heap_allocator())
 }
 
+// One body for what `audio.error_message`, `engine.error_message` and
+// `artifact.error_message` all hand back the same way: a message this
+// procedure owns and must free. `/simplify`'s pass on PR #67 folded the three
+// near-identical wrappers this used to be into their own call sites, which
+// build the message and name which package's renderer built it.
 @(private)
-report_audio_fault :: proc(source: string, err: audio.Error, allocator: mem.Allocator) {
-	message := audio.error_message(err, source, allocator)
-	defer delete(message, allocator)
-	fmt.eprintln(message)
-}
-
-@(private)
-report_engine_fault :: proc(source: string, err: engine.Error, allocator: mem.Allocator) {
-	message := engine.error_message(err, source, allocator)
-	defer delete(message, allocator)
-	fmt.eprintln(message)
-}
-
-@(private)
-report_artifact_fault :: proc(source: string, err: artifact.Error, allocator: mem.Allocator) {
-	message := artifact.error_message(err, source, allocator)
+report_fault :: proc(message: string, allocator: mem.Allocator) {
 	defer delete(message, allocator)
 	fmt.eprintln(message)
 }
@@ -87,7 +77,7 @@ extract_recording :: proc(job: Recording_Job) -> (extracted: Recording_Extracted
 
 	planned, unread := audio.read_source(job.source, job.allocator)
 	if unread.fault != .None {
-		report_audio_fault(job.source, unread, job.allocator)
+		report_fault(audio.error_message(unread, job.source, job.allocator), job.allocator)
 		destroy_recording_arena(job)
 		return {}, false
 	}
@@ -99,7 +89,7 @@ extract_recording :: proc(job: Recording_Job) -> (extracted: Recording_Extracted
 		job.allocator,
 	)
 	if unextracted.fault != .None {
-		report_audio_fault(job.source, unextracted, job.allocator)
+		report_fault(audio.error_message(unextracted, job.source, job.allocator), job.allocator)
 		destroy_recording_arena(job)
 		return {}, false
 	}
@@ -127,7 +117,7 @@ transcribe_and_place :: proc(extracted: Recording_Extracted) -> bool {
 	)
 	defer delete(produced.output, job.allocator)
 	if unfinished.fault != .None {
-		report_engine_fault(job.source, unfinished, job.allocator)
+		report_fault(engine.error_message(unfinished, job.source, job.allocator), job.allocator)
 		return false
 	}
 	return placed_from_engine_output(job, extracted, produced.output)
@@ -157,7 +147,7 @@ placed_from_engine_output :: proc(
 	)
 	defer artifact.destroy_names(placed, job.allocator)
 	if unplaced.fault != .None {
-		report_artifact_fault(job.source, unplaced, job.allocator)
+		report_fault(artifact.error_message(unplaced, job.source, job.allocator), job.allocator)
 		return false
 	}
 	fmt.println(placed[.Transcript])
