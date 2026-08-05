@@ -17,6 +17,15 @@ Engine_Job :: struct {
 	audio:  string,
 	// Without an extension; the Engine appends its own (ADR-0002).
 	prefix: string,
+	// Empty is the Engine's own default -- no initial prompt at all -- and adds
+	// no `--prompt` flag; the Engine has no way to spell "an explicit, empty
+	// prompt" that differs from omitting the flag, so there is nothing to record
+	// by sending one. Never length-bounded here: `build_command_line`'s own
+	// `.Too_Long` (src/process/command_line.odin) already refuses a command
+	// line no `CreateProcessW` could accept, whatever argument pushed it there,
+	// and is what A8 asks this external text be checked against (finding 1 of
+	// PR #67's round-2 review).
+	prompt: string,
 }
 
 // Chosen by the Engine and not by transcibr: it appends this to whatever prefix it
@@ -25,7 +34,10 @@ ENGINE_OUTPUT_SUFFIX :: ".json"
 
 // The caller owns the returned slice and frees it with `delete` and the same
 // allocator; the strings in it are borrowed and outlive nothing the caller does not
-// already hold. Why these flags, and why not `-bs`, `-np` or `-l`: ADR-0012.
+// already hold. Why these flags, and why not `-bs`, `-np` or `-l`: ADR-0012. Why
+// `--prompt` is conditional and not a ninth fixed flag: verified against
+// `whisper-cli.exe --help` at the installed Engine, the flag takes free text with
+// no short form and no flag at all is how whisper.cpp spells "no initial prompt."
 @(require_results)
 engine_arguments :: proc(job: Engine_Job, allocator: mem.Allocator) -> (arguments: []string) {
 	assert(allocator.procedure != nil, "an argument list needs an allocator to be built in")
@@ -33,7 +45,11 @@ engine_arguments :: proc(job: Engine_Job, allocator: mem.Allocator) -> (argument
 	assert(len(job.audio) > 0, "there is no audio here for the Engine to read")
 	assert(len(job.prefix) > 0, "the Engine was given nowhere to write its output")
 
-	arguments = make([]string, 8, allocator)
+	count := 8
+	if len(job.prompt) > 0 {
+		count += 2
+	}
+	arguments = make([]string, count, allocator)
 	arguments[0] = "-m"
 	arguments[1] = job.model
 	arguments[2] = "-oj"
@@ -42,10 +58,18 @@ engine_arguments :: proc(job: Engine_Job, allocator: mem.Allocator) -> (argument
 	arguments[5] = job.prefix
 	arguments[6] = "-f"
 	arguments[7] = job.audio
+	if len(job.prompt) > 0 {
+		arguments[8] = "--prompt"
+		arguments[9] = job.prompt
+	}
 
 	for argument in arguments {
 		assert(len(argument) > 0, "the argument list left a slot empty")
 	}
+	assert(
+		len(arguments) == 8 || len(arguments) == 10,
+		"the argument list grew by something other than the whole --prompt pair",
+	)
 	return arguments
 }
 

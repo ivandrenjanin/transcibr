@@ -21,6 +21,8 @@ Job :: struct {
 	name:         string,
 	model:        string,
 	container_ms: i64,
+	// Empty means no `--prompt` flag at all; see `process.Engine_Job.prompt`.
+	prompt:       string,
 }
 
 Transcribed :: struct {

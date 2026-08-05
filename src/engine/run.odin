@@ -45,7 +45,12 @@ transcribe :: proc(
 		return {}, Error{fault = .Path_Not_Ascii}
 	}
 	arguments := process.engine_arguments(
-		process.Engine_Job{model = job.model, audio = job.audio, prefix = prefix},
+		process.Engine_Job {
+			model = job.model,
+			audio = job.audio,
+			prefix = prefix,
+			prompt = job.prompt,
+		},
 		allocator,
 	)
 	defer delete(arguments, allocator)

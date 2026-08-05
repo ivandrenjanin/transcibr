@@ -3,7 +3,9 @@ package artifact
 
 import "core:fmt"
 import "core:mem"
+import "core:path/filepath"
 import "core:strings"
+import "transcibr:transcript"
 
 // What things are called. Every answer here is a decision about a string, and
 // nothing in this file touches the filesystem.
@@ -99,6 +101,26 @@ path_stem_of :: proc(source: string) -> string {
 stem_of :: proc(source: string) -> string {
 	from, to := name_bounds(source)
 	return source[from:to]
+}
+
+// A Model's own display name, for a Transcript's header -- and `filepath.-`
+// `stem` on purpose, unlike `stem_of` just above: a Model is never the
+// dotfile `stem_of`'s own comment warns about, so the caller-facing name a
+// Model was given is exactly what `filepath.stem` already reads. Empty is
+// `transcript.UNKNOWN` and never the empty string, the same rule every other
+// provenance field on a Transcript follows. `--transcribe` and `--batch` both
+// called their own copy of this before PR #67's review, finding 5 -- one of
+// them could drift and silently write a different `model:` line than the
+// other.
+@(require_results)
+model_display_name :: proc(path: string) -> string {
+	assert(len(path) > 0, "there is no Model here to name")
+
+	named := filepath.stem(path)
+	if len(named) == 0 {
+		return transcript.UNKNOWN
+	}
+	return named
 }
 
 // The other half of the same cut, so a caller asking what kind of file this is
