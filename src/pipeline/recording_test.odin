@@ -94,12 +94,6 @@ recording_sidecar_reflects_whichever_engine_its_own_job_named :: proc(t: ^testin
 	testing.expect_value(t, second.engine_version, "engine-two")
 }
 
-@(test)
-model_display_name_falls_back_to_unknown_for_an_unnamed_model :: proc(t: ^testing.T) {
-	testing.expect_value(t, model_display_name("C:\\models\\large-v3.bin"), "large-v3")
-	testing.expect_value(t, model_display_name("C:\\models\\.bin"), transcript.UNKNOWN)
-}
-
 // The three outcomes `sort_entry` settles without ever building a Recording
 // Job: nothing here should reach the GPU-serialising pipeline at all, which
 // this proves by checking that `jobs` stays empty rather than by mocking

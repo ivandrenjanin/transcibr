@@ -88,7 +88,7 @@ re_rendered_and_placed :: proc(
 			now = time.now(),
 			source_display = source,
 			engine_version = made.engine_version,
-			model = model_display_name(made.model),
+			model = artifact.model_display_name(made.model),
 			profile = o.profile,
 		},
 		made,

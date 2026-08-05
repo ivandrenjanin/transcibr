@@ -3,6 +3,7 @@ package artifact
 
 import "core:strings"
 import "core:testing"
+import "transcibr:transcript"
 
 @(test)
 artifacts_replace_the_recordings_extension_and_share_its_stem :: proc(t: ^testing.T) {
@@ -169,4 +170,10 @@ engine_output_that_will_not_parse_is_moved_aside_to_json_bad :: proc(t: ^testing
 	defer delete(aside, context.allocator)
 
 	testing.expect_value(t, aside, "C:\\cache\\talk.json.bad")
+}
+
+@(test)
+model_display_name_falls_back_to_unknown_for_an_unnamed_model :: proc(t: ^testing.T) {
+	testing.expect_value(t, model_display_name("C:\\models\\large-v3.bin"), "large-v3")
+	testing.expect_value(t, model_display_name("C:\\models\\.bin"), transcript.UNKNOWN)
 }

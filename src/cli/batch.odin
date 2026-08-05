@@ -13,6 +13,7 @@ import win32 "core:sys/windows"
 import "transcibr:artifact"
 import "transcibr:audio"
 import "transcibr:child"
+import "transcibr:engine"
 import "transcibr:pipeline"
 import "transcibr:planning"
 import "transcibr:process"
@@ -183,11 +184,7 @@ run_the_batch :: proc(
 		plan,
 		pipeline.Batch_Options {
 			group = group,
-			tools = pipeline.Tools {
-				ffmpeg = o.tools.ffmpeg,
-				ffprobe = o.tools.ffprobe,
-				engine = o.engine,
-			},
+			tools = pipeline.Tools{audio = o.tools, engine = engine.Tools{engine = o.engine}},
 			cache = o.cache,
 			model = identified,
 			prompt = o.prompt,

@@ -36,7 +36,7 @@ USAGE ::
                 --engine-exe <path> --cache <directory>
                 [--profile ` +
 	transcript.PROFILE_CHOICE +
-	`] [--engine-version <version>]
+	`] [--engine-version <version>] [--prompt <text>]
                 [--ffmpeg <path>] [--ffprobe <path>]
       transcribe one recording, write its transcript, its retained engine
       output and its sidecar beside the recording, and print the transcript's

@@ -10,7 +10,6 @@ package pipeline
 import "base:runtime"
 import "core:fmt"
 import "core:mem"
-import "core:path/filepath"
 import "core:time"
 import "transcibr:artifact"
 import "transcibr:audio"
@@ -19,12 +18,14 @@ import "transcibr:engine"
 import "transcibr:planning"
 import "transcibr:transcript"
 
-// The three child executables a Batch names once, never resolved per
-// Recording.
+// The child executables a Batch names once, never resolved per Recording --
+// `audio.Tools` and `engine.Tools` passed straight through to the two
+// packages that actually spawn them, rather than unpacked into a third
+// struct field-by-field, which is a silent-swap opportunity every time a
+// caller builds one (PR #67's review, finding 6).
 Tools :: struct {
-	ffmpeg:  string,
-	ffprobe: string,
-	engine:  string,
+	audio:  audio.Tools,
+	engine: engine.Tools,
 }
 
 // One Recording's share of a Batch: everything its two Stages need, borrowed
@@ -32,6 +33,11 @@ Tools :: struct {
 // created when this Job is built and destroyed by whichever Stage finishes
 // it (extraction on failure, transcription either way, or the pipeline's own
 // abandon/discard hooks when a Stage is never reached at all).
+//
+// `report` is the one field a Batch of many Recordings leaves at its zero
+// value: several Recordings transcribing at once would tangle each other's
+// carriage returns on one Terminal. `--transcribe`'s one-entry Batch is the
+// exception -- it sets `on_progress` to watch the single Recording it owns.
 Recording_Job :: struct {
 	source:         string,
 	name:           string,
@@ -42,6 +48,7 @@ Recording_Job :: struct {
 	prompt:         string,
 	engine_version: string,
 	profile:        transcript.Merge_Profile,
+	report:         engine.Report,
 	arena:          ^mem.Dynamic_Arena,
 	allocator:      mem.Allocator,
 }
@@ -84,7 +91,7 @@ extract_recording :: proc(job: Recording_Job) -> (extracted: Recording_Extracted
 
 	produced, unextracted := audio.extract(
 		job.group,
-		audio.Tools{ffmpeg = job.tools.ffmpeg, ffprobe = job.tools.ffprobe},
+		job.tools.audio,
 		audio.Job{source = job.source, cache = job.cache, name = job.name, planned = planned},
 		job.allocator,
 	)
@@ -104,7 +111,7 @@ transcribe_and_place :: proc(extracted: Recording_Extracted) -> bool {
 
 	produced, unfinished := engine.transcribe(
 		job.group,
-		engine.Tools{engine = job.tools.engine},
+		job.tools.engine,
 		engine.Job {
 			audio = extracted.extracted.audio,
 			cache = job.cache,
@@ -112,10 +119,13 @@ transcribe_and_place :: proc(extracted: Recording_Extracted) -> bool {
 			model = job.model.path,
 			container_ms = extracted.extracted.container_ms,
 		},
-		engine.Report{},
+		job.report,
 		job.allocator,
 	)
 	defer delete(produced.output, job.allocator)
+	if job.report.on_progress != nil {
+		fmt.eprintln()
+	}
 	if unfinished.fault != .None {
 		report_fault(engine.error_message(unfinished, job.source, job.allocator), job.allocator)
 		return false
@@ -139,7 +149,7 @@ placed_from_engine_output :: proc(
 			now = time.now(),
 			source_display = job.source,
 			engine_version = job.engine_version,
-			model = model_display_name(job.model.path),
+			model = artifact.model_display_name(job.model.path),
 			profile = job.profile,
 		},
 		made,
@@ -179,18 +189,6 @@ recording_sidecar :: proc(job: Recording_Job, extracted: Recording_Extracted) ->
 	)
 }
 
-@(private)
-@(require_results)
-model_display_name :: proc(path: string) -> string {
-	assert(len(path) > 0, "there is no Model here to name")
-
-	named := filepath.stem(path)
-	if len(named) == 0 {
-		return transcript.UNKNOWN
-	}
-	return named
-}
-
 discard_recording_audio :: proc(extracted: Recording_Extracted) {
 	delete(extracted.extracted.audio, extracted.job.allocator)
 	destroy_recording_arena(extracted.job)
@@ -219,10 +217,26 @@ Batch_Options :: struct {
 	config:         Config,
 }
 
-@(private)
+// The one place a Recording_Job is actually built, for a Batch of many
+// through `recording_job_of` below or for `--transcribe`'s Batch of one
+// (`src/cli/transcribe.odin`) -- so the arena ADR-0010 asks for is opened
+// the same way at both call sites and a mismatched `block_allocator` or
+// `array_allocator` cannot drift between them.
 @(require_results)
-recording_job_of :: proc(entry: planning.Entry, o: Batch_Options) -> Recording_Job {
-	assert(len(entry.found.source) > 0, "there is no Recording here to build a Job for")
+new_recording_job :: proc(
+	source: string,
+	name: string,
+	group: ^child.Job_Object,
+	tools: Tools,
+	cache: string,
+	model: artifact.Model,
+	prompt: string,
+	engine_version: string,
+	profile: transcript.Merge_Profile,
+	report: engine.Report,
+) -> Recording_Job {
+	assert(len(source) > 0, "there is no Recording here to build a Job for")
+	assert(len(name) > 0, "a Recording with no artifact stem has nowhere to put its output")
 
 	arena := new(mem.Dynamic_Arena, runtime.heap_allocator())
 	mem.dynamic_arena_init(
@@ -232,16 +246,36 @@ recording_job_of :: proc(entry: planning.Entry, o: Batch_Options) -> Recording_J
 	)
 
 	return Recording_Job {
-		source = entry.found.source,
-		name = artifact.stem_of(entry.found.source),
-		group = o.group,
-		tools = o.tools,
-		cache = o.cache,
-		model = o.model,
-		prompt = o.prompt,
-		engine_version = o.engine_version,
-		profile = o.profile,
+		source = source,
+		name = name,
+		group = group,
+		tools = tools,
+		cache = cache,
+		model = model,
+		prompt = prompt,
+		engine_version = engine_version,
+		profile = profile,
+		report = report,
 		arena = arena,
 		allocator = mem.dynamic_arena_allocator(arena),
 	}
+}
+
+@(private)
+@(require_results)
+recording_job_of :: proc(entry: planning.Entry, o: Batch_Options) -> Recording_Job {
+	assert(len(entry.found.source) > 0, "there is no Recording here to build a Job for")
+
+	return new_recording_job(
+		entry.found.source,
+		artifact.stem_of(entry.found.source),
+		o.group,
+		o.tools,
+		o.cache,
+		o.model,
+		o.prompt,
+		o.engine_version,
+		o.profile,
+		engine.Report{},
+	)
 }
