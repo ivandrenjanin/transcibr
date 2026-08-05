@@ -2017,8 +2017,16 @@ Test-Case 'network confinement over a source list with nothing under src refuses
 }
 
 Test-Case 'the network confinement claim README makes is written down' {
+	# The 'grep -ri --include=*.odin -r winhttp src/' claim used to be pinned
+	# verbatim; narrowed to the bare 'is the whole audit' the day README's
+	# audit command grew '-i' and '--include=*.odin' and nobody re-pinned the
+	# new wording, this case passed a README reverted to the case-SENSITIVE
+	# `grep -r winhttp src/` -- the exact command whose case-blindness was the
+	# defect Assert-OdinNetworkConfinement exists to close. The '-i' below is
+	# the token that regression needs pinned; 'is the whole audit' alone does
+	# not see it move.
 	Assert-PolicyClaim -Document 'README.md' -Enforcer 'Assert-OdinNetworkConfinement' -Claims @(
-		'is the whole audit'
+		'grep -ri --include=*.odin -r winhttp src/` is the whole audit'
 		'Assert-OdinNetworkConfinement'
 	)
 }

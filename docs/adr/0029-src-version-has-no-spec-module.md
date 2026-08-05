@@ -19,8 +19,10 @@ with no seam behind it is the ordinary case, not a defect.
 `<program> <major>.<minor>.<patch>` and asserts the shape of what it hands back: no embedded newline,
 the program name as a prefix, exactly one space between the name and the number. `src/cli/main.odin`
 is one importer — the bare-argument case that prints it and exits, and `--help`'s usage block — and
-`src/transcript/render.odin` is a second, calling `version.banner` to write the Engine-version line
-into a Transcript's front matter.
+`src/transcript/render.odin` is a second, calling `version.banner` to write the `generator` field
+(`render.odin:262,271`) into a Transcript's front matter — transcibr's own name and version. The
+`engine` field is a separate line, fed from `Render_Context.engine_version` (`render.odin:274`), and
+never calls into `src/version` at all.
 
 That second importer is why folding `src/version` into `src/cli` is not available at all, never mind
 costly. `src/cli/main.odin` already imports `transcibr:transcript` to render a Transcript from a

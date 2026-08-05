@@ -1633,6 +1633,21 @@ function Assert-OdinVetTagPolicy {
 # would be the second model of Odin ADR-0028 exists to avoid, applied to a
 # question that never needed one.
 #
+# Deny-by-default over the file's raw text, deliberately, not by oversight:
+# the match below is a plain substring (see .IndexOf), so it fires from
+# inside a `//` comment or a string literal exactly as it does from a live
+# call, foreign import, or identifier. Measured: a file under `src\` holding
+# nothing but the top-level comment `// Unlike WinHTTP, ffmpeg is driven as a
+# child process.` -- no network code at all -- fails this gate. That is the
+# traded cost, taken on purpose: distinguishing prose from code needs the
+# same parser ADR-0028 already argues against reaching for over a literal
+# substring (the paragraph above), and refusing every spelling everywhere is
+# what keeps this a one-line check instead of a second model of Odin. There
+# is no escape hatch. A comment under `src\` that needs to name the Win32 API
+# says "the system HTTP API" instead of the word this gate refuses;
+# `docs/reference/winhttp-download.odin` is outside `src\` and free to spell
+# it.
+#
 # `src/net/winhttp.odin` does not exist yet -- issue #14 is what adds it --
 # so today this refuses the name EVERYWHERE under src\, which is the correct
 # verdict for a tree carrying no network code at all. The day the file lands,
@@ -1680,10 +1695,16 @@ function Assert-OdinNetworkConfinement {
 		# not a pattern, and there is nothing in "winhttp" for a regex engine
 		# to mean differently -- but nothing here should rely on that staying
 		# true. Not .Contains: Windows PowerShell 5.1 runs on a .NET Framework
-		# whose String.Contains has no StringComparison overload at all, so
-		# that call does not fail to match case-insensitively -- it fails to
-		# compile, every time, which is louder than the bug this replaces but
-		# still worth naming so nobody "fixes" it back to .Contains.
+		# whose String.Contains has no StringComparison overload at all, so a
+		# revert to the two-argument form throws "Cannot find an overload for
+		# 'Contains' and the argument count: '2'" at run time -- PowerShell has
+		# no compile step, so this is caught the moment the line runs, not
+		# before. That error guards only the two-argument revert. A revert to
+		# the ORIGINAL bug -- plain, one-argument `.Contains($OdinNetworkCodeName)`,
+		# ordinal case-sensitive -- throws nothing at all; it resolves to a
+		# normal true-or-false. Nothing here catches that regression -- the
+		# self-test case 'the canonical Win32 spelling outside its one allowed
+		# file fails the build' is what does.
 		# OrdinalIgnoreCase over the plain overload: see above.
 		$text = [System.IO.File]::ReadAllText($source.Path)
 		if ($text.IndexOf($OdinNetworkCodeName, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
