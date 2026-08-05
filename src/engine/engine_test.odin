@@ -418,11 +418,15 @@ an_engine_that_floods_its_diagnostic_stream_is_still_stopped_at_its_bound :: pro
 	testing.expect_value(t, err.fault, Fault.Did_Not_Finish)
 }
 
-// The last thing an Engine says before it exits is exactly what a
-// process.Line_Reader is still holding when end of stream arrives: nothing
-// terminated it, so watched_chunk never turned it into a reading on its own.
-// watched_end is what flushes it through process.last_line and tracker_said,
-// which is the only path this trailing percentage has to the display at all.
+// This run carries two readings: 10%, terminated with \r\n, which
+// watched_chunk turns into a reading the ordinary way, and the trailing 77%
+// written with no terminator at all, which is exactly what a
+// process.Line_Reader is still holding when end of stream arrives. Nothing
+// terminated the second one, so watched_chunk never turns it into a reading
+// on its own; watched_end is what flushes it through process.last_line and
+// tracker_said, which is the only path that trailing percentage has to the
+// display at all. Because both readings arrive, watched.highest landing on
+// 77 and not 10 is what proves watched_end ran.
 @(test)
 an_engine_that_exits_mid_line_still_hands_over_its_last_reading :: proc(t: ^testing.T) {
 	group, ok := open_group(t)
@@ -451,7 +455,7 @@ an_engine_that_exits_mid_line_still_hands_over_its_last_reading :: proc(t: ^test
 		cache,
 		"midline",
 		fmt.tprintf(
-			">&2 echo whisper_print_progress_callback: progress = 10%%\r\n" +
+			">&2 echo whisper_print_progress_callback: progress = 10%%%%\r\n" +
 			">\"%%PREFIX%%.json\" echo {{}}\r\n" +
 			"type \"%s\" 1>&2",
 			trailer,
