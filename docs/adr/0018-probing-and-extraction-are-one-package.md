@@ -115,14 +115,15 @@ one. ADR-0002 also asks that the check be on the **resolved** path, and it now i
 decision names is a non-ASCII Windows account name inside `%LOCALAPPDATA%`, which a perfectly ASCII
 relative cache path resolves straight into.
 
-**It also brings a fourth copy of the fault-report shape**, which `src/child` once said out loud was
-one too many: "a third copy is the point at which the shape moves into a package of its own and both
-of these import it" — a comment CLAUDE.md's section 0 has since banned from every procedure body, and
-it is gone from `src/child` along with every other one that rule reached. That trigger did **not**
-fire here — it fired one ticket earlier, and this records that rather than claiming the credit:
-`src/transcript/engine_json.odin` got its `FAULT` table on 2026-08-03, and `src/child` carried "THE
-SECOND COPY IS THE LAST ONE" sixteen hours later with three copies already in the tree, before the
-comment ban removed it. This is the fourth, and the debt is one ticket older than it looks.
+**It also brings a fourth copy of the fault-report shape**, one too many by the rule this ADR states
+here and nowhere else: "a third copy is the point at which the shape moves into a package of its own
+and both of these import it." That sentence is not a `src/child` comment the tree once carried and the
+comment ban later removed — `git log -S` for it, and for "THE SECOND COPY IS THE LAST ONE", turns up
+only this document's own revisions, and `src/child` has never declared a `_Fault` type at all, at any
+commit. An earlier draft of this paragraph attributed both quotes to `src/child`; that attribution
+does not survive checking against `git log` and is corrected here rather than restated.
+`src/transcript/engine_json.odin` got its `FAULT` table on 2026-08-03; `Cache_Fault` is the fourth
+copy of the shape.
 
 `src/audio` carries the small version — an enumeration, a table of sentences, one checked reader and
 one renderer, and not the borrowed-culprit record — because the culprit here is always the Recording,
