@@ -894,3 +894,28 @@ a_listing_that_cannot_be_cloned_under_memory_pressure_frees_what_it_cloned_exact
 	testing.expect(t, !ok, "cloning under memory pressure was reported as succeeding")
 	testing.expect(t, cloned == nil, "a failed clone still handed back a partial listing")
 }
+
+// Findings 3 and 4 of PR #64's second review: a Transcript-head read that
+// hit its bound used to answer `.Foreign`, which routes to
+// `Reason.Foreign_Transcript` in plan.odin -- a confident wrong diagnosis,
+// since the truth is that discovery does not know what is there. A thread
+// that could not even be started (walk.odin's `t == nil` branch, reached by
+// exactly the resource exhaustion issue #12's pipeline over hundreds of
+// Recordings can produce) used to answer `.Absent`, which plans the
+// Recording fresh and risks overwriting a Transcript this walk never read.
+// Both now answer `.Unreadable`, checked here against every member of
+// `child.Wait` directly -- `transcript_state_of` is the pure mapping
+// `transcript_state_bounded` reads its answer through, so this does not
+// need a thread that can be made to hang to prove it.
+@(test)
+transcript_state_of_never_lets_a_bound_reached_read_as_absent_or_foreign :: proc(t: ^testing.T) {
+	testing.expect_value(
+		t,
+		transcript_state_of(.Finished, .Transcibrs),
+		Transcript_State.Transcibrs,
+	)
+	testing.expect_value(t, transcript_state_of(.Finished, .Foreign), Transcript_State.Foreign)
+	testing.expect_value(t, transcript_state_of(.Finished, .Absent), Transcript_State.Absent)
+	testing.expect_value(t, transcript_state_of(.Stopped, {}), Transcript_State.Unreadable)
+	testing.expect_value(t, transcript_state_of(.Unstoppable, {}), Transcript_State.Unreadable)
+}

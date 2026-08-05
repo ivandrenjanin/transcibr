@@ -668,12 +668,18 @@ transcript_head_worker :: proc(data: rawptr) {
 	job.state = transcript_state(job.path)
 }
 
-// `.Foreign` and not `.Absent` on a bound reached: `.Absent` plans the
-// Recording fresh, `.Foreign` refuses it (plan.odin), and a wedge means this
-// genuinely does not know which is true. Refusing is the safe direction --
-// it costs an operator a look, where planning fresh over a Transcript this
-// walk never got to read risks the data loss ADR-0009's boundary rule exists
-// to prevent.
+// `.Unreadable` on every path this could fail by, and never `.Absent` or
+// `.Foreign`: `.Absent` plans the Recording fresh, which risks the data
+// loss ADR-0009's boundary rule exists to prevent when this walk never
+// actually got to read what is there; `.Foreign` tells the operator
+// transcibr did not write the Transcript, which is a wrong diagnosis when
+// discovery genuinely does not know. `.Unreadable` refuses the way
+// `.Foreign` does (plan.odin), naming the true reason instead -- and it is
+// the answer whether a bound was reached (`.Stopped`, `.Unstoppable`) or the
+// read never got a thread to run on at all (`t == nil`), because a Batch
+// resource-starved enough to fail `thread.create_and_start_with_data` is
+// exactly issue #12's exhaustion case and no safer a moment to guess (PR
+// #64's second review, findings 3 and 4).
 @(private)
 @(require_results)
 transcript_state_bounded :: proc(path: string, bound_ms: i64) -> Transcript_State {
@@ -688,19 +694,43 @@ transcript_state_bounded :: proc(path: string, bound_ms: i64) -> Transcript_Stat
 	if t == nil {
 		delete(job.path, runtime.heap_allocator())
 		free(job, runtime.heap_allocator())
-		return .Absent
+		return .Unreadable
 	}
 
 	switch child.await_or_abandon(t, bound_ms) {
 	case .Finished:
 		state := job.state
 		release_transcript_head_job(t, job)
-		return state
+		return transcript_state_of(.Finished, state)
 	case .Stopped:
 		release_transcript_head_job(t, job)
-		return .Foreign
+		return transcript_state_of(.Stopped, {})
 	case .Unstoppable:
-		return .Foreign
+		return transcript_state_of(.Unstoppable, {})
+	}
+	unreachable()
+}
+
+// The mapping `transcript_state_bounded` reads its answer through, pulled
+// out so it can be checked against every member of `child.Wait` directly
+// rather than only through a real thread's timing: a `.Stopped` or
+// `.Unstoppable` wait answers `.Unreadable` whatever `when_finished` says,
+// because that value was read out of a job a worker this walk gave up on --
+// never touched for either of those two, so a caller may pass it a zero
+// value the way `transcript_state_bounded` does. Exhaustive over
+// `child.Wait`, so a member neither this repository nor `transcibr:child`
+// has today is a build failure here rather than an unhandled arm.
+@(private)
+@(require_results)
+transcript_state_of :: proc(
+	wait: child.Wait,
+	when_finished: Transcript_State,
+) -> Transcript_State {
+	switch wait {
+	case .Finished:
+		return when_finished
+	case .Stopped, .Unstoppable:
+		return .Unreadable
 	}
 	unreachable()
 }
