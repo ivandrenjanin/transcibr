@@ -334,6 +334,13 @@ discard_part :: proc(part: string, fault: Fault) {
 // and resolves under an account name that may not be. A path that is not valid
 // UTF-8 answers `.Unusable` rather than `.Path_Not_Ascii`, because
 // `get_absolute_path` refuses it before the ASCII check ever sees it.
+//
+// `--cache` is hand-typed, and this is the FIRST thing `--transcribe` does
+// with it -- before any bound the rest of a run relies on. `make_directory-`
+// `_bounded` is `os.make_directory_all` run the way `child.read_bounded`
+// runs a whole-file read, so a scratch cache on a share that stops
+// answering is reported rather than wedging the Batch before its first
+// Recording (PR #64's third review, finding 6).
 @(require_results)
 open_cache :: proc(cache: string, allocator: mem.Allocator) -> Cache_Fault {
 	assert(len(cache) > 0, "there is no scratch cache here to open")
@@ -348,7 +355,7 @@ open_cache :: proc(cache: string, allocator: mem.Allocator) -> Cache_Fault {
 	if !process.ascii_only(resolved) {
 		return .Path_Not_Ascii
 	}
-	if os.make_directory_all(cache) != nil && !os.exists(cache) {
+	if !child.make_directory_bounded(cache, child.READ_BOUND_MS) {
 		return .Unusable
 	}
 	return .None
@@ -357,6 +364,13 @@ open_cache :: proc(cache: string, allocator: mem.Allocator) -> Cache_Fault {
 // Best effort by construction: Windows refuses to delete a file another process
 // holds open without sharing delete permission, so the file stays, the sweep
 // carries on, and what is answered is what actually went.
+//
+// `child.list_directory_bounded` and not `os.read_all_directory_by_path`
+// directly, for the identical reason `open_cache` no longer calls
+// `os.make_directory_all` directly: the listing this sweep starts with is
+// the same call `planning.directory_listing_bounded` already bounds, two
+// packages over, and `--cache` reaches it unbounded until this does (PR
+// #64's third review, finding 6).
 @(require_results)
 sweep_cache :: proc(
 	cache: string,
@@ -372,8 +386,8 @@ sweep_cache :: proc(
 	if opening := open_cache(cache, allocator); opening != .None {
 		return 0, opening
 	}
-	listing, unreadable := os.read_all_directory_by_path(cache, allocator)
-	if unreadable != nil {
+	listing, readable := child.list_directory_bounded(cache, child.READ_BOUND_MS, allocator)
+	if !readable {
 		return 0, .Unusable
 	}
 	defer os.file_info_slice_delete(listing, allocator)
