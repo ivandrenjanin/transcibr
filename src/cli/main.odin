@@ -54,6 +54,22 @@ USAGE ::
       --engine-version left out means "not asked", not "unknown": a plan that
       cannot name its engine never reports the engine as having changed.
 
+  transcibr-cli --batch <folder> --model-file <path>
+                --engine-exe <path> --cache <directory>
+                [--profile ` +
+	transcript.PROFILE_CHOICE +
+	`] [--engine-version <version>] [--prompt <text>]
+                [--follow-reparse-points ` +
+	FOLLOW_CHOICE +
+	`] [--ffmpeg <path>] [--ffprobe <path>]
+                [--extract-workers <n>] [--queue-depth <n>]
+      transcribe every recording under the folder that needs it, resuming
+      what an earlier run already finished. One or two extraction workers
+      feed exactly one transcription worker through a bounded queue, so the
+      GPU is never idle waiting on disk and never runs two transcriptions at
+      once. Ctrl+C stops admitting new recordings; whatever the queue already
+      holds still finishes. Spends GPU time.
+
   transcibr-cli --help
       print this and exit.
 
@@ -89,6 +105,9 @@ main :: proc() {
 	}
 	if os.args[1] == PLAN {
 		os.exit(plan_batch(os.args[1:]))
+	}
+	if os.args[1] == BATCH {
+		os.exit(run_batch_command(os.args[1:]))
 	}
 	os.exit(re_render(os.args[1:]))
 }
