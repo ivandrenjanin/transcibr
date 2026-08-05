@@ -182,6 +182,31 @@ transcibr_thread_count :: proc() -> (n: int, counted: bool) {
 	return n, true
 }
 
+// Finding 7 of the PR #64 review's second pass: five rounds made this case's
+// only guard on the headline finding below a single stray thread away from
+// either failure direction, since the sweep runs every package's tests
+// across twelve concurrent threads and a sibling case (the single-read case
+// above, the 8 MiB worst-case read) holds a read thread of its own live in
+// that same window. A sibling that exits between `baseline` and `after`
+// fails this spuriously; one that starts in that window masks a real leak by
+// the identical amount. Scaling the round count up and the pass condition to
+// a tolerance rather than an exact match is what tells the two apart: the
+// unfixed code's own signature is +1 thread EVERY round, never reclaimed, so
+// at `ROUNDS` large enough that signal dwarfs whatever a handful of sibling
+// threads starting or stopping during this case's wall-clock window could
+// produce, only a real leak can clear `TOLERANCE`.
+@(private)
+ROUNDS :: 25
+
+// However many of its own threads a sibling case in this package's suite
+// might transiently hold across this case's window -- comfortably above
+// that, and comfortably below what a real per-round leak reaches at
+// `ROUNDS`, which is `ROUNDS` itself.
+@(private)
+TOLERANCE :: 8
+
+#assert(TOLERANCE < ROUNDS)
+
 // Finding 1 of the PR #64 review: every abandoned read used to leak a live OS
 // thread, its stack, its thread handle and the file handle `ReadFile` was
 // blocked inside -- permanently, because nothing ever joined it. Measured
@@ -189,9 +214,10 @@ transcibr_thread_count :: proc() -> (n: int, counted: bool) {
 // code: eight abandoned reads took the thread count from 5 to 13, +1 per
 // read, never reclaimed. `await_or_abandon` now asks
 // `win32.CancelSynchronousIo` to unblock the thread's `ReadFile` before this
-// case's bound is even reached again, and joins it -- so five abandonments in
-// a row, run one after another through the public `read_bounded` seam, must
-// not leave the thread count any higher than where it started.
+// case's bound is even reached again, and joins it -- so `ROUNDS` abandonments
+// in a row, run one after another through the public `read_bounded` seam,
+// must not leave the thread count more than `TOLERANCE` above where it
+// started.
 //
 // Every server end stays open until after `after` is read: closing one early
 // breaks its pipe and unblocks that round's ReadFile on its own, which would
@@ -205,7 +231,6 @@ abandoning_a_read_repeatedly_does_not_accumulate_threads :: proc(t: ^testing.T) 
 		return
 	}
 
-	ROUNDS :: 5
 	servers: [ROUNDS]win32.HANDLE
 	paths: [ROUNDS]string
 	rounds_ok := 0
@@ -237,12 +262,13 @@ abandoning_a_read_repeatedly_does_not_accumulate_threads :: proc(t: ^testing.T) 
 	}
 	testing.expectf(
 		t,
-		after <= baseline,
-		"abandoning %d reads left %d thread(s) behind that were never reclaimed (baseline %d, after %d)",
+		after - baseline <= TOLERANCE,
+		"abandoning %d reads left %d thread(s) behind that were never reclaimed (baseline %d, after %d, tolerance %d)",
 		rounds_ok,
 		after - baseline,
 		baseline,
 		after,
+		TOLERANCE,
 	)
 }
 
