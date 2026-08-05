@@ -34,17 +34,22 @@ made_by :: proc(profile := transcript.DEFAULT_PROFILE) -> Sidecar {
 	)
 }
 
+// Reads engine_version, model and profile out of a Sidecar `made_by` already
+// built, rather than repeating those three literals here -- so this and
+// `made_by` cannot drift into two provenance records that disagree with each
+// other, the fixture-side half of issue #73's acceptance criteria.
 @(private)
 @(require_results)
 rendered_as :: proc(
 	source: string,
 	profile := transcript.DEFAULT_PROFILE,
 ) -> transcript.Render_Context {
+	made := made_by(profile)
 	return transcript.Render_Context {
 		now = time.unix(1_754_136_000, 0),
 		source_display = source,
-		engine_version = "whisper.cpp v1.9.1",
-		model = "ggml-large-v3",
+		engine_version = made.engine_version,
+		model = model_display_name(made.model),
 		profile = profile,
 	}
 }
@@ -393,6 +398,34 @@ a_recording_whose_path_names_no_file_is_refused_before_anything_is_read :: proc(
 	defer destroy_names(placed, context.allocator)
 
 	testing.expect_value(t, err.fault, Fault.Named_No_File)
+}
+
+// The re-render path (`pipeline.re_rendered_and_placed`) never has a fresh
+// container probe to pass, so it passes no duration at all -- issue #73's
+// pair-assert on duration is an implication for exactly this reason, and
+// this case is what would catch it being written unconditional instead.
+@(test)
+re_rendering_with_no_duration_still_places_green :: proc(t: ^testing.T) {
+	b := set_out(t, "re-render")
+	defer cleared(b)
+
+	made := made_by()
+	placed, err := complete(
+		b.source,
+		b.output,
+		nil,
+		rendered_as(b.source),
+		made,
+		context.allocator,
+	)
+	defer destroy_names(placed, context.allocator)
+
+	testing.expect_value(t, err.fault, Fault.None)
+	testing.expect(
+		t,
+		os.exists(placed[.Transcript]),
+		"a re-render with no duration placed nothing",
+	)
 }
 
 @(test)
