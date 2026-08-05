@@ -108,6 +108,19 @@ pipe_read_worker :: proc(data: rawptr) {
 // The same worker, handed an ordinary job right after an abandonment, must
 // still run it -- this is the "spawn a replacement only when a job is
 // actually abandoned" contract issue #65's follow-up review asks for.
+//
+// PR #64's fourth review found this case itself violating the precondition
+// it exists to pin: `defer release_worker(w)` ran unconditionally, so a
+// `.Stopped` regressing to `.Unstoppable` (`testing.expect_value` records the
+// mismatch and carries on rather than stopping the case) fell through to
+// handing a SECOND job to a wedged worker and then joining it -- a join that
+// never returns, because the worker was still blocked inside the first job's
+// `ReadFile` with nothing left to unblock it. `w.wedged` now turns that same
+// mutation into an assertion failure instead of a hang (`worker.odin`), but
+// this case does not lean on that backstop: it checks `wait` itself and
+// returns before either handing a second job to `w` or releasing it, and it
+// closes `server` -- which unblocks a `ReadFile` still pending on the first
+// job, wedged worker or not -- before any attempt to join `w`'s thread.
 @(test)
 a_worker_abandons_a_job_that_cannot_finish_and_stays_usable_afterward :: proc(t: ^testing.T) {
 	path, server, ok := pipe_with_no_writer(t, "workerbound", context.allocator)
@@ -115,19 +128,24 @@ a_worker_abandons_a_job_that_cannot_finish_and_stays_usable_afterward :: proc(t:
 		return
 	}
 	defer delete(path, context.allocator)
-	defer win32.CloseHandle(server)
 
 	w := spawn_worker()
 	if !testing.expect(t, w != nil, "a worker this case needed to start would not start") {
+		win32.CloseHandle(server)
 		return
 	}
-	defer release_worker(w)
 
 	job := Pipe_Read_Job {
 		path = path,
 	}
 	wait := run_on_worker(w, pipe_read_worker, &job, READ_SHORT_BOUND_MS)
-	testing.expect_value(t, wait, Wait.Stopped)
+	win32.CloseHandle(server)
+
+	if !testing.expect_value(t, wait, Wait.Stopped) {
+		return
+	}
+	defer release_worker(w)
+
 	testing.expect(
 		t,
 		job.read,

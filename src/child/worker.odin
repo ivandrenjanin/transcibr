@@ -20,12 +20,19 @@ import "core:time"
 // jobs, so it needs its own signal for "a job is waiting" and its own
 // signal for "that job is done" -- both auto-reset, so one `SetEvent`
 // wakes exactly one wait and re-arms for the next.
+// `wedged` is what turns `release_worker`'s "never after `.Unstoppable`"
+// precondition from prose into something a caller cannot get past silently:
+// PR #64's fourth review found the one test pinning this contract itself
+// violating it, unconditionally releasing a worker `run_on_worker` had just
+// reported `.Unstoppable`, past a soft `testing.expect_value` that recorded
+// the mismatch and let the case carry on into the join that never returns.
 Worker :: struct {
 	thread: ^thread.Thread,
 	wake:   win32.HANDLE,
 	done:   win32.HANDLE,
 	job:    proc(data: rawptr),
 	data:   rawptr,
+	wedged: bool,
 }
 
 @(private)
@@ -103,6 +110,7 @@ run_on_worker :: proc(w: ^Worker, job: proc(data: rawptr), data: rawptr, bound_m
 		bound_expressible(bound_ms),
 		"a bound this large cannot be expressed to WaitForSingleObject without meaning INFINITE",
 	)
+	assert(!w.wedged, "a worker already reported unstoppable was handed another job")
 
 	w.job = job
 	w.data = data
@@ -113,6 +121,7 @@ run_on_worker :: proc(w: ^Worker, job: proc(data: rawptr), data: rawptr, bound_m
 		return .Finished
 	case win32.WAIT_TIMEOUT:
 	case win32.WAIT_FAILED:
+		w.wedged = true
 		return .Unstoppable
 	case:
 		unreachable()
@@ -121,6 +130,7 @@ run_on_worker :: proc(w: ^Worker, job: proc(data: rawptr), data: rawptr, bound_m
 	cancelling := time.tick_now()
 	for win32.WaitForSingleObject(w.done, 0) != win32.WAIT_OBJECT_0 {
 		if i64(time.duration_milliseconds(time.tick_since(cancelling))) > CANCEL_BOUND_MS {
+			w.wedged = true
 			return .Unstoppable
 		}
 		_ = CancelSynchronousIo(w.thread.win32_thread)
@@ -132,10 +142,12 @@ run_on_worker :: proc(w: ^Worker, job: proc(data: rawptr), data: rawptr, bound_m
 // Only safe once `w` is known idle -- after `run_on_worker` answered
 // `.Finished` or `.Stopped`, never after `.Unstoppable`: the thread may
 // still be inside the job it was abandoned for, and joining it would be the
-// same indefinite wait issue #27 exists to abolish.
+// same indefinite wait issue #27 exists to abolish. `w.wedged` is the check
+// below and not only this paragraph.
 release_worker :: proc(w: ^Worker) {
 	assert(w != nil, "there is no worker here to release")
 	assert(w.thread != nil, "a worker with no thread was released")
+	assert(!w.wedged, "release_worker called on a worker still wedged in an unstoppable job")
 
 	w.job = nil
 	win32.SetEvent(w.wake)
