@@ -368,6 +368,20 @@ own thread, and `.Unstoppable` means the worker itself — not only the job — 
 `planning`'s `run_bounded` spawns a replacement only then, preserving the bound exactly while cutting
 the create/join cost to one thread per walk rather than one per bounded call.
 
+**A wedged worker leaks more than a one-shot read's `Unstoppable` does, and this ADR said nothing
+about the difference until PR #64's fourth review measured it.** `release_worker` is never safe to
+call once `.Unstoppable` comes back — the same reason `thread.destroy` is never called on an
+abandoned read's thread — so the replacement `run_bounded` spawns leaves the old `Worker` exactly as
+its last job left it: its thread (still blocked, or, once whatever it was blocked on lets go,
+parked forever on its own `wake` event), the `wake` and `done` kernel event handles
+`close_worker_events` would otherwise close, and the `Worker` struct itself, all on
+`runtime.heap_allocator()`'s heap for the rest of the process — `close_worker_events` is never
+called on an abandoned worker at all. Measured by forcing every `.Unstoppable` path in a row: 25
+abandoned workers left the thread count +25, with `spawn_worker` producing a clean replacement each
+time and no corruption. The trade is the same one `Unstoppable` already makes for a one-shot read;
+it costs two kernel handles and a heap struct more per occurrence, because a `Worker` owns more than
+a `Read_Job` does.
+
 ## Consequences
 
 **The by-pointer `Handle_List` is a shape that invites a cleanup, and the cleanup is a silent

@@ -290,6 +290,25 @@ TOLERANCE :: 8
 // let the thread exit WITHOUT the fix this case exists to pin -- the leak
 // only shows up while every pipe is still genuinely unanswered, the same way
 // the single-read case above keeps its one server open for its whole body.
+//
+// N2 of PR #64's fourth review: at `ROUNDS`, a cancellation broken on EVERY
+// round pays the full `CANCEL_BOUND_MS` penalty each time -- about 530
+// seconds of the 600-second ceiling `scripts\common.ps1` gives the whole
+// `child` package, an 11% margin that reports as "the child package did not
+// finish within 600 seconds and was killed" rather than this case's own
+// message, the identical defect Finding 1 of the same review closes for the
+// worker. `LEAK_SWEEP_BUDGET` bails the round loop and not the detection: a
+// healthy run pays `READ_SHORT_BOUND_MS` on every round regardless -- there
+// is never a writer to race, so the bound is always what ends the read, not
+// a fast cancellation -- measured at 31.8 s for the full `ROUNDS` sweep, and
+// `LEAK_SWEEP_BUDGET` leaves it almost four times that before bailing. A
+// regression bad enough to reach it anyway has already leaked several times
+// `TOLERANCE` worth of threads by the time it does, so `after - baseline <=`
+// `TOLERANCE` below still catches it -- this budget only stops the case from
+// spending the package's own ceiling to say so.
+@(private)
+LEAK_SWEEP_BUDGET :: 120 * time.Second
+
 @(test)
 abandoning_a_read_repeatedly_does_not_accumulate_threads :: proc(t: ^testing.T) {
 	baseline, counted := transcibr_thread_count()
@@ -300,7 +319,18 @@ abandoning_a_read_repeatedly_does_not_accumulate_threads :: proc(t: ^testing.T) 
 	servers: [ROUNDS]win32.HANDLE
 	paths: [ROUNDS]string
 	rounds_ok := 0
+	started := time.tick_now()
 	for round in 0 ..< ROUNDS {
+		if !testing.expectf(
+			t,
+			time.tick_since(started) < LEAK_SWEEP_BUDGET,
+			"abandoning reads is taking far longer than a healthy run ever should (stopped after %d of %d rounds) -- bailing out rather than risking the package's own ceiling",
+			round,
+			ROUNDS,
+		) {
+			break
+		}
+
 		tag := fmt.aprintf("leakcheck%d", round, allocator = context.allocator)
 		path, server, ok := pipe_with_no_writer(t, tag, context.allocator)
 		delete(tag, context.allocator)

@@ -171,9 +171,9 @@ directory_listing_finished :: proc(
 // with `delete(infos, allocator)`, which already frees the pointer `cloned`
 // itself holds. A second `delete` there is the exact double free PR #64's
 // second review found in `planning`'s own `clone_listing`
-// (`a_listing_that_cannot_be_cloned_under_memory_pressure_frees_what_it_-`
-// `cloned_exactly_once` is this file's copy of the regression test that
-// pins it).
+// (`a_directory_listing_that_cannot_be_cloned_under_memory_pressure_frees_-`
+// `what_it_cloned_exactly_once` is this file's copy of the regression test
+// that pins it).
 @(private)
 @(require_results)
 clone_directory_listing :: proc(
