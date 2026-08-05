@@ -6,6 +6,7 @@ import "core:os"
 import "core:strings"
 import "core:testing"
 import "core:time"
+import "transcibr:child"
 import "transcibr:transcript"
 
 @(private)
@@ -352,6 +353,15 @@ engine_output_that_is_not_there_at_all_is_reported_rather_than_asserted :: proc(
 	defer destroy_names(placed, context.allocator)
 
 	testing.expect_value(t, err.fault, Fault.Output_Unreadable)
+	testing.expect_value(t, err.read.fault, child.Read_Fault.Unreadable)
+
+	message := error_message(err, b.source, context.allocator)
+	defer delete(message, context.allocator)
+	testing.expect(
+		t,
+		strings.contains(message, "talk.mkv"),
+		"an unreadable Engine output did not name the Recording it belongs to",
+	)
 }
 
 @(test)
@@ -418,6 +428,28 @@ reason_for :: proc(fault: Fault) -> transcript.Parse_Error {
 	return {}
 }
 
+// Exhaustive for the same reason as reason_for, and a second helper rather
+// than folded into it: `.Output_Unreadable` is the only Fault whose message
+// is borrowed from `child.Read_Error` rather than from `transcript.Parse_Error`.
+@(private)
+@(require_results)
+read_reason_for :: proc(fault: Fault) -> child.Read_Error {
+	switch fault {
+	case .Output_Unreadable:
+		return {fault = .Did_Not_Finish}
+	case .None,
+	     .Named_No_File,
+	     .Not_Recordable,
+	     .Output_Quarantined,
+	     .Output_Not_Quarantined,
+	     .Nothing_Transcribed,
+	     .Not_Written,
+	     .Not_Placed:
+		return {}
+	}
+	return {}
+}
+
 @(test)
 every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testing.T) {
 	for fault in Fault {
@@ -425,7 +457,7 @@ every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testin
 			continue
 		}
 		message := error_message(
-			Error{fault = fault, parse = reason_for(fault)},
+			Error{fault = fault, parse = reason_for(fault), read = read_reason_for(fault)},
 			"C:\\recordings\\talk.mkv",
 			context.allocator,
 		)

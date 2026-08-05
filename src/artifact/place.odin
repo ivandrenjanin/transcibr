@@ -31,6 +31,12 @@ Error :: struct {
 	// The name inside it is borrowed from the caller's own spelling of the Engine's
 	// output, so the message is rendered while that string is still alive.
 	parse: transcript.Parse_Error,
+	// Only meaningful when fault == .Output_Unreadable. A share wedged for
+	// child.READ_BOUND_MS and a file Windows can no longer find both collapsed
+	// into this one Fault until issue #27's PR review found it: an operator
+	// deciding between retrying and re-running a Recording needs to know
+	// which one happened, and this is where that distinction is carried.
+	read:  child.Read_Error,
 }
 
 // The Names come back whichever way this ends, except where the Recording's own
@@ -79,7 +85,7 @@ complete :: proc(
 
 	json_bytes, unreadable := child.read_bounded(output, child.READ_BOUND_MS, allocator)
 	if unreadable.fault != .None {
-		return names, Error{fault = .Output_Unreadable}
+		return names, Error{fault = .Output_Unreadable, read = unreadable}
 	}
 	defer delete(json_bytes, allocator)
 
@@ -307,7 +313,13 @@ error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> s
 		message = fmt.aprintf("%q: %s %s", source, which, says, allocator = allocator)
 	case .Output_Quarantined, .Output_Not_Quarantined, .Nothing_Transcribed:
 		message = borrowed_message(err, source, says, allocator)
-	case .None, .Named_No_File, .Not_Recordable, .Output_Unreadable:
+	case .Output_Unreadable:
+		assert(
+			err.read.fault != .None,
+			"an unreadable Engine output carries no read fault to explain it",
+		)
+		message = child.read_error_message(err.read, source, allocator)
+	case .None, .Named_No_File, .Not_Recordable:
 		message = fmt.aprintf("%q: %s", source, says, allocator = allocator)
 	}
 	assert(len(message) > 0, "a refusal rendered as nothing at all")
