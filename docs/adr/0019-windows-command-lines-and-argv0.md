@@ -110,9 +110,10 @@ established the rule and is not re-run.
 Six of the seven refusals are inputs that cannot be spelled on a Windows command line at all, and no
 retry changes that. `.Too_Long` is a different kind of refusal — the same job fits if it is built
 from shorter paths, and ADR-0002 puts the engine's output under `<cache>\<job_id>` with the cache path
-transcibr's own to choose — so `Disposition` answers `Shorten_And_Replan` for it and `Fail_The_Job`
-for the rest. A caller treating all seven alike would either retry the unfixable forever or fail a job
-one shorter path would have run.
+transcibr's own to choose — so `Disposition` answers `Shorten_And_Replan` for it and
+`Fail_The_Recording` for the rest (renamed from `Fail_The_Job` by ADR-0030, which merges this type
+with `transcript`'s own). A caller treating all seven alike would either retry the unfixable forever
+or fail a Recording one shorter path would have run.
 
 ## The ceiling is counted in UTF-16 code units, and the asymmetry is why
 

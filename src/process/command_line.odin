@@ -31,11 +31,6 @@ Build_Error :: struct {
 	argument: int,
 }
 
-Disposition :: enum u8 {
-	Fail_The_Job = 0,
-	Shorten_And_Replan,
-}
-
 @(private)
 Fault_Blames :: enum u8 {
 	Unset = 0,
@@ -63,24 +58,28 @@ FAULT := [Build_Fault]Fault_Facts {
 	.Empty_Executable = {
 		says = "there is no executable to run",
 		blames = .Nothing,
-		disposition = .Fail_The_Job,
+		disposition = .Fail_The_Recording,
 	},
 	.Quote_In_Executable = {
 		says = "contains a quote, and argv[0] has no escape for one",
 		blames = .The_Executable,
-		disposition = .Fail_The_Job,
+		disposition = .Fail_The_Recording,
 	},
-	.Nul_In_Executable = {says = NUL_SAYS, blames = .The_Executable, disposition = .Fail_The_Job},
-	.Nul_In_Argument = {says = NUL_SAYS, blames = .An_Argument, disposition = .Fail_The_Job},
+	.Nul_In_Executable = {
+		says = NUL_SAYS,
+		blames = .The_Executable,
+		disposition = .Fail_The_Recording,
+	},
+	.Nul_In_Argument = {says = NUL_SAYS, blames = .An_Argument, disposition = .Fail_The_Recording},
 	.Invalid_Utf8_In_Executable = {
 		says = INVALID_UTF8_SAYS,
 		blames = .The_Executable,
-		disposition = .Fail_The_Job,
+		disposition = .Fail_The_Recording,
 	},
 	.Invalid_Utf8_In_Argument = {
 		says = INVALID_UTF8_SAYS,
 		blames = .An_Argument,
-		disposition = .Fail_The_Job,
+		disposition = .Fail_The_Recording,
 	},
 	.Too_Long = {
 		says = "the command line needs more than the 32,767 code units CreateProcessW accepts",
@@ -97,6 +96,7 @@ fault_facts :: proc(fault: Build_Fault) -> (facts: Fault_Facts) {
 	facts = FAULT[fault]
 	assert(len(facts.says) > 0, "a fault was added to Build_Fault without a row in FAULT")
 	assert(facts.blames != .Unset, "a fault's row in FAULT names nothing to blame")
+	assert(facts.disposition != .Unset, "a fault's row in FAULT names no disposition")
 	return
 }
 

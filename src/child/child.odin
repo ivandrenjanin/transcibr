@@ -90,7 +90,7 @@ disposition_of :: proc(err: Error) -> process.Disposition {
 	if err.fault == .Bad_Command_Line {
 		return process.disposition_of(err.build.fault)
 	}
-	return .Fail_The_Job
+	return .Fail_The_Recording
 }
 
 Job_Object :: struct {

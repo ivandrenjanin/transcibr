@@ -49,9 +49,7 @@ cache_error_message :: proc(
 	says := cache_fault_says(fault)
 	assert(len(says) > 0, "a fault was added to Cache_Fault without a sentence")
 
-	message := fmt.aprintf("%q: %s -- the Batch cannot start", cache, says, allocator = allocator)
-	assert(len(message) > 0, "a refusal rendered as nothing at all")
-	return message
+	return process.batch_setup_message(cache, says, allocator)
 }
 
 Fault :: enum u8 {

@@ -3,7 +3,6 @@ package artifact
 
 import "core:crypto/sha2"
 import "core:encoding/hex"
-import "core:fmt"
 import "core:io"
 import "core:mem"
 import "core:os"
@@ -181,7 +180,5 @@ model_error_message :: proc(
 	says := model_fault_says(fault)
 	assert(len(says) > 0, "a fault was added to Model_Fault without a sentence")
 
-	message := fmt.aprintf("%q: %s -- the Batch cannot start", model, says, allocator = allocator)
-	assert(len(message) > 0, "a refusal rendered as nothing at all")
-	return message
+	return process.batch_setup_message(model, says, allocator)
 }

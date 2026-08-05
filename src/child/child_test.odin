@@ -232,7 +232,13 @@ every_fault_says_whether_a_different_plan_would_help :: proc(t: ^testing.T) {
 			}
 		}
 		got := disposition_of(err)
-		testing.expectf(t, got == .Fail_The_Job, "%v is %v, want Fail_The_Job", fault, got)
+		testing.expectf(
+			t,
+			got == .Fail_The_Recording,
+			"%v is %v, want Fail_The_Recording",
+			fault,
+			got,
+		)
 	}
 }
 
