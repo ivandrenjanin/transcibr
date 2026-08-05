@@ -2,11 +2,14 @@
 package planning
 
 import "core:fmt"
+import "core:mem"
 import "core:os"
 import "core:slice"
 import "core:strings"
 import "core:sync"
+import win32 "core:sys/windows"
 import "core:testing"
+import "core:time"
 import "transcibr:child"
 
 // Names a place and does not create it. The caller frees the path and removes
@@ -328,6 +331,114 @@ a_markdown_file_transcibr_did_not_write_is_left_alone_and_reported :: proc(t: ^t
 		"the Markdown file transcibr did not write was not left where it was",
 	)
 	testing.expect_value(t, string(left), "# Notes on the interview\n")
+}
+
+// Finding 1 of PR #64's third review: `os.open` failing on a Transcript held
+// open elsewhere used to read exactly like `os.open` failing because nothing
+// is there at all -- both answered `.Absent`, which plans the Recording
+// fresh and risks the Sidecar and Transcript-head reads discovery makes at
+// exactly the moment a locked file (an editor, an antivirus scan, OneDrive,
+// a backup agent) is the ordinary and not the exceptional case on Windows.
+// `share_mode = 0` conflicts with every other open handle whatever sharing
+// that handle allowed, the same primitive `transcibr:child`'s
+// `taken_exclusively` uses to prove a read released its own handle -- here
+// used the other way, to hold one open while the walk tries to read it.
+@(test)
+a_transcript_locked_by_another_process_reads_as_unreadable_not_absent :: proc(t: ^testing.T) {
+	tree := scratch_tree(t, "locked")
+	defer delete(tree, context.allocator)
+	defer remove_tree(tree)
+
+	recording := in_tree(t, tree, "talk.mp4", "video")
+	defer delete(recording, context.allocator)
+	written := in_tree(t, tree, "talk.md", "---\ngenerator: \"transcibr 0.1.0\"\n---\n")
+	defer delete(written, context.allocator)
+
+	wide := win32.utf8_to_utf16(written, context.allocator)
+	defer delete(wide, context.allocator)
+	locked := win32.CreateFileW(
+		win32.wstring(raw_data(wide)),
+		win32.GENERIC_READ,
+		0,
+		nil,
+		win32.OPEN_EXISTING,
+		win32.FILE_ATTRIBUTE_NORMAL,
+		nil,
+	)
+	if !testing.expect(
+		t,
+		locked != win32.INVALID_HANDLE_VALUE,
+		"could not lock the Transcript this case exists to test against",
+	) {
+		return
+	}
+	defer win32.CloseHandle(locked)
+
+	inventory := discover([]string{tree}, Walk{}, context.allocator)
+	defer destroy_inventory(inventory, context.allocator)
+
+	found, took := found_at(inventory, recording)
+	testing.expect(t, took, "a Recording beside a locked Transcript was not found")
+	testing.expect_value(t, found.transcript, Transcript_State.Unreadable)
+	testing.expect_value(t, decide(found, settings()).reason, Reason.Transcript_Unreadable)
+}
+
+// PR #64's fourth review, finding 2: round 4 widened `os.read_at` failure
+// with `read == 0` to `.Unreadable` to close the locked-Transcript case
+// above, and swept a genuinely EMPTY Transcript into the same answer along
+// the way -- `os.open` succeeds, `os.read_at` answers `io.Error.EOF`, and
+// nothing was ever unreadable. A 0-byte `.md` is what an interrupted run or
+// a failed copy leaves beside a Recording, and round 3's answer for it --
+// `.Foreign`, since `written_by_transcibr` never matches an empty head --
+// was the accurate one.
+@(test)
+a_zero_byte_transcript_reads_as_foreign_and_not_unreadable :: proc(t: ^testing.T) {
+	tree := scratch_tree(t, "zerobyte")
+	defer delete(tree, context.allocator)
+	defer remove_tree(tree)
+
+	recording := in_tree(t, tree, "talk.mp4", "video")
+	defer delete(recording, context.allocator)
+	empty := in_tree(t, tree, "talk.md", "")
+	defer delete(empty, context.allocator)
+
+	inventory := discover([]string{tree}, Walk{}, context.allocator)
+	defer destroy_inventory(inventory, context.allocator)
+
+	found, took := found_at(inventory, recording)
+	testing.expect(t, took, "a Recording beside an empty Transcript was not found")
+	testing.expect_value(t, found.transcript, Transcript_State.Foreign)
+	testing.expect_value(t, decide(found, settings()).reason, Reason.Foreign_Transcript)
+}
+
+// The third live case `.Transcript_Unreadable`'s sentence has to stay true
+// for: a directory occupying the path a Transcript would be at fails
+// `os.open` outright (measured: `ERROR_ACCESS_DENIED`, not
+// `ERROR_FILE_NOT_FOUND`), so this reads as `.Unreadable` the same as a
+// locked file does, and never as `.Absent` -- planning fresh over a
+// directory transcibr cannot write a Transcript to is refused, not guessed.
+@(test)
+a_transcript_path_that_names_a_directory_reads_as_unreadable :: proc(t: ^testing.T) {
+	tree := scratch_tree(t, "transcriptdir")
+	defer delete(tree, context.allocator)
+	defer remove_tree(tree)
+
+	recording := in_tree(t, tree, "talk.mp4", "video")
+	defer delete(recording, context.allocator)
+	as_directory := a_directory(t, tree, "talk.md")
+	defer delete(as_directory, context.allocator)
+
+	inventory := discover([]string{tree}, Walk{}, context.allocator)
+	defer destroy_inventory(inventory, context.allocator)
+
+	found, took := found_at(inventory, recording)
+	testing.expect(
+		t,
+		took,
+		"a Recording beside a directory named like its Transcript was not found",
+	)
+	testing.expect_value(t, found.transcript, Transcript_State.Unreadable)
+	testing.expect_value(t, decide(found, settings()).reason, Reason.Transcript_Unreadable)
 }
 
 @(test)
@@ -746,4 +857,200 @@ a_recording_that_is_itself_a_reparse_point_is_planned_and_never_skipped :: proc(
 		len(inventory.notes) == 0,
 		"a Recording that is itself a reparse point was reported as a skipped directory",
 	)
+}
+
+// Enough entries that even a fast NTFS enumeration takes real, measurable
+// time -- a single FindNextFileW call is cheap, but several thousand of them
+// are not free, and that is what stands in here for the stalled share issue
+// #27 names: this suite has no way to make a real network drive stop
+// answering, so the bound is proven against real wall-clock cost instead.
+@(private)
+DIRECTORY_BOUND_TEST_ENTRIES :: 3000
+
+@(test)
+a_directory_listing_that_cannot_finish_within_its_bound_is_reported_rather_than_awaited_forever :: proc(
+	t: ^testing.T,
+) {
+	tree := scratch_tree(t, "dirbound")
+	defer delete(tree, context.allocator)
+	defer remove_tree(tree)
+
+	for i in 0 ..< DIRECTORY_BOUND_TEST_ENTRIES {
+		name := fmt.aprintf("f%d.txt", i, allocator = context.allocator)
+		path := in_tree(t, tree, name, "")
+		delete(path, context.allocator)
+		delete(name, context.allocator)
+	}
+
+	state := Walking {
+		allocator = context.allocator,
+		worker    = child.spawn_worker(),
+	}
+	if !testing.expect(
+		t,
+		state.worker != nil,
+		"a worker this case needed to start would not start",
+	) {
+		return
+	}
+	defer child.release_worker(state.worker)
+
+	started := time.tick_now()
+	listing, ok := directory_listing_bounded(&state, tree, 1)
+	elapsed := time.tick_since(started)
+	defer if ok {
+		os.file_info_slice_delete(listing, context.allocator)
+	}
+
+	testing.expect(t, !ok, "a directory listing bounded at 1 ms was not abandoned at all")
+	testing.expect(
+		t,
+		len(listing) == 0,
+		"an abandoned listing handed back entries it never finished",
+	)
+	testing.expectf(
+		t,
+		elapsed < 5 * time.Second,
+		"a directory listing bounded at 1 ms took %v to be reported, which is not being bounded at all",
+		elapsed,
+	)
+}
+
+@(test)
+a_directory_listing_within_its_bound_returns_every_entry :: proc(t: ^testing.T) {
+	tree := scratch_tree(t, "dirboundok")
+	defer delete(tree, context.allocator)
+	defer remove_tree(tree)
+
+	a := in_tree(t, tree, "a.mp4", "a")
+	defer delete(a, context.allocator)
+	b := in_tree(t, tree, "b.mp4", "b")
+	defer delete(b, context.allocator)
+
+	state := Walking {
+		allocator = context.allocator,
+		worker    = child.spawn_worker(),
+	}
+	if !testing.expect(
+		t,
+		state.worker != nil,
+		"a worker this case needed to start would not start",
+	) {
+		return
+	}
+	defer child.release_worker(state.worker)
+
+	listing, ok := directory_listing_bounded(&state, tree, child.READ_BOUND_MS)
+	defer if ok {
+		os.file_info_slice_delete(listing, context.allocator)
+	}
+
+	testing.expect(t, ok, "a directory listing within its bound was reported as unreadable")
+	testing.expect_value(t, len(listing), 2)
+}
+
+// A wrapper allocator that answers `.Out_Of_Memory` once `remaining`
+// allocations have been handed out, and defers to `backing` for everything
+// else -- freeing, resizing, querying. What `clone_listing`'s error path
+// (Finding 1 of PR #64's second review) needs is a way to reach
+// `os.file_info_clone`'s own allocation failure without a real
+// out-of-memory condition on the machine running the suite, the same
+// technique the review itself used.
+@(private)
+Failing_Allocator :: struct {
+	backing:   mem.Allocator,
+	remaining: int,
+}
+
+@(private)
+@(require_results)
+fails_after_proc :: proc(
+	allocator_data: rawptr,
+	mode: mem.Allocator_Mode,
+	size, alignment: int,
+	old_memory: rawptr,
+	old_size: int,
+	loc := #caller_location,
+) -> (
+	[]byte,
+	mem.Allocator_Error,
+) {
+	fa := (^Failing_Allocator)(allocator_data)
+	assert(fa != nil, "a probe allocator call arrived with no state behind it")
+
+	if mode == .Alloc || mode == .Alloc_Non_Zeroed {
+		if fa.remaining <= 0 {
+			return nil, .Out_Of_Memory
+		}
+		fa.remaining -= 1
+	}
+	return fa.backing.procedure(fa.backing.data, mode, size, alignment, old_memory, old_size, loc)
+}
+
+@(private)
+@(require_results)
+fails_after :: proc(
+	fa: ^Failing_Allocator,
+	remaining: int,
+	backing: mem.Allocator,
+) -> mem.Allocator {
+	assert(fa != nil, "there is no state here to run a probe allocator through")
+	assert(remaining >= 0, "a probe cannot fail before it has done anything")
+
+	fa.backing = backing
+	fa.remaining = remaining
+	return mem.Allocator{procedure = fails_after_proc, data = fa}
+}
+
+// Finding 1 of PR #64's second review: clone_listing's error path freed its
+// own backing slice twice -- os.file_info_slice_delete(cloned[:i], allocator)
+// already frees it, and a second delete(cloned, allocator) right after freed
+// the same pointer again. Two entries clone successfully (the initial `make`
+// and the first file_info_clone) before the probe answers .Out_Of_Memory on
+// the third, landing the failure mid-listing rather than at either end of
+// it. scripts\test.ps1 runs with ODIN_TEST_FAIL_ON_BAD_MEMORY set, so this
+// case fails with a reported bad free against the unfixed clone_listing and
+// is clean against the fix.
+@(test)
+a_listing_that_cannot_be_cloned_under_memory_pressure_frees_what_it_cloned_exactly_once :: proc(
+	t: ^testing.T,
+) {
+	listing := []os.File_Info {
+		{fullpath = "C:\\clips\\a.mp4"},
+		{fullpath = "C:\\clips\\b.mp4"},
+		{fullpath = "C:\\clips\\c.mp4"},
+	}
+
+	fa: Failing_Allocator
+	probe := fails_after(&fa, 2, context.allocator)
+
+	cloned, ok := clone_listing(listing, probe)
+
+	testing.expect(t, !ok, "cloning under memory pressure was reported as succeeding")
+	testing.expect(t, cloned == nil, "a failed clone still handed back a partial listing")
+}
+
+// Findings 3 and 4 of PR #64's second review: a Transcript-head read that
+// hit its bound used to answer `.Foreign`, which routes to
+// `Reason.Foreign_Transcript` in plan.odin -- a confident wrong diagnosis,
+// since the truth is that discovery does not know what is there. A thread
+// that could not even be started (walk.odin's `t == nil` branch, reached by
+// exactly the resource exhaustion issue #12's pipeline over hundreds of
+// Recordings can produce) used to answer `.Absent`, which plans the
+// Recording fresh and risks overwriting a Transcript this walk never read.
+// Both now answer `.Unreadable`, checked here against every member of
+// `child.Wait` directly -- `transcript_state_of` is the pure mapping
+// `transcript_state_bounded` reads its answer through, so this does not
+// need a thread that can be made to hang to prove it.
+@(test)
+transcript_state_of_never_lets_a_bound_reached_read_as_absent_or_foreign :: proc(t: ^testing.T) {
+	testing.expect_value(
+		t,
+		transcript_state_of(.Finished, .Transcibrs),
+		Transcript_State.Transcibrs,
+	)
+	testing.expect_value(t, transcript_state_of(.Finished, .Foreign), Transcript_State.Foreign)
+	testing.expect_value(t, transcript_state_of(.Finished, .Absent), Transcript_State.Absent)
+	testing.expect_value(t, transcript_state_of(.Stopped, {}), Transcript_State.Unreadable)
+	testing.expect_value(t, transcript_state_of(.Unstoppable, {}), Transcript_State.Unreadable)
 }

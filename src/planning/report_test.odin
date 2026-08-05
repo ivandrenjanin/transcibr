@@ -49,6 +49,31 @@ every_reason_renders_a_line_carrying_a_decision_and_a_recording :: proc(t: ^test
 	}
 }
 
+// PR #64's fourth review, finding 2: `.Transcript_Unreadable` reaches three
+// live cases that never wait out a bound at all -- `os.open` refusing a
+// locked Transcript instantly, `os.open` refusing a path a directory
+// occupies instead of a file, and (before that same review) `os.read_at`
+// answering EOF on a 0-byte Transcript. A sentence that claims a bound
+// elapsed and was abandoned is a confident wrong diagnosis for every one of
+// them; this pins the sentence generic enough to stay true regardless of
+// which of the three actually reached it.
+@(test)
+transcript_unreadable_does_not_claim_a_bound_that_may_never_have_elapsed :: proc(t: ^testing.T) {
+	says := reason_says(.Transcript_Unreadable)
+	testing.expectf(
+		t,
+		!strings.contains(says, "bound"),
+		"%q claims a bound elapsed, which is not true of every case that reaches it",
+		says,
+	)
+	testing.expectf(
+		t,
+		!strings.contains(says, "abandoned"),
+		"%q claims this walk gave up waiting, which is not true of every case that reaches it",
+		says,
+	)
+}
+
 @(test)
 every_decision_says_what_it_will_do :: proc(t: ^testing.T) {
 	for decision in Decision {

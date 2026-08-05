@@ -54,6 +54,8 @@ reason_says :: proc(reason: Reason) -> string {
 		return "it names no file to make artifacts from"
 	case .Foreign_Transcript:
 		return "there is a Markdown file beside it that transcibr did not write"
+	case .Transcript_Unreadable:
+		return "its Transcript could not be read, and this walk will not guess what it is"
 	case .Dated_Before_1970:
 		return "the filesystem dates it before 1970, and no Sidecar can record a moment below zero"
 	case .Directory_Not_Writable:

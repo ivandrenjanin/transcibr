@@ -7,6 +7,8 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
+import "core:time"
+import "transcibr:testkit"
 
 // From FIPS 180-4's own worked example: a source of truth outside this
 // repository rather than a value this package produced and compared with itself.
@@ -146,6 +148,73 @@ a_model_that_is_not_there_is_refused_rather_than_asserted :: proc(t: ^testing.T)
 	testing.expect_value(t, fault, Model_Fault.Unreadable)
 }
 
+// Big enough that hashing it takes real, measurable time -- software SHA-256
+// runs nowhere near a disk's own transfer rate, so 128 MiB of it stays well
+// clear of a 1 ms bound on any machine this suite runs on, without paying
+// the cost of writing something the size of a real Model.
+@(private)
+MODEL_TEST_BOUND_FILE_BYTES :: 128 * 1024 * 1024
+
+// Finding 8 of PR #64's second review: this margin used to be a literal
+// `5 * time.Second`, numerically equal to `transcibr:child`'s own
+// (`@(private)`, unreachable from here) `CANCEL_BOUND_MS` by coincidence
+// rather than by reference. A machine slow enough to make cancellation
+// itself take close to five seconds would then fail this assertion at
+// exactly the moment `digest_of_bounded` actually reached the `.Unstoppable`
+// leak path -- two distinct failures, sharing one cause, with nothing here
+// able to say which had happened. Generous against the worst case a
+// correctly working bound could ever legitimately take -- the 1 ms this
+// case hands `digest_of_bounded` plus a cancellation running its own full
+// course -- rather than tuned to equal it, so a machine slow enough to trip
+// this is slow enough that something is actually wrong.
+@(private)
+MODEL_BOUND_TEST_SLACK :: 30 * time.Second
+
+// Finding 3 of the PR #64 review: `--model-file` is hand-typed, the same
+// class of input `--from-json` is, and issue #27's read half was not closed
+// for it. `digest_of_bounded` is the seam this pins directly, at a bound of
+// 1 ms against a file large enough that no real machine finishes hashing it
+// that fast -- proving the bound is actually wired through rather than
+// merely declared, without needing a genuinely stalled network share to
+// demonstrate it.
+@(test)
+a_model_that_cannot_be_hashed_within_its_bound_is_reported_rather_than_awaited_forever :: proc(
+	t: ^testing.T,
+) {
+	directory := scratch(t, "model-bound")
+	defer delete(directory, context.allocator)
+	defer remove_scratch(directory)
+
+	path := fmt.aprintf("%s\\slow.bin", directory, allocator = context.allocator)
+	defer delete(path, context.allocator)
+	defer os.remove(path)
+
+	if !testkit.write_flood(
+		t,
+		path,
+		MODEL_TEST_BOUND_FILE_BYTES,
+		"a byte of a Model too big to hash inside a millisecond\n",
+		context.allocator,
+	) {
+		return
+	}
+
+	started := time.tick_now()
+	digest, bytes, fault := digest_of_bounded(path, 1, context.allocator)
+	elapsed := time.tick_since(started)
+	defer delete(string(digest), context.allocator)
+
+	testing.expect_value(t, fault, Model_Fault.Did_Not_Finish)
+	testing.expect_value(t, bytes, i64(0))
+	testing.expect(t, len(digest) == 0, "an abandoned hash handed back a digest it never finished")
+	testing.expectf(
+		t,
+		elapsed < MODEL_BOUND_TEST_SLACK,
+		"a hash bounded at 1 ms took %v to be reported, which is not being bounded at all",
+		elapsed,
+	)
+}
+
 @(test)
 every_model_fault_renders_a_line_naming_the_model_and_stopping_the_batch :: proc(t: ^testing.T) {
 	for fault in Model_Fault {
@@ -163,4 +232,27 @@ every_model_fault_renders_a_line_naming_the_model_and_stopping_the_batch :: proc
 			fault,
 		)
 	}
+}
+
+// Finding 11 of PR #64's third review: `digest_of_bounded`'s `t == nil`
+// branch -- a thread to hash the Model on could not be started at all --
+// used to answer `.Unreadable`, the identical fault a Model that genuinely
+// will not open reports, so both rendered the identical sentence and pointed
+// an operator whose Batch is thread-starved (issue #12's exhaustion case) at
+// the NAS instead of at what actually happened. `.Not_Started` is a
+// distinct member with a distinct sentence for exactly that reason; this
+// pins the two apart so a future edit cannot quietly re-collapse them.
+@(test)
+a_model_hash_thread_that_could_not_start_is_distinguished_from_an_unreadable_model :: proc(
+	t: ^testing.T,
+) {
+	unstarted := model_fault_says(.Not_Started)
+	unreadable := model_fault_says(.Unreadable)
+
+	testing.expect(t, len(unstarted) > 0, "a thread that could not start rendered no sentence")
+	testing.expect(
+		t,
+		unstarted != unreadable,
+		"a thread that could not start reads exactly like a Model that could not be read",
+	)
 }

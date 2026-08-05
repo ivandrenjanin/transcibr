@@ -6,10 +6,21 @@ import "transcibr:transcript"
 
 // What one Recording's Transcript is, if it is there at all. The Sidecar answers
 // staleness and never ownership: ADR-0026.
+//
+// `.Unreadable` and not `.Foreign`: a Transcript-head read that hit its
+// bound (`planning.transcript_state_bounded`, issue #27) was never actually
+// read, and `.Foreign` tells the operator transcibr did not write it -- a
+// confident wrong diagnosis when the truth is that discovery does not know.
+// `.Unreadable` and not `.Absent` either, for the reason `.Foreign` already
+// argues at its own call site: `.Absent` plans the Recording fresh, and
+// planning fresh over a Transcript this walk never got to read risks the
+// data loss ADR-0009's boundary rule exists to prevent (PR #64's second
+// review, findings 3 and 4).
 Transcript_State :: enum u8 {
 	Absent = 0,
 	Transcibrs,
 	Foreign,
+	Unreadable,
 }
 
 // One Recording as discovery found it. Everything a decision rests on is HERE:
@@ -50,6 +61,7 @@ Reason :: enum u8 {
 	Provenance_Unknown,
 	Names_No_File,
 	Foreign_Transcript,
+	Transcript_Unreadable,
 	Dated_Before_1970,
 	Directory_Not_Writable,
 }
@@ -112,6 +124,15 @@ writable :: proc(found: Found, wanted: Outcome) -> Outcome {
 // `notes.mp4` would otherwise read as a Transcript already up to date
 // (ADR-0008). Whether the directory can be WRITTEN to is not here and cannot be
 // -- see `writable`.
+//
+// `switch found.transcript` and not an `if` chain, deliberately: `transcript_-`
+// `state_of` (walk.odin) is exhaustive over `child.Wait` so a member neither
+// this repository nor `transcibr:child` has today fails the build rather than
+// falling through silently, and this is the classifying site `Transcript_-`
+// `State` itself deserves the same guard at (PR #64's third review, finding
+// 9). A fifth member with no arm here would otherwise reach `unrecorded` and
+// `settled`, whose asserts name only `.Foreign` and `.Unreadable` and would
+// wave it through.
 @(private)
 @(require_results)
 refused :: proc(found: Found, current: artifact.Sidecar) -> (outcome: Outcome, yes: bool) {
@@ -121,8 +142,12 @@ refused :: proc(found: Found, current: artifact.Sidecar) -> (outcome: Outcome, y
 	if len(artifact.stem_of(found.source)) == 0 {
 		return Outcome{decision = .Refuse, reason = .Names_No_File}, true
 	}
-	if found.transcript == .Foreign {
+	switch found.transcript {
+	case .Foreign:
 		return Outcome{decision = .Refuse, reason = .Foreign_Transcript}, true
+	case .Unreadable:
+		return Outcome{decision = .Refuse, reason = .Transcript_Unreadable}, true
+	case .Absent, .Transcibrs:
 	}
 	if !artifact.recordable(current) {
 		return Outcome{decision = .Refuse, reason = .Dated_Before_1970}, true
@@ -139,6 +164,10 @@ unrecorded :: proc(found: Found) -> Outcome {
 	assert(
 		found.transcript != .Foreign,
 		"a Markdown file transcibr did not write reached a resume rule",
+	)
+	assert(
+		found.transcript != .Unreadable,
+		"a Transcript-head read that hit its bound reached a resume rule",
 	)
 
 	if found.transcript == .Absent && !found.engine_output {
@@ -273,6 +302,10 @@ settled :: proc(found: Found) -> Outcome {
 	assert(
 		found.transcript != .Foreign,
 		"a Markdown file transcibr did not write was taken for done",
+	)
+	assert(
+		found.transcript != .Unreadable,
+		"a Transcript-head read that hit its bound was taken for done",
 	)
 
 	if found.transcript == .Transcibrs {

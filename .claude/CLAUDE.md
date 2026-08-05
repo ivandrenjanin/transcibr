@@ -8,16 +8,3 @@ In repositories indexed by CodeGraph (a `.codegraph/` directory exists at the re
 
 If there is no `.codegraph/` directory, skip CodeGraph entirely — indexing is the user's decision.
 <!-- CODEGRAPH_END -->
-
-## CodeGraph does not index this repository yet
-
-The block above is generated and says to reach for CodeGraph before grep. **Do not, here.** It degrades on
-the *absence* of a `.codegraph/` directory, and this repository has one — so the advice reads as live when
-it is not.
-
-CodeGraph has no Odin support. Upstream PR
-[colbymchenry/codegraph#1000](https://github.com/colbymchenry/codegraph/pull/1000) adds it and has not landed.
-Measured here: `codegraph status` reports **1 file, 0 nodes, 0 edges, language `yaml`** — it indexes this
-repository's YAML and none of its 80 `.odin` files.
-
-Use grep and the compiler. When that PR lands and an index over `src/` actually exists, delete this section.

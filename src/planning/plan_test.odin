@@ -105,6 +105,11 @@ a_recording_a_batch_cannot_honour_is_refused_before_any_gpu_time :: proc(t: ^tes
 				.Foreign_Transcript,
 			},
 			{
+				"a Transcript-head read that hit its bound before this walk could tell",
+				proc(f: ^Found) {f.transcript = .Unreadable},
+				.Transcript_Unreadable,
+			},
+			{
 				"a path that names no file to make artifacts from",
 				proc(f: ^Found) {f.source = "C:\\clips\\"},
 				.Names_No_File,

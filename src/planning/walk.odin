@@ -1,7 +1,9 @@
 #+vet explicit-allocators
 package planning
 
+import "base:runtime"
 import "core:fmt"
+import "core:io"
 import "core:mem"
 import "core:os"
 import "core:strings"
@@ -9,6 +11,7 @@ import "core:sync"
 import win32 "core:sys/windows"
 import "core:time"
 import "transcibr:artifact"
+import "transcibr:child"
 import "transcibr:transcript"
 
 // Discovery: the shell half of this package. Walking a tree is I/O and cannot be
@@ -190,6 +193,10 @@ discover :: proc(roots: []string, w: Walk, allocator: mem.Allocator) -> (invento
 		found     = make([dynamic]Found, 0, 64, allocator),
 		notes     = make([dynamic]Walk_Note, 0, 8, allocator),
 		allocator = allocator,
+		worker    = child.spawn_worker(),
+	}
+	defer if state.worker != nil {
+		child.release_worker(state.worker)
 	}
 	for root in roots {
 		walk_root(&state, root)
@@ -233,6 +240,44 @@ Walking :: struct {
 	allocator:   mem.Allocator,
 	directories: int,
 	cancelled:   bool,
+	// One thread for the whole walk rather than one per bounded call --
+	// `run_bounded` below is the only reader and writer. `nil` while a
+	// walk's own `spawn_worker` failed (resource exhaustion) or while the
+	// only worker this walk ever had was abandoned as `.Unstoppable` and no
+	// replacement could be started either; every bounded call treats that
+	// the same way a one-shot thread that would not start already is.
+	worker:      ^child.Worker,
+}
+
+// Runs one bounded job on the walk's own reusable worker, spawning a
+// replacement only when a job is actually abandoned -- issue #65's follow-
+// up review, PR #64's third review, finding 3. `started == false` collapses
+// "no worker was ever running" and "the last one wedged and no replacement
+// would start" into the one answer every caller already gives a thread that
+// could not be started at all.
+@(private)
+@(require_results)
+run_bounded :: proc(
+	state: ^Walking,
+	job: proc(data: rawptr),
+	data: rawptr,
+	bound_ms: i64,
+) -> (
+	wait: child.Wait,
+	started: bool,
+) {
+	assert(state != nil, "there is no walk here to run a job for")
+	assert(job != nil, "a walk was asked to run no job at all")
+
+	if state.worker == nil {
+		return {}, false
+	}
+
+	wait = child.run_on_worker(state.worker, job, data, bound_ms)
+	if wait == .Unstoppable {
+		state.worker = child.spawn_worker()
+	}
+	return wait, true
 }
 
 // A directory still to be enumerated. The path is owned by the frontier and
@@ -292,8 +337,8 @@ walk_one :: proc(state: ^Walking, pending: Pending, frontier: ^[dynamic]Pending)
 	assert(len(pending.path) > 0, "a directory with no path at all came off the frontier")
 	assert(pending.depth >= 0, "a directory at a negative depth came off the frontier")
 
-	listing, unreadable := os.read_all_directory_by_path(pending.path, state.allocator)
-	if unreadable != nil {
+	listing, readable := directory_listing_bounded(state, pending.path, child.READ_BOUND_MS)
+	if !readable {
 		note(state, .Directory_Unreadable, pending.path)
 		return
 	}
@@ -312,6 +357,137 @@ walk_one :: proc(state: ^Walking, pending: Pending, frontier: ^[dynamic]Pending)
 		}
 		took(state, info, pending, frontier, writable)
 	}
+}
+
+// A directory on a share that stops answering wedges this the identical way
+// a hand-typed `--from-json` path wedges `child.read_bounded`. Runs on the
+// walk's own reusable worker (`Walking.worker`) and bounded the same way
+// `child.read_bounded` bounds a file read, for the reason `read.odin`'s own
+// comment gives: nothing about a blocked Win32 call can be polled from
+// outside it. This bounds the WEDGE at READ_BOUND_MS; it does not make the
+// wait itself cancellable mid-flight -- what that does and does not buy a
+// cancelled walk is `stopped`'s to say, below, because `stopped` is the one
+// place that already decides what "cancelled" means for a walk in progress.
+@(private)
+Directory_Job :: struct {
+	path:    string,
+	listing: []os.File_Info,
+	err:     os.Error,
+}
+
+@(private)
+directory_worker :: proc(data: rawptr) {
+	job := (^Directory_Job)(data)
+	assert(job != nil, "a directory-listing thread was started with no job to read")
+	assert(len(job.path) > 0, "a directory-listing thread was started with no path to read")
+
+	job.listing, job.err = os.read_all_directory_by_path(job.path, runtime.heap_allocator())
+}
+
+@(private)
+@(require_results)
+directory_listing_bounded :: proc(
+	state: ^Walking,
+	path: string,
+	bound_ms: i64,
+) -> (
+	listing: []os.File_Info,
+	ok: bool,
+) {
+	assert(state != nil, "there is no walk here to list a directory for")
+	assert(len(path) > 0, "there is no directory here to list")
+	assert(bound_ms > 0, "a listing given no time at all cannot do anything")
+
+	job := new(Directory_Job, runtime.heap_allocator())
+	job.path = strings.clone(path, runtime.heap_allocator())
+
+	wait, started := run_bounded(state, directory_worker, job, bound_ms)
+	if !started {
+		delete(job.path, runtime.heap_allocator())
+		free(job, runtime.heap_allocator())
+		return nil, false
+	}
+
+	switch wait {
+	case .Finished:
+		return directory_finished(job, state.allocator)
+	case .Stopped:
+		release_directory_job(job)
+		return nil, false
+	case .Unstoppable:
+		return nil, false
+	}
+	unreachable()
+}
+
+@(private)
+release_directory_job :: proc(job: ^Directory_Job) {
+	assert(job != nil, "there is no job here to release")
+
+	if job.err == nil {
+		os.file_info_slice_delete(job.listing, runtime.heap_allocator())
+	}
+	delete(job.path, runtime.heap_allocator())
+	free(job, runtime.heap_allocator())
+}
+
+// Where a completed listing's answer crosses from `runtime.heap_allocator`'s
+// heap onto the allocator the caller actually asked for -- the same
+// copy-then-release shape `child.read.odin`'s `finished` uses, one struct
+// deeper: `os.file_info_clone` copies `fullpath` (and re-derives `name` from
+// it) per entry, since a `File_Info` owns a string the source heap will free.
+@(private)
+@(require_results)
+directory_finished :: proc(
+	job: ^Directory_Job,
+	allocator: mem.Allocator,
+) -> (
+	listing: []os.File_Info,
+	ok: bool,
+) {
+	assert(job != nil, "a finished listing has no job to read its answer from")
+
+	err := job.err
+	if err == nil {
+		listing, ok = clone_listing(job.listing, allocator)
+	}
+	release_directory_job(job)
+	return
+}
+
+// The error path frees `cloned[:i]` through `os.file_info_slice_delete`
+// alone, and never `cloned` again after it: `file_info_slice_delete` ends
+// with `delete(infos, allocator)`, which frees the pointer `raw_data`
+// carries -- the same pointer `cloned` itself has, since slicing from the
+// front leaves the base address untouched. A second `delete(cloned,
+// allocator)` after that freed the same block twice, corruption a normal
+// heap does not report until some unrelated allocation reuses the address
+// (PR #64's second review, finding 1).
+// `a_listing_that_cannot_be_cloned_under_memory_pressure_frees_what_it_-`
+// `cloned_exactly_once` in walk_test.odin proves it with an allocator that
+// answers `.Out_Of_Memory` partway through cloning, rather than waiting for
+// a real out-of-memory condition to reach it.
+@(private)
+@(require_results)
+clone_listing :: proc(
+	listing: []os.File_Info,
+	allocator: mem.Allocator,
+) -> (
+	cloned: []os.File_Info,
+	ok: bool,
+) {
+	assert(allocator.procedure != nil, "a listing outliving this procedure needs an allocator")
+
+	cloned = make([]os.File_Info, len(listing), allocator)
+	for info, i in listing {
+		one, err := os.file_info_clone(info, allocator)
+		if err != nil {
+			os.file_info_slice_delete(cloned[:i], allocator)
+			return nil, false
+		}
+		cloned[i] = one
+	}
+	return cloned, true
 }
 
 // Whether this listing is worth a writability probe at all. The probe creates and
@@ -456,35 +632,116 @@ looked_at :: proc(state: ^Walking, info: os.File_Info, writable: bool) -> (found
 		return found
 	}
 
-	found.transcript = transcript_state(names[.Transcript])
+	found.transcript = transcript_state_bounded(state, names[.Transcript], child.READ_BOUND_MS)
 	found.engine_output = os.is_file(names[.Engine_Output])
-	found.recorded = sidecar_at(names[.Sidecar], state.allocator)
+	found.recorded = sidecar_at(state, names[.Sidecar])
 	return found
 }
 
 // An unreadable Sidecar and an absent one are one answer, which is ADR-0003's
-// disposition for unknown provenance: re-do it.
+// disposition for unknown provenance: re-do it -- and a Sidecar wedged behind
+// a stalled share reads the same way rather than blocking discovery forever
+// (issue #27), on the walk's own reusable worker rather than a thread of its
+// own (PR #64's third review, finding 3) -- `child.read_bounded`'s one-shot
+// thread was the right shape before a walk ran this once per Recording.
+@(private)
+Sidecar_Read_Job :: struct {
+	path:     string,
+	bytes:    []u8,
+	os_error: os.Error,
+}
+
+@(private)
+sidecar_read_worker :: proc(data: rawptr) {
+	job := (^Sidecar_Read_Job)(data)
+	assert(job != nil, "a Sidecar-read thread was started with no job to read")
+	assert(len(job.path) > 0, "a Sidecar-read thread was started with no path to read")
+
+	job.bytes, job.os_error = os.read_entire_file_from_path(job.path, runtime.heap_allocator())
+}
+
 @(private)
 @(require_results)
-sidecar_at :: proc(path: string, allocator: mem.Allocator) -> Maybe(artifact.Sidecar) {
+sidecar_at :: proc(state: ^Walking, path: string) -> Maybe(artifact.Sidecar) {
+	assert(state != nil, "there is no walk here to read a Sidecar for")
 	assert(len(path) > 0, "there is nowhere here to read a Sidecar from")
-	assert(allocator.procedure != nil, "a Sidecar outlives this procedure and needs an allocator")
 
-	text, unreadable := os.read_entire_file_from_path(path, allocator)
-	if unreadable != nil {
+	job := new(Sidecar_Read_Job, runtime.heap_allocator())
+	job.path = strings.clone(path, runtime.heap_allocator())
+
+	wait, started := run_bounded(state, sidecar_read_worker, job, child.READ_BOUND_MS)
+	if !started {
+		delete(job.path, runtime.heap_allocator())
+		free(job, runtime.heap_allocator())
 		return nil
 	}
-	defer delete(text, allocator)
 
-	recorded, readable := artifact.read_sidecar(string(text), allocator)
-	if !readable {
+	switch wait {
+	case .Finished:
+		return sidecar_finished(job, state.allocator)
+	case .Stopped:
+		release_sidecar_job(job)
+		return nil
+	case .Unstoppable:
 		return nil
 	}
-	return recorded
+	unreachable()
+}
+
+@(private)
+release_sidecar_job :: proc(job: ^Sidecar_Read_Job) {
+	assert(job != nil, "there is no job here to release")
+
+	delete(job.bytes, runtime.heap_allocator())
+	delete(job.path, runtime.heap_allocator())
+	free(job, runtime.heap_allocator())
+}
+
+@(private)
+@(require_results)
+sidecar_finished :: proc(
+	job: ^Sidecar_Read_Job,
+	allocator: mem.Allocator,
+) -> Maybe(artifact.Sidecar) {
+	assert(job != nil, "a finished Sidecar read has no job to read its answer from")
+
+	result: Maybe(artifact.Sidecar)
+	if job.os_error == nil {
+		recorded, readable := artifact.read_sidecar(string(job.bytes), allocator)
+		if readable {
+			result = recorded
+		}
+	}
+	release_sidecar_job(job)
+	return result
 }
 
 // The head and never the whole file: a Transcript is megabytes, and what is
 // being asked is who wrote it.
+//
+// `.Absent` only where `os.open` says the file is not there
+// (`os.General_Error.Not_Exist`, which `core:os`'s Windows layer gives
+// `ERROR_FILE_NOT_FOUND` and `ERROR_PATH_NOT_FOUND`) -- any other reason
+// `os.open` or `os.read_at` refuses is `.Unreadable`, never a guess at
+// absence. A Transcript held open elsewhere with `FileShare.None` -- an
+// editor, an antivirus scan, OneDrive, a backup agent, all ordinary on
+// Windows -- fails `os.open` with `ERROR_SHARING_VIOLATION`, which
+// `core:os` maps to `io.Error.Permission_Denied` and not to `Not_Exist`; the
+// walk that cannot open a locked Transcript does not know it is not there,
+// so it must not plan fresh over it (PR #64's third review, finding 1 --
+// `fa92616` fixed this for a read that hit its bound and a thread that
+// could not start, and missed the far more reachable case of `os.open`
+// itself failing).
+//
+// `.Foreign` and not `.Unreadable` where `os.read_at` answers `io.Error.EOF`
+// with `read == 0`: `os.open` already succeeded, so that is an empty file,
+// not a failed read -- exactly what an interrupted run or a failed copy
+// leaves behind, and `written_by_transcibr` already answers false for it.
+// Any OTHER `read_at` failure with `read == 0` is a real read that did not
+// happen and answers `.Unreadable`, same as `os.open` itself failing (PR
+// #64's fourth review, finding 2 -- this branch used to answer `.Unreadable`
+// for both, sweeping a 0-byte Transcript into the same bucket as one this
+// walk genuinely could not open).
 @(private)
 @(require_results)
 transcript_state :: proc(path: string) -> Transcript_State {
@@ -492,14 +749,17 @@ transcript_state :: proc(path: string) -> Transcript_State {
 
 	handle, unopenable := os.open(path)
 	if unopenable != nil {
-		return .Absent
+		if unopenable == os.General_Error.Not_Exist {
+			return .Absent
+		}
+		return .Unreadable
 	}
 	defer os.close(handle)
 
 	head: [TRANSCRIPT_HEAD_BYTES]u8 = ---
 	read, unreadable := os.read_at(handle, head[:], 0)
-	if unreadable != nil && read == 0 {
-		return .Foreign
+	if unreadable != nil && unreadable != io.Error.EOF && read == 0 {
+		return .Unreadable
 	}
 	assert(read <= len(head), "more of a Transcript came back than there was room for it")
 
@@ -507,6 +767,102 @@ transcript_state :: proc(path: string) -> Transcript_State {
 		return .Transcibrs
 	}
 	return .Foreign
+}
+
+@(private)
+Transcript_Head_Job :: struct {
+	path:  string,
+	state: Transcript_State,
+}
+
+@(private)
+transcript_head_worker :: proc(data: rawptr) {
+	job := (^Transcript_Head_Job)(data)
+	assert(job != nil, "a Transcript-head thread was started with no job to read")
+	assert(len(job.path) > 0, "a Transcript-head thread was started with no path to read")
+
+	job.state = transcript_state(job.path)
+}
+
+// `.Unreadable` on every path this could fail by, and never `.Absent` or
+// `.Foreign`: `.Absent` plans the Recording fresh, which risks the data
+// loss ADR-0009's boundary rule exists to prevent when this walk never
+// actually got to read what is there; `.Foreign` tells the operator
+// transcibr did not write the Transcript, which is a wrong diagnosis when
+// discovery genuinely does not know. `.Unreadable` refuses the way
+// `.Foreign` does (plan.odin), naming the true reason instead -- and it is
+// the answer whether a bound was reached (`.Stopped`, `.Unstoppable`) or the
+// walk's reusable worker could not be started or replaced at all
+// (`started == false`), because a Batch resource-starved enough to fail
+// `child.spawn_worker` is exactly issue #12's exhaustion case and no safer a
+// moment to guess (PR #64's second review, findings 3 and 4). Runs on the
+// walk's own reusable worker rather than a thread of its own, the way
+// `directory_listing_bounded` does (PR #64's third review, finding 3).
+@(private)
+@(require_results)
+transcript_state_bounded :: proc(
+	state: ^Walking,
+	path: string,
+	bound_ms: i64,
+) -> Transcript_State {
+	assert(state != nil, "there is no walk here to read a Transcript for")
+	assert(len(path) > 0, "there is nowhere here to look for a Transcript")
+	assert(bound_ms > 0, "a read given no time at all cannot do anything")
+
+	job := new(Transcript_Head_Job, runtime.heap_allocator())
+	job.path = strings.clone(path, runtime.heap_allocator())
+
+	wait, started := run_bounded(state, transcript_head_worker, job, bound_ms)
+	if !started {
+		delete(job.path, runtime.heap_allocator())
+		free(job, runtime.heap_allocator())
+		return .Unreadable
+	}
+
+	switch wait {
+	case .Finished:
+		found := job.state
+		release_transcript_head_job(job)
+		return transcript_state_of(.Finished, found)
+	case .Stopped:
+		release_transcript_head_job(job)
+		return transcript_state_of(.Stopped, {})
+	case .Unstoppable:
+		return transcript_state_of(.Unstoppable, {})
+	}
+	unreachable()
+}
+
+// The mapping `transcript_state_bounded` reads its answer through, pulled
+// out so it can be checked against every member of `child.Wait` directly
+// rather than only through a real thread's timing: a `.Stopped` or
+// `.Unstoppable` wait answers `.Unreadable` whatever `when_finished` says,
+// because that value was read out of a job a worker this walk gave up on --
+// never touched for either of those two, so a caller may pass it a zero
+// value the way `transcript_state_bounded` does. Exhaustive over
+// `child.Wait`, so a member neither this repository nor `transcibr:child`
+// has today is a build failure here rather than an unhandled arm.
+@(private)
+@(require_results)
+transcript_state_of :: proc(
+	wait: child.Wait,
+	when_finished: Transcript_State,
+) -> Transcript_State {
+	switch wait {
+	case .Finished:
+		return when_finished
+	case .Stopped, .Unstoppable:
+		return .Unreadable
+	}
+	unreachable()
+}
+
+@(private)
+release_transcript_head_job :: proc(job: ^Transcript_Head_Job) {
+	assert(job != nil, "there is no job here to release")
+
+	delete(job.path, runtime.heap_allocator())
+	free(job, runtime.heap_allocator())
 }
 
 @(private)
@@ -536,6 +892,30 @@ report :: proc(state: ^Walking, at: string) {
 
 // Read atomically because the flag is written on another thread by design, and
 // a plain read of a value another thread stores is a race whatever the width.
+//
+// Checked BETWEEN entries and BETWEEN directories, never inside a single
+// blocked Win32 call -- a walk that is asked to stop while it is inside
+// `directory_listing_bounded`, `transcript_state_bounded` or `sidecar_at`
+// notices only once that call returns, at worst `child.READ_BOUND_MS` (30 s)
+// later, and not sooner. That is a real, honest limit on how quickly a
+// cancelled walk actually stops, and it is the one this package accepts:
+// making the wait itself interruptible needs a poll loop against
+// `state.w.cancelled` inside the wait, which is the identical shape PR #64's
+// second review measured taking a 150-Recording `--plan` from tens of
+// milliseconds to 7.5 seconds (finding 2) -- trading a bounded worst case for
+// an unbounded best case is not the fix issue #16's window needs.
+//
+// `directory_writable` (an open-write-close-remove probe, once per
+// directory), `os.is_file` (the Engine-output check, once per Recording) and
+// `enumerable`/`attributes_of` (`os.is_dir` and `GetFileAttributesW`, once
+// per directory entry) are NOT bounded at all -- unlike the three calls
+// above, a share that stops answering inside one of these wedges the walk
+// for as long as the share stays down, not for READ_BOUND_MS. That is a
+// known gap and not a silent one: these are stat-shaped Win32 calls this
+// suite has not measured wedging the way `child.read_bounded`'s own comment
+// grounds its bound in real numbers, and bounding them the way this package
+// now bounds a directory listing is tracked rather than done here (PR #64's
+// third review, finding 10).
 @(private)
 @(require_results)
 stopped :: proc(state: ^Walking) -> (yes: bool) {
