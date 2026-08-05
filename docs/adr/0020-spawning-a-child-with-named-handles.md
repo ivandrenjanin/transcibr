@@ -324,10 +324,18 @@ fall back to the original abandonment, on `job_allocator`'s heap, for the proces
 `Wait` (`.Finished` / `.Stopped` / `.Unstoppable`) is what names the three outcomes, deliberately
 matching `Run`'s own vocabulary for a process one layer up.
 
-`child.abandoning_a_read_repeatedly_does_not_accumulate_threads` is what pins the fix: five abandoned
-reads, run one after another through the public `read_bounded` seam, must not leave this process's own
-thread count any higher than its baseline — measured with the identical `CreateToolhelp32Snapshot`
-technique the review used, so the claim and the proof use the same instrument.
+`child.abandoning_a_read_repeatedly_does_not_accumulate_threads` is what pins the fix: a hundred
+abandoned reads, run one after another through the public `read_bounded` seam, must not leave this
+process's own thread count more than `TOLERANCE` above its baseline — measured with the identical
+`CreateToolhelp32Snapshot` technique the review used, so the claim and the proof use the same
+instrument. Not an exact match: this suite runs every package's tests across twelve concurrent
+threads, and a sibling case transiently holding a thread of its own during this case's window can move
+the count either direction by a handful. `ROUNDS :: 100` and `TOLERANCE :: 8` are sized against each
+other rather than picked separately — PR #64's third review (finding 2) proved the sizing by mutation:
+skipping cancellation on one call in four leaks roughly a quarter of `ROUNDS` every run, which
+`TOLERANCE` must not be able to absorb. At the round count this ADR shipped with first (25), it could:
+the mutation leaked 6 threads against a tolerance of 8. At 100 it leaks roughly 25, more than three
+times the tolerance, while a clean run's own delta does not move.
 
 `child.a_read_that_cannot_finish_is_abandoned_at_its_bound` is the case that discriminates the bound
 itself, and it does not depend on a Windows device name: it opens a named pipe server end
@@ -340,11 +348,25 @@ ADR is about.
 
 **The same `await_or_abandon` is now the general mechanism for bounding any blocking call transcibr
 does not control, not only a read.** `src/artifact/model.odin`'s `digest_of_bounded` bounds hashing a
-`--model-file`, and `src/planning/walk.odin`'s `directory_listing_bounded` and
-`transcript_state_bounded` bound a directory listing and a Transcript-head read discovery makes —
-issue #27's read half was not fully closed by the Engine-output and `--from-json` reads alone, and
-these three are the ones reachable from hand-typed input and the walk. `src/child/child.odin`'s
-package doc was widened to say so.
+`--model-file` on a one-shot thread, the same shape `read_bounded` uses. `src/planning/walk.odin`'s
+`directory_listing_bounded`, `transcript_state_bounded` and `sidecar_at` bound a directory listing, a
+Transcript-head read and a Sidecar read discovery makes — issue #27's read half was not fully closed
+by the Engine-output and `--from-json` reads alone, and these three are the ones reachable from
+hand-typed input and the walk. `src/child/child.odin`'s package doc was widened to say so.
+
+**A walk of hundreds of Recordings does not pay for a one-shot thread per bounded call.** PR #64's
+third review (finding 3) measured `--plan` 3–3.8x slower than before this ADR's own `await_or_abandon`
+existed, scaling linearly with the size of the archive: `looked_at` created and joined a fresh thread
+for the Transcript-head read AND the Sidecar read, and `walk_one` did the same for the directory
+listing, for every Recording and every directory — 2N+D create/join pairs over an archive of N
+Recordings across D directories, almost all of them for the dominant case where neither file exists.
+`src/child/worker.odin`'s `Worker` is the fix: one persistent OS thread for the whole walk, waited on
+with its own pair of auto-reset events (`wake`, `done`) rather than the thread's own win32 handle,
+since a persistent thread never exits between jobs the way a one-shot thread's handle signals on. Past
+`bound_ms` the same `CancelSynchronousIo` escalation `await_or_abandon` uses applies to the worker's
+own thread, and `.Unstoppable` means the worker itself — not only the job — is no longer safe to reuse:
+`planning`'s `run_bounded` spawns a replacement only then, preserving the bound exactly while cutting
+the create/join cost to one thread per walk rather than one per bounded call.
 
 ## Consequences
 
@@ -385,8 +407,9 @@ it is the one that goes red if `MAX_DRAIN_BYTES` is dropped.
 
 **A read that misses its bound is cancelled and joined, reclaiming its thread, stack, thread handle,
 file handle and every heap block it held** — measured with `CreateToolhelp32Snapshot` returning to
-its exact baseline after five abandoned reads. Only a thread that will not stop even once
-`CancelSynchronousIo` asks it to — a case nothing measured here has produced — falls back to the
+within `TOLERANCE` of its baseline after a hundred abandoned reads, a margin sized to absorb this
+suite's own concurrent sibling noise and nothing more (see above). Only a thread that will not stop
+even once `CancelSynchronousIo` asks it to — a case nothing measured here has produced — falls back to the
 original trade: `Read_Job`, its cloned path and whatever bytes its thread eventually reads stay
 allocated on `job_allocator`'s heap rather than the caller's own, for as long as the process runs,
 the same trade `Unstoppable` already makes for a child that will not stop. Issue #27 is the ticket

@@ -7,6 +7,7 @@ import "core:os"
 import "core:slice"
 import "core:strings"
 import "core:sync"
+import win32 "core:sys/windows"
 import "core:testing"
 import "core:time"
 import "transcibr:child"
@@ -330,6 +331,56 @@ a_markdown_file_transcibr_did_not_write_is_left_alone_and_reported :: proc(t: ^t
 		"the Markdown file transcibr did not write was not left where it was",
 	)
 	testing.expect_value(t, string(left), "# Notes on the interview\n")
+}
+
+// Finding 1 of PR #64's third review: `os.open` failing on a Transcript held
+// open elsewhere used to read exactly like `os.open` failing because nothing
+// is there at all -- both answered `.Absent`, which plans the Recording
+// fresh and risks the Sidecar and Transcript-head reads discovery makes at
+// exactly the moment a locked file (an editor, an antivirus scan, OneDrive,
+// a backup agent) is the ordinary and not the exceptional case on Windows.
+// `share_mode = 0` conflicts with every other open handle whatever sharing
+// that handle allowed, the same primitive `transcibr:child`'s
+// `taken_exclusively` uses to prove a read released its own handle -- here
+// used the other way, to hold one open while the walk tries to read it.
+@(test)
+a_transcript_locked_by_another_process_reads_as_unreadable_not_absent :: proc(t: ^testing.T) {
+	tree := scratch_tree(t, "locked")
+	defer delete(tree, context.allocator)
+	defer remove_tree(tree)
+
+	recording := in_tree(t, tree, "talk.mp4", "video")
+	defer delete(recording, context.allocator)
+	written := in_tree(t, tree, "talk.md", "---\ngenerator: \"transcibr 0.1.0\"\n---\n")
+	defer delete(written, context.allocator)
+
+	wide := win32.utf8_to_utf16(written, context.allocator)
+	defer delete(wide, context.allocator)
+	locked := win32.CreateFileW(
+		win32.wstring(raw_data(wide)),
+		win32.GENERIC_READ,
+		0,
+		nil,
+		win32.OPEN_EXISTING,
+		win32.FILE_ATTRIBUTE_NORMAL,
+		nil,
+	)
+	if !testing.expect(
+		t,
+		locked != win32.INVALID_HANDLE_VALUE,
+		"could not lock the Transcript this case exists to test against",
+	) {
+		return
+	}
+	defer win32.CloseHandle(locked)
+
+	inventory := discover([]string{tree}, Walk{}, context.allocator)
+	defer destroy_inventory(inventory, context.allocator)
+
+	found, took := found_at(inventory, recording)
+	testing.expect(t, took, "a Recording beside a locked Transcript was not found")
+	testing.expect_value(t, found.transcript, Transcript_State.Unreadable)
+	testing.expect_value(t, decide(found, settings()).reason, Reason.Transcript_Unreadable)
 }
 
 @(test)
@@ -773,8 +824,21 @@ a_directory_listing_that_cannot_finish_within_its_bound_is_reported_rather_than_
 		delete(name, context.allocator)
 	}
 
+	state := Walking {
+		allocator = context.allocator,
+		worker    = child.spawn_worker(),
+	}
+	if !testing.expect(
+		t,
+		state.worker != nil,
+		"a worker this case needed to start would not start",
+	) {
+		return
+	}
+	defer child.release_worker(state.worker)
+
 	started := time.tick_now()
-	listing, ok := directory_listing_bounded(tree, 1, context.allocator)
+	listing, ok := directory_listing_bounded(&state, tree, 1)
 	elapsed := time.tick_since(started)
 	defer if ok {
 		os.file_info_slice_delete(listing, context.allocator)
@@ -805,7 +869,20 @@ a_directory_listing_within_its_bound_returns_every_entry :: proc(t: ^testing.T) 
 	b := in_tree(t, tree, "b.mp4", "b")
 	defer delete(b, context.allocator)
 
-	listing, ok := directory_listing_bounded(tree, child.READ_BOUND_MS, context.allocator)
+	state := Walking {
+		allocator = context.allocator,
+		worker    = child.spawn_worker(),
+	}
+	if !testing.expect(
+		t,
+		state.worker != nil,
+		"a worker this case needed to start would not start",
+	) {
+		return
+	}
+	defer child.release_worker(state.worker)
+
+	listing, ok := directory_listing_bounded(&state, tree, child.READ_BOUND_MS)
 	defer if ok {
 		os.file_info_slice_delete(listing, context.allocator)
 	}
