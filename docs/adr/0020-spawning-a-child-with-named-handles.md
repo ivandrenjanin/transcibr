@@ -235,6 +235,64 @@ this package and once through `core:os.process_start`. Through `core:os` a visib
 through this package none does. The pull request records the runs. The windowed binary is issue #15
 and does not exist yet, so this stays a hand verification until it does.
 
+## A read is bounded by the same shape, not by a third drain
+
+Issue #27's second half: `--from-json CON` never returns. `CON` names the Windows console device, so
+the path opens fine and then blocks on `ReadFile` forever, even with this process's own stdin
+pointed at the null device — because `CreateFile("CON", ...)` opens a *new* handle onto the console,
+independent of whatever this process inherited as standard input. `AUX`, `COM1`, `CONIN$` and
+lowercase `con` all hang the same way; `PRN`, `NUL`, `LPT1` and `con.json` do not, which is exactly
+why this is bounded as a read and not special-cased by name — the reserved names do not even agree
+with each other on whether they hang, and a network share or a named pipe with nothing writing to it
+block by the identical mechanism without naming anything reserved at all.
+
+`child.read_bounded` (`src/child/read.odin`) answers this the same way `run_bounded` answers a child
+that will not exit: poll a wall-clock ceiling, and abandon whatever has not finished inside it.
+`READ_BOUND_MS :: 30_000` sits beside `STOP_BOUND_MS` for the same reason the two are the same order
+of magnitude — both answer "how long does transcibr wait for something outside it to answer", and the
+largest thing a bounded read here reads, a multi-megabyte Engine output, comes back in well under a
+second even off a slow disk.
+
+**A read cannot be polled the way a child's diagnostic pipe is.** `PeekNamedPipe` lets `drain_bounded`
+ask "is there anything to read" without blocking, but that answer does not exist for an arbitrary
+`ReadFile` against a console handle or a stalled network share — there is no non-blocking peek that
+works uniformly across every device a path can name. Overlapped I/O (`FILE_FLAG_OVERLAPPED` plus
+`GetOverlappedResultEx` and a timeout) was considered and rejected for the same reason a blacklist
+was: console handles do not reliably honour it, so the one motivating case would still block. The read
+therefore runs on its own thread, and what this package polls is *that thread*, through
+`thread.is_done` — the identical poll-a-ceiling shape as `run_bounded`, aimed at a thread instead of a
+process.
+
+**A read that hits its bound is abandoned, never `TerminateThread`d.** `stop` already establishes that
+a child past its bound is asked to end and, failing that, left running rather than trusted to a
+forceful stop of its own process tree; a read follows the same rule one level down. CLAUDE.md's own
+notes on this repository's test runner found `TerminateThread` abandons whatever locks the thread held
+mid-use — measured, not assumed, against this very toolchain — so a read thread that will not finish
+is simply never joined. Its `Read_Job`, the path it read, and whatever bytes it eventually reads all
+stay allocated until the process exits: the same accepted cost `Unstoppable` already carries for a
+child, moved down to a thread and a heap block instead of a process and a job object.
+
+**That leak cannot sit on the caller's own allocator.** The caller's `allocator` argument is, under
+`odin test`, a per-test tracking allocator torn down the moment the test that started the read
+returns — and in general this package cannot know how long any caller-supplied allocator stays valid
+past the call it was given to. `job_allocator` (`runtime.heap_allocator`) is a fixed, always-valid
+heap used for everything a read thread might still be touching after its caller has stopped waiting on
+it; `finished` copies a completed read's answer onto the caller's own allocator before handing it
+back, so the normal path still costs one extra copy but still returns memory the caller's own
+`delete` can free. Measured: without this split, the abandoned-read test below reported three leaks
+— the `Read_Job`, its cloned path, and the `Thread` bookkeeping `core:thread` itself allocates — every
+time it ran, because `odin test`'s tracking allocator has no way to know an abandonment was
+deliberate.
+
+`child.a_read_that_cannot_finish_is_abandoned_at_its_bound` is the case that discriminates the bound
+itself, and it does not depend on a Windows device name: it opens a named pipe server end
+(`CreateNamedPipeW`) that nobody ever writes to or connects a reader's other end against, which blocks
+a `ReadFile` by the same mechanism `CON` does, on any filesystem. **Mutating the bound check out of
+`await_bounded` turns this case from a 300 ms pass into a hang the test harness kills at its own
+timeout** — measured directly, with `-TestName` and a short `-TimeoutSeconds` rather than the sweep's
+default ten minutes, specifically so proving the negative could not itself become the next hang this
+ADR is about.
+
 ## Consequences
 
 **The by-pointer `Handle_List` is a shape that invites a cleanup, and the cleanup is a silent
@@ -271,6 +329,16 @@ Issue #33 carried both halves as acceptance criteria. The lifted drain keeps `MA
 `src/engine/engine_test.odin`'s own copy, discriminates the ceiling itself — see above —
 `child.a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood` is the one case that does, and
 it is the one that goes red if `MAX_DRAIN_BYTES` is dropped.
+
+**A read abandoned at its bound leaks one heap block for as long as the process runs**, not just a
+Windows handle: `child.read_bounded`'s `Read_Job`, its cloned path and whatever bytes its thread
+eventually reads all stay allocated on `job_allocator`'s heap rather than the caller's own. That is
+the same trade `Unstoppable` already makes for a child that will not stop, carried one layer further
+down — there is no safe way to reclaim memory a thread might still be writing into, and the alternative,
+`TerminateThread`, is the exact hazard CLAUDE.md's notes on this repository's own test runner already
+measured. Issue #27 is the ticket that added it; `src/cli/main.odin`'s `--from-json` and
+`src/artifact/place.odin`'s Engine-output read are its first two callers, covering a hand-typed path
+and one this program built from a Recording's own stem respectively.
 
 ## What reopens this
 

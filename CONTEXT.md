@@ -100,9 +100,12 @@ of model load — and bounded by the recording's own length rather than by a fix
 _Avoid_: timeout, heartbeat, monitor, keepalive
 
 **Bound**:
-The wall-clock ceiling on one child, so that nothing in a batch blocks forever (issue #27). Distinct
-from the watchdog: a bound is about a child still working that has had long enough, a watchdog about
-one that has stopped saying anything at all.
+The wall-clock ceiling on one child or one read, so that nothing in a batch blocks forever (issue
+#27). `child.run_bounded` polls one for a child; `child.read_bounded` polls the same shape for a
+blocking read — a Recording's Engine output, or a hand-typed `--from-json` path that names a reserved
+Windows device and opens fine but never returns from reading it. Distinct from the watchdog: a bound
+is about something still working that has had long enough, a watchdog about one that has stopped
+saying anything at all.
 _Avoid_: timeout, deadline, limit, budget
 
 ## Turning a recording into audio
