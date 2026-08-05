@@ -383,6 +383,64 @@ a_transcript_locked_by_another_process_reads_as_unreadable_not_absent :: proc(t:
 	testing.expect_value(t, decide(found, settings()).reason, Reason.Transcript_Unreadable)
 }
 
+// PR #64's fourth review, finding 2: round 4 widened `os.read_at` failure
+// with `read == 0` to `.Unreadable` to close the locked-Transcript case
+// above, and swept a genuinely EMPTY Transcript into the same answer along
+// the way -- `os.open` succeeds, `os.read_at` answers `io.Error.EOF`, and
+// nothing was ever unreadable. A 0-byte `.md` is what an interrupted run or
+// a failed copy leaves beside a Recording, and round 3's answer for it --
+// `.Foreign`, since `written_by_transcibr` never matches an empty head --
+// was the accurate one.
+@(test)
+a_zero_byte_transcript_reads_as_foreign_and_not_unreadable :: proc(t: ^testing.T) {
+	tree := scratch_tree(t, "zerobyte")
+	defer delete(tree, context.allocator)
+	defer remove_tree(tree)
+
+	recording := in_tree(t, tree, "talk.mp4", "video")
+	defer delete(recording, context.allocator)
+	empty := in_tree(t, tree, "talk.md", "")
+	defer delete(empty, context.allocator)
+
+	inventory := discover([]string{tree}, Walk{}, context.allocator)
+	defer destroy_inventory(inventory, context.allocator)
+
+	found, took := found_at(inventory, recording)
+	testing.expect(t, took, "a Recording beside an empty Transcript was not found")
+	testing.expect_value(t, found.transcript, Transcript_State.Foreign)
+	testing.expect_value(t, decide(found, settings()).reason, Reason.Foreign_Transcript)
+}
+
+// The third live case `.Transcript_Unreadable`'s sentence has to stay true
+// for: a directory occupying the path a Transcript would be at fails
+// `os.open` outright (measured: `ERROR_ACCESS_DENIED`, not
+// `ERROR_FILE_NOT_FOUND`), so this reads as `.Unreadable` the same as a
+// locked file does, and never as `.Absent` -- planning fresh over a
+// directory transcibr cannot write a Transcript to is refused, not guessed.
+@(test)
+a_transcript_path_that_names_a_directory_reads_as_unreadable :: proc(t: ^testing.T) {
+	tree := scratch_tree(t, "transcriptdir")
+	defer delete(tree, context.allocator)
+	defer remove_tree(tree)
+
+	recording := in_tree(t, tree, "talk.mp4", "video")
+	defer delete(recording, context.allocator)
+	as_directory := a_directory(t, tree, "talk.md")
+	defer delete(as_directory, context.allocator)
+
+	inventory := discover([]string{tree}, Walk{}, context.allocator)
+	defer destroy_inventory(inventory, context.allocator)
+
+	found, took := found_at(inventory, recording)
+	testing.expect(
+		t,
+		took,
+		"a Recording beside a directory named like its Transcript was not found",
+	)
+	testing.expect_value(t, found.transcript, Transcript_State.Unreadable)
+	testing.expect_value(t, decide(found, settings()).reason, Reason.Transcript_Unreadable)
+}
+
 @(test)
 a_root_that_is_not_there_is_reported_against_itself_and_never_as_empty :: proc(t: ^testing.T) {
 	tree := scratch_tree(t, "missing")

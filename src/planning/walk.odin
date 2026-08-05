@@ -3,6 +3,7 @@ package planning
 
 import "base:runtime"
 import "core:fmt"
+import "core:io"
 import "core:mem"
 import "core:os"
 import "core:strings"
@@ -731,6 +732,16 @@ sidecar_finished :: proc(
 // `fa92616` fixed this for a read that hit its bound and a thread that
 // could not start, and missed the far more reachable case of `os.open`
 // itself failing).
+//
+// `.Foreign` and not `.Unreadable` where `os.read_at` answers `io.Error.EOF`
+// with `read == 0`: `os.open` already succeeded, so that is an empty file,
+// not a failed read -- exactly what an interrupted run or a failed copy
+// leaves behind, and `written_by_transcibr` already answers false for it.
+// Any OTHER `read_at` failure with `read == 0` is a real read that did not
+// happen and answers `.Unreadable`, same as `os.open` itself failing (PR
+// #64's fourth review, finding 2 -- this branch used to answer `.Unreadable`
+// for both, sweeping a 0-byte Transcript into the same bucket as one this
+// walk genuinely could not open).
 @(private)
 @(require_results)
 transcript_state :: proc(path: string) -> Transcript_State {
@@ -747,7 +758,7 @@ transcript_state :: proc(path: string) -> Transcript_State {
 
 	head: [TRANSCRIPT_HEAD_BYTES]u8 = ---
 	read, unreadable := os.read_at(handle, head[:], 0)
-	if unreadable != nil && read == 0 {
+	if unreadable != nil && unreadable != io.Error.EOF && read == 0 {
 		return .Unreadable
 	}
 	assert(read <= len(head), "more of a Transcript came back than there was room for it")
