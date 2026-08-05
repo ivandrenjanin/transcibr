@@ -57,6 +57,13 @@ Distinct from Executable, which is only the path — and it is a tree rather tha
 child that starts something of its own leaves a process no handle reaches (ADR-0004).
 _Avoid_: spawner, subprocess, runner, process
 
+**Run**:
+One bounded execution of a single Child, from start to Finished, Stopped or Unstoppable — what
+`transcibr:child.run_bounded` hands back. Not a Batch: Batch's own entry avoids this word for exactly
+this reason, because "a run" colloquially means the whole invocation, and this is one child inside
+it. Not the Child either, which is the process itself rather than how its execution ended.
+_Avoid_: execution, attempt, invocation, session
+
 ## Watching the engine run
 
 **Reading**:
