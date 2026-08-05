@@ -34,6 +34,14 @@ Model_Fault :: enum u8 {
 	Path_Not_Ascii,
 	Unreadable,
 	Did_Not_Finish,
+	// A thread to hash it on could not be started at all -- distinct from
+	// `.Unreadable`, which `digest_of_bounded` also returns for a Model that
+	// genuinely will not open. Collapsing the two pointed an operator whose
+	// Batch is thread-starved (issue #12's exhaustion case) at the NAS, when
+	// nothing here has actually looked at the Model yet (PR #64's third
+	// review, finding 11; `transcibr:child`'s `Read_Fault.Not_Started` is the
+	// worked example this follows).
+	Not_Started,
 }
 
 // `--model-file` is hand-typed, the same class of input `--from-json` is
@@ -195,7 +203,7 @@ digest_of_bounded :: proc(
 	if t == nil {
 		delete(job.path, runtime.heap_allocator())
 		free(job, runtime.heap_allocator())
-		return "", 0, .Unreadable
+		return "", 0, .Not_Started
 	}
 
 	switch child.await_or_abandon(t, bound_ms) {
@@ -273,6 +281,8 @@ model_fault_says :: proc(fault: Model_Fault) -> string {
 		return "the Model could not be read"
 	case .Did_Not_Finish:
 		return "could not be read within its bound and was abandoned"
+	case .Not_Started:
+		return "a thread to hash it on could not be started"
 	case .None:
 	}
 	return ""

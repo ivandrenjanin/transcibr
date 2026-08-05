@@ -233,3 +233,26 @@ every_model_fault_renders_a_line_naming_the_model_and_stopping_the_batch :: proc
 		)
 	}
 }
+
+// Finding 11 of PR #64's third review: `digest_of_bounded`'s `t == nil`
+// branch -- a thread to hash the Model on could not be started at all --
+// used to answer `.Unreadable`, the identical fault a Model that genuinely
+// will not open reports, so both rendered the identical sentence and pointed
+// an operator whose Batch is thread-starved (issue #12's exhaustion case) at
+// the NAS instead of at what actually happened. `.Not_Started` is a
+// distinct member with a distinct sentence for exactly that reason; this
+// pins the two apart so a future edit cannot quietly re-collapse them.
+@(test)
+a_model_hash_thread_that_could_not_start_is_distinguished_from_an_unreadable_model :: proc(
+	t: ^testing.T,
+) {
+	unstarted := model_fault_says(.Not_Started)
+	unreadable := model_fault_says(.Unreadable)
+
+	testing.expect(t, len(unstarted) > 0, "a thread that could not start rendered no sentence")
+	testing.expect(
+		t,
+		unstarted != unreadable,
+		"a thread that could not start reads exactly like a Model that could not be read",
+	)
+}
