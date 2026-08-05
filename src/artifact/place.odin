@@ -142,9 +142,7 @@ disposed_of :: proc(
 		return Error{fault = .Output_Quarantined, parse = parse_err}
 	case .Fail_The_Recording:
 		return Error{fault = .Nothing_Transcribed, parse = parse_err}
-	case .Shorten_And_Replan:
-		unreachable()
-	case .Unset:
+	case .Shorten_And_Replan, .Unset:
 		unreachable()
 	}
 	unreachable()
