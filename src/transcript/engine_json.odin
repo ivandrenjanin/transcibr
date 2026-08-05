@@ -6,6 +6,7 @@ import "core:fmt"
 import "core:math"
 import "core:mem"
 import "core:strings"
+import "transcibr:process"
 
 Parse_Fault :: enum u8 {
 	None = 0,
@@ -39,12 +40,6 @@ Parse_Error :: struct {
 	cue:       int,
 }
 
-// Why a fault's disposition is not readable off its name: ADR-0002.
-Disposition :: enum u8 {
-	Quarantine_And_Rerun = 0,
-	Fail_The_Recording,
-}
-
 @(private)
 Fault_Scope :: enum u8 {
 	Unset = 0,
@@ -56,7 +51,8 @@ Fault_Scope :: enum u8 {
 Fault_Facts :: struct {
 	says:        string,
 	scope:       Fault_Scope,
-	disposition: Disposition,
+	// Why this is not readable off the fault's own name: ADR-0002.
+	disposition: process.Disposition,
 }
 
 @(private, rodata)
@@ -162,7 +158,7 @@ fault_facts :: proc(fault: Parse_Fault) -> (facts: Fault_Facts) {
 }
 
 @(require_results)
-disposition_of :: proc(fault: Parse_Fault) -> Disposition {
+disposition_of :: proc(fault: Parse_Fault) -> process.Disposition {
 	assert(fault != .None, "a parse that did not fail has nothing to dispose of")
 	return fault_facts(fault).disposition
 }

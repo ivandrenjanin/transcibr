@@ -5,6 +5,7 @@ import "core:mem"
 import "core:slice"
 import "core:strings"
 import "core:testing"
+import "transcibr:process"
 
 // One real whisper.cpp v1.9.1 run, committed verbatim. Kept unedited because it
 // pins the schema this design bets on (ADR-0001): an Engine release that changes
@@ -288,7 +289,7 @@ every_fault_says_what_adr_0002_does_with_it :: proc(t: ^testing.T) {
 		if fault == .None {
 			continue
 		}
-		want := Disposition.Quarantine_And_Rerun
+		want := process.Disposition.Quarantine_And_Rerun
 		if slice.contains(hard, fault) {
 			want = .Fail_The_Recording
 		}

@@ -435,7 +435,7 @@ every_fault_says_whether_a_different_plan_would_help :: proc(t: ^testing.T) {
 		if fault == .None {
 			continue
 		}
-		want := Disposition.Fail_The_Job
+		want := Disposition.Fail_The_Recording
 		if fault == .Too_Long {
 			want = .Shorten_And_Replan
 		}
