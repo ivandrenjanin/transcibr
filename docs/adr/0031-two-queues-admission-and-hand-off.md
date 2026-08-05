@@ -53,8 +53,13 @@ be touching it has genuinely stopped.
 
 - `CONTEXT.md`'s **Queue** entry is corrected to name both channels rather than describing the
   hand-off queue alone. **Worker**'s claim that the one-transcription-worker invariant "is asserted, not
-  merely intended" is made true by `run_batch`'s own explicit assertion (PR #67's finding 5) rather than
-  left as a claim the code did not back.
+  merely intended" is made true by `bump` (`src/pipeline/pipeline.odin`), which asserts
+  `active_transcriptions <= 1` at the one place that count actually changes, rather than left as a claim
+  the code did not back. PR #67's finding 5 first answered this with `assert(len(transcribe_threads) ==
+  1)` in `shut_down_and_settle` — a slice built one line above with exactly one element, which cannot
+  fail under any input and did not fire when round 2's review spawned a genuine second transcription
+  Worker; that review's finding 2 replaced it with the `bump` assertion above, proved by the same
+  mutation against a real, changing count.
 - ADR-0006 itself is left as written. It is not wrong about the invariant that matters — one GPU Worker,
   a bounded hand-off — only silent about the second, disk-cheap channel sitting in front of it. This ADR
   is the correction, not a rewrite of that one.

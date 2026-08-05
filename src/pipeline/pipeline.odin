@@ -107,6 +107,14 @@ Counters :: struct {
 	max_transcribe_queue_depth: int,
 }
 
+// ADR-0006's one transcription Worker, checked where a second one running would
+// actually show up -- the live count a second concurrent transcription pushes
+// past one -- rather than by a slice length fixed at one element on the line
+// that builds it, which cannot fail under any input, mutation or future edit
+// (finding 2 of PR #67's round-2 review). `exactly_one_transcription_runs_-`
+// `at_a_time_however_many_are_queued` (topology_test.odin) is the same
+// invariant proved from outside; this is the production assertion that backs
+// it at the one place the count itself changes.
 @(private)
 bump :: proc(c: ^Counters, which: Metric, delta: int) {
 	assert(c != nil, "there is no counters block here to bump")
@@ -119,6 +127,10 @@ bump :: proc(c: ^Counters, which: Metric, delta: int) {
 		c.max_active_extractions = max(c.max_active_extractions, c.active_extractions)
 	case .Transcribe_Active:
 		c.active_transcriptions += delta
+		assert(
+			c.active_transcriptions <= 1,
+			"ADR-0006's one transcription Worker is asserted, not merely intended",
+		)
 		c.max_active_transcriptions = max(c.max_active_transcriptions, c.active_transcriptions)
 	case .Extract_Depth, .Transcribe_Depth:
 		unreachable()

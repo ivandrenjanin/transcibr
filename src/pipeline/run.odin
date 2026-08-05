@@ -391,10 +391,6 @@ shut_down_and_settle :: proc(
 	extract_clean := close_and_join(extract_queue, extract_threads, bound_ms)
 
 	transcribe_threads := []^thread.Thread{transcribe_thread}
-	assert(
-		len(transcribe_threads) == 1,
-		"ADR-0006's one transcription Worker is asserted, not merely intended",
-	)
 	transcribe_clean := close_and_join(transcribe_queue, transcribe_threads, bound_ms)
 	delete(extract_threads, runtime.heap_allocator())
 
