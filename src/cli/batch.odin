@@ -201,15 +201,17 @@ run_the_batch :: proc(
 		},
 		context.allocator,
 		&cancel_requested,
+		pipeline.RECORDING_STAGES,
 	)
 
 	fmt.eprintfln(
-		"  %d transcribed, %d re-rendered, %d failed, %d refused, %d skipped",
+		"  %d transcribed, %d re-rendered, %d failed, %d refused, %d skipped, %d cancelled",
 		summary.transcribed,
 		summary.rerendered,
 		summary.failed,
 		summary.refused,
 		summary.skipped,
+		summary.cancelled,
 	)
 	if summary.failed > 0 || summary.refused > 0 {
 		return OPERATING_ERROR
@@ -220,12 +222,20 @@ run_the_batch :: proc(
 // Why not `strconv.parse_int`, which takes `_`, a sign and overflows in
 // silence: CLAUDE.md, Odin notes. Three digits is generous against any
 // machine's real core or disk count and refuses a mistyped, absurdly large
-// one rather than handing it to `chan.create`.
+// one before it ever reaches `chan.create`.
+//
+// The ceiling used to be 64 for both `--extract-workers` and `--queue-depth`,
+// silently contradicting the one spec sentence pipeline.run_recordings now
+// asserts: ADR-0006 bounds a real Batch to one or two of each. Sharing
+// `pipeline.MAX_QUEUE_DEPTH` here rather than a second copy of the number 2
+// is what keeps a value outside it a refusal at the command line (A8) instead
+// of a crash at that assertion -- both options take the same ceiling because
+// ADR-0006 gives both the same bound.
 @(private)
 @(require_results)
 read_worker_count :: proc(value: string) -> (count: int, ok: bool) {
 	parsed, readable := process.read_natural(value, 3)
-	if !readable || parsed <= 0 || parsed > 64 {
+	if !readable || parsed <= 0 || parsed > i64(pipeline.MAX_QUEUE_DEPTH) {
 		return 0, false
 	}
 	return int(parsed), true
@@ -327,7 +337,12 @@ read_batch_worker_option :: proc(into: ^int, name, value: string) -> (ok: bool) 
 
 	count, readable := read_worker_count(value)
 	if !readable {
-		return refuse("%s takes a whole number from 1 to 64, not %q.", name, value)
+		return refuse(
+			"%s takes a whole number from 1 to %d, not %q.",
+			name,
+			pipeline.MAX_QUEUE_DEPTH,
+			value,
+		)
 	}
 	into^ = count
 	return true

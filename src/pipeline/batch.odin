@@ -22,6 +22,11 @@ Summary :: struct {
 	failed:      int,
 	refused:     int,
 	skipped:     int,
+	// A Recording queued for transcription but never admitted because the
+	// Batch was cancelled first (`Terminal.Not_Admitted`) -- never folded into
+	// `failed`, the same way `planning.Inventory.cancelled` keeps a stopped
+	// walk apart from one that actually failed (finding 4 of PR #67's review).
+	cancelled:   int,
 }
 
 @(private)
@@ -91,7 +96,7 @@ re_rendered_and_placed :: proc(
 	)
 	defer artifact.destroy_names(placed, allocator)
 	if unplaced.fault != .None {
-		report_artifact_fault(source, unplaced, allocator)
+		report_fault(artifact.error_message(unplaced, source, allocator), allocator)
 		return false
 	}
 	fmt.println(placed[.Transcript])
@@ -138,16 +143,31 @@ sort_entry :: proc(
 // Stage already running -- is what makes interrupting mid-Batch stop
 // admitting new work rather than abandon what the bounded queue already
 // holds (see run_batch's own admit_jobs).
+//
+// `stages` is a real parameter and not a default of `RECORDING_STAGES`
+// baked in here, so a test can drive the exact same folder-to-artifacts
+// wiring with the pipeline's own fake Stages and no GPU (finding 8 of PR
+// #67's review) -- `src/cli/batch.odin` is the one production caller and
+// always passes `RECORDING_STAGES`.
 @(require_results)
 run_recordings :: proc(
 	plan: planning.Plan,
 	o: Batch_Options,
 	allocator: mem.Allocator,
-	cancelled: ^bool = nil,
+	cancelled: ^bool,
+	stages: Stages(Recording_Job, Recording_Extracted),
 ) -> (
 	summary: Summary,
 ) {
 	assert(o.config.extract_workers > 0, "a Batch with no extraction workers admits nothing")
+	assert(
+		o.config.extract_workers <= MAX_EXTRACT_WORKERS,
+		"ADR-0006 bounds a Batch to one or two extraction Workers, asserted rather than merely intended",
+	)
+	assert(
+		o.config.queue_depth <= MAX_QUEUE_DEPTH,
+		"ADR-0006 bounds a Batch's queue to a depth of one or two, asserted rather than merely intended",
+	)
 
 	jobs := make([dynamic]Recording_Job, 0, len(plan.entries), allocator)
 	defer delete(jobs)
@@ -158,12 +178,20 @@ run_recordings :: proc(
 		return
 	}
 
-	results, _ := run_batch(jobs[:], RECORDING_STAGES, o.config, allocator, cancelled)
+	results, _ := run_batch(jobs[:], stages, o.config, allocator, cancelled)
 	defer delete(results, allocator)
 	for status in results {
-		if status == .Transcribed {
+		switch status {
+		case .Transcribed:
 			summary.transcribed += 1
-		} else {
+		case .Not_Admitted:
+			summary.cancelled += 1
+		case .Unset,
+		     .Extraction_Failed,
+		     .Transcription_Failed,
+		     .Extract_Queue_Send_Failed,
+		     .Transcribe_Queue_Send_Failed,
+		     .Stage_Abandoned:
 			summary.failed += 1
 		}
 	}
