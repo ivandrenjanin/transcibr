@@ -4,52 +4,21 @@ package engine
 import "core:fmt"
 import "core:mem"
 import "core:os"
-import "core:time"
 import "transcibr:child"
 import "transcibr:process"
 
-// This file starts the Engine, drains what it says while it runs, and reads back
-// what it left.
-
-// A quarter of a second stays well under the 64 KiB diagnostic pipe filling
-// against an Engine that writes a few kilobytes over a whole Recording
-// (ADR-0004), and paints far more often than a hundred-position bar can show.
-@(private)
-POLL_MS :: u32(250)
-
-@(private)
-DRAIN_BYTES :: 4096
-
-// Why one drain has a ceiling at all, and why a megabyte: ADR-0020.
-@(private)
-MAX_DRAIN_BYTES :: 1 << 20
-
-#assert(MAX_DRAIN_BYTES > DRAIN_BYTES)
-
-@(private)
-Run :: enum u8 {
-	Not_Started = 0,
-	Finished,
-	Stopped,
-	Unstoppable,
-}
+// This file starts the Engine, drains what it says while it runs, and reads
+// back what it left. The poll loop and the drain that bounds it live in
+// transcibr:child; what stays here is what an Engine's chunk means -- fed to a
+// process.Tracker through a process.Line_Reader -- and what one bounded run of
+// it is called.
 
 @(private)
 Ending :: struct {
-	run:         Run,
+	run:         child.Run,
 	silent:      bool,
 	duration_ms: i64,
 	child:       child.Error,
-}
-
-// Offset by one because the first tick since a start reads zero, and
-// `process.tracker_start` refuses that.
-@(private)
-@(require_results)
-elapsed_ns :: proc(started: time.Tick) -> i64 {
-	reading := 1 + i64(time.duration_nanoseconds(time.tick_since(started)))
-	assert(reading > 0, "a monotonic counter that went backwards or has not started")
-	return reading
 }
 
 @(require_results)
@@ -151,6 +120,70 @@ landed :: proc(output: string) -> Fault {
 	return .None
 }
 
+// The caller's own reading of a chunk: a Tracker fed through a Line_Reader,
+// exactly what transcibr:child knows nothing about.
+@(private)
+Watch_State :: struct {
+	tracker: process.Tracker,
+	reader:  process.Line_Reader,
+	report:  Report,
+	watch:   process.Watch,
+	painted: process.Progress,
+	silent:  bool,
+}
+
+// Called for every read that produced bytes, whether or not any of them read
+// as a line: an Engine writing a log this reader has no reading for is still
+// alive (ADR-0012).
+@(private)
+watched_chunk :: proc(chunk: string, elapsed_ns: i64, user: rawptr) {
+	assert(user != nil, "there is no Recording here to track")
+	assert(elapsed_ns > 0, "a chunk arrived before the child's clock could have started")
+	assert(len(chunk) > 0, "a read that took nothing was reported as the Engine talking")
+
+	watch_state := (^Watch_State)(user)
+	process.tracker_heard(&watch_state.tracker, len(chunk), elapsed_ns)
+	remaining := chunk
+	for {
+		line, ok := process.next_line(&watch_state.reader, &remaining)
+		if !ok {
+			return
+		}
+		process.tracker_said(&watch_state.tracker, process.read_engine_line(line), elapsed_ns)
+	}
+}
+
+// The pipe outlives the child that wrote to it, and the reading worth having
+// most is the one written just before exit.
+@(private)
+watched_end :: proc(elapsed_ns: i64, user: rawptr) {
+	assert(user != nil, "there is no Recording here to track")
+	assert(elapsed_ns > 0, "an end arrived before the child's clock could have started")
+
+	watch_state := (^Watch_State)(user)
+	if line, held := process.last_line(&watch_state.reader); held {
+		process.tracker_said(&watch_state.tracker, process.read_engine_line(line), elapsed_ns)
+	}
+}
+
+// Only on a change: this is called four times a second, so a three-hour
+// Recording is 43,200 console writes to show the forty-odd distinct frames a
+// bar with a hundred positions and three annotations can have. Called once
+// more after the child finishes, so the display's last paint reflects the
+// Engine's true final reading.
+@(private)
+@(require_results)
+watched_poll :: proc(elapsed_ns: i64, user: rawptr) -> bool {
+	assert(user != nil, "there is no Recording here to track")
+	assert(elapsed_ns > 0, "a poll arrived before the child's clock could have started")
+
+	watch_state := (^Watch_State)(user)
+	now := process.shown(watch_state.tracker, elapsed_ns, watch_state.watch)
+	tell(watch_state.report, now, &watch_state.painted)
+	watch_state.silent = now.silent
+	return now.silent
+}
+
 @(private)
 @(require_results)
 run_engine :: proc(
@@ -166,6 +199,7 @@ run_engine :: proc(
 ) {
 	assert(group != nil, "a child started outside a job object outlives transcibr")
 	assert(len(arguments) > 0, "the Engine was started with no arguments at all")
+	assert(job.container_ms >= 0, "a Recording of negative length reached the Engine")
 
 	bound_ms := limits.bound_ms
 	if bound_ms <= 0 {
@@ -173,127 +207,40 @@ run_engine :: proc(
 	}
 	assert(bound_ms > 0, "an Engine given no time at all cannot transcribe anything")
 
-	c, refusal := child.start(group, executable, arguments, allocator)
-	if refusal.fault != .None {
+	watch_state := Watch_State {
+		tracker = process.tracker_start(job.container_ms, 1),
+		report = report,
+		watch = limits.watch,
+		painted = process.Progress{percent = UNPAINTED},
+	}
+
+	run, refusal := child.run_bounded(
+		group,
+		executable,
+		arguments,
+		bound_ms,
+		allocator,
+		child.Run_Callbacks {
+			user = &watch_state,
+			on_chunk = watched_chunk,
+			on_end = watched_end,
+			on_poll = watched_poll,
+		},
+	)
+	switch run {
+	case .Not_Started:
 		return Ending{run = .Not_Started, child = refusal}
+	case .Unstoppable:
+		return Ending{run = .Unstoppable}
+	case .Stopped:
+		return Ending {
+			run = .Stopped,
+			silent = watch_state.silent,
+			duration_ms = watch_state.tracker.duration_ms,
+		}
+	case .Finished:
 	}
-	defer child.close(&c)
-
-	started := time.tick_now()
-	tracker := process.tracker_start(job.container_ms, elapsed_ns(started))
-	reader: process.Line_Reader
-	painted := process.Progress {
-		percent = UNPAINTED,
-	}
-	for {
-		if !drain(&c, &tracker, &reader, started) {
-			return stopped(&c, false, tracker.duration_ms)
-		}
-		now_ns := elapsed_ns(started)
-		now := process.shown(tracker, now_ns, limits.watch)
-		tell(report, now, &painted)
-		if now.silent {
-			return stopped(&c, true, tracker.duration_ms)
-		}
-		if child.wait(&c, POLL_MS) {
-			return finished(&c, &tracker, &reader, started, report, limits.watch, &painted)
-		}
-		if now_ns / 1_000_000 > bound_ms {
-			return stopped(&c, false, tracker.duration_ms)
-		}
-	}
-}
-
-// The pipe outlives the child that wrote to it, and the readings worth having
-// most are the ones written just before exit.
-@(private)
-@(require_results)
-finished :: proc(
-	c: ^child.Child,
-	tracker: ^process.Tracker,
-	reader: ^process.Line_Reader,
-	started: time.Tick,
-	report: Report,
-	watch: process.Watch,
-	painted: ^process.Progress,
-) -> Ending {
-	assert(c != nil, "there is no child here to read out")
-	assert(tracker != nil, "there is no Recording here to track")
-
-	_ = drain(c, tracker, reader, started)
-	tell(report, process.shown(tracker^, elapsed_ns(started), watch), painted)
-	return Ending{run = .Finished, duration_ms = tracker.duration_ms}
-}
-
-@(private)
-@(require_results)
-stopped :: proc(c: ^child.Child, silent: bool, duration_ms: i64) -> Ending {
-	assert(c != nil, "there is no child here to stop")
-
-	return Ending {
-		run = .Stopped if child.stop(c) else .Unstoppable,
-		silent = silent,
-		duration_ms = duration_ms,
-	}
-}
-
-// tracker_heard is called for every read that produced bytes, whether or not any
-// of them read as a line: an Engine writing a log this reader has no reading for
-// is still alive (ADR-0012).
-@(private)
-@(require_results)
-drain :: proc(
-	c: ^child.Child,
-	tracker: ^process.Tracker,
-	reader: ^process.Line_Reader,
-	started: time.Tick,
-) -> (
-	readable: bool,
-) {
-	assert(c != nil, "there is no child here to read")
-	assert(tracker != nil, "there is no Recording here to track")
-	assert(reader != nil, "there is nowhere to assemble the child's lines")
-
-	buffer: [DRAIN_BYTES]u8 = ---
-	taken := 0
-	for taken < MAX_DRAIN_BYTES {
-		read, at_end, reading := child.read_diagnostics(c, buffer[:])
-		if reading.fault != .None {
-			return false
-		}
-		if read > 0 {
-			assert(read <= len(buffer), "the pipe wrote past the end of the buffer it was given")
-			took(tracker, reader, string(buffer[:read]), elapsed_ns(started))
-			taken += read
-		}
-		if at_end {
-			if line, held := process.last_line(reader); held {
-				process.tracker_said(tracker, process.read_engine_line(line), elapsed_ns(started))
-			}
-			return true
-		}
-		if read == 0 {
-			return true
-		}
-	}
-	assert(taken >= MAX_DRAIN_BYTES, "a drain left its loop with room to spare")
-	return true
-}
-
-@(private)
-took :: proc(tracker: ^process.Tracker, reader: ^process.Line_Reader, chunk: string, now_ns: i64) {
-	assert(tracker != nil, "there is no Recording here to track")
-	assert(len(chunk) > 0, "a read that took nothing was reported as the Engine talking")
-
-	process.tracker_heard(tracker, len(chunk), now_ns)
-	remaining := chunk
-	for {
-		line, ok := process.next_line(reader, &remaining)
-		if !ok {
-			return
-		}
-		process.tracker_said(tracker, process.read_engine_line(line), now_ns)
-	}
+	return Ending{run = .Finished, duration_ms = watch_state.tracker.duration_ms}
 }
 
 // Below any percentage `shown` can answer, so the first poll of a run always
@@ -303,9 +250,6 @@ UNPAINTED :: -1
 
 #assert(UNPAINTED < 0)
 
-// Only on a change: this is called four times a second, so a three-hour
-// Recording is 43,200 console writes to show the forty-odd distinct frames a bar
-// with a hundred positions and three annotations can have.
 @(private)
 tell :: proc(report: Report, shown: process.Progress, painted: ^process.Progress) {
 	assert(painted != nil, "there is nowhere to remember what the display was last told")
