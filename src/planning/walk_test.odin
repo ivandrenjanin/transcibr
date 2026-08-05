@@ -7,6 +7,7 @@ import "core:slice"
 import "core:strings"
 import "core:sync"
 import "core:testing"
+import "core:time"
 import "transcibr:child"
 
 // Names a place and does not create it. The caller frees the path and removes
@@ -746,4 +747,68 @@ a_recording_that_is_itself_a_reparse_point_is_planned_and_never_skipped :: proc(
 		len(inventory.notes) == 0,
 		"a Recording that is itself a reparse point was reported as a skipped directory",
 	)
+}
+
+// Enough entries that even a fast NTFS enumeration takes real, measurable
+// time -- a single FindNextFileW call is cheap, but several thousand of them
+// are not free, and that is what stands in here for the stalled share issue
+// #27 names: this suite has no way to make a real network drive stop
+// answering, so the bound is proven against real wall-clock cost instead.
+@(private)
+DIRECTORY_BOUND_TEST_ENTRIES :: 3000
+
+@(test)
+a_directory_listing_that_cannot_finish_within_its_bound_is_reported_rather_than_awaited_forever :: proc(
+	t: ^testing.T,
+) {
+	tree := scratch_tree(t, "dirbound")
+	defer delete(tree, context.allocator)
+	defer remove_tree(tree)
+
+	for i in 0 ..< DIRECTORY_BOUND_TEST_ENTRIES {
+		name := fmt.aprintf("f%d.txt", i, allocator = context.allocator)
+		path := in_tree(t, tree, name, "")
+		delete(path, context.allocator)
+		delete(name, context.allocator)
+	}
+
+	started := time.tick_now()
+	listing, ok := directory_listing_bounded(tree, 1, context.allocator)
+	elapsed := time.tick_since(started)
+	defer if ok {
+		os.file_info_slice_delete(listing, context.allocator)
+	}
+
+	testing.expect(t, !ok, "a directory listing bounded at 1 ms was not abandoned at all")
+	testing.expect(
+		t,
+		len(listing) == 0,
+		"an abandoned listing handed back entries it never finished",
+	)
+	testing.expectf(
+		t,
+		elapsed < 5 * time.Second,
+		"a directory listing bounded at 1 ms took %v to be reported, which is not being bounded at all",
+		elapsed,
+	)
+}
+
+@(test)
+a_directory_listing_within_its_bound_returns_every_entry :: proc(t: ^testing.T) {
+	tree := scratch_tree(t, "dirboundok")
+	defer delete(tree, context.allocator)
+	defer remove_tree(tree)
+
+	a := in_tree(t, tree, "a.mp4", "a")
+	defer delete(a, context.allocator)
+	b := in_tree(t, tree, "b.mp4", "b")
+	defer delete(b, context.allocator)
+
+	listing, ok := directory_listing_bounded(tree, child.READ_BOUND_MS, context.allocator)
+	defer if ok {
+		os.file_info_slice_delete(listing, context.allocator)
+	}
+
+	testing.expect(t, ok, "a directory listing within its bound was reported as unreadable")
+	testing.expect_value(t, len(listing), 2)
 }

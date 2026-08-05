@@ -1,14 +1,17 @@
 #+vet explicit-allocators
 package planning
 
+import "base:runtime"
 import "core:fmt"
 import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:sync"
 import win32 "core:sys/windows"
+import "core:thread"
 import "core:time"
 import "transcibr:artifact"
+import "transcibr:child"
 import "transcibr:transcript"
 
 // Discovery: the shell half of this package. Walking a tree is I/O and cannot be
@@ -292,8 +295,12 @@ walk_one :: proc(state: ^Walking, pending: Pending, frontier: ^[dynamic]Pending)
 	assert(len(pending.path) > 0, "a directory with no path at all came off the frontier")
 	assert(pending.depth >= 0, "a directory at a negative depth came off the frontier")
 
-	listing, unreadable := os.read_all_directory_by_path(pending.path, state.allocator)
-	if unreadable != nil {
+	listing, readable := directory_listing_bounded(
+		pending.path,
+		child.READ_BOUND_MS,
+		state.allocator,
+	)
+	if !readable {
 		note(state, .Directory_Unreadable, pending.path)
 		return
 	}
@@ -312,6 +319,130 @@ walk_one :: proc(state: ^Walking, pending: Pending, frontier: ^[dynamic]Pending)
 		}
 		took(state, info, pending, frontier, writable)
 	}
+}
+
+// A directory on a share that stops answering wedges this the identical way
+// a hand-typed `--from-json` path wedges `child.read_bounded`, and worse: it
+// wedges `stopped` too, since a walk only checks its cancellation flag
+// BETWEEN entries -- a wedged listing made discovery uncancellable, breaking
+// story 14's "show progress and be cancellable" (issue #27). Runs on its own
+// thread and bounded the same way `child.read_bounded` bounds a file read,
+// for the reason `read.odin`'s own comment gives: nothing about a blocked
+// Win32 call can be polled from outside it.
+@(private)
+Directory_Job :: struct {
+	path:    string,
+	listing: []os.File_Info,
+	err:     os.Error,
+}
+
+@(private)
+directory_worker :: proc(data: rawptr) {
+	job := (^Directory_Job)(data)
+	assert(job != nil, "a directory-listing thread was started with no job to read")
+	assert(len(job.path) > 0, "a directory-listing thread was started with no path to read")
+
+	job.listing, job.err = os.read_all_directory_by_path(job.path, runtime.heap_allocator())
+}
+
+@(private)
+@(require_results)
+directory_listing_bounded :: proc(
+	path: string,
+	bound_ms: i64,
+	allocator: mem.Allocator,
+) -> (
+	listing: []os.File_Info,
+	ok: bool,
+) {
+	assert(len(path) > 0, "there is no directory here to list")
+	assert(bound_ms > 0, "a listing given no time at all cannot do anything")
+	assert(allocator.procedure != nil, "a listing outliving this procedure needs an allocator")
+
+	job := new(Directory_Job, runtime.heap_allocator())
+	job.path = strings.clone(path, runtime.heap_allocator())
+
+	context.allocator = runtime.heap_allocator()
+	t := thread.create_and_start_with_data(job, directory_worker)
+	if t == nil {
+		delete(job.path, runtime.heap_allocator())
+		free(job, runtime.heap_allocator())
+		return nil, false
+	}
+
+	switch child.await_or_abandon(t, bound_ms) {
+	case .Finished:
+		return directory_finished(t, job, allocator)
+	case .Stopped:
+		release_directory_job(t, job)
+		return nil, false
+	case .Unstoppable:
+		return nil, false
+	}
+	unreachable()
+}
+
+@(private)
+release_directory_job :: proc(t: ^thread.Thread, job: ^Directory_Job) {
+	assert(t != nil, "there is no thread here to release")
+	assert(job != nil, "there is no job here to release")
+
+	if job.err == nil {
+		os.file_info_slice_delete(job.listing, runtime.heap_allocator())
+	}
+	delete(job.path, runtime.heap_allocator())
+	free(job, runtime.heap_allocator())
+	thread.destroy(t)
+}
+
+// Where a completed listing's answer crosses from `runtime.heap_allocator`'s
+// heap onto the allocator the caller actually asked for -- the same
+// copy-then-release shape `child.read.odin`'s `finished` uses, one struct
+// deeper: `os.file_info_clone` copies `fullpath` (and re-derives `name` from
+// it) per entry, since a `File_Info` owns a string the source heap will free.
+@(private)
+@(require_results)
+directory_finished :: proc(
+	t: ^thread.Thread,
+	job: ^Directory_Job,
+	allocator: mem.Allocator,
+) -> (
+	listing: []os.File_Info,
+	ok: bool,
+) {
+	assert(t != nil, "there is no thread here to close out")
+	assert(job != nil, "a finished listing has no job to read its answer from")
+
+	err := job.err
+	if err == nil {
+		listing, ok = clone_listing(job.listing, allocator)
+	}
+	release_directory_job(t, job)
+	return
+}
+
+@(private)
+@(require_results)
+clone_listing :: proc(
+	listing: []os.File_Info,
+	allocator: mem.Allocator,
+) -> (
+	cloned: []os.File_Info,
+	ok: bool,
+) {
+	assert(allocator.procedure != nil, "a listing outliving this procedure needs an allocator")
+
+	cloned = make([]os.File_Info, len(listing), allocator)
+	for info, i in listing {
+		one, err := os.file_info_clone(info, allocator)
+		if err != nil {
+			os.file_info_slice_delete(cloned[:i], allocator)
+			delete(cloned, allocator)
+			return nil, false
+		}
+		cloned[i] = one
+	}
+	return cloned, true
 }
 
 // Whether this listing is worth a writability probe at all. The probe creates and
@@ -456,22 +587,25 @@ looked_at :: proc(state: ^Walking, info: os.File_Info, writable: bool) -> (found
 		return found
 	}
 
-	found.transcript = transcript_state(names[.Transcript])
+	found.transcript = transcript_state_bounded(names[.Transcript], child.READ_BOUND_MS)
 	found.engine_output = os.is_file(names[.Engine_Output])
 	found.recorded = sidecar_at(names[.Sidecar], state.allocator)
 	return found
 }
 
 // An unreadable Sidecar and an absent one are one answer, which is ADR-0003's
-// disposition for unknown provenance: re-do it.
+// disposition for unknown provenance: re-do it -- and a Sidecar wedged behind
+// a stalled share reads the same way rather than blocking discovery forever
+// (issue #27); `child.read_bounded` is the same bound `place.odin` reads an
+// Engine's own output under.
 @(private)
 @(require_results)
 sidecar_at :: proc(path: string, allocator: mem.Allocator) -> Maybe(artifact.Sidecar) {
 	assert(len(path) > 0, "there is nowhere here to read a Sidecar from")
 	assert(allocator.procedure != nil, "a Sidecar outlives this procedure and needs an allocator")
 
-	text, unreadable := os.read_entire_file_from_path(path, allocator)
-	if unreadable != nil {
+	text, unreadable := child.read_bounded(path, child.READ_BOUND_MS, allocator)
+	if unreadable.fault != .None {
 		return nil
 	}
 	defer delete(text, allocator)
@@ -507,6 +641,68 @@ transcript_state :: proc(path: string) -> Transcript_State {
 		return .Transcibrs
 	}
 	return .Foreign
+}
+
+@(private)
+Transcript_Head_Job :: struct {
+	path:  string,
+	state: Transcript_State,
+}
+
+@(private)
+transcript_head_worker :: proc(data: rawptr) {
+	job := (^Transcript_Head_Job)(data)
+	assert(job != nil, "a Transcript-head thread was started with no job to read")
+	assert(len(job.path) > 0, "a Transcript-head thread was started with no path to read")
+
+	job.state = transcript_state(job.path)
+}
+
+// `.Foreign` and not `.Absent` on a bound reached: `.Absent` plans the
+// Recording fresh, `.Foreign` refuses it (plan.odin), and a wedge means this
+// genuinely does not know which is true. Refusing is the safe direction --
+// it costs an operator a look, where planning fresh over a Transcript this
+// walk never got to read risks the data loss ADR-0009's boundary rule exists
+// to prevent.
+@(private)
+@(require_results)
+transcript_state_bounded :: proc(path: string, bound_ms: i64) -> Transcript_State {
+	assert(len(path) > 0, "there is nowhere here to look for a Transcript")
+	assert(bound_ms > 0, "a read given no time at all cannot do anything")
+
+	job := new(Transcript_Head_Job, runtime.heap_allocator())
+	job.path = strings.clone(path, runtime.heap_allocator())
+
+	context.allocator = runtime.heap_allocator()
+	t := thread.create_and_start_with_data(job, transcript_head_worker)
+	if t == nil {
+		delete(job.path, runtime.heap_allocator())
+		free(job, runtime.heap_allocator())
+		return .Absent
+	}
+
+	switch child.await_or_abandon(t, bound_ms) {
+	case .Finished:
+		state := job.state
+		release_transcript_head_job(t, job)
+		return state
+	case .Stopped:
+		release_transcript_head_job(t, job)
+		return .Foreign
+	case .Unstoppable:
+		return .Foreign
+	}
+	unreachable()
+}
+
+@(private)
+release_transcript_head_job :: proc(t: ^thread.Thread, job: ^Transcript_Head_Job) {
+	assert(t != nil, "there is no thread here to release")
+	assert(job != nil, "there is no job here to release")
+
+	delete(job.path, runtime.heap_allocator())
+	free(job, runtime.heap_allocator())
+	thread.destroy(t)
 }
 
 @(private)
