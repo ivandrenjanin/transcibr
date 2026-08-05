@@ -81,6 +81,7 @@ complete :: proc(
 		"the language is read out of the Engine's own output here and is not the caller's to supply",
 	)
 	assert_filled_in(made)
+	assert_agree(duration, rc, made)
 
 	names, namable := names_of(source, allocator)
 	if !namable {
@@ -106,6 +107,39 @@ complete :: proc(
 		made,
 		allocator,
 	)
+}
+
+// The front matter (`rc`) and the Sidecar (`made`) are assembled at two
+// separate call sites and read by two different consumers -- a person
+// reading the Transcript's header, and `artifact.changed` deciding whether
+// to resume. Nothing else in this program checks that the two agree; this
+// is the one place both records are in hand together. Every comparison here
+// is over values this program itself assembled, never anything read
+// straight from a file, a child process, or the command line (A8).
+@(private)
+assert_agree :: proc(
+	duration: Maybe(transcript.Millis),
+	rc: transcript.Render_Context,
+	made: Sidecar,
+) {
+	assert(
+		rc.engine_version == made.engine_version,
+		"the Transcript's header and its Sidecar name two different Engines",
+	)
+	assert(
+		transcript.profile_name(rc.profile) == made.merge_profile,
+		"the Transcript's header and its Sidecar name two different Merge Profiles",
+	)
+	assert(
+		rc.model == model_display_name(made.model),
+		"the Transcript's header and its Sidecar name two different Models",
+	)
+	if ms, given := duration.?; given {
+		assert(
+			i64(ms) == made.container_ms,
+			"the duration passed to place this Transcript disagrees with its own Sidecar",
+		)
+	}
 }
 
 @(private)
