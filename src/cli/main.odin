@@ -9,6 +9,7 @@ import "core:os"
 import "core:strings"
 import "core:time"
 import "transcibr:artifact"
+import "transcibr:child"
 import "transcibr:transcript"
 import "transcibr:version"
 
@@ -109,6 +110,13 @@ Options :: struct {
 	rc:        transcript.Render_Context,
 }
 
+// `--from-json` is typed, pasted or scripted, so `options.json_path` is the
+// one path this whole binary opens that it did not construct itself --
+// including a reserved Windows device name such as `CON`, which opens fine
+// and then reads forever even with stdin from the null device. The read is
+// bounded for exactly that reason (issue #27); `child.READ_BOUND_MS` is the
+// same ceiling `transcibr-cli --transcribe` reads the Engine's own output
+// under.
 @(require_results)
 re_render :: proc(arguments: []string) -> int {
 	assert(
@@ -122,10 +130,16 @@ re_render :: proc(arguments: []string) -> int {
 	}
 	assert(len(options.json_path) > 0, "accepted a command line with nothing to render")
 
-	json_bytes, read_err := os.read_entire_file_from_path(options.json_path, context.allocator)
+	json_bytes, read_err := child.read_bounded(
+		options.json_path,
+		child.READ_BOUND_MS,
+		context.allocator,
+	)
 	defer delete(json_bytes, context.allocator)
-	if read_err != nil {
-		fmt.eprintfln("%s: %v", options.json_path, read_err)
+	if read_err.fault != .None {
+		message := child.read_error_message(read_err, options.json_path, context.allocator)
+		defer delete(message, context.allocator)
+		fmt.eprintln(message)
 		return OPERATING_ERROR
 	}
 	json_text := string(json_bytes)
