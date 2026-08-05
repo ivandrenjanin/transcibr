@@ -99,6 +99,10 @@ refused :: proc(ending: Ending) -> Error {
 }
 
 // One open and no stat, so the length belongs to the same file the handle does.
+//
+// Known-open, not silent: `os.open` below is unbounded and can wedge on the
+// same stalled scratch cache `child.read_bounded` guards the read that
+// follows this one against, in `artifact.complete`. Issue #65 tracks it.
 @(private)
 @(require_results)
 landed :: proc(output: string) -> Fault {

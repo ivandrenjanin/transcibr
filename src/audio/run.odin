@@ -92,6 +92,10 @@ settle :: proc(
 	unreachable()
 }
 
+// Known-open, not silent: the read of ffprobe's own answer file below is
+// unbounded and can wedge on a stalled scratch cache the same way the reads
+// issue #27 bounded could -- tracked as issue #65 rather than closed here,
+// the way ADR-0020 records a gap by name instead of leaving it unmentioned.
 @(require_results)
 probe :: proc(
 	group: ^child.Job_Object,
@@ -179,6 +183,9 @@ check_audio :: proc(
 // One open for both the length and the bytes, so the length belongs to the same
 // file the bytes came from: a stat taken separately can name a file something
 // has replaced in between.
+//
+// Known-open, not silent: `os.open` and `os.read_at` below are unbounded and
+// can wedge on a stalled scratch cache the same way. Issue #65 tracks it.
 @(private)
 @(require_results)
 read_head :: proc(path: string, into: []u8) -> (head: []u8, bytes: i64, err: Error) {
