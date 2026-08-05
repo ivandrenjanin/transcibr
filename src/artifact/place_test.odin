@@ -343,6 +343,13 @@ engine_output_that_parsed_and_said_nothing_fails_the_recording :: proc(t: ^testi
 	)
 }
 
+// Finding 5 of PR #64's second review: this case's own assertion used to
+// check only that the message contained "talk.mkv", which passed whether
+// the message named the Recording (wrong -- it read fine) or the Engine
+// output that was actually missing, since `b.source` and `b.output` both sit
+// under a name containing "talk". Checking for `b.output`'s own extension,
+// and that the Recording's is absent, is what makes the case able to tell
+// the two apart.
 @(test)
 engine_output_that_is_not_there_at_all_is_reported_rather_than_asserted :: proc(t: ^testing.T) {
 	b := set_out(t, "absent")
@@ -354,13 +361,19 @@ engine_output_that_is_not_there_at_all_is_reported_rather_than_asserted :: proc(
 
 	testing.expect_value(t, err.fault, Fault.Output_Unreadable)
 	testing.expect_value(t, err.read.fault, child.Read_Fault.Unreadable)
+	testing.expect_value(t, err.output, b.output)
 
 	message := error_message(err, b.source, context.allocator)
 	defer delete(message, context.allocator)
 	testing.expect(
 		t,
-		strings.contains(message, "talk.mkv"),
-		"an unreadable Engine output did not name the Recording it belongs to",
+		strings.contains(message, "talk.json"),
+		"an unreadable Engine output did not name the Engine output that actually failed",
+	)
+	testing.expect(
+		t,
+		!strings.contains(message, "talk.mkv"),
+		"an unreadable Engine output named the Recording, which read fine, rather than its output",
 	)
 }
 
@@ -450,6 +463,34 @@ read_reason_for :: proc(fault: Fault) -> child.Read_Error {
 	return {}
 }
 
+// Exhaustive for the same reason as reason_for: `.Output_Unreadable` is the
+// only Fault whose message names the Engine's own output rather than the
+// Recording (finding 5 of PR #64's second review).
+@(private)
+@(require_results)
+output_for :: proc(fault: Fault) -> string {
+	switch fault {
+	case .Output_Unreadable:
+		return "C:\\cache\\talk.json"
+	case .None,
+	     .Named_No_File,
+	     .Not_Recordable,
+	     .Output_Quarantined,
+	     .Output_Not_Quarantined,
+	     .Nothing_Transcribed,
+	     .Not_Written,
+	     .Not_Placed:
+		return ""
+	}
+	return ""
+}
+
+// Finding 5 of PR #64's second review: this case's own generic assertion,
+// "the message names talk.mkv", was too weak to catch `.Output_Unreadable`
+// naming the Recording rather than the Engine output that actually failed
+// -- both `source` and `output` carry "talk" here on purpose, at different
+// extensions and different directories, so a message that merely mentions
+// the Recording no longer passes by accident.
 @(test)
 every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testing.T) {
 	for fault in Fault {
@@ -457,13 +498,34 @@ every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testin
 			continue
 		}
 		message := error_message(
-			Error{fault = fault, parse = reason_for(fault), read = read_reason_for(fault)},
+			Error {
+				fault = fault,
+				parse = reason_for(fault),
+				read = read_reason_for(fault),
+				output = output_for(fault),
+			},
 			"C:\\recordings\\talk.mkv",
 			context.allocator,
 		)
 		defer delete(message, context.allocator)
 
 		testing.expectf(t, len(message) > 0, "%v rendered as nothing at all", fault)
+
+		if fault == .Output_Unreadable {
+			testing.expectf(
+				t,
+				strings.contains(message, "talk.json"),
+				"%v does not name the Engine output that actually failed",
+				fault,
+			)
+			testing.expectf(
+				t,
+				!strings.contains(message, "talk.mkv"),
+				"%v named the Recording rather than the Engine output that failed",
+				fault,
+			)
+			continue
+		}
 		testing.expectf(
 			t,
 			strings.contains(message, "talk.mkv"),
