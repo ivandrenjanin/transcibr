@@ -155,6 +155,21 @@ a_model_that_is_not_there_is_refused_rather_than_asserted :: proc(t: ^testing.T)
 @(private)
 MODEL_TEST_BOUND_FILE_BYTES :: 128 * 1024 * 1024
 
+// Finding 8 of PR #64's second review: this margin used to be a literal
+// `5 * time.Second`, numerically equal to `transcibr:child`'s own
+// (`@(private)`, unreachable from here) `CANCEL_BOUND_MS` by coincidence
+// rather than by reference. A machine slow enough to make cancellation
+// itself take close to five seconds would then fail this assertion at
+// exactly the moment `digest_of_bounded` actually reached the `.Unstoppable`
+// leak path -- two distinct failures, sharing one cause, with nothing here
+// able to say which had happened. Generous against the worst case a
+// correctly working bound could ever legitimately take -- the 1 ms this
+// case hands `digest_of_bounded` plus a cancellation running its own full
+// course -- rather than tuned to equal it, so a machine slow enough to trip
+// this is slow enough that something is actually wrong.
+@(private)
+MODEL_BOUND_TEST_SLACK :: 30 * time.Second
+
 // Finding 3 of the PR #64 review: `--model-file` is hand-typed, the same
 // class of input `--from-json` is, and issue #27's read half was not closed
 // for it. `digest_of_bounded` is the seam this pins directly, at a bound of
@@ -194,7 +209,7 @@ a_model_that_cannot_be_hashed_within_its_bound_is_reported_rather_than_awaited_f
 	testing.expect(t, len(digest) == 0, "an abandoned hash handed back a digest it never finished")
 	testing.expectf(
 		t,
-		elapsed < 5 * time.Second,
+		elapsed < MODEL_BOUND_TEST_SLACK,
 		"a hash bounded at 1 ms took %v to be reported, which is not being bounded at all",
 		elapsed,
 	)
