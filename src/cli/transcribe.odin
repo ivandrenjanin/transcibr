@@ -253,7 +253,7 @@ read_transcribe_option :: proc(o: ^Transcribe_Options, name, value: string) -> (
 @(require_results)
 read_common_option :: proc(
 	model: ^string,
-	engine: ^string,
+	engine_exe: ^string,
 	cache: ^string,
 	tools: ^audio.Tools,
 	engine_version: ^string,
@@ -265,13 +265,13 @@ read_common_option :: proc(
 	ok: bool,
 ) {
 	assert(model != nil, "there is nowhere here to read a Model path into")
-	assert(engine != nil, "there is nowhere here to read an Engine path into")
+	assert(engine_exe != nil, "there is nowhere here to read an Engine path into")
 
 	switch name {
 	case "--model-file":
 		model^ = value
 	case "--engine-exe":
-		engine^ = value
+		engine_exe^ = value
 	case "--cache":
 		cache^ = value
 	case "--ffmpeg":
