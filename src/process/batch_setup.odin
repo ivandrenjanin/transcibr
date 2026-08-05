@@ -7,25 +7,18 @@ import "core:mem"
 // The one sentence for a fault that stops the Batch from ever starting -- the
 // scratch cache or the Model, both checked once before any Recording is
 // touched. `audio` and `artifact` share no package of their own, and both
-// already import `process` for Build_Fault or ascii_only, which is why the one
-// spelling lives here (ADR-0030).
+// already import `process` in the file this lives beside -- `audio/fault.odin`
+// for Probe_Fault, `artifact/model.odin` for ascii_only -- which is why the one
+// spelling lives here; see ADR-0030 for the placement argument in full.
 //
-// Free the answer with `delete` and this allocator.
+// Free the answer with `delete` and this allocator. `says` and the allocator are
+// asserted non-empty by every caller before this is reached (A4); only `subject`
+// is not, so only it is asserted again here.
 @(require_results)
 batch_setup_message :: proc(subject: string, says: string, allocator: mem.Allocator) -> string {
 	assert(len(subject) > 0, "a batch setup refusal must name what it is reported against")
-	assert(len(says) > 0, "there is no message for a batch setup refusal that names nothing")
-	assert(
-		allocator.procedure != nil,
-		"the message outlives this procedure and needs a chosen allocator",
-	)
 
-	message := fmt.aprintf(
-		"%q: %s -- the Batch cannot start",
-		subject,
-		says,
-		allocator = allocator,
+	return deliverable(
+		fmt.aprintf("%q: %s -- the Batch cannot start", subject, says, allocator = allocator),
 	)
-	assert(len(message) > 0, "a refusal rendered as nothing at all")
-	return message
 }
