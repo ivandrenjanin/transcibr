@@ -3,6 +3,7 @@ package audio
 
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import win32 "core:sys/windows"
 import "core:testing"
 import "core:time"
@@ -18,6 +19,11 @@ RUN_BOUND_MS :: i64(60_000)
 // stopped child measures the bound rather than the child's patience.
 @(private)
 SHORT_BOUND_MS :: i64(500)
+
+// Generous against the few seconds ADR-0020 measured for a real stop, so this
+// only fires if the bound was never reached at all.
+@(private)
+FLOOD_STOP_SLACK :: 5 * time.Second
 
 // The child ends itself whatever this suite does or fails to do.
 @(private)
@@ -333,9 +339,15 @@ a_child_that_exits_inside_its_bound_ran_to_completion :: proc(t: ^testing.T) {
 		return
 	}
 
-	ending, err := run_bounded(&group, CMD, {"/c", "exit 3"}, RUN_BOUND_MS, context.allocator)
+	ending, err := child.run_bounded(
+		&group,
+		CMD,
+		{"/c", "exit 3"},
+		RUN_BOUND_MS,
+		context.allocator,
+	)
 	testing.expect_value(t, err.fault, child.Fault.None)
-	testing.expect_value(t, ending, Run.Finished)
+	testing.expect_value(t, ending, child.Run.Finished)
 }
 
 @(test)
@@ -356,9 +368,15 @@ a_child_that_outlives_its_bound_is_stopped_rather_than_waited_for :: proc(t: ^te
 		return
 	}
 
-	ending, err := run_bounded(&group, CMD, {"/c", command}, SHORT_BOUND_MS, context.allocator)
+	ending, err := child.run_bounded(
+		&group,
+		CMD,
+		{"/c", command},
+		SHORT_BOUND_MS,
+		context.allocator,
+	)
 	testing.expect_value(t, err.fault, child.Fault.None)
-	testing.expect_value(t, ending, Run.Stopped)
+	testing.expect_value(t, ending, child.Run.Stopped)
 }
 
 @(test)
@@ -369,14 +387,14 @@ a_child_that_will_not_start_is_reported_rather_than_asserted :: proc(t: ^testing
 		return
 	}
 
-	ending, err := run_bounded(
+	ending, err := child.run_bounded(
 		&group,
 		"transcibr-no-such-executable.exe",
 		{},
 		RUN_BOUND_MS,
 		context.allocator,
 	)
-	testing.expect_value(t, ending, Run.Not_Started)
+	testing.expect_value(t, ending, child.Run.Not_Started)
 	testing.expect_value(t, err.fault, child.Fault.Not_Started)
 
 	message := error_message(
@@ -386,4 +404,75 @@ a_child_that_will_not_start_is_reported_rather_than_asserted :: proc(t: ^testing
 	)
 	defer delete(message, context.allocator)
 	testing.expect(t, len(message) > 0, "a refusal rendered as nothing at all")
+}
+
+// The caller frees the path; remove_cache takes the file.
+@(private)
+@(require_results)
+flood_file :: proc(t: ^testing.T, cache: string, bytes: int) -> string {
+	assert(bytes > 0, "a flood of nothing at all floods nothing")
+
+	path := fmt.aprintf("%s\\flood.txt", cache, allocator = context.allocator)
+	written := strings.builder_make(context.allocator)
+	defer strings.builder_destroy(&written)
+	for strings.builder_len(written) < bytes {
+		strings.write_string(&written, "ffmpeg: a line this reader has no reading for\r\n")
+	}
+
+	testing.expect(
+		t,
+		os.write_entire_file(path, written.buf[:]) == nil,
+		"could not write the flood ffmpeg types",
+	)
+	return path
+}
+
+// ADR-0020 records that this suite had no equivalent to
+// engine.an_engine_that_floods_its_diagnostic_stream_is_still_stopped_at_its_bound,
+// so nothing here went red when src/audio/run.odin's drain was the one copy of
+// the two with no ceiling on it. Both halves are the claim: the flood is
+// drained, and the bound is still honoured despite it.
+@(test)
+a_child_that_floods_its_diagnostic_stream_is_still_stopped_at_its_bound :: proc(t: ^testing.T) {
+	cache := scratch_cache(t, "flood")
+	defer delete(cache, context.allocator)
+	defer remove_cache(cache)
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
+
+	flood := flood_file(t, cache, 1 << 20)
+	defer delete(flood, context.allocator)
+	signal := lonely_signal("flood")
+	defer delete(signal, context.allocator)
+	command := fmt.aprintf(
+		"type %s 1>&2 & waitfor /t %d %s",
+		flood,
+		LONGER_SECONDS,
+		signal,
+		allocator = context.allocator,
+	)
+	defer delete(command, context.allocator)
+
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	started := time.tick_now()
+	ending, err := child.run_bounded(
+		&group,
+		CMD,
+		{"/c", command},
+		SHORT_BOUND_MS,
+		context.allocator,
+	)
+	elapsed := time.tick_since(started)
+
+	testing.expect_value(t, err.fault, child.Fault.None)
+	testing.expect_value(t, ending, child.Run.Stopped)
+	testing.expect(
+		t,
+		elapsed < time.Duration(SHORT_BOUND_MS) * time.Millisecond + FLOOD_STOP_SLACK,
+		"the flood delayed the bound from being reached at all",
+	)
 }

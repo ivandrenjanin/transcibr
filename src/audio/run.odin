@@ -33,12 +33,6 @@ PROBE_BOUND_MS :: i64(60_000)
 // source. What it bounds is a wedge, not slowness.
 EXTRACTION_BOUND_MS :: i64(30 * 60 * 1000)
 
-// A quarter of a second, against bounds of sixty seconds and half an hour. At 25
-// milliseconds this was eighty kernel calls a second per running child; what it
-// must stay well under is the 64 KiB pipe filling at `-loglevel error`.
-@(private)
-POLL_MS :: u32(250)
-
 // The head and never the file: a Recording's audio is hundreds of megabytes and
 // the chunk table ffmpeg writes lands in the first hundred bytes, so this is six
 // hundred times what is needed.
@@ -98,84 +92,6 @@ settle :: proc(
 	unreachable()
 }
 
-@(private)
-Run :: enum u8 {
-	Not_Started = 0,
-	Finished,
-	Stopped,
-	// It may still be running and may still hold its output file open, which is
-	// why nothing may delete that file.
-	Unstoppable,
-}
-
-@(private)
-@(require_results)
-run_bounded :: proc(
-	group: ^child.Job_Object,
-	executable: string,
-	arguments: []string,
-	bound_ms: i64,
-	allocator: mem.Allocator,
-) -> (
-	ending: Run,
-	err: child.Error,
-) {
-	assert(group != nil, "a child started outside a job object outlives transcibr")
-	assert(bound_ms > 0, "a child given no time at all cannot do anything")
-	assert(len(executable) > 0, "there is no executable here to start")
-	assert(allocator.procedure != nil, "starting a child needs an allocator for its command line")
-
-	c, refusal := child.start(group, executable, arguments, allocator)
-	if refusal.fault != .None {
-		return .Not_Started, refusal
-	}
-	defer child.close(&c)
-
-	started := time.tick_now()
-	for {
-		if !drain(&c) {
-			return stop(&c), child.Error{}
-		}
-		if child.wait(&c, POLL_MS) {
-			return .Finished, child.Error{}
-		}
-		if i64(time.duration_milliseconds(time.tick_since(started))) > bound_ms {
-			return stop(&c), child.Error{}
-		}
-	}
-}
-
-// The pipe is 64 KiB and ffmpeg at `-loglevel error` says almost nothing, but a
-// Recording that fails to decode says a line per frame.
-@(private)
-@(require_results)
-drain :: proc(c: ^child.Child) -> (readable: bool) {
-	assert(c != nil, "there is no child here to read")
-
-	discarded: [4096]u8 = ---
-	for {
-		read, at_end, reading := child.read_diagnostics(c, discarded[:])
-		if reading.fault != .None {
-			return false
-		}
-		if at_end || read == 0 {
-			return true
-		}
-		assert(read <= len(discarded), "the child said more than there was room for")
-	}
-}
-
-@(private)
-@(require_results)
-stop :: proc(c: ^child.Child) -> Run {
-	assert(c != nil, "there is no child here to stop")
-
-	if child.stop(c) {
-		return .Stopped
-	}
-	return .Unstoppable
-}
-
 @(require_results)
 probe :: proc(
 	group: ^child.Job_Object,
@@ -194,7 +110,13 @@ probe :: proc(
 	arguments := process.probe_arguments(source, answer, allocator)
 	defer delete(arguments, allocator)
 
-	ending, refusal := run_bounded(group, tools.ffprobe, arguments, PROBE_BOUND_MS, allocator)
+	ending, refusal := child.run_bounded(
+		group,
+		tools.ffprobe,
+		arguments,
+		PROBE_BOUND_MS,
+		allocator,
+	)
 	switch ending {
 	case .Not_Started:
 		return {}, Error{fault = .Probe_Not_Started, child = refusal}
@@ -359,7 +281,13 @@ produce :: proc(
 
 	arguments := process.extract_arguments(job.source, part, allocator)
 	defer delete(arguments, allocator)
-	ending, refusal := run_bounded(group, tools.ffmpeg, arguments, EXTRACTION_BOUND_MS, allocator)
+	ending, refusal := child.run_bounded(
+		group,
+		tools.ffmpeg,
+		arguments,
+		EXTRACTION_BOUND_MS,
+		allocator,
+	)
 	switch ending {
 	case .Not_Started:
 		return {}, Error{fault = .Extraction_Not_Started, child = refusal}

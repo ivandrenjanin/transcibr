@@ -226,19 +226,27 @@ a_run_stops_early_when_its_own_callback_asks_it_to :: proc(t: ^testing.T) {
 	)
 }
 
-// Both halves are the claim (ADR-0020): the flood is drained, meaning the poll
-// loop was handed back control rather than left spinning inside one drain, and
-// the bound is still honoured within a few seconds of stop overhead rather
-// than the 25-second waitfor this child would otherwise sit in.
-@(test)
-a_flooding_child_is_drained_and_still_stopped_at_its_bound :: proc(t: ^testing.T) {
-	path := scratch_path(t, "flood", context.allocator)
-	defer delete(path, context.allocator)
-	defer os.remove(path)
+// Writes a file of at least `minimum_bytes` and a command that types it to
+// standard error before waiting -- so the child outlives whatever the flood
+// alone takes to drain. The caller frees both strings; an empty command means
+// the file could not be written and the case should return early.
+@(private)
+@(require_results)
+flood_command :: proc(
+	t: ^testing.T,
+	name: string,
+	minimum_bytes: int,
+	allocator: mem.Allocator,
+) -> (
+	path: string,
+	command: string,
+) {
+	assert(minimum_bytes > 0, "a flood of nothing at all floods nothing")
 
-	written := strings.builder_make(context.allocator)
+	path = scratch_path(t, name, allocator)
+	written := strings.builder_make(allocator)
 	defer strings.builder_destroy(&written)
-	for strings.builder_len(written) < 1 << 20 {
+	for strings.builder_len(written) < minimum_bytes {
 		strings.write_string(&written, "a line this test has no reading for\r\n")
 	}
 	if !testing.expect(
@@ -246,19 +254,34 @@ a_flooding_child_is_drained_and_still_stopped_at_its_bound :: proc(t: ^testing.T
 		os.write_entire_file(path, written.buf[:]) == nil,
 		"could not write the flood this case types",
 	) {
-		return
+		return path, ""
 	}
 
-	signal := lonely_signal("floodceiling", context.allocator)
-	defer delete(signal, context.allocator)
-	command := fmt.aprintf(
+	signal := lonely_signal(name, allocator)
+	defer delete(signal, allocator)
+	command = fmt.aprintf(
 		"type %s 1>&2 & waitfor /t %d %s",
 		path,
 		LONGER_SECONDS,
 		signal,
-		allocator = context.allocator,
+		allocator = allocator,
 	)
+	return path, command
+}
+
+// Both halves are the claim (ADR-0020): the flood is drained, meaning the poll
+// loop was handed back control rather than left spinning inside one drain, and
+// the bound is still honoured within a few seconds of stop overhead rather
+// than the 25-second waitfor this child would otherwise sit in.
+@(test)
+a_flooding_child_is_drained_and_still_stopped_at_its_bound :: proc(t: ^testing.T) {
+	path, command := flood_command(t, "flood", 1 << 20, context.allocator)
+	defer delete(path, context.allocator)
+	defer os.remove(path)
 	defer delete(command, context.allocator)
+	if len(command) == 0 {
+		return
+	}
 
 	group, ok := open_group(t)
 	defer job_object_close(&group)
@@ -295,4 +318,78 @@ a_flooding_child_is_drained_and_still_stopped_at_its_bound :: proc(t: ^testing.T
 		total += len(chunk)
 	}
 	testing.expect(t, total > 0, "the flood was never drained at all")
+}
+
+// A pipe holds at most DIAGNOSTIC_PIPE_BYTES (64 KiB), so nothing a real child
+// writes can hand a single, unthrottled read loop much more than that at once
+// -- measured, `type` on a multi-megabyte file into an unread pipe still
+// leaves one drain reading only the pipe's own capacity, because the child
+// cannot refill it faster than a tight loop empties it. The ceiling exists for
+// the case a real Engine's diagnostic output resembles instead: many small
+// writes arriving steadily, which is what a per-chunk delay on the CONSUMER
+// side reproduces here -- it gives the child time to keep the pipe topped up
+// between reads, so a single drain sees a steady trickle for as long as the
+// flood file lasts. Deliberately several times MAX_DRAIN_BYTES, so the loop's
+// only way out is the ceiling and not running out of flood to read.
+@(private)
+slow_collect_chunk :: proc(chunk: string, elapsed_ns: i64, user: rawptr) {
+	collect_chunk(chunk, elapsed_ns, user)
+	time.sleep(2 * time.Millisecond)
+}
+
+@(test)
+a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood :: proc(t: ^testing.T) {
+	path, command := flood_command(t, "onedrain", 4 * MAX_DRAIN_BYTES, context.allocator)
+	defer delete(path, context.allocator)
+	defer os.remove(path)
+	defer delete(command, context.allocator)
+	if len(command) == 0 {
+		return
+	}
+
+	group, ok := open_group(t)
+	defer job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	c, err := start(&group, CMD, {"/c", command}, context.allocator)
+	defer close(&c)
+	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
+		return
+	}
+
+	time.sleep(100 * time.Millisecond)
+
+	collected := Collected {
+		chunks = make([dynamic]string, context.allocator),
+	}
+	defer free_collected(&collected, context.allocator)
+
+	readable := drain_bounded(
+		&c,
+		time.tick_now(),
+		Run_Callbacks{user = &collected, on_chunk = slow_collect_chunk},
+	)
+
+	total := 0
+	for chunk in collected.chunks {
+		total += len(chunk)
+	}
+
+	testing.expect(t, readable, "a drain that hit its ceiling reported the pipe as unreadable")
+	testing.expectf(
+		t,
+		total <= MAX_DRAIN_BYTES + DRAIN_BYTES,
+		"one drain took %d bytes, more than its %d-byte ceiling permits even though more was waiting",
+		total,
+		MAX_DRAIN_BYTES,
+	)
+	testing.expectf(
+		t,
+		total >= MAX_DRAIN_BYTES,
+		"one drain stopped at %d bytes, well short of its %d-byte ceiling, so the flood ran out rather than the ceiling being reached",
+		total,
+		MAX_DRAIN_BYTES,
+	)
 }
