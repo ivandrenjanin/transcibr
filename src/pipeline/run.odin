@@ -237,7 +237,9 @@ close_and_join :: proc(
 ) -> bool {
 	assert(len(threads) > 0, "there is no worker tier here to close and join")
 
-	chan.close(queue)
+	closed_now := chan.close(queue)
+	assert(closed_now, "a worker tier's queue was already closed before its own shutdown began")
+
 	all_joined := true
 	for t in threads {
 		switch child.await_or_abandon(t, bound_ms) {
