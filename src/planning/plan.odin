@@ -124,6 +124,15 @@ writable :: proc(found: Found, wanted: Outcome) -> Outcome {
 // `notes.mp4` would otherwise read as a Transcript already up to date
 // (ADR-0008). Whether the directory can be WRITTEN to is not here and cannot be
 // -- see `writable`.
+//
+// `switch found.transcript` and not an `if` chain, deliberately: `transcript_-`
+// `state_of` (walk.odin) is exhaustive over `child.Wait` so a member neither
+// this repository nor `transcibr:child` has today fails the build rather than
+// falling through silently, and this is the classifying site `Transcript_-`
+// `State` itself deserves the same guard at (PR #64's third review, finding
+// 9). A fifth member with no arm here would otherwise reach `unrecorded` and
+// `settled`, whose asserts name only `.Foreign` and `.Unreadable` and would
+// wave it through.
 @(private)
 @(require_results)
 refused :: proc(found: Found, current: artifact.Sidecar) -> (outcome: Outcome, yes: bool) {
@@ -133,11 +142,12 @@ refused :: proc(found: Found, current: artifact.Sidecar) -> (outcome: Outcome, y
 	if len(artifact.stem_of(found.source)) == 0 {
 		return Outcome{decision = .Refuse, reason = .Names_No_File}, true
 	}
-	if found.transcript == .Foreign {
+	switch found.transcript {
+	case .Foreign:
 		return Outcome{decision = .Refuse, reason = .Foreign_Transcript}, true
-	}
-	if found.transcript == .Unreadable {
+	case .Unreadable:
 		return Outcome{decision = .Refuse, reason = .Transcript_Unreadable}, true
+	case .Absent, .Transcibrs:
 	}
 	if !artifact.recordable(current) {
 		return Outcome{decision = .Refuse, reason = .Dated_Before_1970}, true
