@@ -7,6 +7,8 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
+import "core:time"
+import "transcibr:testkit"
 
 // From FIPS 180-4's own worked example: a source of truth outside this
 // repository rather than a value this package produced and compared with itself.
@@ -144,6 +146,58 @@ a_model_that_is_not_there_is_refused_rather_than_asserted :: proc(t: ^testing.T)
 	defer destroy_model(identified, context.allocator)
 
 	testing.expect_value(t, fault, Model_Fault.Unreadable)
+}
+
+// Big enough that hashing it takes real, measurable time -- software SHA-256
+// runs nowhere near a disk's own transfer rate, so 128 MiB of it stays well
+// clear of a 1 ms bound on any machine this suite runs on, without paying
+// the cost of writing something the size of a real Model.
+@(private)
+MODEL_TEST_BOUND_FILE_BYTES :: 128 * 1024 * 1024
+
+// Finding 3 of the PR #64 review: `--model-file` is hand-typed, the same
+// class of input `--from-json` is, and issue #27's read half was not closed
+// for it. `digest_of_bounded` is the seam this pins directly, at a bound of
+// 1 ms against a file large enough that no real machine finishes hashing it
+// that fast -- proving the bound is actually wired through rather than
+// merely declared, without needing a genuinely stalled network share to
+// demonstrate it.
+@(test)
+a_model_that_cannot_be_hashed_within_its_bound_is_reported_rather_than_awaited_forever :: proc(
+	t: ^testing.T,
+) {
+	directory := scratch(t, "model-bound")
+	defer delete(directory, context.allocator)
+	defer remove_scratch(directory)
+
+	path := fmt.aprintf("%s\\slow.bin", directory, allocator = context.allocator)
+	defer delete(path, context.allocator)
+	defer os.remove(path)
+
+	if !testkit.write_flood(
+		t,
+		path,
+		MODEL_TEST_BOUND_FILE_BYTES,
+		"a byte of a Model too big to hash inside a millisecond\n",
+		context.allocator,
+	) {
+		return
+	}
+
+	started := time.tick_now()
+	digest, bytes, fault := digest_of_bounded(path, 1, context.allocator)
+	elapsed := time.tick_since(started)
+	defer delete(string(digest), context.allocator)
+
+	testing.expect_value(t, fault, Model_Fault.Did_Not_Finish)
+	testing.expect_value(t, bytes, i64(0))
+	testing.expect(t, len(digest) == 0, "an abandoned hash handed back a digest it never finished")
+	testing.expectf(
+		t,
+		elapsed < 5 * time.Second,
+		"a hash bounded at 1 ms took %v to be reported, which is not being bounded at all",
+		elapsed,
+	)
 }
 
 @(test)

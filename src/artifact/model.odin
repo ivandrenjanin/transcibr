@@ -1,11 +1,15 @@
 #+vet explicit-allocators
 package artifact
 
+import "base:runtime"
 import "core:crypto/sha2"
 import "core:encoding/hex"
 import "core:io"
 import "core:mem"
 import "core:os"
+import "core:strings"
+import "core:thread"
+import "transcibr:child"
 import "transcibr:process"
 
 // Hashing a Model costs a pass over upwards of a gigabyte, so its identity is
@@ -29,7 +33,19 @@ Model_Fault :: enum u8 {
 	// Why the Engine cannot open such a path: ADR-0025.
 	Path_Not_Ascii,
 	Unreadable,
+	Did_Not_Finish,
 }
+
+// `--model-file` is hand-typed, the same class of input `--from-json` is
+// (issue #27), and a Model up to roughly 1.5 GB is the normal case rather
+// than an edge one: weights kept on a NAS is how a shared machine stores
+// them. Grounded rather than assumed: ten minutes only requires a sustained
+// 2.6 MB/s to finish hashing 1.5 GB, generous margin against a real disk or
+// a working network share -- the wedge this bound exists to catch is a share
+// answering nothing at all, not one running slow.
+MODEL_READ_BOUND_MS :: i64(10 * 60 * 1000)
+
+#assert(MODEL_READ_BOUND_MS > 0)
 
 // A path that is not valid UTF-8 answers `.Unreadable` and not
 // `.Path_Not_Ascii`, because get_absolute_path refuses it before the ASCII
@@ -66,7 +82,7 @@ identify_model :: proc(
 		return {}, .Path_Not_Ascii
 	}
 
-	digest, bytes, unreadable := digest_of(resolved, allocator)
+	digest, bytes, unreadable := digest_of_bounded(resolved, MODEL_READ_BOUND_MS, allocator)
 	if unreadable != .None {
 		return {}, unreadable
 	}
@@ -129,6 +145,105 @@ digest_of :: proc(
 	return hex_digest(&context_256, allocator), bytes, .None
 }
 
+// `digest_of` opens the Model and reads the whole of it, so it runs on its
+// own thread and this bound is what keeps a wedged one -- a NAS that stops
+// answering mid-hash -- from blocking a Batch forever, the same way
+// `child.read_bounded` bounds a read of an Engine's output (issue #27).
+//
+// The job's own fields live on `runtime.heap_allocator`'s heap rather than
+// the caller's `allocator`, for the identical reason `child.Read_Job` does
+// (src/child/read.odin): a thread this package cannot safely stop needs
+// somewhere to write that outlives whatever allocator the caller happens to
+// have handed in.
+@(private)
+Digest_Job :: struct {
+	path:   string,
+	digest: Digest,
+	bytes:  i64,
+	fault:  Model_Fault,
+}
+
+@(private)
+digest_worker :: proc(data: rawptr) {
+	job := (^Digest_Job)(data)
+	assert(job != nil, "a digest thread was started with no job to hash")
+	assert(len(job.path) > 0, "a digest thread was started with no path to hash")
+
+	job.digest, job.bytes, job.fault = digest_of(job.path, runtime.heap_allocator())
+}
+
+@(private)
+@(require_results)
+digest_of_bounded :: proc(
+	path: string,
+	bound_ms: i64,
+	allocator: mem.Allocator,
+) -> (
+	digest: Digest,
+	bytes: i64,
+	fault: Model_Fault,
+) {
+	assert(len(path) > 0, "there is no file here to hash")
+	assert(bound_ms > 0, "a hash given no time at all cannot do anything")
+	assert(allocator.procedure != nil, "the digest outlives this procedure and needs an allocator")
+
+	job := new(Digest_Job, runtime.heap_allocator())
+	job.path = strings.clone(path, runtime.heap_allocator())
+
+	context.allocator = runtime.heap_allocator()
+	t := thread.create_and_start_with_data(job, digest_worker)
+	if t == nil {
+		delete(job.path, runtime.heap_allocator())
+		free(job, runtime.heap_allocator())
+		return "", 0, .Unreadable
+	}
+
+	switch child.await_or_abandon(t, bound_ms) {
+	case .Finished:
+		return digest_finished(t, job, allocator)
+	case .Stopped:
+		release_digest_job(t, job)
+		return "", 0, .Did_Not_Finish
+	case .Unstoppable:
+		return "", 0, .Did_Not_Finish
+	}
+	unreachable()
+}
+
+@(private)
+release_digest_job :: proc(t: ^thread.Thread, job: ^Digest_Job) {
+	assert(t != nil, "there is no thread here to release")
+	assert(job != nil, "there is no job here to release")
+
+	delete(string(job.digest), runtime.heap_allocator())
+	delete(job.path, runtime.heap_allocator())
+	free(job, runtime.heap_allocator())
+	thread.destroy(t)
+}
+
+@(private)
+@(require_results)
+digest_finished :: proc(
+	t: ^thread.Thread,
+	job: ^Digest_Job,
+	allocator: mem.Allocator,
+) -> (
+	digest: Digest,
+	bytes: i64,
+	fault: Model_Fault,
+) {
+	assert(t != nil, "there is no thread here to close out")
+	assert(job != nil, "a finished hash has no job to read its answer from")
+
+	fault = job.fault
+	bytes = job.bytes
+	if fault == .None {
+		digest = Digest(strings.clone(string(job.digest), allocator))
+	}
+	release_digest_job(t, job)
+	return
+}
+
 #assert(DIGEST_CHARS == 2 * sha2.DIGEST_SIZE_256)
 
 @(private)
@@ -156,6 +271,8 @@ model_fault_says :: proc(fault: Model_Fault) -> string {
 		)
 	case .Unreadable:
 		return "the Model could not be read"
+	case .Did_Not_Finish:
+		return "could not be read within its bound and was abandoned"
 	case .None:
 	}
 	return ""
