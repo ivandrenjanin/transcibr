@@ -171,6 +171,19 @@ watched_end :: proc(elapsed_ns: i64, user: rawptr) {
 // bar with a hundred positions and three annotations can have. Called once
 // more after the child finishes, so the display's last paint reflects the
 // Engine's true final reading.
+//
+// It also carries a second duty `on_poll`'s `-> bool` signature has no room
+// for: `child.Run` collapses a bound expiry, this callback asking to stop,
+// and a drain failure into one `.Stopped`, so this writes the distinction
+// into `watch_state.silent` for `ending_for` to read back once `run_bounded`
+// has already returned. Correct only because a `true` return here exits the
+// loop immediately, so nothing between the write and `ending_for`'s read can
+// see a stale value. A future `on_poll` that sets the flag and returns
+// `false` -- a "warn, don't stop" reading -- would leave a wall-clock-expiry
+// ending reporting `.Went_Silent` for a run that was never silent. Carrying
+// the stop reason in `child.Run`'s own return would close this, but that is
+// a shape change to a type two other callers already share; recorded here
+// rather than done in this pass.
 @(private)
 @(require_results)
 watched_poll :: proc(elapsed_ns: i64, user: rawptr) -> bool {
@@ -199,7 +212,7 @@ run_engine :: proc(
 ) {
 	assert(group != nil, "a child started outside a job object outlives transcibr")
 	assert(len(arguments) > 0, "the Engine was started with no arguments at all")
-	assert(job.container_ms >= 0, "a Recording of negative length reached the Engine")
+	assert(job.container_ms > 0, "a Recording nobody could time reached the Engine")
 
 	bound_ms := limits.bound_ms
 	if bound_ms <= 0 {
@@ -227,11 +240,25 @@ run_engine :: proc(
 			on_poll = watched_poll,
 		},
 	)
+	return ending_for(run, watch_state, refusal)
+}
+
+// What run_engine's loop measured survives every ending, stopped or not: an
+// Engine that ran for two hours and then would not stop still ran for two
+// hours, and a caller deciding what to do with an Unstoppable Engine is
+// exactly the caller that most needs to know how long it had been running.
+@(private)
+@(require_results)
+ending_for :: proc(run: child.Run, watch_state: Watch_State, refusal: child.Error) -> Ending {
 	switch run {
 	case .Not_Started:
 		return Ending{run = .Not_Started, child = refusal}
 	case .Unstoppable:
-		return Ending{run = .Unstoppable}
+		return Ending {
+			run = .Unstoppable,
+			silent = watch_state.silent,
+			duration_ms = watch_state.tracker.duration_ms,
+		}
 	case .Stopped:
 		return Ending {
 			run = .Stopped,

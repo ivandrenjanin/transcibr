@@ -3,7 +3,6 @@ package engine
 
 import "core:fmt"
 import "core:os"
-import "core:strings"
 import "core:testing"
 import "transcibr:child"
 import "transcibr:process"
@@ -82,19 +81,13 @@ stand_in :: proc(t: ^testing.T, cache: string, tag: string, body: string) -> str
 @(private)
 @(require_results)
 flood_file :: proc(t: ^testing.T, cache: string, tag: string, bytes: int) -> string {
-	assert(bytes > 0, "a flood of nothing at all floods nothing")
-
 	path := fmt.aprintf("%s\\flood-%s.txt", cache, tag, allocator = context.allocator)
-	written := strings.builder_make(context.allocator)
-	defer strings.builder_destroy(&written)
-	for strings.builder_len(written) < bytes {
-		strings.write_string(&written, "whisper: a line this reader has no reading for\r\n")
-	}
-
-	testing.expect(
+	_ = testkit.write_flood(
 		t,
-		os.write_entire_file(path, written.buf[:]) == nil,
-		"could not write the flood the stand-in types",
+		path,
+		bytes,
+		"whisper: a line this reader has no reading for\r\n",
+		context.allocator,
 	)
 	return path
 }
@@ -127,11 +120,10 @@ job_in :: proc(
 	return tools, job
 }
 
-// Kept local rather than moved into transcibr:testkit: testkit carries no
-// dependency on transcibr:child, on purpose, because src/child/child_test.odin
-// is itself part of that package and could not import a testkit that imported
-// it back. audio and engine each keep this same handful of lines rather than
-// the one package gaining a cycle only child's own suite would hit.
+// Spelled the same way at all three call sites (transcibr:testkit's own
+// header explains why this one is not among them): child_test.odin is part of
+// package child, and a testkit that imported child could not be imported back
+// by child's own tests without a cycle.
 @(private)
 @(require_results)
 open_group :: proc(t: ^testing.T) -> (group: child.Job_Object, ok: bool) {
@@ -389,6 +381,12 @@ an_engine_that_outlives_its_bound_is_stopped_and_told_apart_from_a_silent_one ::
 	testing.expect_value(t, err.fault, Fault.Did_Not_Finish)
 }
 
+// Proves the bound is still reached despite a flood, not that a single drain
+// has a ceiling at all: mutating MAX_DRAIN_BYTES away leaves this green,
+// because an unbounded drain still runs out of flood to read and hands
+// control back the same way. Only
+// child.a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood pins the
+// ceiling itself.
 @(test)
 an_engine_that_floods_its_diagnostic_stream_is_still_stopped_at_its_bound :: proc(t: ^testing.T) {
 	group, ok := open_group(t)
@@ -420,6 +418,69 @@ an_engine_that_floods_its_diagnostic_stream_is_still_stopped_at_its_bound :: pro
 	testing.expect_value(t, err.fault, Fault.Did_Not_Finish)
 }
 
+// The last thing an Engine says before it exits is exactly what a
+// process.Line_Reader is still holding when end of stream arrives: nothing
+// terminated it, so watched_chunk never turned it into a reading on its own.
+// watched_end is what flushes it through process.last_line and tracker_said,
+// which is the only path this trailing percentage has to the display at all.
+@(test)
+an_engine_that_exits_mid_line_still_hands_over_its_last_reading :: proc(t: ^testing.T) {
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	cache := testkit.made_scratch_cache(t, "engine", "midline", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	trailer := fmt.aprintf("%s\\trailer.txt", cache, allocator = context.allocator)
+	defer delete(trailer, context.allocator)
+	trailing_line := "whisper_print_progress_callback: progress = 77%"
+	if !testing.expect(
+		t,
+		os.write_entire_file(trailer, transmute([]u8)trailing_line) == nil,
+		"could not write the unterminated trailer this case types",
+	) {
+		return
+	}
+
+	executable := stand_in(
+		t,
+		cache,
+		"midline",
+		fmt.tprintf(
+			">&2 echo whisper_print_progress_callback: progress = 10%%\r\n" +
+			">\"%%PREFIX%%.json\" echo {{}}\r\n" +
+			"type \"%s\" 1>&2",
+			trailer,
+		),
+	)
+	defer delete(executable, context.allocator)
+
+	watched := Watched {
+		seen = make([dynamic]process.Progress, context.allocator),
+	}
+	defer delete(watched.seen)
+
+	tools, job := job_in(cache, executable)
+	produced, err := transcribe(
+		&group,
+		tools,
+		job,
+		Report{on_progress = note, user = &watched},
+		context.allocator,
+		SHORT_LIMITS,
+	)
+	defer delete(produced.output, context.allocator)
+	if !testing.expectf(t, err.fault == .None, "the Engine failed: %v", err.fault) {
+		return
+	}
+
+	testing.expect_value(t, watched.highest, 77)
+}
+
 @(test)
 every_way_a_run_can_end_is_the_fault_that_names_it :: proc(t: ^testing.T) {
 	started := child.Error {
@@ -438,6 +499,22 @@ every_way_a_run_can_end_is_the_fault_that_names_it :: proc(t: ^testing.T) {
 	)
 	testing.expect_value(t, refused(Ending{run = .Stopped}).fault, Fault.Did_Not_Finish)
 	testing.expect_value(t, refused(Ending{run = .Finished}).fault, Fault.None)
+}
+
+// An Unstoppable Engine is still the caller's only record of how long it ran
+// and whether it had gone silent -- both already measured by the time stop
+// was even tried, and neither has anywhere else to go.
+@(test)
+an_unstoppable_run_still_carries_what_it_measured :: proc(t: ^testing.T) {
+	watch_state := Watch_State {
+		tracker = process.Tracker{duration_ms = 4_200},
+		silent = true,
+	}
+	ending := ending_for(.Unstoppable, watch_state, child.Error{})
+
+	testing.expect_value(t, ending.run, child.Run.Unstoppable)
+	testing.expect_value(t, ending.duration_ms, i64(4_200))
+	testing.expect_value(t, ending.silent, true)
 }
 
 @(test)
