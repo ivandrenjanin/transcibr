@@ -124,6 +124,30 @@ path that is not (ADR-0002), and swept at Batch start so a run that fails every 
 accumulate audio forever.
 _Avoid_: temp, working directory, staging, intermediate
 
+## Pipeline
+
+**Stage**:
+One step a Recording passes through on its way to a Transcript: extraction or transcription. A
+Stage is what a topology test replaces with a fake — the pipeline itself never knows whether a real
+one drives ffmpeg, drives the Engine, or does nothing at all (ADR-0006).
+_Avoid_: step, phase, task
+
+**Worker**:
+A thread that runs one Stage, repeatedly, for as many Recordings as the pipeline hands it. One or
+two Workers run the extraction Stage; exactly one runs the transcription Stage, because a GPU is a
+serial resource and that is asserted, not merely intended (ADR-0006). Distinct from `child.Worker`,
+an unrelated internal type that bounds a single external call — a Model hash, a directory listing —
+on a reusable thread, and never runs a Stage.
+_Avoid_: thread, pool
+
+**Queue**:
+The bounded holding point between the extraction Stage and the transcription Stage, one or two
+Recordings deep, so extraction can run ahead of transcription without the scratch cache filling
+faster than the GPU can empty it. Closing it still delivers whatever it already holds rather than
+dropping it. Distinct from Batch, which is the whole invocation and is never called a queue for
+exactly this reason — see Batch's own entry.
+_Avoid_: channel, buffer
+
 ## Repetition
 
 **Saying**:
