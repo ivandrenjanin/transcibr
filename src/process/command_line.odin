@@ -96,6 +96,7 @@ fault_facts :: proc(fault: Build_Fault) -> (facts: Fault_Facts) {
 	facts = FAULT[fault]
 	assert(len(facts.says) > 0, "a fault was added to Build_Fault without a row in FAULT")
 	assert(facts.blames != .Unset, "a fault's row in FAULT names nothing to blame")
+	assert(facts.disposition != .Unset, "a fault's row in FAULT names no disposition")
 	return
 }
 

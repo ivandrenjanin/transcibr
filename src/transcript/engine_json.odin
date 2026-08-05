@@ -154,6 +154,7 @@ fault_facts :: proc(fault: Parse_Fault) -> (facts: Fault_Facts) {
 	facts = FAULT[fault]
 	assert(len(facts.says) > 0, "a fault was added to Parse_Fault without a row in FAULT")
 	assert(facts.scope != .Unset, "a fault's row in FAULT names no scope")
+	assert(facts.disposition != .Unset, "a fault's row in FAULT names no disposition")
 	return
 }
 

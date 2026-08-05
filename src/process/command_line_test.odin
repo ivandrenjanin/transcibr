@@ -444,6 +444,26 @@ every_fault_says_whether_a_different_plan_would_help :: proc(t: ^testing.T) {
 	}
 }
 
+// Reads FAULT directly rather than through disposition_of, exactly as
+// src/audio/fault_test.odin reads its own table directly: a row written present
+// and empty is not caught by the enumerated array or by an exhaustive switch, so
+// nothing but a test that looks at the row itself catches it (see CLAUDE.md,
+// Odin notes: enumerated arrays and switches).
+@(test)
+every_build_fault_names_a_disposition :: proc(t: ^testing.T) {
+	for fault in Build_Fault {
+		if fault == .None {
+			continue
+		}
+		testing.expectf(
+			t,
+			FAULT[fault].disposition != .Unset,
+			"%v has no disposition in FAULT",
+			fault,
+		)
+	}
+}
+
 // Measured; see ADR-0019.
 @(private)
 UNENCODABLE_CASES :: []string {

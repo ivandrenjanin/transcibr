@@ -298,6 +298,47 @@ every_fault_says_what_adr_0002_does_with_it :: proc(t: ^testing.T) {
 	}
 }
 
+// Reads FAULT directly rather than through disposition_of, exactly as
+// src/audio/fault_test.odin reads its own table directly: a row written present
+// and empty is not caught by the enumerated array, so nothing but a test that
+// looks at the row itself catches it (see CLAUDE.md, Odin notes: enumerated
+// arrays and switches).
+@(test)
+every_parse_fault_names_a_disposition :: proc(t: ^testing.T) {
+	for fault in Parse_Fault {
+		if fault == .None {
+			continue
+		}
+		testing.expectf(
+			t,
+			FAULT[fault].disposition != .Unset,
+			"%v has no disposition in FAULT",
+			fault,
+		)
+	}
+}
+
+// process.Disposition is shared with process.Build_Fault, whose .Too_Long row
+// answers .Shorten_And_Replan (ADR-0030) -- but no Parse_Fault has a command
+// line to shorten. Stated as its own invariant, over every row and not just the
+// ones a hand-written expected-value list happens to cover, so a fault added
+// later that mis-copies .Shorten_And_Replan from process cannot be waved through
+// by widening that list's cases instead of fixing the row.
+@(test)
+no_parse_fault_ever_asks_to_shorten_a_command_line :: proc(t: ^testing.T) {
+	for fault in Parse_Fault {
+		if fault == .None {
+			continue
+		}
+		testing.expectf(
+			t,
+			disposition_of(fault) != .Shorten_And_Replan,
+			"%v asks to shorten a command line, but a parse fault has no command line to shorten",
+			fault,
+		)
+	}
+}
+
 @(test)
 an_engine_that_transcribed_nothing_fails_its_recording :: proc(t: ^testing.T) {
 	empty := []string{"", `{"transcription": []}`}

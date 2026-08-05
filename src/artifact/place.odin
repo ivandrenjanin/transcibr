@@ -119,9 +119,12 @@ rendered_and_placed :: proc(
 // Why output that will not parse is quarantined and re-run, while output that
 // parsed and said nothing fails the Recording: ADR-0002. Why a quarantine that
 // Windows refuses is reported under a fault of its own rather than as the move
-// that did not happen: ADR-0024. `Shorten_And_Replan` never reaches here -- a
-// Parse_Fault's row in transcript's own FAULT table never names it -- and stays
-// only because process.Disposition is shared with a package that does (ADR-0030).
+// that did not happen: ADR-0024. `Shorten_And_Replan` and `Unset` never reach
+// here -- a Parse_Fault's row in transcript's own FAULT table never names either
+// one -- and both stay in this switch only because process.Disposition is shared
+// with a package (`process` itself) that does produce `Shorten_And_Replan`; each
+// is named explicitly below rather than left for the trailing unreachable(), so
+// the impossibility is stated where it holds (ADR-0030).
 @(private)
 @(require_results)
 disposed_of :: proc(
@@ -140,6 +143,9 @@ disposed_of :: proc(
 	case .Fail_The_Recording:
 		return Error{fault = .Nothing_Transcribed, parse = parse_err}
 	case .Shorten_And_Replan:
+		unreachable()
+	case .Unset:
+		unreachable()
 	}
 	unreachable()
 }
