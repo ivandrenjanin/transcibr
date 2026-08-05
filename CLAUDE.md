@@ -384,23 +384,26 @@ leading sign, so `+7` reads as seven and a negative percentage arrives as a numb
 refusal; and runs `value *= base` with no check of any kind, so a forty-digit number answers
 something arbitrary and reports `ok`. Every one of those is a byte the Engine can write into its
 diagnostics and a corrupt Sidecar can carry. `read_natural` in `src\process\engine.odin` is what this
-repository reads a whole number with: digits only, no sign, no separator, and the overflow closed by
-a ceiling on the DIGIT COUNT tested BEFORE the first multiplication rather than by a range check
-after the wrap has already happened. The ceiling is `MAX_NATURAL_DIGITS :: 12`, with
-`#assert(MAX_NATURAL_DIGITS < 19)` holding it below the width at which i64 could wrap at all.
+repository reads a whole number with: digits only, no sign, no separator. Two guards close the
+overflow, doing two different jobs. What actually stands between a long literal and a wrap is the
+per-digit range check inside the loop — `value > (max(i64) - i64(digit - '0')) / 10`, run before every
+multiplication — because it holds at any digit count: a 19-digit run can still exceed `max(i64)`, and
+that check is what refuses it rather than letting it wrap. Beside it sits a separate, POLICY ceiling on
+the DIGIT COUNT, tested before the first digit is even read: `MAX_NATURAL_DIGITS :: 12`, with
+`#assert(MAX_NATURAL_DIGITS < 19)` recording that twelve digits can never reach anywhere near i64's
+range, so the per-digit check can never actually fire for that consumer — the ceiling alone already
+keeps its numbers well inside i64. Rejecting an implausibly long run on sight is the ceiling's job;
+refusing a wrap is the loop's, and the loop's job does not change with the ceiling's value.
 
 The ceiling belongs to the CONSUMER and not to the reader, and it already reads that way:
-`read_natural(text: string, max_digits := MAX_NATURAL_DIGITS)` takes it as a parameter, for the day a
-second consumer wants a different one — a nanosecond moment would need the full nineteen digits where
-a percentage needs two. Nothing has asked for nineteen yet; both call sites in `src\process\engine.odin`
-take the default.
-
-What actually stands between a long literal and a wrap is not the digit-count ceiling at all: it is
-the per-digit range check inside the loop, `value > (max(i64) - i64(digit - '0')) / 10`, run before
-every multiplication — and it holds at nineteen digits exactly as it does at twelve, because a
-19-digit run can still exceed `max(i64)` and the check is what refuses that, not the count. The
-ceiling is a separate, POLICY limit on top of it: rejecting an implausibly long run on sight rather
-than reading all nineteen digits of it correctly and then range-checking the answer.
+`read_natural(text: string, max_digits := MAX_NATURAL_DIGITS)` takes it as a parameter — for the day a
+second consumer wants a different one, a nanosecond moment needing the full nineteen digits where a
+percentage needs two. That day has come: both call sites in `src\process\engine.odin` still take the
+default, but `src\artifact\sidecar.odin` declares `MAX_SIDECAR_DIGITS :: 19`, with
+`#assert(MAX_SIDECAR_DIGITS == len("9223372036854775807"))`, and passes it at five call sites
+(`sidecar.odin:396-405`) — including `s.source_modified_ns`, the nanosecond moment itself. At nineteen
+digits the digit-count ceiling no longer bounds the value below i64's range by itself; the per-digit
+check in the loop is what still does, unchanged from what it was doing at twelve.
 
 The parser leaks on several of its error paths: an object key parsed just before the value after it
 fails is never inserted into the object, so the cleanup that walks that object never frees it, and a
