@@ -52,10 +52,15 @@ documentation and not the file's. That paragraph goes wrong the day #9 adds `eng
 next to it, and it goes wrong silently — nothing checks a comment. The package comment says what the
 package is; each file says what it holds, below its own imports.
 
-**The rule generalises to the two core modules that do not exist yet.** *Planning* and *Worker
-planning* are named in the spec with seams of their own (S2, S4), so they get `src/planning/` and
-`src/worker_planning/`, whatever the files inside end up being called. A third package that turns
-out to hold half of one of them is this decision being reopened, not applied.
+**The rule generalises to the core module that does not exist yet.** *Worker planning* has no seam of
+its own among the spec's S1–S5: S2 is *Planning*'s (now `src/planning/`, `plan_batch`), and S4 tests
+pipeline topology given a worker configuration as one of its inputs (spec:332, "job count, worker
+configuration and fake stages **in**") — that configuration is what *Worker planning* "turns detected
+hardware into" (spec:197), which is a different question from the one S4 tests. It still gets
+`src/worker_planning/` when it lands, on this decision's own rule of one package per spec module,
+whatever the files inside end up being called — not because a seam pairs with it, because none does.
+A third package that turns out to hold half of a spec module is this decision being reopened, not
+applied.
 
 **The test-package accounting is what enforces it.** `test.ps1` fails any package under `src/` that
 collects zero tests unless it is named in `$OdinPackagesWithoutTests`, so a new directory is a new
