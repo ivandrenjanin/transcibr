@@ -135,17 +135,20 @@ _Avoid_: step, phase, task
 **Worker**:
 A thread that runs one Stage, repeatedly, for as many Recordings as the pipeline hands it. One or
 two Workers run the extraction Stage; exactly one runs the transcription Stage, because a GPU is a
-serial resource and that is asserted, not merely intended (ADR-0006). Distinct from `child.Worker`,
-an unrelated internal type that bounds a single external call — a Model hash, a directory listing —
-on a reusable thread, and never runs a Stage.
+serial resource and that is asserted, not merely intended (ADR-0006, ADR-0031). Distinct from
+`child.Worker`, an unrelated internal type that bounds a single external call — a Model hash, a
+directory listing — on a reusable thread, and never runs a Stage.
 _Avoid_: thread, pool
 
 **Queue**:
-The bounded holding point between the extraction Stage and the transcription Stage, one or two
-Recordings deep, so extraction can run ahead of transcription without the scratch cache filling
-faster than the GPU can empty it. Closing it still delivers whatever it already holds rather than
-dropping it. Distinct from Batch, which is the whole invocation and is never called a queue for
-exactly this reason — see Batch's own entry.
+One of two bounded holding points a Job or its extracted audio sits in on the way to a Transcript
+(ADR-0031): the admission Queue in front of the extraction Stage, and the hand-off Queue between the
+extraction Stage and the transcription Stage. Both are one or two Recordings deep. The hand-off Queue
+is the one ADR-0006's disk-filling bound is about — it is what stops extraction running ahead of the
+GPU and filling the scratch cache; the admission Queue carries Jobs rather than audio and costs the
+disk nothing. Closing either still delivers whatever it already holds rather than dropping it.
+Distinct from Batch, which is the whole invocation and is never called a queue for exactly this
+reason — see Batch's own entry.
 _Avoid_: channel, buffer
 
 ## Repetition
