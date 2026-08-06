@@ -41,6 +41,28 @@ matching_sidecar :: proc(found: Found) -> artifact.Sidecar {
 	)
 }
 
+// What the Batch above would have written for this Recording last time, had
+// the container's own probed duration rounded to zero milliseconds -- a value
+// `read_sidecar` accepts and `artifact.recordable` allows (sidecar.odin's
+// `container_ms` field note), and the value this file's `current_of` asserts
+// `>= 0` and not `> 0` over.
+@(private)
+@(require_results)
+zero_duration_sidecar :: proc(found: Found) -> artifact.Sidecar {
+	s := settings()
+	named, _ := s.engine_version.?
+	return artifact.sidecar_of(
+		named,
+		s.model,
+		s.beam,
+		s.merge_profile,
+		s.prompt,
+		found.bytes,
+		found.modified_ns,
+		0,
+	)
+}
+
 @(private)
 expect_decided :: proc(
 	t: ^testing.T,
@@ -172,6 +194,27 @@ a_recording_already_done_is_skipped_even_where_nothing_may_be_written :: proc(t:
 	expect_decided(
 		t,
 		"a finished Recording in a directory nothing may be written to",
+		decide(found, settings()),
+		.Skip,
+		.Up_To_Date,
+	)
+}
+
+// A recorded Sidecar carrying `container_ms: 0` reaches `current_of`'s
+// `recorded.container_ms >= 0` assert with `known == true` -- the exact case
+// that assert exists to tolerate (see its doc comment in plan.odin). A
+// Recording whose container probed to zero milliseconds last time and has not
+// changed since is settled the same as any other, not refused or crashed.
+@(test)
+a_recording_whose_recorded_duration_is_zero_is_not_refused :: proc(t: ^testing.T) {
+	found := a_recording()
+	found.transcript = .Transcibrs
+	found.engine_output = true
+	found.recorded = zero_duration_sidecar(found)
+
+	expect_decided(
+		t,
+		"a Recording last recorded with a zero-millisecond container duration",
 		decide(found, settings()),
 		.Skip,
 		.Up_To_Date,
