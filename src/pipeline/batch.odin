@@ -52,12 +52,17 @@ Summary :: struct {
 // `failed_and_refused_do`, batch_test.odin).
 @(require_results)
 batch_succeeded :: proc(summary: Summary) -> bool {
+	assert(summary.failed >= 0, "a Batch counted a negative number of failed Recordings")
+	assert(summary.refused >= 0, "a Batch counted a negative number of refused Recordings")
+
 	return summary.failed == 0 && summary.refused == 0 && !summary.unhealthy
 }
 
 @(private)
 @(require_results)
 engine_output_path :: proc(source: string, allocator: mem.Allocator) -> (path: string, ok: bool) {
+	assert(len(source) > 0, "there is no Recording here to name an Engine output for")
+
 	names, namable := artifact.names_of(source, allocator)
 	defer artifact.destroy_names(names, allocator)
 	if !namable {
@@ -106,6 +111,9 @@ re_rendered_and_placed :: proc(
 	o: Batch_Options,
 	allocator: mem.Allocator,
 ) -> bool {
+	assert(len(made.engine_version) > 0, "a re-rendered Sidecar named no Engine version")
+	assert(len(made.model) > 0, "a re-rendered Sidecar named no Model")
+
 	return placed_and_reported(
 		source,
 		output,
@@ -138,6 +146,7 @@ sort_entry :: proc(
 	jobs: ^[dynamic]Recording_Job,
 ) {
 	assert(summary != nil, "there is nowhere here to record what this entry came to")
+	assert(jobs != nil, "there is nowhere here to collect a Transcribe entry's Job")
 
 	switch entry.outcome.decision {
 	case .Transcribe:
@@ -215,5 +224,15 @@ run_recordings :: proc(
 	if o.health.unhealthy != nil {
 		summary.unhealthy = sync.atomic_load(o.health.unhealthy)
 	}
+	assert(
+		summary.transcribed +
+			summary.cancelled +
+			summary.failed +
+			summary.rerendered +
+			summary.skipped +
+			summary.refused ==
+		len(plan.entries),
+		"a Batch settled fewer or more Recordings than its Plan named",
+	)
 	return
 }
