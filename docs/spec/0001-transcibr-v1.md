@@ -340,8 +340,10 @@ appear. Cannot run in CI — it needs a multi-gigabyte Model and a CUDA GPU — 
 
 Every test invocation runs the project vet set, and memory-failure reporting is enabled so a core
 procedure that leaks its returned slice fails rather than passes. Because the code spans several
-packages, the test command must iterate packages rather than naming one, or it will report success
-having run nothing.
+packages, the test command must cover every test-holding package -- today one explicit `odin test`
+line per package in the justfile's `test` recipe -- with completeness enforced by `tools\policy`'s
+deny-by-default package-accounting check via `just check`, not by iteration in the test command, or
+it will report success having run nothing.
 
 **Not covered by any seam, deliberately**: the Win32 window, the downloader against live upstreams,
 and GPU behaviour. These get manual verification. The pipeline, subprocess and window layers will

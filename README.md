@@ -85,9 +85,9 @@ This is structural, not a promise: all network code lives in one file, `src/net/
 called from exactly two places. `grep -ri --include=*.odin -r winhttp src/` is the whole audit —
 case-insensitive, because a case-sensitive grep refuses the spelling nobody writes and admits
 `WinHttpOpen`, the Win32 headers' own capitalisation — and it is not merely run by hand:
-`collect_network_violations` in `tools\policy\check.odin` fails `just check` -- and so `just ci`,
-which runs nothing else -- the moment the name appears, in any case, in any `.odin` file anywhere
-under `src\` outside that one.
+`collect_network_violations` in `tools\policy\check.odin` fails `just check`, and so `just ci` --
+the moment the name appears, in any case, in any `.odin` file anywhere under `src\` outside that
+one.
 
 ## Requirements and installation
 
@@ -113,7 +113,7 @@ A [`justfile`](justfile) (casey/just) at the repository root, run by hand or by 
 exactly what the workflow runs, so nothing there does anything a developer's own machine cannot do
 too. `just install-tools` fetches the two pinned tools a developer's own machine usually already has.
 
-```powershell
+```text
 just build         # -> build\transcibr-cli.exe, debug
 just release        # -> build\transcibr-cli.exe, -o:speed
 just check          # tools\policy: CLAUDE.md's source policies and the package-accounting check
@@ -167,9 +167,11 @@ point the two environment variables at binaries you have pinned by hand, before 
 The style itself is `odinfmt.json` at the repository root, which is the name odinfmt looks for on
 its own — an editor formatting on save and the build cannot disagree about it. A misformatted file
 fails `just fmt-check`, not merely a check somebody remembers to run. `fmt` and `fmt-check` each
-spell the same three directories — `src`, `tools`, `docs\reference` — as a `for /r` loop per
-directory; `fmt-check` runs odinfmt per file without `-w`, compares its output against the file on
-disk byte for byte, and never consults `git`. It is line-ending-sensitive on purpose:
+spell the same three directories — `src`, `tools`, `docs\reference` — but only `fmt-check` iterates
+them file by file: `fmt` hands each directory whole to `odinfmt -w`, while `fmt-check` walks each
+directory with a `for /r` loop per file, running odinfmt per file without `-w`, comparing its
+output against the file on disk byte for byte, and never consulting `git` -- the per-file loop is
+what a byte compare needs. It is line-ending-sensitive on purpose:
 `core.autocrlf` is on, a Windows checkout holds CRLF, and `newline_style` is pinned to match rather
 than left to odinfmt's own default, which is CRLF on Windows and LF everywhere else.
 
@@ -177,13 +179,18 @@ Every build and test recipe passes the full vet set with warnings as errors, and
 additionally set `ODIN_TEST_FAIL_ON_BAD_MEMORY=true` — it defaults to false, which would let a
 procedure that leaks its returned slice pass with a warning (ADR-0010).
 
+Check the repository out under a path containing no space. `odin test` runs its test binary
+through a command line it does not quote, so a space is re-parsed as an argument separator and the
+compiler exits `-1` with `Unknown argument encountered '<second word>'` — a checkout under
+`C:\Users\John Smith\...` fails before a single test runs (ADR-0035's second accepted risk).
+
 **`odin test` collects test procedures from one package only**, and on a package with none it prints
 `No tests to run.` and exits 0. `just test` therefore spells one explicit line per package that holds
 tests under `src\` and `tools\policy`, rather than naming one and hoping; `tools\policy`'s own
 package-accounting check fails `just check` the moment a tested package under either root loses its
 line from that list, or a package under either root loses its last test file. To run a single test:
 
-```powershell
+```text
 just test-one version banner_names_the_program_and_its_version
 ```
 
