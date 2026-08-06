@@ -24,12 +24,18 @@ layer needed something to call. With it gone, the verdicts moved into `tools\pol
   `Get-OdinSource`'s PowerShell walk. Same exclusions — `.git`, `build`, `.scratch` — same
   repository-wide scope (`docs\reference\` included, exactly as CLAUDE.md's Odin notes record for
   the comment ban).
-- `packages.odin` is new: the package-accounting check the ticket asked for. Every `src\` package
-  holding a `*_test.odin` file must be named in the `justfile`'s own `test:` recipe body — scoped to
-  that recipe's lines specifically, not a whole-file search, because `test-single` also mentions
-  `src/child` and a whole-file match would call a package present the moment *any* recipe mentioned
-  it. `cli` is the one declared exemption (`TEST_LESS_SRC_PACKAGES`), carrying forward
-  `$OdinPackagesWithoutTests`' single entry and ADR-0009's reasoning for it.
+- `packages.odin` is new: the package-accounting check the ticket asked for, over **both** package
+  roots — `src\` and `tools\`, the same two `$OdinPackageRoots` covered — and in **both**
+  directions. Every package under either root holding a `*_test.odin` file must be named in the
+  `justfile`'s own `test:` recipe body — scoped to that recipe's lines specifically, not a
+  whole-file search, because `test-single` also mentions `src/child` and a whole-file match would
+  call a package present the moment *any* recipe mentioned it — and every package under either root
+  holding `.odin` files and *no* `*_test.odin` file at all is a violation, which is what makes the
+  check deny-by-default rather than a list of things it already knows about. `cli` is the one
+  declared exemption (`TEST_LESS_SRC_PACKAGES`), carrying forward `$OdinPackagesWithoutTests`'
+  single entry and ADR-0009's reasoning for it; that roster is `src\`-only, and `tools\` has no
+  roster at all (`NO_TEST_LESS_PACKAGES`), so the `tools\check` runner accepted risk 1 names as a
+  re-entry path lands inside the check rather than beside it.
 - `main.odin` is the entry point `just check` runs: no request file any more (nothing left to write
   one), it discovers the repository root itself — the one argument, or `just`'s own working
   directory — and prints each file's name to standard error *before* reading it, preserving the

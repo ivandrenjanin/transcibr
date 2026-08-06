@@ -376,9 +376,12 @@ place that list is spelled); `just test-one version banner_names_the_program_and
 one. Issue #152 retired the PowerShell layer's own suite that used to check a name written here
 against the real one; no mechanism pins these names against the tree any more, so treat every `just
 test-one` example as a claim worth re-running, not a pinned fact (ADR-0035's third accepted risk).
-Do not hand-roll the compiler invocation — `tools\policy`'s package-accounting check enforces that
-every `src\` package holding a `*_test.odin` file is named in the `justfile`'s `test` recipe (issue
-#152; `cli` is the one declared exemption, ADR-0009).
+Do not hand-roll the compiler invocation — `tools\policy`'s package-accounting check covers both
+package roots, `src\` and `tools\`, in both directions: every package under either root holding a
+`*_test.odin` file must be named in the `justfile`'s `test` recipe, and every package under either
+root holding none at all is a violation (issue #152). `cli` is the one declared exemption
+(ADR-0009), and it is a `src\` name — `tools\` has no exemption roster at all, so a tool added
+there is denied by default until it holds tests and the `test` recipe names it.
 
 `core:testing`'s runner caps the thread pool at the test count: `thread_count = min(thread_count,
 total_test_count)` in `runner.odin`, right after thread count is chosen from

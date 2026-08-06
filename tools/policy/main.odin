@@ -10,8 +10,10 @@ import "core:strings"
 // repository holds -- docs\reference\ included, the scope CLAUDE.md's source
 // policies have always had -- computes the verdicts check.odin knows about
 // for each one, and refuses the package-accounting check this ticket added:
-// every `src\` package holding a `*_test.odin` file must be named in the
-// justfile's own `test` recipe.
+// every `src\` and `tools\` package holding a `*_test.odin` file must be
+// named in the justfile's own `test` recipe, and every package under either
+// root holding no `*_test.odin` file at all is a violation unless that root's
+// roster names it.
 //
 // The root is the one argument, or the working directory `just` starts this
 // in when there is none. `just`'s recipes run from the repository root by
@@ -149,8 +151,26 @@ check_one_file :: proc(
 	collect_violations(relative, facts, required, into)
 }
 
-// The check ticket #152 added: every `src\` package holding a `*_test.odin`
-// file must appear in the justfile's own `test` recipe.
+// One package root as this check reads it: where it is on disk, the name it
+// is spelled by in the justfile and in every message, the roster that may
+// excuse a package there from holding tests, and the justfile the recipe half
+// of the check reads. `justfile_ok` is false when the file could not be read
+// at all, which is a violation of its own and not a reason to call every
+// tested package missing from a recipe nobody could see.
+Accounting_Scope :: struct {
+	package_root:  string,
+	prefix:        string,
+	exempt:        []string,
+	justfile_path: string,
+	justfile_text: string,
+	justfile_ok:   bool,
+}
+
+// The check ticket #152 added, over both roots this repository holds
+// packages under: every `src\` and `tools\` package holding a `*_test.odin`
+// file must appear in the justfile's own `test` recipe, and every package
+// under either root holding no `*_test.odin` file at all is a violation
+// unless that root's roster names it.
 check_package_accounting :: proc(
 	root: string,
 	into: ^[dynamic]Violation,
@@ -159,9 +179,49 @@ check_package_accounting :: proc(
 	assert(len(root) > 0, "asked to account for the packages of no repository root at all")
 	assert(into != nil, "asked to collect violations into nothing at all")
 
+	justfile_path := strings.concatenate({root, "/justfile"}, allocator)
+	defer delete(justfile_path, allocator)
+	justfile_bytes, read_error := os.read_entire_file(justfile_path, allocator)
+	defer delete(justfile_bytes, allocator)
+	if read_error != nil {
+		message := fmt.aprintf("cannot be read: %v", read_error, allocator = allocator)
+		append(into, make_violation(justfile_path, 0, message, allocator))
+	}
+
 	src_root := strings.concatenate({root, "/src"}, allocator)
 	defer delete(src_root, allocator)
-	tested, strays, discovered := tested_src_packages(src_root, allocator)
+	tools_root := strings.concatenate({root, "/tools"}, allocator)
+	defer delete(tools_root, allocator)
+
+	scope := Accounting_Scope {
+		package_root  = src_root,
+		prefix        = "src",
+		exempt        = TEST_LESS_SRC_PACKAGES,
+		justfile_path = justfile_path,
+		justfile_text = string(justfile_bytes),
+		justfile_ok   = read_error == nil,
+	}
+	check_root_accounting(scope, into, allocator)
+
+	scope.package_root = tools_root
+	scope.prefix = "tools"
+	scope.exempt = NO_TEST_LESS_PACKAGES
+	check_root_accounting(scope, into, allocator)
+}
+
+// One root's accounting, both directions: a package holding tests that no
+// `test` recipe line names, and a package holding no tests at all that no
+// roster excuses.
+check_root_accounting :: proc(
+	scope: Accounting_Scope,
+	into: ^[dynamic]Violation,
+	allocator: mem.Allocator,
+) {
+	assert(len(scope.package_root) > 0, "asked to account for the packages of no root at all")
+	assert(len(scope.prefix) > 0, "asked to account for a root with no name to report it by")
+	assert(into != nil, "asked to collect violations into nothing at all")
+
+	tested, strays, discovered := tested_packages(scope.package_root, allocator)
 	defer delete(tested, allocator)
 	defer for name in tested {
 		delete(name, allocator)
@@ -171,110 +231,172 @@ check_package_accounting :: proc(
 		delete(stray, allocator)
 	}
 	if !discovered {
-		message := strings.clone("could not walk src\\ looking for tested packages", allocator)
-		append(into, make_violation(src_root, 0, message, allocator))
-		return
-	}
-	report_stray_test_files(strays, into, allocator)
-	if !report_untested_packages(src_root, tested, into, allocator) {
-		return
-	}
-
-	exempt_with_tests := exempt_packages_holding_tests(tested, allocator)
-	defer delete(exempt_with_tests, allocator)
-	defer for name in exempt_with_tests {
-		delete(name, allocator)
-	}
-	for name in exempt_with_tests {
 		message := fmt.aprintf(
-			"src/%s is declared test-less but holds a *_test.odin file that no recipe compiles or runs",
-			name,
+			"could not walk %s\\ looking for tested packages",
+			scope.prefix,
 			allocator = allocator,
 		)
-		append(into, make_violation(src_root, 0, message, allocator))
-	}
-
-	justfile_path := strings.concatenate({root, "/justfile"}, allocator)
-	defer delete(justfile_path, allocator)
-	justfile_bytes, read_error := os.read_entire_file(justfile_path, allocator)
-	if read_error != nil {
-		message := fmt.aprintf("cannot be read: %v", read_error, allocator = allocator)
-		append(into, make_violation(justfile_path, 0, message, allocator))
+		append(into, make_violation(scope.package_root, 0, message, allocator))
 		return
 	}
-	defer delete(justfile_bytes, allocator)
 
-	missing := missing_from_test_recipe(tested, string(justfile_bytes), allocator)
-	defer delete(missing, allocator)
-	for name in missing {
-		message := fmt.aprintf(
-			"src/%s holds a *_test.odin file but is not named in the justfile's test recipe",
-			name,
-			allocator = allocator,
-		)
-		append(into, make_violation(justfile_path, 0, message, allocator))
-		delete(name, allocator)
+	report_stray_test_files(scope, strays, into, allocator)
+	if !report_untested_packages(scope, tested, into, allocator) {
+		return
+	}
+	report_exempt_packages_holding_tests(scope, tested, into, allocator)
+	if scope.justfile_ok {
+		report_missing_from_test_recipe(scope, tested, into, allocator)
 	}
 }
 
-// One violation per stray `*_test.odin` file -- a file `tested_src_packages`
-// found sitting directly in `src_root`, belonging to no package (A8: report
+// One violation per stray `*_test.odin` file -- a file `tested_packages`
+// found sitting directly in the root, belonging to no package (A8: report
 // through the error return, never assert past a filesystem input that does
 // not fit the package shape).
 report_stray_test_files :: proc(
+	scope: Accounting_Scope,
 	strays: []string,
 	into: ^[dynamic]Violation,
 	allocator: mem.Allocator,
 ) {
+	assert(len(scope.prefix) > 0, "asked to report a stray under a root with no name")
 	assert(into != nil, "asked to collect violations into nothing at all")
 
 	for stray in strays {
-		message := strings.clone(
-			"a *_test.odin file that belongs to no package under src/",
-			allocator,
+		message := fmt.aprintf(
+			"a *_test.odin file that belongs to no package under %s/",
+			scope.prefix,
+			allocator = allocator,
 		)
 		append(into, make_violation(stray, 0, message, allocator))
 	}
 }
 
-// One violation per `src\` package holding no `*_test.odin` file at all and
-// not declared exempt in TEST_LESS_SRC_PACKAGES -- the deny-by-default half
-// of this check (review round 5): a package with zero test files, new or
+// One violation per package under this root holding no `*_test.odin` file at
+// all and not named by the root's own roster -- the deny-by-default half of
+// this check (review round 5): a package with zero test files, new or
 // emptied, used to pass `just check` silently. Returns false only when the
-// walk itself failed, matching `tested_src_packages`' own failure shape.
+// walk itself failed, matching `tested_packages`' own failure shape.
 @(require_results)
 report_untested_packages :: proc(
-	src_root: string,
+	scope: Accounting_Scope,
 	tested: []string,
 	into: ^[dynamic]Violation,
 	allocator: mem.Allocator,
 ) -> bool {
-	assert(len(src_root) > 0, "asked to find untested packages under no root at all")
+	assert(len(scope.package_root) > 0, "asked to find untested packages under no root at all")
 	assert(into != nil, "asked to collect violations into nothing at all")
 
-	all, discovered := all_src_packages(src_root, allocator)
+	all, discovered := all_packages(scope.package_root, allocator)
 	defer delete(all, allocator)
 	defer for name in all {
 		delete(name, allocator)
 	}
 	if !discovered {
-		message := strings.clone("could not walk src\\ looking for every package", allocator)
-		append(into, make_violation(src_root, 0, message, allocator))
+		message := fmt.aprintf(
+			"could not walk %s\\ looking for every package",
+			scope.prefix,
+			allocator = allocator,
+		)
+		append(into, make_violation(scope.package_root, 0, message, allocator))
 		return false
 	}
 
-	untested := untested_packages(all, tested, allocator)
+	untested := untested_packages(all, tested, scope.exempt, allocator)
 	defer delete(untested, allocator)
 	for name in untested {
-		message := fmt.aprintf(
-			"src/%s holds no *_test.odin file and is not named in TEST_LESS_SRC_PACKAGES",
-			name,
-			allocator = allocator,
-		)
-		append(into, make_violation(src_root, 0, message, allocator))
+		message := untested_package_says(scope, name, allocator)
+		append(into, make_violation(scope.package_root, 0, message, allocator))
 		delete(name, allocator)
 	}
 	return true
+}
+
+// What an untested package is told, which is not the same sentence under both
+// roots: `src\` has a roster a package can be named in, and `tools\` has none
+// at all, so pointing a tool at TEST_LESS_SRC_PACKAGES would name a way out
+// that does not exist for it.
+@(require_results)
+untested_package_says :: proc(
+	scope: Accounting_Scope,
+	name: string,
+	allocator: mem.Allocator,
+) -> string {
+	assert(len(name) > 0, "asked what to say about a package with no name")
+	assert(len(scope.prefix) > 0, "asked what to say about a package under a root with no name")
+
+	if len(scope.exempt) > 0 {
+		return fmt.aprintf(
+			"%s/%s holds no *_test.odin file and is not named in TEST_LESS_SRC_PACKAGES",
+			scope.prefix,
+			name,
+			allocator = allocator,
+		)
+	}
+	return fmt.aprintf(
+		"%s/%s holds no *_test.odin file, and %s\\ has no exemption roster at all",
+		scope.prefix,
+		name,
+		scope.prefix,
+		allocator = allocator,
+	)
+}
+
+// One violation per package this root's roster declares test-less that holds
+// a `*_test.odin` file anyway: tests no recipe compiles or runs.
+report_exempt_packages_holding_tests :: proc(
+	scope: Accounting_Scope,
+	tested: []string,
+	into: ^[dynamic]Violation,
+	allocator: mem.Allocator,
+) {
+	assert(len(scope.prefix) > 0, "asked to report an exemption under a root with no name")
+	assert(into != nil, "asked to collect violations into nothing at all")
+
+	offending := exempt_packages_holding_tests(tested, scope.exempt, allocator)
+	defer delete(offending, allocator)
+	for name in offending {
+		message := fmt.aprintf(
+			"%s/%s is declared test-less but holds a *_test.odin file that no recipe compiles or runs",
+			scope.prefix,
+			name,
+			allocator = allocator,
+		)
+		append(into, make_violation(scope.package_root, 0, message, allocator))
+		delete(name, allocator)
+	}
+}
+
+// One violation per tested package under this root that the justfile's own
+// `test` recipe body does not name.
+report_missing_from_test_recipe :: proc(
+	scope: Accounting_Scope,
+	tested: []string,
+	into: ^[dynamic]Violation,
+	allocator: mem.Allocator,
+) {
+	assert(scope.justfile_ok, "asked to read a test recipe out of a justfile nobody could read")
+	assert(into != nil, "asked to collect violations into nothing at all")
+
+	missing := missing_from_test_recipe(
+		tested,
+		scope.justfile_text,
+		scope.prefix,
+		scope.exempt,
+		allocator,
+	)
+	defer delete(missing, allocator)
+	for name in missing {
+		message := fmt.aprintf(
+			"%s/%s holds a *_test.odin file but is not named in the justfile's test recipe",
+			scope.prefix,
+			name,
+			allocator = allocator,
+		)
+		append(into, make_violation(scope.justfile_path, 0, message, allocator))
+		delete(name, allocator)
+	}
 }
 
 // Every violation, one line each, to standard error: the stream the compiler

@@ -33,8 +33,11 @@ release:
 
 # All existing source policies: CLAUDE.md section 0, rule F1, rule F2, rule
 # M2, the issue #97/#105 os.remove_all(...) ban, and the package-accounting
-# check issue #152 added -- every src/ package holding a *_test.odin file
-# must be named in the test recipe below.
+# check issue #152 added -- over both package roots, src/ and tools/: every
+# package under either root holding a *_test.odin file must be named in the
+# test recipe below, and every package under either root holding none at all
+# is a violation (src/cli is the one exemption, by ADR-0009; tools/ has no
+# exemption roster at all).
 check:
 	if not exist build mkdir build
 	{{ odin }} run tools/policy {{ collection }} -out:build/transcibr-policy.exe {{ vet }}

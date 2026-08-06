@@ -125,10 +125,13 @@ just ci             # fmt-check, check, build, release, test, test-single, smoke
 `check` builds and runs `tools\policy`, a small Odin program that reads the repository's own source
 with `core:odin/parser` and answers every source rule `just ci` enforces — the line limit, the
 comment ban, `@(require_results)`, the `#+vet` tags, the `os.remove_all` ban, network confinement
-(see [Network access](#network-access)), and the package-accounting check that every `src\` package
-holding tests is named in the `justfile`'s own `test` recipe. It is not part of transcibr and ships
-with nothing; ADR-0028 records why the build reads Odin with the compiler's parser rather than with
-a text scan of its own, and ADR-0035 records the move off PowerShell onto `just`.
+(see [Network access](#network-access)), and the package-accounting check over both package roots,
+`src\` and `tools\`: every package under either root holding tests is named in the `justfile`'s own
+`test` recipe, and every package under either root holding none at all is a violation (`src\cli` is
+the one exemption, by ADR-0009; `tools\` has no exemption roster at all). It is not part of
+transcibr and ships with nothing; ADR-0028 records why the build reads Odin with the compiler's
+parser rather than with a text scan of its own, and ADR-0035 records the move off PowerShell onto
+`just`.
 
 The command-line binary re-renders a transcript from retained engine output, without touching the
 GPU — which is what makes tuning the paragraphing cost seconds instead of hours:
@@ -177,8 +180,8 @@ procedure that leaks its returned slice pass with a warning (ADR-0010).
 **`odin test` collects test procedures from one package only**, and on a package with none it prints
 `No tests to run.` and exits 0. `just test` therefore spells one explicit line per package that holds
 tests under `src\` and `tools\policy`, rather than naming one and hoping; `tools\policy`'s own
-package-accounting check fails `just check` the moment a tested package's line goes missing from
-that list. To run a single test:
+package-accounting check fails `just check` the moment a tested package under either root loses its
+line from that list, or a package under either root loses its last test file. To run a single test:
 
 ```powershell
 just test-one version banner_names_the_program_and_its_version
