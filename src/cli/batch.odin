@@ -48,6 +48,16 @@ cancel_requested: bool
 @(private)
 gpu_health_checked: bool
 
+// The A4 partner to `bump`'s assert in `src/pipeline/pipeline.odin` (commit
+// 1c67c11): that one catches a second transcription Worker at the one place
+// its own count changes, from inside the pipeline that spawns it. This one
+// catches the shape of race `gpu_health_checked` itself cannot survive --
+// two Batches reaching for the same non-atomic flag at once -- at the flag's
+// own site, checked and held for exactly as long as `run_the_batch` is
+// lending its address out through `Health_Watch.checked`.
+@(private)
+gpu_health_watch_in_use: bool
+
 // Set by the same Worker at the moment it aborts the Batch for an unhealthy
 // GPU, distinct from `cancel_requested` -- which an operator's Ctrl+C also
 // sets, and which `pipeline.batch_succeeded` reads as a successful stop on
@@ -169,6 +179,13 @@ run_the_batch :: proc(
 	identified: artifact.Model,
 	plan: planning.Plan,
 ) -> int {
+	assert(
+		!gpu_health_watch_in_use,
+		"ADR-0006's one transcription Worker is asserted, not merely intended",
+	)
+	gpu_health_watch_in_use = true
+	defer gpu_health_watch_in_use = false
+
 	sync.atomic_store(&cancel_requested, false)
 	gpu_health_checked = false
 	sync.atomic_store(&gpu_health_unhealthy, false)
