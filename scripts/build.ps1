@@ -74,17 +74,17 @@ else {
 $policy = Resolve-OdinPolicyTool
 Write-Host "Policy: $policy"
 
-# READ ONCE, for all five checks below.
+# READ ONCE, for all six checks below.
 #
 # Each of them reads the tree for itself when it is handed nothing -- a walk for
-# discovery and a child process to read what it found -- which is five walks and
-# four child processes per build over one tree that cannot change in between.
+# discovery and a child process to read what it found -- which is six walks and
+# five child processes per build over one tree that cannot change in between.
 # Measured over this repository before the fifth joined them: 487ms for the
 # four, against 456ms to compile the whole product.
 #
 # Not a memo, and specifically not one keyed on timestamps: see Get-OdinSourceFact
-# for why that is unsafe here. $sources has two direct callers, and $facts four more, so there
-# is nothing cached and nothing to invalidate, and every other caller of the four
+# for why that is unsafe here. $sources has two direct callers, and $facts five more, so there
+# is nothing cached and nothing to invalidate, and every other caller of the five
 # -- scripts\selftest.ps1's cases -- passes nothing and reads afresh.
 $sources = Get-OdinCheckedSource
 $facts = Get-OdinSourceFact -Sources $sources
@@ -121,7 +121,14 @@ Write-Host '-> every .odin procedure that returns carries @(require_results)' -F
 Assert-OdinVetTagPolicy -Facts $facts
 Write-Host "-> every .odin file declares the #+vet names it is scoped for ($(($OdinFileVetTags | ForEach-Object { $_.Name }) -join ' '))" -ForegroundColor Green
 
-# README.md's Network access claim (issue #58), the fifth verdict over the same
+# Issue #105, filed from the #97 review: no os.remove_all(...) call
+# expression anywhere in the tree. Not one of CLAUDE.md's four source
+# policies -- it enforces the #97 review's own finding rather than a rule
+# CLAUDE.md states -- but it rides the same facts read above.
+Assert-OdinRemoveAllPolicy -Facts $facts
+Write-Host '-> no .odin file calls os.remove_all(...) (issue #97/#105)' -ForegroundColor Green
+
+# README.md's Network access claim (issue #58), the sixth verdict over the same
 # file list and the only one that is not one of CLAUDE.md's four source
 # policies: it answers a literal substring rather than a structural question,
 # so it reads the sources directly rather than through tools\policy's facts.
