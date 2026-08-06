@@ -7,6 +7,13 @@ instrumentation in a disposable worktree, never by reading) → fixer (Sonnet, f
 re-implements) — looping until the reviewer verdicts MERGE, capped at five fix rounds, after which
 it returns the open findings for orchestrator adjudication instead of churning.
 
+The three role contracts live as agent definitions in `.claude/agents/` — `ticket-implementer`,
+`ticket-reviewer`, `ticket-fixer` — each carrying its model, medium reasoning effort, the skills
+it invokes (`tdd` for implementer/fixer, `simplify` for the reviewer's post-correctness pass,
+`research`/`domain-modeling` where warranted), and the role's method. The workflow invokes them by
+`agentType`; its per-call prompts carry only the variables (ticket, branch, worktree, notes). Edit
+role behavior in the agent files; edit orchestration in the script.
+
 The orchestrator merges (merge commit, never squash), deletes the branch, removes the worktree,
 prunes, and routes every deferred minor and out-of-scope discovery to a ticket. The loop never
 merges anything itself.

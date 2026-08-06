@@ -26,14 +26,9 @@ const reviewNotes = A.reviewNotes || '(none)'
 const continueNotes = A.continueNotes || null
 
 const COMMON = [
-  'Repository: ' + repo + ' (GitHub ivandrenjanin/transcibr). Base branch: main. Windows 11, Windows PowerShell 5.1 (no && / || chaining; chain with ; or if ($?) {}).',
+  'Repository checkout: ' + repo + ' (GitHub ivandrenjanin/transcibr). Base branch: main. Windows 11, Windows PowerShell 5.1 (no && / || chaining; chain with ; or if ($?) {}).',
   'Where a path in this prompt is written with $env:TEMP, resolve the environment variable to its actual value before using it in any tool call.',
-  'CLAUDE.md at the repo root is the BINDING engineering standard - read it in full before touching code. Non-negotiables it enforces mechanically (the build fails on each): comments are banned inside procedure bodies; hard cap 70 lines per procedure; @(require_results) on every procedure that returns anything; tabs + odinfmt + the full vet set; the #+vet file tags above package clauses.',
-  'Judgment rules review enforces: average two assertions per procedure; assert internal invariants ONLY - external input (files, CLI args, child output) is rejected via error returns (rule A8), never asserted; a test may NEVER deliberately trip an assert (issue #22: the test runner hangs or dies without a summary when assertions fire concurrently).',
-  'Validation, always from the worktree root: .\\scripts\\build.ps1 then .\\scripts\\test.ps1 - both must pass with zero failures. Formatting is fixed ONLY with .\\scripts\\format.ps1 -Fix.',
-  'Known flake: the #68 drain-ceiling test (a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood) can fail under machine load. If it fails, re-run the suite once; NEVER modify that test or its tolerances.',
-  'The Odin stdlib notes in CLAUDE.md are binding (core:os/os2 is gone; JSON parser traps; process_terminate is cooperative; etc.). Verify any stdlib identifier against the installed compiler sources at C:\\odin\\dist\\, never from memory or the web.',
-  'CONTEXT.md is the glossary; its _Avoid_ lists are enforced at review. docs/adr/ carries the decisions and their evidence.',
+  'Your role contract is your agent definition (.claude/agents/ticket-*); CLAUDE.md and CONTEXT.md bind everything. The validation commands are the ones CLAUDE.md\'s style section names.',
 ].join('\n')
 
 const IMPL_SCHEMA = {
@@ -198,7 +193,7 @@ function fixPrompt(round, pr, openFindings) {
 
 phase('Implement')
 log('Dispatching implementer for #' + issue)
-const impl = await agent(continueNotes ? CONTINUE_PROMPT : IMPL_PROMPT, { label: 'implement-' + issue, phase: 'Implement', model: 'sonnet', effort: 'medium', schema: IMPL_SCHEMA })
+const impl = await agent(continueNotes ? CONTINUE_PROMPT : IMPL_PROMPT, { label: 'implement-' + issue, phase: 'Implement', agentType: 'ticket-implementer', model: 'sonnet', effort: 'medium', schema: IMPL_SCHEMA })
 if (!impl) { return { issue: issue, outcome: 'IMPLEMENTER_DIED' } }
 if (impl.status === 'NEEDS_CONTEXT' || impl.status === 'BLOCKED') { return { issue: issue, outcome: impl.status, detail: impl } }
 if (typeof impl.pr_number !== 'number') { return { issue: issue, outcome: 'NO_PR_NUMBER', detail: impl } }
@@ -213,7 +208,7 @@ let prior = null
 let lastReview = null
 
 for (let r = 1; r <= 6; r += 1) {
-  const rev = await agent(reviewPrompt(r, pr, prior, impl.concerns), { label: 'review-' + issue + '-r' + r, phase: 'Review', model: 'opus', effort: 'medium', schema: REVIEW_SCHEMA })
+  const rev = await agent(reviewPrompt(r, pr, prior, impl.concerns), { label: 'review-' + issue + '-r' + r, phase: 'Review', agentType: 'ticket-reviewer', model: 'opus', effort: 'medium', schema: REVIEW_SCHEMA })
   if (!rev) { outcome = 'REVIEWER_DIED'; break }
   lastReview = rev
   for (const d of rev.out_of_scope_defects || []) { newIssues.push(d) }
@@ -224,7 +219,7 @@ for (let r = 1; r <= 6; r += 1) {
   if (rev.verdict === 'MERGE' && open.length === 0) { outcome = 'MERGE_READY'; break }
   if (open.length === 0) { outcome = 'MERGE_READY'; break }
   if (r === 6) { outcome = 'CAP_REACHED'; prior = open; break }
-  const fix = await agent(fixPrompt(r, pr, open), { label: 'fix-' + issue + '-r' + r, phase: 'Fix', model: 'sonnet', effort: 'medium', schema: FIX_SCHEMA })
+  const fix = await agent(fixPrompt(r, pr, open), { label: 'fix-' + issue + '-r' + r, phase: 'Fix', agentType: 'ticket-fixer', model: 'sonnet', effort: 'medium', schema: FIX_SCHEMA })
   if (!fix) { outcome = 'FIXER_DIED'; prior = open; break }
   if (fix.status === 'BLOCKED') { outcome = 'FIXER_BLOCKED'; prior = open; roundLog.push({ round: r, fixer_blocked: fix.blocked_reason || fix.notes }); break }
   prior = open
