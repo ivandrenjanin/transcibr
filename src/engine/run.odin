@@ -171,21 +171,17 @@ landed_worker :: proc(data: rawptr) {
 // same fault `landed` itself already answers for an output it could not
 // open: a caller cannot tell a wedge from an ordinary open failure apart, and
 // A8 asks it to reject the read rather than assert on it either way.
-@(private)
-@(require_results)
-landed_bounded :: proc(output: string, bound_ms: i64) -> Fault {
-	return landed_bounded_stalled(output, bound_ms, 0)
-}
-
-// `landed_bounded`'s own body, plus a worker-side stall no production caller
-// ever passes: `landed_bounded_stalled(output, bound_ms, 0)` behaves
-// identically to the code above it. A stall greater than `bound_ms` is what
+//
+// `stall_ms` is a worker-side stall no production caller ever passes --
+// `landed_bounded(output, bound_ms)` behaves identically to a call that
+// spells the default out. A stall greater than `bound_ms` is what
 // `engine_test.odin` uses to reach the `.Stopped` branch with a real,
 // running thread rather than a mocked wait outcome (issue #65's coverage
-// finding).
+// finding); the one-line forwarding wrapper that used to carry that case's
+// own name is gone (issue #66).
 @(private)
 @(require_results)
-landed_bounded_stalled :: proc(output: string, bound_ms: i64, stall_ms: i64) -> Fault {
+landed_bounded :: proc(output: string, bound_ms: i64, stall_ms: i64 = 0) -> Fault {
 	assert(len(output) > 0, "there is nowhere here to look for the Engine's output")
 	assert(bound_ms > 0, "a check given no time at all cannot do anything")
 	assert(stall_ms >= 0, "a stall cannot run for negative time")

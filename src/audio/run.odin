@@ -274,38 +274,26 @@ head_worker :: proc(data: rawptr) {
 
 // Bounded the same shape as `artifact.digest_of_bounded` and
 // `planning.transcript_state_bounded`: a small worker thread plus
-// `child.await_or_abandon`. Every wait outcome that is not `.Finished`
+// `child.await_and_reclaim`. Every wait outcome that is not `.Finished`
 // collapses onto `.Audio_Unreadable`, the same fault a `read_head` that
 // genuinely could not open the file already answers -- a caller cannot tell
 // a wedge from an ordinary open failure apart, and does not need to (A8: an
 // external read that times out is reported against the file that caused it).
+//
+// `stall_ms` is a worker-side stall no production caller ever passes --
+// `read_head_bounded(path, bound_ms, allocator)` behaves identically to a
+// call that spells the default out. A stall greater than `bound_ms` is what
+// `run_test.odin` uses to reach the `.Stopped` branch with a real, running
+// thread rather than a mocked wait outcome (issue #65's coverage finding);
+// the one-line forwarding wrapper that used to carry that case's own name is
+// gone (issue #66).
 @(private)
 @(require_results)
 read_head_bounded :: proc(
 	path: string,
 	bound_ms: i64,
 	allocator: mem.Allocator,
-) -> (
-	head: []u8,
-	bytes: i64,
-	err: Error,
-) {
-	return read_head_bounded_stalled(path, bound_ms, allocator, 0)
-}
-
-// `read_head_bounded`'s own body, plus a worker-side stall no production
-// caller ever passes: `read_head_bounded_stalled(path, bound_ms, allocator,
-// 0)` behaves identically to the code above it. A stall greater than
-// `bound_ms` is what `run_test.odin` uses to reach the `.Stopped` branch with
-// a real, running thread rather than a mocked wait outcome (issue #65's
-// coverage finding).
-@(private)
-@(require_results)
-read_head_bounded_stalled :: proc(
-	path: string,
-	bound_ms: i64,
-	allocator: mem.Allocator,
-	stall_ms: i64,
+	stall_ms: i64 = 0,
 ) -> (
 	head: []u8,
 	bytes: i64,
