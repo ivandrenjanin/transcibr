@@ -498,6 +498,48 @@ discard_part :: proc(part: string, fault: Fault) {
 	os.remove(part)
 }
 
+// A drive path's root is `X:\` and a UNC path's root is `\\server\share\` --
+// trimming past either turns a root into a different, relative-on-that-drive
+// path (`C:\` into `C:`), so this is the floor `trim_trailing_separators`
+// will not cross.
+@(require_results)
+volume_root_len :: proc(path: string) -> int {
+	assert(len(path) > 0, "there is no path here to find a volume root in")
+
+	if len(path) >= 3 && path[1] == ':' && os.is_path_separator(path[2]) {
+		return 3
+	}
+	if len(path) >= 2 && os.is_path_separator(path[0]) && os.is_path_separator(path[1]) {
+		seps := 0
+		for i := 2; i < len(path); i += 1 {
+			if os.is_path_separator(path[i]) {
+				seps += 1
+				if seps == 2 {
+					return i + 1
+				}
+			}
+		}
+		return len(path)
+	}
+	return 0
+}
+
+// A trailing separator on an otherwise ordinary leaf (`...\leaf\`) makes
+// `os.dir` answer the leaf itself rather than its parent -- `_split_path`
+// walks back from the last byte, and the last byte is the separator. Strip it
+// before asking for the parent, down to but never past the volume root.
+@(require_results)
+trim_trailing_separators :: proc(path: string) -> string {
+	assert(len(path) > 0, "there is no path here to trim")
+
+	floor := volume_root_len(path)
+	trimmed := path
+	for len(trimmed) > floor && os.is_path_separator(trimmed[len(trimmed) - 1]) {
+		trimmed = trimmed[:len(trimmed) - 1]
+	}
+	return trimmed
+}
+
 // The resolved path is what is checked: a relative cache path is perfectly ASCII
 // and resolves under an account name that may not be. A path that is not valid
 // UTF-8 answers `.Unusable` rather than `.Path_Not_Ascii`, because
@@ -535,7 +577,7 @@ open_cache :: proc(cache: string, allocator: mem.Allocator) -> Cache_Fault {
 		return .Not_A_Directory
 	}
 	if !os.exists(resolved) {
-		parent := os.dir(resolved)
+		parent := os.dir(trim_trailing_separators(resolved))
 		if !os.exists(parent) {
 			return .Parent_Missing
 		}

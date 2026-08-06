@@ -211,6 +211,24 @@ a_cache_whose_immediate_parent_directory_already_exists_is_created :: proc(t: ^t
 }
 
 @(test)
+a_cache_with_a_trailing_separator_under_an_existing_parent_is_created :: proc(t: ^testing.T) {
+	parent := testkit.made_scratch_cache(t, "audio", "trailing-sep-parent", context.allocator)
+	defer delete(parent, context.allocator)
+	defer testkit.remove_cache(parent, context.allocator)
+
+	cache := fmt.aprintf("%s\\leaf\\", parent, allocator = context.allocator)
+	defer delete(cache, context.allocator)
+
+	testing.expect(t, !os.exists(cache), "the fixture already made the leaf this case creates")
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
+	testing.expect(
+		t,
+		os.exists(cache),
+		"open_cache did not create a trailing-separator leaf under an existing parent",
+	)
+}
+
+@(test)
 a_cache_whose_parent_directory_is_also_missing_is_refused_rather_than_invented :: proc(
 	t: ^testing.T,
 ) {
