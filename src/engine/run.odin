@@ -25,6 +25,13 @@ Ending :: struct {
 	child:       child.Error,
 }
 
+// Issue #132: `job.container_ms > 0` below is internal, not a check on
+// external input, for the same reason #129 recorded at `read_probe`'s guard
+// in src/process/ffmpeg.odin. `transcribe`'s only production caller,
+// `pipeline.transcribe_and_place`, builds this `Job` straight from
+// `extracted.extracted.container_ms` -- `audio.Extracted.container_ms`,
+// which that same probe guarantees positive; engine_test.odin's cases pass
+// only positive literals (`job_in` asserts it).
 @(require_results)
 transcribe :: proc(
 	group: ^child.Job_Object,
@@ -285,6 +292,11 @@ watched_poll :: proc(elapsed_ns: i64, user: rawptr) -> bool {
 	return now.silent
 }
 
+// Issue #132: `job.container_ms > 0` below is internal for the same reason
+// `transcribe` above states it -- `run_engine`'s only caller is
+// `transcribe`, which forwards the very `Job` its own identical assert
+// already checked; see #129's guard at `read_probe` in
+// src/process/ffmpeg.odin for the derivation.
 @(private)
 @(require_results)
 run_engine :: proc(
