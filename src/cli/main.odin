@@ -10,6 +10,7 @@ import "core:strings"
 import "core:time"
 import "transcibr:artifact"
 import "transcibr:child"
+import "transcibr:pipeline"
 import "transcibr:transcript"
 import "transcibr:version"
 
@@ -168,9 +169,10 @@ re_render :: proc(arguments: []string) -> int {
 	)
 	defer delete(json_bytes, context.allocator)
 	if read_err.fault != .None {
-		message := child.read_error_message(read_err, options.json_path, context.allocator)
-		defer delete(message, context.allocator)
-		fmt.eprintln(message)
+		pipeline.report_fault(
+			child.read_error_message(read_err, options.json_path, context.allocator),
+			context.allocator,
+		)
 		return OPERATING_ERROR
 	}
 	json_text := string(json_bytes)
@@ -200,9 +202,7 @@ write_transcript :: proc(
 	defer delete(markdown, context.allocator)
 
 	if err.fault != .None {
-		message := transcript.error_message(err, context.allocator)
-		defer delete(message, context.allocator)
-		fmt.eprintln(message)
+		pipeline.report_fault(transcript.error_message(err, context.allocator), context.allocator)
 		return OPERATING_ERROR
 	}
 
@@ -317,9 +317,8 @@ model_identified :: proc(path: string) -> (identified: artifact.Model, ok: bool)
 	}
 
 	message := artifact.model_error_message(unidentified, path, context.allocator)
-	defer delete(message, context.allocator)
 	assert(len(message) > 0, "a Model was refused and nothing said why")
-	fmt.eprintln(message)
+	pipeline.report_fault(message, context.allocator)
 	return identified, false
 }
 

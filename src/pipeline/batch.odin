@@ -106,7 +106,7 @@ re_rendered_and_placed :: proc(
 	o: Batch_Options,
 	allocator: mem.Allocator,
 ) -> bool {
-	placed, unplaced := artifact.complete(
+	return placed_and_reported(
 		source,
 		output,
 		nil,
@@ -120,13 +120,6 @@ re_rendered_and_placed :: proc(
 		made,
 		allocator,
 	)
-	defer artifact.destroy_names(placed, allocator)
-	if unplaced.fault != .None {
-		report_fault(artifact.error_message(unplaced, source, allocator), allocator)
-		return false
-	}
-	fmt.println(placed[.Transcript])
-	return true
 }
 
 @(private)

@@ -97,7 +97,10 @@ destroy_recording_arena :: proc(job: Recording_Job) {
 // procedure owns and must free. `/simplify`'s pass on PR #67 folded the three
 // near-identical wrappers this used to be into their own call sites, which
 // build the message and name which package's renderer built it.
-@(private)
+//
+// Exported (issue #78) so `src/cli` can call the one definition instead of
+// hand-copying the `message := ...; defer delete(message); fmt.eprintln(message)`
+// shape at every fault it reports -- six copies of it, at the ticket's count.
 report_fault :: proc(message: string, allocator: mem.Allocator) {
 	defer delete(message, allocator)
 	fmt.eprintln(message)
@@ -225,6 +228,34 @@ checked_first_recording_health :: proc(
 	}
 }
 
+// The one place `artifact.complete` is actually called, from both the
+// transcribe path (`placed_from_engine_output`, `duration` a real `Millis`)
+// and the re-render path (`pipeline.re_rendered_and_placed` in batch.odin,
+// `duration` nil because a re-render never re-measures the container). #73's
+// review measured the two callers sharing 12 of 21 body lines before this
+// fold; the 9 that differed were only which local filled `duration`,
+// `engine_version` and `model` -- callers still settle those, this only
+// shares the placement and the fault report that follows it.
+@(private)
+@(require_results)
+placed_and_reported :: proc(
+	source: string,
+	output: string,
+	duration: Maybe(transcript.Millis),
+	rc: transcript.Render_Context,
+	made: artifact.Sidecar,
+	allocator: mem.Allocator,
+) -> bool {
+	placed, unplaced := artifact.complete(source, output, duration, rc, made, allocator)
+	defer artifact.destroy_names(placed, allocator)
+	if unplaced.fault != .None {
+		report_fault(artifact.error_message(unplaced, source, allocator), allocator)
+		return false
+	}
+	fmt.println(placed[.Transcript])
+	return true
+}
+
 @(private)
 @(require_results)
 placed_from_engine_output :: proc(
@@ -233,7 +264,7 @@ placed_from_engine_output :: proc(
 	output: string,
 ) -> bool {
 	made := recording_sidecar(job, extracted)
-	placed, unplaced := artifact.complete(
+	return placed_and_reported(
 		job.source,
 		output,
 		transcript.Millis(extracted.extracted.container_ms),
@@ -247,13 +278,6 @@ placed_from_engine_output :: proc(
 		made,
 		job.allocator,
 	)
-	defer artifact.destroy_names(placed, job.allocator)
-	if unplaced.fault != .None {
-		report_fault(artifact.error_message(unplaced, job.source, job.allocator), job.allocator)
-		return false
-	}
-	fmt.println(placed[.Transcript])
-	return true
 }
 
 // The Sidecar this run actually earns -- ADR-0027's warning at `current_of`
