@@ -59,6 +59,20 @@ write_probe_wav :: proc(allocator: mem.Allocator) -> (path: string, ok: bool) {
 	return name, true
 }
 
+// Whether the scratch wav `model_load_check` below wrote is safe to remove:
+// `.Unstoppable` is the one `child.Run` member whose child may still be
+// running and may still hold the wav open, exactly as `Run`'s own doc
+// comment (`src\child\run.odin`) states -- so removal is refused on it, and
+// the wav is leaked deliberately, the same way `child.Read_Job`'s own doc
+// comment states its worker leaks for the identical reason (issue #125,
+// filed from the #66 review's comment on this ticket, adjacent to #66's own
+// reclaim vocabulary in `src\child\reclaim.odin`, ADR-0034).
+@(private)
+@(require_results)
+model_probe_wav_settled :: proc(run: child.Run) -> bool {
+	return run != .Unstoppable
+}
+
 // The authoritative half of the Model check: `model_check`'s size floor and
 // magic bytes are a cheap pre-filter for obviously broken files, but only
 // actually spawning the Engine against the Model proves it loads.
@@ -83,7 +97,6 @@ model_load_check :: proc(
 		)
 		return failed("model", message)
 	}
-	defer os.remove(wav)
 	defer delete(wav, allocator)
 
 	arguments := []string{"-m", model_path, "-f", wav, "--no-prints"}
@@ -95,6 +108,10 @@ model_load_check :: proc(
 		MODEL_LOAD_PROBE_BOUND_MS,
 	)
 	defer delete(probe.captured, allocator)
+
+	if model_probe_wav_settled(probe.run) {
+		os.remove(wav)
+	}
 
 	return model_load_verdict(probe, model_path, allocator)
 }
