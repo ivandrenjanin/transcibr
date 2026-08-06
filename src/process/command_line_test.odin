@@ -7,9 +7,10 @@ import "core:strings"
 import win32 "core:sys/windows"
 import "core:testing"
 
-// Every argument the real Windows parser found in a command line, as UTF-8. The
-// caller owns the slice and every string in it; `free_argv` returns both.
-// Why the suite uses shell32's own parser rather than one written here: ADR-0019.
+// Every argument the real Windows parser found in a command line, as UTF-8,
+// read through the same `argv_from_wide_command_line` production code
+// `transcibr-cli` reads its own argv with (issue #35). The caller owns the
+// slice and every string in it; `free_argv` returns both.
 @(private)
 @(require_results)
 argv_of :: proc(t: ^testing.T, command_line: string, allocator: mem.Allocator) -> []string {
@@ -19,28 +20,16 @@ argv_of :: proc(t: ^testing.T, command_line: string, allocator: mem.Allocator) -
 		return nil
 	}
 
-	count: win32.c_int
-	argv := win32.CommandLineToArgvW(win32.wstring(raw_data(wide)), &count)
-	if !testing.expect(t, argv != nil, "CommandLineToArgvW refused the command line") {
+	argv, ok := argv_from_wide_command_line(win32.wstring(raw_data(wide)), allocator)
+	if !testing.expect(t, ok, "argv_from_wide_command_line refused the command line") {
 		return nil
 	}
-	defer win32.LocalFree(rawptr(argv))
-
-	out := make([]string, int(count), allocator)
-	for i in 0 ..< int(count) {
-		text, err := win32.wstring_to_utf8(argv[i], -1, allocator)
-		testing.expect_value(t, err, mem.Allocator_Error.None)
-		out[i] = text
-	}
-	return out
+	return argv
 }
 
 @(private)
 free_argv :: proc(argv: []string, allocator: mem.Allocator) {
-	for text in argv {
-		delete(text, allocator)
-	}
-	delete(argv, allocator)
+	delete_argv(argv, allocator)
 }
 
 @(private)
@@ -602,5 +591,25 @@ a_trailing_backslash_in_the_executable_path_is_not_an_escape :: proc(t: ^testing
 	if len(doubled_argv) == 2 {
 		testing.expect_value(t, doubled_argv[0], `C:\dir\\`)
 		testing.expect_value(t, doubled_argv[1], "one")
+	}
+}
+
+// This test binary's own argv, read the same way `transcibr-cli`'s `main`
+// reads its (issue #35, ADR-0025): `GetCommandLineW` and not `os.args`, so
+// the running process is the fixture and there is nothing to build.
+@(test)
+process_argv_reads_the_running_processs_own_command_line :: proc(t: ^testing.T) {
+	argv, ok := process_argv(context.allocator)
+	defer free_argv(argv, context.allocator)
+	if !testing.expect(t, ok, "process_argv refused this test binary's own command line") {
+		return
+	}
+	testing.expectf(t, len(argv) > 0, "argv came back with nothing in it, not even argv[0]")
+	if len(argv) > 0 {
+		testing.expectf(
+			t,
+			len(argv[0]) > 0,
+			"argv[0] came back empty for a process that is plainly running",
+		)
 	}
 }
