@@ -128,9 +128,10 @@ _Avoid_: temp, working directory, staging, intermediate
 
 **Report**:
 What a preflight run hands back: `[]Check`, nothing more — there is no `Report` type in `src/doctor`,
-only a slice of `Check` produced by `run_preflight`, read by `report_ok` to decide whether a Batch may
-proceed, rendered one line at a time by `render_check`, and freed together by `destroy_report`. Every
-other entry in this section describes what one line of it means or how it got there.
+only a slice of `Check` produced by `run_preflight`, read by `report_ok` to decide the `--doctor`
+subcommand's own process exit code, rendered one line at a time by `render_check`, and freed together
+by `destroy_report`. Every other entry in this section describes what one line of it means or how it
+got there.
 _Avoid_: results, summary, output
 
 **Check**:
@@ -144,11 +145,13 @@ and, once past it, always returns a Check one of the three constructors made.
 _Avoid_: result, verdict, test, probe
 
 **Preflight**:
-The doctor run before a Batch starts: extraction tooling, the Engine, the Model, then the GPU
-diagnostic, each turned into one Check and run through to the end even after an earlier one fails, so
-a user sees every actionable reason at once rather than fixing one problem per run (`run_preflight`,
-ADR-0033). Distinct from the health watch, the same GPU guard's other half, which runs during a Batch
-rather than before one.
+The doctor run a user invokes directly, through the `--doctor` subcommand, so they find out about a
+problem before a Batch rather than mid-run (spec story 8): extraction tooling, the Engine, the Model,
+then the GPU diagnostic, each turned into one Check and run through to the end even after an earlier
+one fails, so a user sees every actionable reason at once rather than fixing one problem per run
+(`run_preflight`, ADR-0033). Informational, not gating — a `--batch` run never calls it and is not
+blocked by it. Distinct from the health watch, the same GPU guard's other half, which runs during a
+Batch rather than before one.
 _Avoid_: startup check, sanity check, readiness check
 
 **Load probe**:
