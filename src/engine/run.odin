@@ -214,6 +214,7 @@ landed_bounded :: proc(output: string, bound_ms: i64, stall_ms: i64 = 0) -> Faul
 release_landed_job :: proc(t: ^thread.Thread, job: ^Landed_Job) {
 	assert(t != nil, "there is no thread here to release")
 	assert(job != nil, "there is no job here to release")
+	assert(thread.is_done(t), "release_landed_job called on a thread that never finished")
 
 	delete(job.output, child.job_allocator())
 	free(job, child.job_allocator())

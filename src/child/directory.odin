@@ -67,6 +67,7 @@ make_directory_bounded :: proc(path: string, bound_ms: i64) -> (ok: bool) {
 release_make_directory_job :: proc(t: ^thread.Thread, job: ^Make_Directory_Job) {
 	assert(t != nil, "there is no thread here to release")
 	assert(job != nil, "there is no job here to release")
+	assert(thread.is_done(t), "release_make_directory_job called on a thread that never finished")
 
 	delete(job.path, job_allocator())
 	free(job, job_allocator())
@@ -131,6 +132,10 @@ list_directory_bounded :: proc(
 release_directory_listing_job :: proc(t: ^thread.Thread, job: ^Directory_Listing_Job) {
 	assert(t != nil, "there is no thread here to release")
 	assert(job != nil, "there is no job here to release")
+	assert(
+		thread.is_done(t),
+		"release_directory_listing_job called on a thread that never finished",
+	)
 
 	if job.err == nil {
 		os.file_info_slice_delete(job.listing, job_allocator())

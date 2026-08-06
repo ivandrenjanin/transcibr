@@ -213,6 +213,7 @@ digest_of_bounded :: proc(
 release_digest_job :: proc(t: ^thread.Thread, job: ^Digest_Job) {
 	assert(t != nil, "there is no thread here to release")
 	assert(job != nil, "there is no job here to release")
+	assert(thread.is_done(t), "release_digest_job called on a thread that never finished")
 
 	delete(string(job.digest), child.job_allocator())
 	delete(job.path, child.job_allocator())

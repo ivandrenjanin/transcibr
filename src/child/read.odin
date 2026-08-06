@@ -270,6 +270,7 @@ await_bounded :: proc(
 release_job :: proc(t: ^thread.Thread, job: ^Read_Job) {
 	assert(t != nil, "there is no thread here to release")
 	assert(job != nil, "there is no job here to release")
+	assert(thread.is_done(t), "release_job called on a thread that never finished")
 
 	delete(job.bytes, job_allocator())
 	delete(job.path, job_allocator())

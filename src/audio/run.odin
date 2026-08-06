@@ -332,6 +332,7 @@ read_head_bounded :: proc(
 release_head_job :: proc(t: ^thread.Thread, job: ^Head_Job) {
 	assert(t != nil, "there is no thread here to release")
 	assert(job != nil, "there is no job here to release")
+	assert(thread.is_done(t), "release_head_job called on a thread that never finished")
 
 	delete(job.buffer, child.job_allocator())
 	delete(job.path, child.job_allocator())
