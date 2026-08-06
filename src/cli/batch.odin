@@ -221,18 +221,20 @@ run_the_batch :: proc(
 // machine's real core or disk count and refuses a mistyped, absurdly large
 // one before it ever reaches `chan.create`.
 //
-// The ceiling used to be 64 for both `--extract-workers` and `--queue-depth`,
-// silently contradicting the one spec sentence pipeline.run_recordings now
-// asserts: ADR-0006 bounds a real Batch to one or two of each. Sharing
-// `pipeline.MAX_QUEUE_DEPTH` here rather than a second copy of the number 2
-// is what keeps a value outside it a refusal at the command line (A8) instead
-// of a crash at that assertion -- both options take the same ceiling because
-// ADR-0006 gives both the same bound.
+// `--extract-workers` used to be refused against `pipeline.MAX_QUEUE_DEPTH`
+// regardless of `ceiling` -- the shared constant happened to equal
+// `pipeline.MAX_EXTRACT_WORKERS` today, so nothing was reachable, but a
+// future drop in either ceiling independently of the other would have let an
+// over-ceiling value sail past this refusal and crash at
+// `pipeline.run_recordings`'s own assert instead (issue #94). Taking
+// `ceiling` as a parameter, and `pipeline.worker_count_within_ceiling` doing
+// the actual check, is what keeps a value outside EITHER OPTION'S OWN ceiling
+// a refusal here (A8) instead of a crash at that assertion.
 @(private)
 @(require_results)
-read_worker_count :: proc(value: string) -> (count: int, ok: bool) {
+read_worker_count :: proc(value: string, ceiling: int) -> (count: int, ok: bool) {
 	parsed, readable := process.read_natural(value, 3)
-	if !readable || parsed <= 0 || parsed > i64(pipeline.MAX_QUEUE_DEPTH) {
+	if !readable || parsed <= 0 || !pipeline.worker_count_within_ceiling(int(parsed), ceiling) {
 		return 0, false
 	}
 	return int(parsed), true
@@ -299,9 +301,9 @@ read_batch_option :: proc(o: ^Batch_Options, name, value: string) -> (ok: bool) 
 	case BATCH:
 		o.root = value
 	case "--extract-workers":
-		return read_batch_worker_option(&o.extract_workers, "--extract-workers", value)
+		return read_batch_worker_option(&o.extract_workers, name, value)
 	case "--queue-depth":
-		return read_batch_worker_option(&o.queue_depth, "--queue-depth", value)
+		return read_batch_worker_option(&o.queue_depth, name, value)
 	case "--follow-reparse-points":
 		return read_follow(&o.follow, value)
 	case:
@@ -325,14 +327,12 @@ read_batch_option :: proc(o: ^Batch_Options, name, value: string) -> (ok: bool) 
 read_batch_worker_option :: proc(into: ^int, name, value: string) -> (ok: bool) {
 	assert(into != nil, "there is nowhere here to read a worker count into")
 
-	count, readable := read_worker_count(value)
+	ceiling, registered := pipeline.worker_option_ceiling(name)
+	assert(registered, "no ceiling registered for a worker option this switch dispatches")
+
+	count, readable := read_worker_count(value, ceiling)
 	if !readable {
-		return refuse(
-			"%s takes a whole number from 1 to %d, not %q.",
-			name,
-			pipeline.MAX_QUEUE_DEPTH,
-			value,
-		)
+		return refuse("%s takes a whole number from 1 to %d, not %q.", name, ceiling, value)
 	}
 	into^ = count
 	return true
