@@ -377,6 +377,31 @@ capacity_expressible :: proc(bytes: int) -> bool {
 	return bytes <= int(max(win32.DWORD))
 }
 
+// Mirrors `a_bound_of_infinite_itself_is_not_expressible_to_wait_for_single_object`
+// in `src/child/read_test.odin`, the boundary test for `bound_expressible`
+// that `capacity_expressible`'s own doc comment claims as its precedent.
+// `capacity_expressible` admits `max(win32.DWORD)` itself -- unlike
+// `bound_expressible`, nothing here is bit-identical to `win32.INFINITE` --
+// so the true/false split sits one byte later than the read-bound version.
+@(test)
+a_capacity_one_past_the_dword_maximum_is_not_expressible_to_create_pipe :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		capacity_expressible(int(max(win32.DWORD)) - 1),
+		"a capacity one below the DWORD maximum was refused as inexpressible",
+	)
+	testing.expect(
+		t,
+		capacity_expressible(int(max(win32.DWORD))),
+		"a capacity bit-identical to the DWORD maximum was refused as inexpressible",
+	)
+	testing.expect(
+		t,
+		!capacity_expressible(int(max(win32.DWORD)) + 1),
+		"a capacity past the DWORD maximum was accepted as an expressible pipe capacity",
+	)
+}
+
 // Opens a pipe sized for the whole of `flood_bytes` and writes it all in one
 // call before handing back the read end, so a caller's drain finds the pipe
 // already holding the flood rather than racing anything to fill it. `ok` is
