@@ -1,0 +1,176 @@
+#+vet explicit-allocators
+// This file is the package-accounting check the ticket that retired
+// scripts\ asked for: every package under `src/` holding at least one
+// `*_test.odin` file must appear in the justfile's `test` recipe, replacing
+// scripts\common.ps1's hand-maintained $OdinPackagesWithoutTests. `cli`'s
+// ADR-0009 exemption -- an entry point thin enough to read, with no tests of
+// its own -- moves here as the one name this check does not demand.
+package policy
+
+import "core:mem"
+import "core:os"
+import "core:strings"
+
+// The one src\ package this check does not require of the justfile's test
+// recipe. ADR-0009: logic worth testing belongs in the pure core, and `cli`
+// is the entry point thin enough to read without any.
+TEST_LESS_SRC_PACKAGES :: []string{"cli"}
+
+// Every directory under `src_root` holding at least one `*_test.odin` file,
+// named relative to `src_root` and forward-slashed: `child`, `net/winhttp`.
+@(require_results)
+tested_src_packages :: proc(
+	src_root: string,
+	allocator: mem.Allocator,
+) -> (
+	names: []string,
+	ok: bool,
+) {
+	assert(len(src_root) > 0, "asked which packages under no root at all hold tests")
+	assert(
+		allocator.procedure != nil,
+		"the package names outlive this call and need a chosen allocator",
+	)
+
+	seen := make([dynamic]string, 0, allocator)
+	walker := os.walker_create(src_root)
+	defer os.walker_destroy(&walker)
+
+	for entry in os.walker_walk(&walker) {
+		if entry.type == .Directory {
+			if is_excluded_directory(entry.name) {
+				os.walker_skip_dir(&walker)
+			}
+			continue
+		}
+		if entry.type != .Regular || !strings.has_suffix(entry.name, "_test.odin") {
+			continue
+		}
+		note_tested_package(entry.fullpath, src_root, &seen, allocator)
+	}
+
+	if _, walk_error := os.walker_error(&walker); walk_error != nil {
+		return seen[:], false
+	}
+	return seen[:], true
+}
+
+// Records the package one test file belongs to, unless it is already there.
+note_tested_package :: proc(
+	test_file: string,
+	src_root: string,
+	into: ^[dynamic]string,
+	allocator: mem.Allocator,
+) {
+	assert(len(test_file) > 0, "asked to attribute no test file at all to a package")
+	assert(into != nil, "asked to record a package into nothing at all")
+
+	directory, _ := os.split_path(test_file)
+	name := relative_slashed(directory, src_root, allocator)
+	for existing in into {
+		if existing == name {
+			delete(name, allocator)
+			return
+		}
+	}
+	append(into, name)
+}
+
+// Whether `name` is exempt from appearing in the justfile's `test` recipe.
+@(require_results)
+is_test_less_package :: proc(name: string) -> bool {
+	assert(len(name) > 0, "asked whether a nameless package is exempt")
+	for exempt in TEST_LESS_SRC_PACKAGES {
+		if name == exempt {
+			return true
+		}
+	}
+	return false
+}
+
+// The `test:` recipe's own body: every line strictly between its header and
+// the next recipe header (a line starting at column zero), joined back into
+// one string. SCOPED, and not a search of the whole file: `test-single`
+// names `src/child` too, and a match against the whole justfile would call a
+// package present the moment ANY recipe mentions it -- which is exactly the
+// silence the package-accounting check exists to end.
+@(require_results)
+test_recipe_body :: proc(
+	justfile_text: string,
+	allocator: mem.Allocator,
+) -> (
+	body: string,
+	ok: bool,
+) {
+	assert(
+		allocator.procedure != nil,
+		"the recipe body outlives this call and needs a chosen allocator",
+	)
+
+	lines := strings.split_lines(justfile_text, allocator)
+	defer delete(lines, allocator)
+
+	start := -1
+	for line, i in lines {
+		if line == "test:" {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 {
+		return "", false
+	}
+
+	end := len(lines)
+	for i in start ..< len(lines) {
+		line := lines[i]
+		if len(line) > 0 && line[0] != '\t' && line[0] != ' ' {
+			end = i
+			break
+		}
+	}
+
+	return strings.join(lines[start:end], "\n", allocator), true
+}
+
+// Every tested package the `test:` recipe's own body does not name as
+// `src/<package>`, as a bounded substring match -- the same textual style
+// ADR-0028 already accepts for the #97/#105 remove_all ban, over a file this
+// program does not parse as Odin at all.
+@(require_results)
+missing_from_test_recipe :: proc(
+	tested: []string,
+	justfile_text: string,
+	allocator: mem.Allocator,
+) -> []string {
+	assert(
+		allocator.procedure != nil,
+		"the missing package names outlive this call and need a chosen allocator",
+	)
+
+	missing := make([dynamic]string, 0, allocator)
+	body, found := test_recipe_body(justfile_text, allocator)
+	defer if found {
+		delete(body, allocator)
+	}
+	if !found {
+		for name in tested {
+			if !is_test_less_package(name) {
+				append(&missing, strings.clone(name, allocator))
+			}
+		}
+		return missing[:]
+	}
+
+	for name in tested {
+		if is_test_less_package(name) {
+			continue
+		}
+		needle := strings.concatenate({"src/", name}, allocator)
+		defer delete(needle, allocator)
+		if !strings.contains(body, needle) {
+			append(&missing, strings.clone(name, allocator))
+		}
+	}
+	return missing[:]
+}

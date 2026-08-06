@@ -6,99 +6,207 @@ import "core:mem"
 import "core:os"
 import "core:strings"
 
-// This file is the entry point: one file read, one report written, and nothing
-// else. Everything worth testing is in policy.odin and collect.odin, which take
-// source as text (ADR-0009's boundary, applied to a build tool).
+// This is what `just check` runs. It discovers every `.odin` file the
+// repository holds -- docs\reference\ included, the scope CLAUDE.md's source
+// policies have always had -- computes the verdicts check.odin knows about
+// for each one, and refuses the package-accounting check this ticket added:
+// every `src\` package holding a `*_test.odin` file must be named in the
+// justfile's own `test` recipe.
 //
-// The files to read arrive in a FILE, one absolute path per line, rather than as
-// arguments. Discovery belongs to scripts\common.ps1's Get-OdinSource, which is
-// the one copy of it that the formatting sweep already asks; what this program
-// has to be told is which files that discovery found. A request file also has no
-// command-line length to run out of, and nothing to quote.
+// The root is the one argument, or the working directory `just` starts this
+// in when there is none. `just`'s recipes run from the repository root by
+// default, so `odin run tools/policy` with no argument is the ordinary case;
+// the argument exists for a caller -- a test, a different working directory
+// -- that needs to say so explicitly.
 
-USAGE :: `usage:
-  transcibr-policy <request-file>
-      read every .odin file named in the request file -- one path per line --
-      and write a report of what CLAUDE.md's source policies ask about each.`
-
-// A request nobody can act on: no request file, or one that cannot be read. The
-// build has no report to check and must say so rather than check an empty one.
-REQUEST_ERROR :: 2
+ROOT_ERROR :: 2
+VIOLATION_ERROR :: 3
 
 main :: proc() {
 	assert(len(os.args) > 0, "a process started with no argv at all, not even its own name")
 
-	if len(os.args) != 2 {
-		fmt.eprintln(USAGE)
-		os.exit(REQUEST_ERROR)
+	root, root_ok := repo_root(context.allocator)
+	if !root_ok {
+		fmt.eprintln(
+			"cannot read the working directory to check; pass the repository root as the one argument.",
+		)
+		os.exit(ROOT_ERROR)
 	}
+	defer delete(root, context.allocator)
 
-	request, request_error := os.read_entire_file(os.args[1], context.allocator)
-	if request_error != nil {
-		fmt.eprintfln("cannot read the request file %s: %v", os.args[1], request_error)
-		os.exit(REQUEST_ERROR)
-	}
-	defer delete(request, context.allocator)
+	violations := check_repository(root, context.allocator)
+	defer violations_destroy(violations, context.allocator)
+	defer delete(violations)
 
-	read := report_each(string(request), context.allocator)
-	if read == 0 {
-		fmt.eprintfln("the request file %s names no file at all", os.args[1])
-		os.exit(REQUEST_ERROR)
+	report_violations(violations)
+	if len(violations) > 0 {
+		os.exit(VIOLATION_ERROR)
 	}
+	fmt.println("policy: clean")
 }
 
-// Every path the request names, reported in the order it names them, and each
-// one WRITTEN as it is finished rather than accumulated for the end.
-//
-// Accumulated, a report is lost with the program that holds it, and reading a
-// file is what can still take this one down (see render_file). Written as it
-// goes, what arrived before the crash is what says how far it got. How many were
-// read comes back so that a request naming nothing is refused rather than
-// answered with an empty report, which reads as a tree with nothing in it.
+// The repository root this run checks: the one command-line argument, or the
+// working directory `just` already started this process in. RESOLVED to an
+// absolute path either way, so every relative name this program builds from
+// it -- the request file used to carry, and every violation now does --
+// starts from the same footing a caller's "." would not give it.
 @(require_results)
-report_each :: proc(request: string, allocator: mem.Allocator) -> (read: int) {
-	assert(allocator.procedure != nil, "a report is built per file and needs a chosen allocator")
+repo_root :: proc(allocator: mem.Allocator) -> (root: string, ok: bool) {
+	assert(
+		allocator.procedure != nil,
+		"the root path outlives this call and needs a chosen allocator",
+	)
 
-	rest := request
-	for line in strings.split_lines_iterator(&rest) {
-		path := strings.trim_space(line)
-		if len(path) == 0 {
-			continue
-		}
-		report_one(path, allocator)
-		read += 1
+	if len(os.args) >= 2 {
+		absolute, err := os.get_absolute_path(os.args[1], allocator)
+		return absolute, err == nil
 	}
-
-	return
+	dir, err := os.get_working_directory(allocator)
+	if err != nil {
+		return "", false
+	}
+	return dir, true
 }
 
-// One file, NAMED and then read. The name goes out first and on its own, so a
-// read this program does not survive still says which file it was reading.
-//
-// A file that cannot be read at all is reported as that fault rather than
-// skipped: a check that quietly covers one file fewer than it was asked to
-// reports the same green as one that covered them all.
-report_one :: proc(path: string, allocator: mem.Allocator) {
-	assert(len(path) > 0, "asked to read a file with no name")
-	assert(allocator.procedure != nil, "a report is built here and needs a chosen allocator")
+// Every violation this run found under `root`: the five per-file verdicts
+// check.odin computes, and the package-accounting check beside them.
+@(require_results)
+check_repository :: proc(root: string, allocator: mem.Allocator) -> [dynamic]Violation {
+	assert(len(root) > 0, "asked to check no repository root at all")
+	assert(
+		allocator.procedure != nil,
+		"the violations outlive this call and need a chosen allocator",
+	)
 
-	report := strings.builder_make(allocator)
-	defer strings.builder_destroy(&report)
+	violations := make([dynamic]Violation, 0, allocator)
+	required := required_vet_tags(vet_tag_roster, allocator)
+	defer delete(required, allocator)
 
-	render_file(path, &report)
-	fmt.print(strings.to_string(report))
-	strings.builder_reset(&report)
+	files, discovered := discover_odin_files(root, allocator)
+	defer delete(files, allocator)
+	defer for file in files {
+		delete(file, allocator)
+	}
+	if !discovered {
+		message := strings.clone(
+			"could not walk the repository looking for .odin files",
+			allocator,
+		)
+		append(&violations, make_violation(root, 0, message, allocator))
+		return violations
+	}
+	if len(files) == 0 {
+		message := strings.clone(
+			"discovered zero .odin files, so the source policies would pass having read nothing",
+			allocator,
+		)
+		append(&violations, make_violation(root, 0, message, allocator))
+		return violations
+	}
 
-	src, read_error := os.read_entire_file(path, allocator)
+	for relative in files {
+		check_one_file(root, relative, required, &violations, allocator)
+	}
+	check_package_accounting(root, &violations, allocator)
+	return violations
+}
+
+// One file's verdicts, or the fault that stopped it being read. The relative
+// name is written out FIRST in the caller's discovery, before this reads the
+// bytes -- see check_repository and render_file's own reasoning: reading a
+// file is what can still take this program down.
+check_one_file :: proc(
+	root: string,
+	relative: string,
+	required: []string,
+	into: ^[dynamic]Violation,
+	allocator: mem.Allocator,
+) {
+	assert(len(relative) > 0, "asked to check a file with no name")
+	assert(into != nil, "asked to collect violations into nothing at all")
+
+	fmt.eprintfln("checking: %s", relative)
+
+	full := strings.concatenate({root, "/", relative}, allocator)
+	defer delete(full, allocator)
+
+	src, read_error := os.read_entire_file(full, allocator)
 	if read_error != nil {
-		render_facts(Source_Facts{fault = .Unreadable}, &report)
-		fmt.print(strings.to_string(report))
+		message := fmt.aprintf("cannot be read: %v", read_error, allocator = allocator)
+		append(into, make_violation(relative, 0, message, allocator))
 		return
 	}
 	defer delete(src, allocator)
+	collect_network_violations(relative, string(src), into)
 
-	facts := read_source(path, string(src), allocator)
+	facts := read_source(relative, string(src), allocator)
 	defer facts_destroy(facts, allocator)
-	render_facts(facts, &report)
-	fmt.print(strings.to_string(report))
+	if facts.fault != Fault.None {
+		message := strings.clone(fault_says(facts.fault), allocator)
+		append(into, make_violation(relative, 0, message, allocator))
+		return
+	}
+	collect_violations(relative, facts, required, into)
+}
+
+// The check ticket #152 added: every `src\` package holding a `*_test.odin`
+// file must appear in the justfile's own `test` recipe.
+check_package_accounting :: proc(
+	root: string,
+	into: ^[dynamic]Violation,
+	allocator: mem.Allocator,
+) {
+	assert(len(root) > 0, "asked to account for the packages of no repository root at all")
+	assert(into != nil, "asked to collect violations into nothing at all")
+
+	src_root := strings.concatenate({root, "/src"}, allocator)
+	defer delete(src_root, allocator)
+	tested, discovered := tested_src_packages(src_root, allocator)
+	defer delete(tested, allocator)
+	defer for name in tested {
+		delete(name, allocator)
+	}
+	if !discovered {
+		message := strings.clone("could not walk src\\ looking for tested packages", allocator)
+		append(into, make_violation(src_root, 0, message, allocator))
+		return
+	}
+
+	justfile_path := strings.concatenate({root, "/justfile"}, allocator)
+	defer delete(justfile_path, allocator)
+	justfile_bytes, read_error := os.read_entire_file(justfile_path, allocator)
+	if read_error != nil {
+		message := fmt.aprintf("cannot be read: %v", read_error, allocator = allocator)
+		append(into, make_violation(justfile_path, 0, message, allocator))
+		return
+	}
+	defer delete(justfile_bytes, allocator)
+
+	missing := missing_from_test_recipe(tested, string(justfile_bytes), allocator)
+	defer delete(missing, allocator)
+	for name in missing {
+		message := fmt.aprintf(
+			"src/%s holds a *_test.odin file but is not named in the justfile's test recipe",
+			name,
+			allocator = allocator,
+		)
+		append(into, make_violation(justfile_path, 0, message, allocator))
+		delete(name, allocator)
+	}
+}
+
+// Every violation, one line each, to standard error: the stream the compiler
+// and the test runner already report through, so a developer watching `just
+// check` sees the same kind of output either way.
+report_violations :: proc(violations: [dynamic]Violation) {
+	for one in violations {
+		if one.line > 0 {
+			fmt.eprintfln("%s:%d: %s", one.file, one.line, one.message)
+		} else {
+			fmt.eprintfln("%s: %s", one.file, one.message)
+		}
+	}
+	if len(violations) > 0 {
+		fmt.eprintfln("policy: %d violation(s)", len(violations))
+	}
 }
