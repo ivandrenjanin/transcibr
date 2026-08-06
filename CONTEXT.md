@@ -126,6 +126,13 @@ _Avoid_: temp, working directory, staging, intermediate
 
 ## Doctor
 
+**Report**:
+What a preflight run hands back: `[]Check`, nothing more — there is no `Report` type in `src/doctor`,
+only a slice of `Check` produced by `run_preflight`, read by `report_ok` to decide whether a Batch may
+proceed, rendered one line at a time by `render_check`, and freed together by `destroy_report`. Every
+other entry in this section describes what one line of it means or how it got there.
+_Avoid_: results, summary, output
+
 **Check**:
 One line of a doctor Report: what was checked, and how it came out — PASS, FAIL with an actionable
 reason, SKIP with the reason it was never judged, or an advisory INFO that never turns the Report's
@@ -202,10 +209,14 @@ _Avoid_: GPU check, hardware check, GPU probe
 The one realtime factor this repository has actually measured against a working CUDA path — roughly
 17x at beam size 5 over the reference corpus (docs/spec/0001-transcibr-v1.md) — and the frame of
 reference the health watch's speed half reads against. Not read by the preflight's Engine check at
-all: that half of the GPU guard decides on its own diagnostic output instead, a `--help` capture
-checked for `"loaded CUDA backend from"` (`strings.contains(probe.captured, ...)`, `engine.odin:84`)
-— not the systeminfo JSON field the Health watch entry above reads, which is a different Engine
-output entirely. So the Baseline is the health watch's own number, not one both halves share. Not a promise about any one machine's own
+all: that check decides on two independent evidence sources, neither of them the Baseline. Before
+anything is spawned, `backend_library_present` (`engine.odin:70-71, 90-102`) is a bare filesystem
+check for the CUDA DLL beside the executable — ADR-0011's own account of the most common broken
+install, missing the DLL entirely — and only once that passes does the check go on to its own
+diagnostic output, a `--help` capture checked for `"loaded CUDA backend from"`
+(`strings.contains(probe.captured, ...)`, `engine.odin:84`) — not the systeminfo JSON field the
+Health watch entry above reads, which is a different Engine output entirely. So the Baseline is the
+health watch's own number, not one either of the Engine check's two halves reads. Not a promise about any one machine's own
 GPU: the health watch's threshold sits a full order of magnitude below it, because a factor that far
 under the Baseline is the CPU-fallback signature the guard exists to catch, not ordinary
 machine-to-machine variance.
