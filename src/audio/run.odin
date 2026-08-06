@@ -136,6 +136,39 @@ answer_read_settled :: proc(fault: child.Read_Fault) -> bool {
 	return fault != .Did_Not_Finish
 }
 
+// `probe`'s removal of `answer` is threaded through this type rather than
+// calling `os.remove` inline, so a test can prove the ordering by passing a
+// counting stand-in through `probe_using` below instead of calling
+// `os.remove` and inspecting the file afterward: `DeleteFileW` is measured
+// to be a complete no-op against a named pipe -- the wedge this file's own
+// tests use to reach `Read_Fault.Did_Not_Finish` -- returning
+// `ERROR_INVALID_PARAMETER` with no connected reader and `ERROR_PIPE_BUSY`
+// with one, in both cases leaving the pipe exactly as it was, so "was
+// removal attempted" is unobservable from outside a pipe path by any
+// filesystem effect (issue #125's round-1 review, finding 1). A package
+// variable would race every other test in this package calling `probe`
+// concurrently (`test.ps1` runs 12 threads by default), so this is a
+// parameter, not shared state.
+@(private)
+Answer_Remove :: #type proc(path: string)
+
+@(private)
+os_remove_answer :: proc(path: string) {
+	os.remove(path)
+}
+
+// Pulled out of `probe_using` so its removal effect is provable directly, by
+// handing it a `settled` value straight from a test, rather than only ever
+// proving `answer_read_settled` classifies a `Read_Fault` correctly in
+// isolation from anything that touches disk.
+@(private)
+remove_answer_if_settled :: proc(answer: string, settled: bool, remove: Answer_Remove) {
+	assert(len(answer) > 0, "there is no answer file here to conditionally remove")
+	if settled {
+		remove(answer)
+	}
+}
+
 // The read of ffprobe's own answer file below is bounded the same way
 // `child.read_bounded` bounds a hand-typed `--from-json` path (issue #27): a
 // stalled scratch cache wedges this identically, and this is already a
@@ -148,6 +181,26 @@ probe :: proc(
 	source: string,
 	answer: string,
 	allocator: mem.Allocator,
+) -> (
+	probed: process.Probe,
+	err: Error,
+) {
+	return probe_using(group, tools, source, answer, allocator, os_remove_answer)
+}
+
+// The real body of `probe`, taking its remover as a parameter rather than a
+// package variable so a test can swap it without racing every other test in
+// this package that calls `probe` concurrently (issue #125's round-1
+// review, finding 1).
+@(private)
+@(require_results)
+probe_using :: proc(
+	group: ^child.Job_Object,
+	tools: Tools,
+	source: string,
+	answer: string,
+	allocator: mem.Allocator,
+	remove: Answer_Remove,
 ) -> (
 	probed: process.Probe,
 	err: Error,
@@ -174,14 +227,12 @@ probe :: proc(
 	case .Stopped, .Finished:
 	}
 	if ending == .Stopped {
-		os.remove(answer)
+		remove(answer)
 		return {}, Error{fault = .Probe_Did_Not_Finish}
 	}
 
 	said, unreadable := child.read_bounded(answer, child.READ_BOUND_MS, allocator)
-	if answer_read_settled(unreadable.fault) {
-		os.remove(answer)
-	}
+	remove_answer_if_settled(answer, answer_read_settled(unreadable.fault), remove)
 	if unreadable.fault != .None {
 		return {}, Error{fault = .Probe_Answer_Unreadable}
 	}

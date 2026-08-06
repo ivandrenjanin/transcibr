@@ -67,10 +67,51 @@ write_probe_wav :: proc(allocator: mem.Allocator) -> (path: string, ok: bool) {
 // comment states its worker leaks for the identical reason (issue #125,
 // filed from the #66 review's comment on this ticket, adjacent to #66's own
 // reclaim vocabulary in `src\child\reclaim.odin`, ADR-0034).
+//
+// An exhaustive switch, not `!= .Unstoppable`: issue #33's compile guard
+// applies to a switch that names every member itself exactly as it does to
+// an enumerated array, and it is what makes a member added to `Run` without
+// a case here a build failure rather than a silent settled-for-removal
+// default (issue #125's round-1 review, finding 2 -- the `!=` form fails
+// OPEN, toward removing a file a child may still hold).
 @(private)
 @(require_results)
 model_probe_wav_settled :: proc(run: child.Run) -> bool {
-	return run != .Unstoppable
+	switch run {
+	case .Not_Started, .Finished, .Stopped:
+		return true
+	case .Unstoppable:
+		return false
+	}
+	unreachable()
+}
+
+// `model_load_check`'s removal of `wav` is threaded through this type
+// rather than calling `os.remove` inline, so a test can prove the ordering
+// by passing a counting stand-in through `model_load_check_using` below. A
+// package variable would race every other test in this package calling
+// `model_load_check` concurrently (`test.ps1` runs 12 threads by default),
+// so this is a parameter, not shared state (issue #125's round-1 review,
+// finding 1).
+@(private)
+Wav_Remove :: #type proc(path: string)
+
+@(private)
+os_remove_wav :: proc(path: string) {
+	os.remove(path)
+}
+
+// Pulled out of `model_load_check_using` so its removal effect is provable
+// directly, by handing it a `settled` value straight from a test, rather
+// than only ever proving `model_probe_wav_settled` classifies a `child.Run`
+// correctly in isolation from anything that touches disk (issue #125's
+// round-1 review, finding 1).
+@(private)
+remove_probe_wav_if_settled :: proc(wav: string, settled: bool, remove: Wav_Remove) {
+	assert(len(wav) > 0, "there is no scratch wav here to conditionally remove")
+	if settled {
+		remove(wav)
+	}
 }
 
 // The authoritative half of the Model check: `model_check`'s size floor and
@@ -82,6 +123,22 @@ model_load_check :: proc(
 	engine_executable: string,
 	model_path: string,
 	allocator: mem.Allocator,
+) -> Check {
+	return model_load_check_using(group, engine_executable, model_path, allocator, os_remove_wav)
+}
+
+// The real body of `model_load_check`, taking its remover as a parameter
+// rather than a package variable so a test can swap it without racing every
+// other test in this package that calls `model_load_check` concurrently
+// (issue #125's round-1 review, finding 1).
+@(private)
+@(require_results)
+model_load_check_using :: proc(
+	group: ^child.Job_Object,
+	engine_executable: string,
+	model_path: string,
+	allocator: mem.Allocator,
+	remove: Wav_Remove,
 ) -> Check {
 	assert(group != nil, "a child started outside a job object outlives transcibr")
 	assert(len(engine_executable) > 0, "there is no engine here to load the model with")
@@ -109,9 +166,7 @@ model_load_check :: proc(
 	)
 	defer delete(probe.captured, allocator)
 
-	if model_probe_wav_settled(probe.run) {
-		os.remove(wav)
-	}
+	remove_probe_wav_if_settled(wav, model_probe_wav_settled(probe.run), remove)
 
 	return model_load_verdict(probe, model_path, allocator)
 }

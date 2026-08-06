@@ -1,6 +1,7 @@
 #+vet explicit-allocators
 package doctor
 
+import "core:os"
 import "core:strings"
 import "core:testing"
 import "transcibr:child"
@@ -31,27 +32,124 @@ an_overflowed_probe_is_refused_by_the_model_verdict_rather_than_judged_on_its_ca
 	)
 }
 
-// `model_probe_wav_settled` walks every `child.Run` member rather than
-// trusting a hand-picked few: a member added to `Run` without a case here
-// fails the build first (issue #33's enumerated-array/exhaustive-switch
-// guarantee applies equally to a switch that names every member itself).
-// `.Unstoppable` is the one case whose engine child may still be running and
-// may still hold the probe's scratch wav open -- `child.Run`'s own doc
-// comment states exactly that -- so it is the one member this must refuse to
-// settle (issue #125, filed from the #66 review's comment on this ticket).
+// Named per member rather than recomputed from the same formula
+// `model_probe_wav_settled` itself uses -- the shape `child\read_test.odin`'s
+// own fault tests use, so this cannot agree with a wrong implementation of
+// that formula's shape just by sharing it (issue #125's round-1 review,
+// finding 2). The build-time guard against a member silently defaulting to
+// settled-for-removal lives in `model_probe_wav_settled`'s own exhaustive
+// switch, not here -- issue #33's compile guard applies to a switch that
+// names every member itself exactly as it does to an enumerated array.
 @(test)
-a_model_probe_wav_is_settled_for_removal_only_when_the_engine_is_known_done :: proc(
-	t: ^testing.T,
-) {
-	for run in child.Run {
-		want := run != .Unstoppable
-		testing.expectf(
-			t,
-			model_probe_wav_settled(run) == want,
-			"child.Run.%v was settled for removal as %v, wanted %v",
-			run,
-			model_probe_wav_settled(run),
-			want,
-		)
+a_child_confirmed_not_running_leaves_its_wav_settled_for_removal :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		model_probe_wav_settled(child.Run.Not_Started),
+		"a child that never started was not settled for removal",
+	)
+	testing.expect(
+		t,
+		model_probe_wav_settled(child.Run.Finished),
+		"a child that finished was not settled for removal",
+	)
+	testing.expect(
+		t,
+		model_probe_wav_settled(child.Run.Stopped),
+		"a child confirmed stopped was not settled for removal",
+	)
+}
+
+@(test)
+an_unstoppable_child_never_leaves_its_wav_settled_for_removal :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		!model_probe_wav_settled(child.Run.Unstoppable),
+		"an unstoppable child's wav was settled for removal, which would race a child that might still hold it open",
+	)
+}
+
+// `model_probe_wav_settled` on its own only ever proves the BOOLEAN is
+// right -- nothing above reaches the file-system effect that boolean is
+// supposed to gate. `remove_probe_wav_if_settled` is the exact code
+// `model_load_check` calls with that boolean, so handing it a real,
+// disk-backed wav and a genuine `settled` value proves the removal itself,
+// not only the predicate that decides it (issue #125's round-1 review,
+// finding 1).
+@(test)
+a_settled_probe_wav_is_actually_removed_from_disk :: proc(t: ^testing.T) {
+	f, unopenable := os.create_temp_file("", "transcibr-doctor-probe-settled-*.wav")
+	testing.expect(t, unopenable == nil, "could not open a scratch wav to remove")
+	if unopenable != nil {
+		return
 	}
+	wav := strings.clone(os.name(f), context.allocator)
+	defer delete(wav, context.allocator)
+	testing.expect(t, os.close(f) == nil, "could not close the scratch wav fixture")
+
+	remove_probe_wav_if_settled(wav, true, os_remove_wav)
+	testing.expect(t, !os.exists(wav), "a settled probe wav was left on disk")
+}
+
+@(test)
+an_unsettled_probe_wav_is_left_on_disk :: proc(t: ^testing.T) {
+	f, unopenable := os.create_temp_file("", "transcibr-doctor-probe-unsettled-*.wav")
+	testing.expect(t, unopenable == nil, "could not open a scratch wav to leave alone")
+	if unopenable != nil {
+		return
+	}
+	wav := strings.clone(os.name(f), context.allocator)
+	defer delete(wav, context.allocator)
+	defer os.remove(wav)
+	testing.expect(t, os.close(f) == nil, "could not close the scratch wav fixture")
+
+	remove_probe_wav_if_settled(wav, false, os_remove_wav)
+	testing.expect(
+		t,
+		os.exists(wav),
+		"an unsettled probe wav was removed, which would race a child that might still hold it open",
+	)
+}
+
+// `remove_probe_wav_if_settled` on its own only proves the wiring between a
+// `settled` value and a removal call -- nothing above proves
+// `model_load_check` itself passes that call through rather than removing
+// `wav` some other way. `model_load_check_using`'s `remove` parameter is
+// `model_load_check`'s only route to removing its scratch wav; passing a
+// counting spy through it, around a real, fast-exiting engine stand-in,
+// reads the ordering off the call site directly. The count lives behind
+// `context.user_ptr` rather than a package variable, which would race every
+// other test in this package calling `model_load_check` concurrently
+// (`test.ps1` runs 12 threads by default) (issue #125's round-1 review,
+// finding 1).
+@(private)
+spy_wav_remove :: proc(path: string) {
+	calls := (^int)(context.user_ptr)
+	calls^ += 1
+}
+
+@(test)
+a_finished_engine_probe_calls_the_wav_remover_exactly_once :: proc(t: ^testing.T) {
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	calls := 0
+	context.user_ptr = &calls
+	check := model_load_check_using(
+		&group,
+		"where.exe",
+		"model.bin",
+		context.allocator,
+		spy_wav_remove,
+	)
+	defer destroy_check(check, context.allocator)
+
+	testing.expectf(
+		t,
+		calls == 1,
+		"model_load_check called its remover %d time(s) for a finished engine probe, wanted 1",
+		calls,
+	)
 }
