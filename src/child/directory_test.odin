@@ -13,26 +13,26 @@ import "core:testing"
 // compiles against `await_or_abandon` -- the bound-enforcement mechanism
 // itself is `read_test.odin`'s to prove, against a pipe nobody writes to.
 //
-// One missing level, not `root\a\b\c`'s three: issue #97 measured that a
-// background listing of a non-empty directory (this file's own
-// `a_directory_listing_within_its_bound_returns_every_entry_through_child`,
-// alphabetically the prior test under `odin test`'s fixed ordering) followed
-// by a background `os.make_directory_all` that has to create TWO OR MORE
-// missing levels corrupts process state that `odin test`'s single-threaded
-// mode (`-define:ODIN_TEST_THREADS=1`) then trips over on the next unrelated
-// heap growth -- reproduced 100% (20+ runs) with a minimal case bypassing
-// this package's own code entirely (`core:os.read_all_directory_by_path`
-// then `core:os.make_directory_all` run directly against `core:thread`, no
-// `context.allocator`, no tracking allocator, no `directory.odin` involved),
-// and NEVER reproduced with a single missing level, an empty directory
-// listed, or the reverse order (create then list) -- the order every real
-// caller in this tree already uses (`audio/run.odin`'s `sweep_cache` always
-// calls `open_cache` before `list_directory_bounded`). One missing level
-// exercises the exact same `make_directory_bounded` contract this case
-// exists to prove -- creating what `os.make_directory_all` itself recurses
-// through is `core:os`'s own tested behaviour, not this package's -- without
-// depending on `odin test`'s alphabetical scheduling to dodge a defect this
-// package's own production call order never reaches.
+// One missing level, not `root\a\b\c`'s three: issue #97 measured (fix round
+// 1, against `dev-2026-07-nightly:819fdc7`) that the crash under
+// `-define:ODIN_TEST_THREADS=1` is a second `os.remove_all` on a NON-EMPTY
+// directory, on a `core:testing` runner thread, in the same process -- not
+// depth, not the listing, and not a background thread for the create.
+// `core:os`'s Windows `_remove_all` short-circuits an empty directory
+// through `remove()` and only reaches `win32.SHFileOperationW` when it has
+// to recurse; the second such call in one runner-thread process is what
+// dies. Every other trigger the original diagnosis named was disproven by
+// direct mutation: main-thread creates crash identically; a single missing
+// level crashes; an already-created root holding one written file crashes
+// with zero missing levels; the listing test isn't needed at all (a loop of
+// create-plus-one-file-plus-`remove_all` alone dies on its second
+// iteration); and a standalone `core:os`/`core:thread` harness with no
+// `odin test` runner never reproduced, 5/5. This package's only
+// non-empty-directory `os.remove_all` is
+// `a_directory_listing_within_its_bound_returns_every_entry_through_child`'s
+// (this file, below); this case's own root is never written to, so its
+// `os.remove_all` always runs against an empty directory and never adds a
+// second non-empty removal to the process.
 @(test)
 a_scratch_cache_directory_is_created_within_its_bound :: proc(t: ^testing.T) {
 	root := scratch_path(t, "cachedir", context.allocator)
