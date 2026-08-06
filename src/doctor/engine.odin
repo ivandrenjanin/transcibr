@@ -40,6 +40,7 @@ Engine_Fault :: enum u8 {
 	Not_Started,
 	Did_Not_Finish,
 	Backend_Not_Loaded,
+	Capture_Overflowed,
 }
 
 Engine_Check :: struct {
@@ -74,6 +75,9 @@ verify_engine :: proc(
 	probe := probe_executable(group, executable, ENGINE_PROBE_ARGUMENTS, allocator)
 	defer delete(probe.captured, allocator)
 
+	if probe.overflowed {
+		return Engine_Check{fault = .Capture_Overflowed}
+	}
 	switch probe.run {
 	case .Not_Started:
 		return Engine_Check{fault = .Not_Started, child = probe.child}
@@ -123,6 +127,10 @@ engine_fault_says :: proc(fault: Engine_Fault) -> string {
 	case .Backend_Not_Loaded:
 		return(
 			"the engine started but its own diagnostic output never named the cuda backend as loaded; a candidate gpu backend library failed to load and was silently skipped" \
+		)
+	case .Capture_Overflowed:
+		return(
+			"reported more diagnostic output than a probe will capture (MAX_PROBE_CAPTURE_BYTES exceeded) and was refused rather than judged on a partial capture" \
 		)
 	case .None:
 	}

@@ -58,6 +58,9 @@ extraction_tool_check :: proc(
 	probe := probe_executable(group, executable, arguments, allocator)
 	defer delete(probe.captured, allocator)
 
+	if probe.overflowed {
+		return failed(name, probe_overflow_message(executable, allocator))
+	}
 	switch probe.run {
 	case .Not_Started:
 		reason := child.error_message(probe.child, allocator)

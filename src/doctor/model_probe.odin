@@ -104,6 +104,9 @@ model_load_check :: proc(
 model_load_verdict :: proc(probe: Probe, model_path: string, allocator: mem.Allocator) -> Check {
 	assert(len(model_path) > 0, "there is no model here to report a verdict against")
 
+	if probe.overflowed {
+		return failed("model", probe_overflow_message(model_path, allocator))
+	}
 	switch probe.run {
 	case .Not_Started:
 		reason := child.error_message(probe.child, allocator)
