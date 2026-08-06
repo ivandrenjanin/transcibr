@@ -27,10 +27,11 @@ Ending :: struct {
 
 // Issue #132: `job.container_ms > 0` below is internal, not a check on
 // external input, for the same reason #129 recorded at `read_probe`'s guard
-// in src/process/ffmpeg.odin. `transcribe`'s only caller,
+// in src/process/ffmpeg.odin. `transcribe`'s only production caller,
 // `pipeline.transcribe_and_place`, builds this `Job` straight from
 // `extracted.extracted.container_ms` -- `audio.Extracted.container_ms`,
-// which that same probe guarantees positive.
+// which that same probe guarantees positive; engine_test.odin's cases pass
+// only positive literals (`job_in` asserts it).
 @(require_results)
 transcribe :: proc(
 	group: ^child.Job_Object,
