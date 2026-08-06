@@ -209,6 +209,103 @@ a_head_read_from_a_file_that_is_not_there_is_refused :: proc(t: ^testing.T) {
 }
 
 @(test)
+the_bounded_head_of_a_real_wav_on_disk_walks_to_its_data_chunk :: proc(t: ^testing.T) {
+	cache := testkit.scratch_cache(t, "audio", "head-bounded", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
+
+	path := fmt.aprintf("%s\\audio.wav", cache, allocator = context.allocator)
+	defer delete(path, context.allocator)
+	testing.expect(t, os.write_entire_file(path, FFMPEG_WAV) == nil, "could not write the fixture")
+
+	head, bytes, err := read_head_bounded(path, child.READ_BOUND_MS, context.allocator)
+	defer delete(head, context.allocator)
+	testing.expect_value(t, err.fault, Fault.None)
+	testing.expect_value(t, bytes, i64(FFMPEG_WAV_BYTES))
+	testing.expect_value(t, len(head), FFMPEG_WAV_BYTES)
+
+	facts, malformed := read_wav_facts(head, bytes)
+	testing.expect_value(t, malformed, Riff_Fault.None)
+	testing.expect_value(t, facts.data_bytes, i64(6400))
+	testing.expect(t, as_asked_for(facts), "the fixture off the disk is not what was asked for")
+}
+
+@(test)
+a_bounded_head_read_from_a_file_that_is_not_there_is_refused :: proc(t: ^testing.T) {
+	cache := testkit.scratch_cache(t, "audio", "missing-bounded", context.allocator)
+	defer delete(cache, context.allocator)
+	path := fmt.aprintf("%s\\never-written.wav", cache, allocator = context.allocator)
+	defer delete(path, context.allocator)
+
+	head, _, err := read_head_bounded(path, child.READ_BOUND_MS, context.allocator)
+	defer delete(head, context.allocator)
+	testing.expect_value(t, err.fault, Fault.Audio_Unreadable)
+}
+
+// Short enough that a worker stalled `HEAD_STALL_MS` past it forces
+// `read_head_bounded`'s wait to time out rather than finish, without the
+// suite waiting long for it.
+@(private)
+HEAD_STALL_BOUND_MS :: i64(50)
+
+// Comfortably past `HEAD_STALL_BOUND_MS`, and comfortably inside
+// `transcibr:child`'s own `CANCEL_BOUND_MS` (5 s), so the worker's real
+// `time.sleep` finishes -- and `await_or_abandon`'s poll notices it done --
+// well before the `.Unstoppable` leak path would ever be reached.
+@(private)
+HEAD_STALL_MS :: i64(1_500)
+
+// Generous against the worst case a correctly working bound could ever
+// legitimately take -- `HEAD_STALL_BOUND_MS` plus a cancellation running its
+// own full course -- rather than tuned to equal it, the same reasoning
+// `artifact.model_test.odin`'s `MODEL_BOUND_TEST_SLACK` documents.
+@(private)
+HEAD_STALL_SLACK :: 30 * time.Second
+
+// Finding of the PR #99 review: nothing in this suite before this case ran a
+// `read_head_bounded` worker for longer than its own bound, so a mutant that
+// multiplied `bound_ms` by 1000 -- an effectively unbounded wait -- passed
+// every test unchanged. `read_head_bounded_stalled` puts a real,
+// `time.sleep`-stalled worker on the far side of a short bound, the same way
+// `child`'s own `a_read_that_cannot_finish_is_abandoned_at_its_bound` puts a
+// real stalled pipe read on the far side of one.
+@(test)
+a_head_read_that_cannot_finish_within_its_bound_is_reported_rather_than_awaited_forever :: proc(
+	t: ^testing.T,
+) {
+	cache := testkit.scratch_cache(t, "audio", "head-stalled", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
+
+	path := fmt.aprintf("%s\\audio.wav", cache, allocator = context.allocator)
+	defer delete(path, context.allocator)
+	testing.expect(t, os.write_entire_file(path, FFMPEG_WAV) == nil, "could not write the fixture")
+
+	started := time.tick_now()
+	head, bytes, err := read_head_bounded_stalled(
+		path,
+		HEAD_STALL_BOUND_MS,
+		context.allocator,
+		HEAD_STALL_MS,
+	)
+	elapsed := time.tick_since(started)
+	defer delete(head, context.allocator)
+
+	testing.expect_value(t, err.fault, Fault.Audio_Unreadable)
+	testing.expect_value(t, bytes, i64(0))
+	testing.expect(t, len(head) == 0, "an abandoned head read handed back bytes it never finished")
+	testing.expectf(
+		t,
+		elapsed < HEAD_STALL_SLACK,
+		"a head read bounded at %d ms took %v to be reported, which is not being bounded at all",
+		HEAD_STALL_BOUND_MS,
+		elapsed,
+	)
+}
+
+@(test)
 a_recording_looked_at_too_soon_is_looked_at_again_rather_than_refused :: proc(t: ^testing.T) {
 	cache := testkit.scratch_cache(t, "audio", "settle", context.allocator)
 	defer delete(cache, context.allocator)
