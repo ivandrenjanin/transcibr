@@ -32,12 +32,6 @@ Transcribe_Options :: struct {
 
 TRANSCRIBE :: "--transcribe"
 
-// Bare names, which is what asks CreateProcessW to search PATH -- and safely,
-// because argv[0] is always quoted by the Process contract. A bundled build names
-// the paths instead.
-FFMPEG :: "ffmpeg.exe"
-FFPROBE :: "ffprobe.exe"
-
 @(require_results)
 transcribe_one :: proc(arguments: []string) -> int {
 	assert(len(arguments) > 0, "no arguments at all is the version banner, settled before this")
@@ -130,6 +124,13 @@ show :: proc(shown: process.Progress, user: rawptr) {
 	)
 }
 
+// `audio.defaulted_tools` runs AFTER the loop below, not before it:
+// `--ffmpeg ""` is an ordinary shell invocation with an unset variable in it,
+// and a default set only before the loop is overwritten by the empty value.
+// `engine_version` is never defaulted here at all -- it stays `Maybe(string)`,
+// absent where the command line named none, and forwarded that way into
+// planning, where `pipeline.settled_engine_version` is what decides UNKNOWN,
+// and only for the Sidecar this run actually records (issue #70).
 @(private)
 @(require_results)
 read_transcribe_options :: proc(arguments: []string) -> (o: Transcribe_Options, ok: bool) {
@@ -159,7 +160,7 @@ read_transcribe_options :: proc(arguments: []string) -> (o: Transcribe_Options, 
 		}
 	}
 
-	defaulted(&o)
+	audio.defaulted_tools(&o.tools)
 
 	for missing in ([?][2]string {
 			{o.source, TRANSCRIBE},
@@ -172,40 +173,6 @@ read_transcribe_options :: proc(arguments: []string) -> (o: Transcribe_Options, 
 		}
 	}
 	return o, true
-}
-
-// Called AFTER the loop that reads the command line and not only before it:
-// `--ffmpeg ""` is an ordinary shell invocation with an unset variable in it, and
-// a default set only before the loop is overwritten by the empty value.
-@(private)
-defaulted :: proc(o: ^Transcribe_Options) {
-	assert(o != nil, "there is nothing here to put a default into")
-
-	defaulted_tools(&o.tools)
-}
-
-// The two defaults `--transcribe` and `--batch` put back identically once
-// their own command lines have been read in full (PR #67's review, finding
-// 2) -- `--extract-workers` and `--queue-depth` stay `--batch`'s own, since
-// `--transcribe` has neither. `engine_version` is no longer defaulted here:
-// it stays `Maybe(string)`, absent where the command line named none, and
-// forwarded that way into planning -- `pipeline.settled_engine_version` is
-// where UNKNOWN is decided, and only for the Sidecar this run actually
-// records (issue #70).
-@(private)
-defaulted_tools :: proc(tools: ^audio.Tools) {
-	assert(tools != nil, "there is nowhere here to put a Tools default into")
-	defer {
-		assert(len(tools.ffmpeg) > 0, "a default that was put back is still empty")
-		assert(len(tools.ffprobe) > 0, "a default that was put back is still empty")
-	}
-
-	if len(tools.ffmpeg) == 0 {
-		tools.ffmpeg = FFMPEG
-	}
-	if len(tools.ffprobe) == 0 {
-		tools.ffprobe = FFPROBE
-	}
 }
 
 // `--model-file` and `--engine-exe`, because `--model` and `--engine` are already
