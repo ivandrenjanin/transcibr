@@ -40,6 +40,30 @@ MAX_QUEUE_DEPTH :: 2
 #assert(MAX_EXTRACT_WORKERS > 0)
 #assert(MAX_QUEUE_DEPTH > 0)
 
+// One or two extraction workers feeding exactly one transcription worker
+// through a bounded channel of depth one or two (ADR-0006) -- the shipped
+// defaults `--batch` puts back when its own command line left either unset,
+// overridable per Batch because a machine's disk and GPU are not this
+// program's to assume. `#assert` rather than a runtime check because both
+// defaults are compile-time constants that can never drift past the ceiling
+// beside them without the build itself refusing.
+DEFAULT_EXTRACT_WORKERS :: 1
+DEFAULT_QUEUE_DEPTH :: 2
+
+#assert(DEFAULT_EXTRACT_WORKERS > 0)
+#assert(DEFAULT_EXTRACT_WORKERS <= MAX_EXTRACT_WORKERS)
+#assert(DEFAULT_QUEUE_DEPTH > 0)
+#assert(DEFAULT_QUEUE_DEPTH <= MAX_QUEUE_DEPTH)
+
+// How long shutdown waits for a worker to go idle once the last job has been
+// admitted, before treating it as wedged rather than merely still working.
+// Forty-five days is comfortably above any real Recording's own transcribe
+// bound -- `process.transcribe_bound_ms` of even a full day of audio is a
+// handful of days -- and comfortably below what `child.await_or_abandon`
+// will accept at all. Both orderings are held by a test
+// (`defaults_test.odin`) rather than by this comment alone.
+DEFAULT_JOIN_BOUND_MS :: i64(45 * 24 * 60 * 60 * 1000)
+
 // Every job passes through exactly one of these on the way out. `Unset` is the
 // zero value and never a real answer -- see `run_batch`'s own postcondition --
 // the same pattern `process.Disposition` already carries for the identical

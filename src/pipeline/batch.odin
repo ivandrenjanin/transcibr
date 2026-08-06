@@ -29,6 +29,20 @@ Summary :: struct {
 	cancelled:   int,
 }
 
+// The exit-worthiness of a whole Batch: `failed` and `refused` are the two
+// counts a Recording reaches only by going wrong, so either one fails the
+// run. `cancelled` and `skipped` are not folded in -- a Ctrl+C is an operator
+// decision, not a defect, the same distinction `Terminal.Not_Admitted`'s own
+// comment draws against `failed`, and a Recording already up to date is
+// success by definition, not a Batch that came up short. The policy a caller
+// can dispute is named in the test that holds it, not only in this comment
+// (`cancelled_and_skipped_recordings_do_not_fail_a_batch_only_failed_and_-`
+// `refused_do`, batch_test.odin).
+@(require_results)
+batch_succeeded :: proc(summary: Summary) -> bool {
+	return summary.failed == 0 && summary.refused == 0
+}
+
 @(private)
 @(require_results)
 engine_output_path :: proc(source: string, allocator: mem.Allocator) -> (path: string, ok: bool) {

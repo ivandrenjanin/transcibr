@@ -21,21 +21,6 @@ import "transcibr:transcript"
 
 BATCH :: "--batch"
 
-// One or two extraction workers feeding exactly one transcription worker
-// through a bounded channel of depth one or two (ADR-0006) -- the shipped
-// defaults, overridable per Batch because a machine's disk and GPU are not
-// this program's to assume.
-DEFAULT_EXTRACT_WORKERS :: 1
-DEFAULT_QUEUE_DEPTH :: 2
-
-// How long shutdown waits for a worker to go idle once the last job has been
-// admitted, before treating it as wedged rather than merely still working.
-// Forty-five days is comfortably above any real Recording's own transcribe
-// bound -- `process.transcribe_bound_ms` of even a full day of audio is a
-// handful of days -- and comfortably below what `child.await_or_abandon`
-// will accept at all.
-BATCH_JOIN_BOUND_MS :: i64(45 * 24 * 60 * 60 * 1000)
-
 Batch_Options :: struct {
 	root:            string,
 	model:           string,
@@ -183,7 +168,7 @@ run_the_batch :: proc(
 			config = pipeline.Config {
 				extract_workers = o.extract_workers,
 				queue_depth = o.queue_depth,
-				join_bound_ms = BATCH_JOIN_BOUND_MS,
+				join_bound_ms = pipeline.DEFAULT_JOIN_BOUND_MS,
 			},
 		},
 		context.allocator,
@@ -200,7 +185,7 @@ run_the_batch :: proc(
 		summary.skipped,
 		summary.cancelled,
 	)
-	if summary.failed > 0 || summary.refused > 0 {
+	if !pipeline.batch_succeeded(summary) {
 		return OPERATING_ERROR
 	}
 	return 0
@@ -329,7 +314,7 @@ read_batch_worker_option :: proc(into: ^int, name, value: string) -> (ok: bool) 
 }
 
 // Called AFTER the loop that reads the command line, matching
-// `transcribe.odin`'s own `defaulted`: `--ffmpeg ""` is an ordinary shell
+// `transcribe.odin`'s own tool default: `--ffmpeg ""` is an ordinary shell
 // invocation with an unset variable in it, and a default set only before the
 // loop is overwritten by the empty value.
 @(private)
@@ -340,11 +325,11 @@ defaulted_batch :: proc(o: ^Batch_Options) {
 		assert(o.queue_depth > 0, "a default that was put back is still zero")
 	}
 
-	defaulted_tools(&o.tools)
+	audio.defaulted_tools(&o.tools)
 	if o.extract_workers == 0 {
-		o.extract_workers = DEFAULT_EXTRACT_WORKERS
+		o.extract_workers = pipeline.DEFAULT_EXTRACT_WORKERS
 	}
 	if o.queue_depth == 0 {
-		o.queue_depth = DEFAULT_QUEUE_DEPTH
+		o.queue_depth = pipeline.DEFAULT_QUEUE_DEPTH
 	}
 }
