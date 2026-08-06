@@ -97,7 +97,13 @@ refused :: proc(ending: Ending) -> Error {
 	case .Unstoppable:
 		return Error{fault = .Not_Stopped}
 	case .Stopped:
-		return Error{fault = .Went_Silent if ending.reason == .Poll_Asked else .Did_Not_Finish}
+		switch ending.reason {
+		case .Poll_Asked:
+			return Error{fault = .Went_Silent}
+		case .None, .Bound_Expired, .Drain_Failed:
+			return Error{fault = .Did_Not_Finish}
+		}
+		return Error{fault = .Did_Not_Finish}
 	case .Finished:
 	}
 	return Error{}

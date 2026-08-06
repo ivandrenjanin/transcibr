@@ -507,6 +507,11 @@ every_way_a_run_can_end_is_the_fault_that_names_it :: proc(t: ^testing.T) {
 		refused(Ending{run = .Stopped, reason = .Drain_Failed}).fault,
 		Fault.Did_Not_Finish,
 	)
+	testing.expect_value(
+		t,
+		refused(Ending{run = .Stopped, reason = .Bound_Expired}).fault,
+		Fault.Did_Not_Finish,
+	)
 	testing.expect_value(t, refused(Ending{run = .Finished}).fault, Fault.None)
 }
 
