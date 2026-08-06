@@ -303,6 +303,9 @@ a_folder_processed_once_is_skipped_on_the_next_pass :: proc(t: ^testing.T) {
 ZERO_OFFSET_ENGINE_JSON :: `{"transcription": [{"offsets": {"from": 0, "to": 0}, "text": " zero"}]}`
 
 @(private)
+NONZERO_OFFSET_ENGINE_JSON :: `{"transcription": [{"offsets": {"from": 0, "to": 500}, "text": " zero"}]}`
+
+@(private)
 @(require_results)
 fake_zero_offset_transcribe :: proc(extracted: Recording_Extracted) -> bool {
 	job := extracted.job
@@ -325,6 +328,29 @@ FAKE_ZERO_OFFSET_STAGES := Stages(Recording_Job, Recording_Extracted) {
 	abandon_job = abandon_recording_job,
 }
 
+@(private)
+@(require_results)
+fake_nonzero_offset_transcribe :: proc(extracted: Recording_Extracted) -> bool {
+	job := extracted.job
+	defer destroy_recording_arena(job)
+	defer delete(extracted.extracted.audio, job.allocator)
+
+	output := fmt.aprintf("%s\\%s.fakeengine.json", job.cache, job.name, allocator = job.allocator)
+	defer delete(output, job.allocator)
+	if os.write_entire_file(output, transmute([]u8)string(NONZERO_OFFSET_ENGINE_JSON)) != nil {
+		return false
+	}
+	return placed_from_engine_output(job, extracted, output)
+}
+
+@(private)
+FAKE_NONZERO_OFFSET_STAGES := Stages(Recording_Job, Recording_Extracted) {
+	extract     = fake_resume_extract,
+	transcribe  = fake_nonzero_offset_transcribe,
+	discard     = discard_recording_audio,
+	abandon_job = abandon_recording_job,
+}
+
 // The property #78's fold had to preserve: `placed_from_engine_output` passes
 // the transcribe path's own measured `container_ms` through as `duration`, so
 // an Engine output whose cues never advance past zero over a non-empty
@@ -334,8 +360,25 @@ FAKE_ZERO_OFFSET_STAGES := Stages(Recording_Job, Recording_Extracted) {
 // `the_next_pass` uses. Dropping that duration in favor of `nil` (the exact
 // mutation the fold's own review made to prove this gap) makes
 // `check_cue_set` skip the check outright and this test go red.
+//
+// A round-2 adversarial review proved `summary.failed == 1` alone is not an
+// oracle for this property: mutating `ZERO_OFFSET_ENGINE_JSON` into text that
+// is not JSON at all still failed with `summary.failed == 1`, on a wholly
+// different fault, and the test stayed green. The direct `transcript.parse_cues`
+// call below pins WHICH fault the fixture produces, and
+// `placed_from_engine_output_places_a_final_cue_offset_that_advances` is the
+// positive control CLAUDE.md A3 asks for: the identical fixture and duration
+// with only the final offset changed, which must place rather than fail.
 @(test)
 placed_from_engine_output_refuses_a_final_cue_offset_of_zero :: proc(t: ^testing.T) {
+	_, direct_err := transcript.parse_cues(
+		"zero-offset-oracle",
+		ZERO_OFFSET_ENGINE_JSON,
+		transcript.Millis(RESUME_FIXTURE_MS),
+		context.allocator,
+	)
+	testing.expect_value(t, direct_err.fault, transcript.Parse_Fault.Final_Offset_Is_Zero)
+
 	tree := testkit.made_scratch_cache(t, "pipeline", "zero-offset", context.allocator)
 	defer testkit.remove_cache(tree, context.allocator)
 	defer delete(tree, context.allocator)
@@ -355,6 +398,29 @@ placed_from_engine_output_refuses_a_final_cue_offset_of_zero :: proc(t: ^testing
 
 	testing.expect_value(t, summary.transcribed, 0)
 	testing.expect_value(t, summary.failed, 1)
+}
+
+@(test)
+placed_from_engine_output_places_a_final_cue_offset_that_advances :: proc(t: ^testing.T) {
+	tree := testkit.made_scratch_cache(t, "pipeline", "nonzero-offset", context.allocator)
+	defer testkit.remove_cache(tree, context.allocator)
+	defer delete(tree, context.allocator)
+
+	one := resume_recording(t, tree, "one")
+	defer delete(one, context.allocator)
+
+	settings := resume_settings()
+	defer delete(string(settings.model.digest), context.allocator)
+	o := resume_options(tree, settings)
+
+	inventory, plan := planned_resume(t, tree, settings)
+	defer planning.destroy_inventory(inventory, context.allocator)
+	defer planning.destroy_plan(plan, context.allocator)
+
+	summary := run_recordings(plan, o, context.allocator, nil, FAKE_NONZERO_OFFSET_STAGES)
+
+	testing.expect_value(t, summary.transcribed, 1)
+	testing.expect_value(t, summary.failed, 0)
 }
 
 // The corpus-level claim issue #70 is about, pinned where both --batch and
