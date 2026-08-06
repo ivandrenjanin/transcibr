@@ -203,6 +203,28 @@ bump :: proc(c: ^Counters, which: Metric, delta: int) {
 	}
 }
 
+// The address `Health_Watch.checked` gets lent out from, claimed once per
+// Batch and released when the Batch ends -- the A4 partner to `bump`'s
+// ADR-0006 assert above, carrying its identical message, both in this file
+// and both walked by `defaults_test.odin`. `bump` catches a second
+// transcription Worker at the moment the live count itself changes; this
+// catches a second concurrent Batch reaching for the same lent address
+// before either Worker exists to trip `bump` at all. `src/cli/batch.odin`'s
+// `run_the_batch` is the one caller -- ADR-0009 keeps that package itself
+// test-less, which is why the claim is asserted here instead, where a test
+// can drive it.
+@(private)
+health_watch_claimed: bool
+
+claim_health_watch :: proc() {
+	_, claimed := sync.atomic_compare_exchange_strong(&health_watch_claimed, false, true)
+	assert(claimed, "ADR-0006's one transcription Worker is asserted, not merely intended")
+}
+
+release_health_watch :: proc() {
+	sync.atomic_store(&health_watch_claimed, false)
+}
+
 // The channel's own occupancy right after a successful send, read through
 // `core:sync/chan`'s own mutex (`chan.len`) rather than kept by a second,
 // separately-incremented counter. A counter bumped after `chan.send` returns

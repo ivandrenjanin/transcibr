@@ -42,25 +42,16 @@ Batch_Options :: struct {
 @(private)
 cancel_requested: bool
 
-// ADR-0011's runtime half: read and written through `sync.atomic_load` and
-// `sync.atomic_store` at its one use site, `pipeline.checked_first_recording_
-// health` -- see `pipeline.Health_Watch`'s own doc comment (issue #111). The
-// one-transcription-Worker invariant this flag's safety used to rest on is
-// asserted elsewhere (`pipeline.bump`) and not at this site, so a second
-// Worker reaching for the same address is made to race a correct primitive
-// rather than trusted not to reach for it at all.
+// ADR-0011's runtime half, lent out to the pipeline through `Health_Watch`
+// and read/written by that single transcription Worker only, in strict
+// sequence (`pipeline.checked_first_recording_health`'s own doc comment).
+// Its safety rests entirely on ADR-0006's one-transcription-Worker invariant
+// -- asserted at the count itself in `pipeline.bump`, and, since this flag's
+// address is lent out from here, asserted again at the lending in
+// `pipeline.claim_health_watch` (issue #111), the A4 pair to `bump` that
+// `run_the_batch` below claims and releases around every Batch.
 @(private)
 gpu_health_checked: bool
-
-// A second, narrower guard: not the one-transcription-Worker invariant
-// (`gpu_health_checked`'s own atomicity now holds regardless), but reentrant
-// use of `run_the_batch` itself, the one caller that lends this package's
-// globals out through `Health_Watch`. Checked and set in a single
-// `sync.atomic_compare_exchange_strong` so the guard cannot itself be read by
-// two entrants before either has written it -- a plain check-then-set here
-// would race exactly the way `gpu_health_checked` used to.
-@(private)
-gpu_health_watch_in_use: bool
 
 // Set by the same Worker at the moment it aborts the Batch for an unhealthy
 // GPU, distinct from `cancel_requested` -- which an operator's Ctrl+C also
@@ -183,9 +174,8 @@ run_the_batch :: proc(
 	identified: artifact.Model,
 	plan: planning.Plan,
 ) -> int {
-	_, claimed := sync.atomic_compare_exchange_strong(&gpu_health_watch_in_use, false, true)
-	assert(claimed, "run_the_batch does not tolerate a second concurrent entrant")
-	defer sync.atomic_store(&gpu_health_watch_in_use, false)
+	pipeline.claim_health_watch()
+	defer pipeline.release_health_watch()
 
 	sync.atomic_store(&cancel_requested, false)
 	sync.atomic_store(&gpu_health_checked, false)

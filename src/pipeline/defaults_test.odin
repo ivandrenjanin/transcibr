@@ -130,3 +130,17 @@ worker_option_ceilings_pair_each_option_with_its_own_max :: proc(t: ^testing.T) 
 	_, unknown_found := worker_option_ceiling("--not-a-real-option")
 	testing.expect(t, !unknown_found, "an unregistered option name found a ceiling anyway")
 }
+
+// Issue #111, fix round 2: `claim_health_watch` is the A4 partner to `bump`'s
+// ADR-0006 assert, and `src/cli` -- its one caller -- is kept test-less by
+// ADR-0009, so this is where the happy path is driven for real. A release
+// freeing the claim for a second, later Batch is exactly what `run_the_batch`
+// relies on between two `--batch` invocations in the same process; this does
+// not drive the refusal branch, which issue #22 keeps out of any test.
+@(test)
+claim_health_watch_can_be_claimed_again_once_released :: proc(t: ^testing.T) {
+	claim_health_watch()
+	release_health_watch()
+	claim_health_watch()
+	release_health_watch()
+}
