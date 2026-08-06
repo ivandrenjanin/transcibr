@@ -328,6 +328,16 @@ the process and thread handles, and do not touch any file the child had open unt
 completes. Note also that `Process.pid` is stale once the process exits and Windows recycles pids,
 so a late terminate can signal an unrelated application.
 
+**`core:sys/info.iterate_gpus` hardcodes `ControlSet001` and misses the active control set.**
+`_iterate_gpus` (`platform_windows.odin:274` at the pin) opens
+`SYSTEM\ControlSet001\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}` unconditionally rather
+than `SYSTEM\CurrentControlSet\...`, so on a machine whose active control set is not `ControlSet001`
+it enumerates zero adapters — measured on this repository's own dev machine (round 3 of the #96
+review), where a real, working NVIDIA GPU produced a false "no GPU could be enumerated at all"
+directly beneath a passing `engine` check that had already reached that same GPU. This is why
+`src\doctor\gpu.odin` (ADR-0033) talks to `vendor:directx/dxgi` directly — `CreateDXGIFactory1` and
+`IFactory1.EnumAdapters1` — rather than through this stdlib wrapper.
+
 **No `os.remove_all(...)` call anywhere in the tree (issue #97/#105).** `core:testing` runs tests on
 their own thread, and issue #97 measured `os.remove_all` faulting on that thread over a non-empty
 directory — a crash with no summary and no JSON report, the same failure mode issue #22 already
@@ -346,6 +356,15 @@ runs one. A name written here is checked against the real suite by `scripts\self
 cannot go stale unnoticed.
 Do not hand-roll the compiler invocation — the sweep also enforces that every package either
 collects tests or is declared test-less in `$OdinPackagesWithoutTests`.
+
+`core:testing`'s runner caps the thread pool at the test count: `thread_count = min(thread_count,
+total_test_count)` in `runner.odin`, right after thread count is chosen from
+`ODIN_TEST_THREADS`/core count. A fixture package built to check a thread-count define — for
+example, that concurrent asserts really do run concurrently — needs at least two `@(test)`
+procedures in that package, or the cap silently pins it to one thread regardless of what the define
+asked for and the check asserts nothing. `.\scripts\test.ps1 -Threads1` runs the fixture package this
+repository keeps for exactly that (`$ThreadsPackageName` in `scripts\test.ps1`, currently `child`)
+under `ODIN_TEST_THREADS=1`, alongside the existing `-TestName`.
 
 The notes below name identifiers in the compiler's `core` sources and never line numbers in them. A
 name is greppable, survives an upstream edit, and says which thing is meant; a line number in another
