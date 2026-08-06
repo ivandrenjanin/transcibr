@@ -7,7 +7,6 @@ package pipeline
 // `.Skip` are reported and counted. `planning.plan_batch` already decided
 // which is which -- nothing here re-decides it.
 
-import "core:fmt"
 import "core:mem"
 import "core:strings"
 import "core:sync"
@@ -125,13 +124,6 @@ re_rendered_and_placed :: proc(
 }
 
 @(private)
-report_refusal :: proc(entry: planning.Entry, allocator: mem.Allocator) {
-	line := planning.plan_line(entry, allocator)
-	defer delete(line, allocator)
-	fmt.eprintln(line)
-}
-
-@(private)
 sort_entry :: proc(
 	summary: ^Summary,
 	entry: planning.Entry,
@@ -154,7 +146,7 @@ sort_entry :: proc(
 	case .Skip:
 		summary.skipped += 1
 	case .Refuse:
-		report_refusal(entry, allocator)
+		report_fault(planning.plan_line(entry, allocator), allocator)
 		summary.refused += 1
 	}
 }

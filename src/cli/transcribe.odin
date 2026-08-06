@@ -41,10 +41,9 @@ transcribe_one :: proc(arguments: []string) -> int {
 		return USAGE_ERROR
 	}
 
-	group, opening := child.job_object_open()
+	group, opened := job_object_opened()
 	defer child.job_object_close(&group)
-	if opening.fault != .None {
-		pipeline.report_fault(child.error_message(opening, context.allocator), context.allocator)
+	if !opened {
 		return OPERATING_ERROR
 	}
 

@@ -127,14 +127,13 @@ main :: proc() {
 
 print_version :: proc() {
 	line := version.banner(PROGRAM, version.CURRENT, context.allocator)
-	defer delete(line, context.allocator)
 
 	assert(strings.has_prefix(line, PROGRAM), "banner does not name this program")
 	assert(len(line) > len(PROGRAM), "banner carries no version after the program name")
 	assert(line[len(PROGRAM)] == ' ', "banner does not separate the program name from the version")
 	assert(strings.index_byte(line, '\n') == -1, "banner rendered more than one line")
 
-	fmt.println(line)
+	pipeline.report_line(line, context.allocator)
 }
 
 Options :: struct {
@@ -320,6 +319,28 @@ model_identified :: proc(path: string) -> (identified: artifact.Model, ok: bool)
 	assert(len(message) > 0, "a Model was refused and nothing said why")
 	pipeline.report_fault(message, context.allocator)
 	return identified, false
+}
+
+// The shared Job Object every command that spawns children opens, with its
+// refusal already reported (issue #119: transcribe_one, run_batch_command and
+// run_doctor each hand-copied this open/report/return shape). The caller
+// still writes its own `defer child.job_object_close(&group)`: the object has
+// to outlive this procedure, the same reason `transcibr:child`'s own test
+// helper's does (child_test.odin's open_group).
+@(private)
+@(require_results)
+job_object_opened :: proc() -> (group: child.Job_Object, ok: bool) {
+	defer assert(
+		ok == (group.handle != nil),
+		"a Job Object's ok must agree with whether its handle is live",
+	)
+
+	opened, opening := child.job_object_open()
+	if opening.fault == .None {
+		return opened, true
+	}
+	pipeline.report_fault(child.error_message(opening, context.allocator), context.allocator)
+	return opened, false
 }
 
 // Hands back `false` so a caller can refuse in the one line it took to notice.
