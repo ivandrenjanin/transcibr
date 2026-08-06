@@ -4,15 +4,15 @@ package policy
 import "core:fmt"
 import "core:strings"
 
-// This file renders one file's facts as the lines scripts\common.ps1 reads back.
+// This file renders one file's facts as tab-separated lines -- the report
+// shape ADR-0028's two-language seam used to hand to a second program. That
+// seam is retired: `tools\policy` computes and prints its own verdicts now
+// (main.odin's report_violations), and nothing reads this shape back except
+// report_test.odin, which pins it.
 //
 // One record per line, fields separated by tabs, the first field naming the kind
 // of record. A `file` record opens a block and every record after it belongs to
 // that file, so a path is written once however many procedures it holds.
-//
-// Tab-separated and not JSON, because the reader is PowerShell 5.1 and
-// ConvertFrom-Json there returns a PSCustomObject per record for a report that is
-// a thousand records long. `-split` on a tab is the whole parser.
 
 RECORD_FILE :: "file"
 RECORD_FAULT :: "fault"
@@ -38,9 +38,11 @@ flag :: proc(set: bool) -> string {
 // Reading one is what can still take this program down: `core:odin/parser`
 // recurses on shapes no bracket count bounds -- a chain of `^` in a type runs the
 // thread off its stack at about eighty of them, counted depth one -- and a stack
-// overflow has no error return to catch. A name already written is the whole of
-// what says which file that was. scripts\common.ps1's Get-OdinSourceFact reads
-// the last one when the tool exits non-zero.
+// overflow has no error return to catch. The property this shape names --
+// writing a file's name before reading it -- is what main.odin's
+// check_one_file does directly (`checking: %s`, to standard error) for `just
+// check`'s own run; this render_file is the same shape pinned by
+// report_test.odin.
 render_file :: proc(name: string, into: ^strings.Builder) {
 	assert(len(name) > 0, "asked to report on a file with no name")
 	assert(into != nil, "asked to render a report into nothing at all")

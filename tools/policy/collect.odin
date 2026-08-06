@@ -335,7 +335,8 @@ one_line :: proc(text: string, allocator: mem.Allocator) -> string {
 
 // Every line in one file where an `os.remove_all(...)` call expression
 // appears -- the #97 review's own finding, not a rule any policy document
-// states (see build.ps1's comment above the call into this check).
+// states (see the justfile's `check` recipe comment above the call into this
+// check).
 //
 // A file that never imports `core:os` is answered with no lines and no walk at
 // all: nothing it could write can be a call through a name this never bound,

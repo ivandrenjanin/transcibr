@@ -1,15 +1,16 @@
 #+vet explicit-allocators
-// This file is the package-accounting check the ticket that retired
-// scripts\ asked for, over BOTH package roots the repository holds and in
-// both directions. Every package under `src/` and under `tools/` holding at
-// least one `*_test.odin` file must appear in the justfile's `test` recipe,
-// and every package under either root holding `.odin` files and no
-// `*_test.odin` file at all is a violation. It replaces scripts\common.ps1's
-// hand-maintained $OdinPackagesWithoutTests, whose own $OdinPackageRoots
-// covered `tools\` too. `cli`'s ADR-0009 exemption -- an entry point thin
-// enough to read, with no tests of its own -- moves here as the one name this
-// check does not demand, and it is a `src/` name: `tools/` has no exemption
-// roster at all.
+// This file is the package-accounting check issue #152 (the ticket that
+// retired the PowerShell layer) asked for, over BOTH package roots the
+// repository holds and in both directions. Every package under `src/` and
+// under `tools/` holding at least one `*_test.odin` file must appear in the
+// justfile's `test` recipe, and every package under either root holding
+// `.odin` files and no `*_test.odin` file at all is a violation. Before
+// #152, this was scripts\common.ps1's hand-maintained $OdinPackagesWithoutTests,
+// whose own $OdinPackageRoots covered `tools\` too; `TEST_LESS_SRC_PACKAGES`
+// below is that roster's successor. `cli`'s ADR-0009 exemption -- an entry
+// point thin enough to read, with no tests of its own -- moves here as the
+// one name this check does not demand, and it is a `src/` name: `tools/` has
+// no exemption roster at all.
 package policy
 
 import "core:mem"

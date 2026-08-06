@@ -315,8 +315,10 @@ abandon :: proc(pi: ^win32.PROCESS_INFORMATION, fault: Fault) -> Error {
 }
 
 // Bounded and not INFINITE: a Stop press that never comes back is a frozen window
-// (issue #27). Thirty seconds is what scripts\common.ps1 gives a killed process
-// tree, and the two agree on purpose.
+// (issue #27). Thirty seconds against a process tree Stop itself terminates,
+// chosen independently of any test-runner ceiling (issue #152 retired the
+// PowerShell wrapper that used to give one; ADR-0035 records the local
+// timeout gap as an accepted risk).
 STOP_BOUND_MS :: u32(30_000)
 
 // Deliberately not STOP_BOUND_MS: an abandoned child was created suspended and

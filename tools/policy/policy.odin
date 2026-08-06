@@ -11,8 +11,9 @@
 // answered by a column-zero text scan written in PowerShell -- a second model of
 // Odin, in a second language, that was silently wrong three times.
 //
-// The build runs this; it is not part of transcibr. `scripts\build.ps1` builds
-// it before the checks that read it and says so where it happens.
+// The build runs this; it is not part of transcibr. `just check` builds it
+// (`odin run tools/policy`) before the checks that read it and says so where
+// it happens.
 //
 // This file holds the fault vocabulary, the shape of one file's facts, and the
 // bounded read that produces them. collect.odin holds the walk that finds

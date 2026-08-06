@@ -1,15 +1,17 @@
 #+vet explicit-allocators
 // This file turns one file's Source_Facts into the verdicts CLAUDE.md's
-// source policies ask for. It is what scripts\common.ps1's five Assert-Odin*
-// procedures used to compute, reading this program's own tab-separated report
-// back in a second language; ADR-0028's argument -- read Odin with Odin --
-// carried one step further, so nothing downstream re-parses this program's
-// report to decide pass or fail.
+// source policies ask for, computed here directly -- ADR-0028's argument,
+// read Odin with Odin, carried one step further, so nothing downstream
+// re-parses this program's own report to decide pass or fail. Before #152's
+// justfile migration these five verdicts were computed by
+// scripts\common.ps1's Assert-Odin* procedures instead, reading that report
+// back in a second language.
 //
 // The file-tag roster is here too: CLAUDE.md rule M2's other half, the names
 // every file a scope covers must declare on a `#+vet` line above its own
-// `package` clause. Moved from scripts\common.ps1's $OdinFileVetTags, which
-// this program already read every file's tags to check against.
+// `package` clause. Before #152, this roster lived in scripts\common.ps1's
+// $OdinFileVetTags, which this program already read every file's tags to
+// check against.
 package policy
 
 import "core:fmt"

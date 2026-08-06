@@ -7,7 +7,7 @@ import "core:strings"
 import "transcibr:artifact"
 
 // What a dry run prints. Here rather than in `src/cli`, because that package is
-// named in `$OdinPackagesWithoutTests` and a sentence nothing can turn red is a
+// named in `TEST_LESS_SRC_PACKAGES` and a sentence nothing can turn red is a
 // sentence nobody is holding (ADR-0009).
 
 // %q on every path, for the reason `src/audio` gives: a line reaches a user

@@ -6,8 +6,9 @@ import "core:strings"
 import "core:testing"
 
 // This file checks the verdicts check.odin computes from Source_Facts: the
-// five things scripts\common.ps1's Assert-Odin* procedures used to compute
-// from this program's own report, now computed here instead.
+// five things that, before issue #152's justfile migration, were computed by
+// scripts\common.ps1's Assert-Odin* procedures from this program's own
+// report -- now computed here directly.
 
 @(require_results)
 long_body :: proc(lines: int, allocator: mem.Allocator) -> string {

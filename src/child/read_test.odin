@@ -294,10 +294,12 @@ TOLERANCE :: 8
 //
 // N2 of PR #64's fourth review: at `ROUNDS`, a cancellation broken on EVERY
 // round pays the full `CANCEL_BOUND_MS` penalty each time -- about 530
-// seconds of the 600-second ceiling `scripts\common.ps1` gives the whole
-// `child` package, an 11% margin that reports as "the child package did not
-// finish within 600 seconds and was killed" rather than this case's own
-// message, the identical defect Finding 1 of the same review closes for the
+// seconds against the 600-second ceiling `scripts\common.ps1` used to give
+// the whole `child` package before issue #152 retired it (nothing wraps
+// `odin test` with a package-level ceiling any more; CI's own 30-minute job
+// timeout is what remains), an 11% margin that reported as "the child
+// package did not finish within 600 seconds and was killed" rather than this
+// case's own message, the identical defect Finding 1 of the same review closes for the
 // worker. `LEAK_SWEEP_BUDGET` bails the round loop and not the detection: a
 // healthy run pays `READ_SHORT_BOUND_MS` on every round regardless -- there
 // is never a writer to race, so the bound is always what ends the read, not
