@@ -78,10 +78,11 @@ Body_Comment :: struct {
 // asked. A file with a fault carries no facts at all: a partial answer read as a
 // complete one is the silence this whole program exists to end.
 Source_Facts :: struct {
-	procedures: []Procedure,
-	comments:   []Body_Comment,
-	vet_tags:   []string,
-	fault:      Fault,
+	procedures:       []Procedure,
+	comments:         []Body_Comment,
+	vet_tags:         []string,
+	remove_all_lines: []int,
+	fault:            Fault,
 }
 
 // The attribute rule F2 is about, spelled as the compiler's own sources spell it.
@@ -92,6 +93,21 @@ REQUIRE_RESULTS :: "require_results"
 // The file tag rule M2 is about. The compiler reads one only above the `package`
 // clause, and several names may sit on one of these lines.
 VET_TAG :: "#+vet"
+
+// The import path and the procedure name the #97 ban is about: any
+// `os.remove_all(...)` call expression, wherever the file's own import binds
+// the local name `os` to `core:os`.
+//
+// The match is TEXTUAL against the imported package's own name, the same way
+// requires_results reads an attribute's spelling rather than resolving what it
+// binds to -- a second model of Odin's import resolution is the defect
+// ADR-0028 is about, and this check does not need one to answer the question it
+// asks. The residual: an import aliased away from `os` twice over --
+// `import myos "core:os"` and a local `remove_all` of its own on some other
+// package aliased `os` -- would not be told apart by a textual match. Neither
+// shape appears anywhere in this repository today.
+REMOVE_ALL_PACKAGE :: "core:os"
+REMOVE_ALL_PROCEDURE :: "remove_all"
 
 // What a procedure with no name of its own is called in a report. A literal
 // passed as an argument has a body, and a comment inside that body is a comment
@@ -301,6 +317,7 @@ read_source :: proc(name: string, src: string, allocator: mem.Allocator) -> (fac
 		procedures = found,
 		comments = collect_body_comments(&file, found, tree, allocator),
 		vet_tags = collect_vet_tags(&file, tree, allocator),
+		remove_all_lines = collect_remove_all_calls(&file, tree, allocator),
 	}
 }
 
@@ -328,4 +345,6 @@ facts_destroy :: proc(facts: Source_Facts, allocator: mem.Allocator) {
 		delete(tag, allocator)
 	}
 	delete(facts.vet_tags, allocator)
+
+	delete(facts.remove_all_lines, allocator)
 }

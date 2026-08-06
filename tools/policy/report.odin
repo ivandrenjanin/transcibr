@@ -19,6 +19,7 @@ RECORD_FAULT :: "fault"
 RECORD_PROCEDURE :: "proc"
 RECORD_COMMENT :: "comment"
 RECORD_TAG :: "tag"
+RECORD_REMOVE_ALL :: "remove_all"
 
 // A boolean as the report spells one. Written rather than printed through `%v`,
 // which spells it `true` and `false` and would put the reader's answer at the
@@ -91,5 +92,8 @@ render_facts :: proc(facts: Source_Facts, into: ^strings.Builder) {
 	}
 	for tag in facts.vet_tags {
 		fmt.sbprintfln(into, "%s\t%s", RECORD_TAG, tag)
+	}
+	for line in facts.remove_all_lines {
+		fmt.sbprintfln(into, "%s\t%d", RECORD_REMOVE_ALL, line)
 	}
 }
