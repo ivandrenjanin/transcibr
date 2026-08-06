@@ -6,10 +6,12 @@
 # thing converting them on the way out was Git for Windows' SYSTEM gitconfig
 # setting core.autocrlf=true -- an uncommitted, machine-global setting that
 # happened to be on. `git -c core.autocrlf=false clone` produced a checkout
-# where all thirteen .odin files failed the formatting check and `just build`
-# refused to build anything; running the remedy that failure prints would then
-# have rewritten every one of them and flipped the object store for everybody
-# else.
+# where all thirteen .odin files failed `just fmt-check` (each printed
+# `NOT FORMATTED: <path>`, then just's own recipe-failed error; no remedy is
+# printed anywhere) -- `just build` runs no formatting check at all and built
+# that same checkout without complaint. Running `just fmt` afterward, on
+# nobody's prompt but a human's, would have rewritten every one of them and
+# flipped the object store for everybody else.
 #
 # `text` stores LF and checks out CRLF, which is what the blobs already hold and
 # what the working tree already looks like here -- so this states the state
