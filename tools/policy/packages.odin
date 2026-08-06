@@ -93,6 +93,107 @@ note_tested_package :: proc(
 	append(into, name)
 }
 
+// Every directory under `src_root` holding at least one `.odin` file at all
+// -- tested or not -- named the same way `tested_src_packages` names a
+// tested package. A file sitting directly in `src_root` itself belongs to no
+// package and is not counted here, matching `tested_src_packages`' own
+// `strays` carve-out for the test-file case.
+@(require_results)
+all_src_packages :: proc(
+	src_root: string,
+	allocator: mem.Allocator,
+) -> (
+	names: []string,
+	ok: bool,
+) {
+	assert(len(src_root) > 0, "asked which packages under no root at all exist")
+	assert(
+		allocator.procedure != nil,
+		"the package names outlive this call and need a chosen allocator",
+	)
+
+	seen := make([dynamic]string, 0, allocator)
+	walker := os.walker_create(src_root)
+	defer os.walker_destroy(&walker)
+
+	for entry in os.walker_walk(&walker) {
+		if entry.type == .Directory {
+			if is_excluded_directory(entry.name) {
+				os.walker_skip_dir(&walker)
+			}
+			continue
+		}
+		if entry.type != .Regular || !strings.has_suffix(entry.name, ".odin") {
+			continue
+		}
+		note_present_package(entry.fullpath, src_root, &seen, allocator)
+	}
+
+	if _, walk_error := os.walker_error(&walker); walk_error != nil {
+		return seen[:], false
+	}
+	return seen[:], true
+}
+
+// Records the package one `.odin` file belongs to, unless it is already
+// there. A file sitting directly in `src_root` -- `relative_slashed` trims
+// the whole path and returns the empty string -- belongs to no package and
+// is silently dropped, the same carve-out `note_tested_package` makes for a
+// stray test file.
+note_present_package :: proc(
+	source_file: string,
+	src_root: string,
+	into: ^[dynamic]string,
+	allocator: mem.Allocator,
+) {
+	assert(len(source_file) > 0, "asked to attribute no source file at all to a package")
+	assert(into != nil, "asked to record a package into nothing at all")
+
+	directory, _ := os.split_path(source_file)
+	name := relative_slashed(directory, src_root, allocator)
+	if len(name) == 0 {
+		delete(name, allocator)
+		return
+	}
+	for existing in into {
+		if existing == name {
+			delete(name, allocator)
+			return
+		}
+	}
+	append(into, name)
+}
+
+// Every name in `all` that `tested` does not hold and that is not declared
+// exempt in TEST_LESS_SRC_PACKAGES -- a package with no `*_test.odin` file at
+// all, new or emptied, that `missing_from_test_recipe` alone never asks
+// about because it only ever walks packages that already hold a test file.
+@(require_results)
+untested_packages :: proc(all: []string, tested: []string, allocator: mem.Allocator) -> []string {
+	assert(
+		allocator.procedure != nil,
+		"the untested package names outlive this call and need a chosen allocator",
+	)
+
+	missing := make([dynamic]string, 0, allocator)
+	for name in all {
+		if is_test_less_package(name) {
+			continue
+		}
+		has_test := false
+		for candidate in tested {
+			if candidate == name {
+				has_test = true
+				break
+			}
+		}
+		if !has_test {
+			append(&missing, strings.clone(name, allocator))
+		}
+	}
+	return missing[:]
+}
+
 // Whether `name` is exempt from appearing in the justfile's `test` recipe.
 @(require_results)
 is_test_less_package :: proc(name: string) -> bool {

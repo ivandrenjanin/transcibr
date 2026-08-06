@@ -183,6 +183,84 @@ tested_src_packages_finds_only_directories_holding_a_test_file :: proc(t: ^testi
 	testing.expect_value(t, len(strays), 0)
 }
 
+// A package holding no test file at all -- new, or one whose tests were all
+// deleted -- and not declared exempt must be reported. `missing_from_test_recipe`
+// alone never asks this question: it only ever walks packages `tested_src_packages`
+// already found holding a test file (review round 5 finding).
+@(test)
+untested_and_unexempt_package_is_reported :: proc(t: ^testing.T) {
+	missing := untested_packages(
+		[]string{"child", "cli", "newpkg"},
+		[]string{"child"},
+		context.allocator,
+	)
+	defer {
+		for name in missing {
+			delete(name, context.allocator)
+		}
+		delete(missing, context.allocator)
+	}
+
+	testing.expect_value(t, len(missing), 1)
+	testing.expect_value(t, missing[0], "newpkg")
+}
+
+@(test)
+an_exempt_untested_package_is_not_reported :: proc(t: ^testing.T) {
+	missing := untested_packages([]string{"cli"}, []string{}, context.allocator)
+	defer delete(missing, context.allocator)
+
+	testing.expect_value(t, len(missing), 0)
+}
+
+@(test)
+a_tested_package_is_not_reported_as_untested :: proc(t: ^testing.T) {
+	missing := untested_packages([]string{"child"}, []string{"child"}, context.allocator)
+	defer delete(missing, context.allocator)
+
+	testing.expect_value(t, len(missing), 0)
+}
+
+// A small fixture on disk: one package holding only production source, no
+// test file at all -- `all_src_packages` must still find it, since it is
+// the whole point of the deny-by-default half of this check.
+@(test)
+all_src_packages_finds_a_package_with_no_test_file :: proc(t: ^testing.T) {
+	root, root_err := os.temp_dir(context.allocator)
+	testing.expect_value(t, root_err, nil)
+	defer delete(root, context.allocator)
+
+	base := fmt.aprintf(
+		"%stranscibr-policy-untested-fixture-%d",
+		root,
+		os.get_pid(),
+		allocator = context.allocator,
+	)
+	defer delete(base, context.allocator)
+	plain_dir := fmt.aprintf("%s/plain", base, allocator = context.allocator)
+	defer delete(plain_dir, context.allocator)
+
+	testing.expect_value(t, os.make_directory(base), os.Error(nil))
+	testing.expect_value(t, os.make_directory(plain_dir), os.Error(nil))
+	defer os.remove(plain_dir)
+	defer os.remove(base)
+
+	plain_file := fmt.aprintf("%s/run.odin", plain_dir, allocator = context.allocator)
+	defer delete(plain_file, context.allocator)
+	testing.expect_value(t, os.write_entire_file(plain_file, []byte{}), os.Error(nil))
+	defer os.remove(plain_file)
+
+	names, ok := all_src_packages(base, context.allocator)
+	defer delete(names, context.allocator)
+	defer for name in names {
+		delete(name, context.allocator)
+	}
+
+	testing.expect_value(t, ok, true)
+	testing.expect_value(t, len(names), 1)
+	testing.expect_value(t, names[0], "plain")
+}
+
 // A `*_test.odin` file sitting directly in `src_root` -- not inside any
 // package directory -- belongs to no package. It must be reported through
 // `strays`, never folded into `names` under an empty name: that empty name

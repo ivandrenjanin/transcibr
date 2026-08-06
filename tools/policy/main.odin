@@ -175,12 +175,9 @@ check_package_accounting :: proc(
 		append(into, make_violation(src_root, 0, message, allocator))
 		return
 	}
-	for stray in strays {
-		message := strings.clone(
-			"a *_test.odin file that belongs to no package under src/",
-			allocator,
-		)
-		append(into, make_violation(stray, 0, message, allocator))
+	report_stray_test_files(strays, into, allocator)
+	if !report_untested_packages(src_root, tested, into, allocator) {
+		return
 	}
 
 	exempt_with_tests := exempt_packages_holding_tests(tested, allocator)
@@ -218,6 +215,66 @@ check_package_accounting :: proc(
 		append(into, make_violation(justfile_path, 0, message, allocator))
 		delete(name, allocator)
 	}
+}
+
+// One violation per stray `*_test.odin` file -- a file `tested_src_packages`
+// found sitting directly in `src_root`, belonging to no package (A8: report
+// through the error return, never assert past a filesystem input that does
+// not fit the package shape).
+report_stray_test_files :: proc(
+	strays: []string,
+	into: ^[dynamic]Violation,
+	allocator: mem.Allocator,
+) {
+	assert(into != nil, "asked to collect violations into nothing at all")
+
+	for stray in strays {
+		message := strings.clone(
+			"a *_test.odin file that belongs to no package under src/",
+			allocator,
+		)
+		append(into, make_violation(stray, 0, message, allocator))
+	}
+}
+
+// One violation per `src\` package holding no `*_test.odin` file at all and
+// not declared exempt in TEST_LESS_SRC_PACKAGES -- the deny-by-default half
+// of this check (review round 5): a package with zero test files, new or
+// emptied, used to pass `just check` silently. Returns false only when the
+// walk itself failed, matching `tested_src_packages`' own failure shape.
+@(require_results)
+report_untested_packages :: proc(
+	src_root: string,
+	tested: []string,
+	into: ^[dynamic]Violation,
+	allocator: mem.Allocator,
+) -> bool {
+	assert(len(src_root) > 0, "asked to find untested packages under no root at all")
+	assert(into != nil, "asked to collect violations into nothing at all")
+
+	all, discovered := all_src_packages(src_root, allocator)
+	defer delete(all, allocator)
+	defer for name in all {
+		delete(name, allocator)
+	}
+	if !discovered {
+		message := strings.clone("could not walk src\\ looking for every package", allocator)
+		append(into, make_violation(src_root, 0, message, allocator))
+		return false
+	}
+
+	untested := untested_packages(all, tested, allocator)
+	defer delete(untested, allocator)
+	for name in untested {
+		message := fmt.aprintf(
+			"src/%s holds no *_test.odin file and is not named in TEST_LESS_SRC_PACKAGES",
+			name,
+			allocator = allocator,
+		)
+		append(into, make_violation(src_root, 0, message, allocator))
+		delete(name, allocator)
+	}
+	return true
 }
 
 // Every violation, one line each, to standard error: the stream the compiler
