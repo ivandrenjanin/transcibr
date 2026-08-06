@@ -32,6 +32,47 @@ fixture_read :: proc(buffer: []u8, user: rawptr) -> (read: u32, ok: bool) {
 	return u32(n), true
 }
 
+@(private = "file")
+Progress_Collector :: struct {
+	ticks: [dynamic]Download_Progress,
+}
+
+@(private = "file")
+record_progress :: proc(progress: Download_Progress, user: rawptr) {
+	collector := cast(^Progress_Collector)user
+	append(&collector.ticks, progress)
+}
+
+@(test)
+write_body_reports_progress_after_every_chunk_received :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "net", "transfer-progress", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	part := fmt.aprintf("%s\\progress.part", cache, allocator = context.allocator)
+	defer delete(part, context.allocator)
+
+	body := Fixture_Body {
+		data = []u8{1, 2, 3, 4, 5},
+	}
+	source := Body_Source {
+		read = fixture_read,
+		user = &body,
+	}
+	spec := Download_Spec {
+		expected_bytes = 5,
+	}
+	collector: Progress_Collector
+	defer delete(collector.ticks)
+	result := receive_and_write(200, 0, spec, part, source, record_progress, &collector)
+
+	testing.expect_value(t, result.fault, Download_Fault.None)
+	testing.expect(t, len(collector.ticks) > 0, "a completed transfer must have reported progress")
+	last := collector.ticks[len(collector.ticks) - 1]
+	testing.expect_value(t, last.bytes_received, i64(5))
+	testing.expect_value(t, last.total_bytes, i64(5))
+}
+
 @(test)
 a_resumed_206_response_appends_onto_the_existing_part_file :: proc(t: ^testing.T) {
 	cache := testkit.made_scratch_cache(t, "net", "transfer-append", context.allocator)
@@ -98,6 +139,63 @@ a_server_ignoring_range_and_answering_200_replaces_the_part_file_rather_than_app
 	testing.expect_value(t, len(written), 3)
 	testing.expect_value(t, written[0], u8(1))
 	testing.expect_value(t, written[2], u8(3))
+}
+
+@(test)
+a_download_over_plain_http_is_refused_before_any_request_is_sent :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "net", "transfer-insecure-url", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	destination := fmt.aprintf("%s\\insecure.bin", cache, allocator = context.allocator)
+	defer delete(destination, context.allocator)
+
+	spec := Download_Spec {
+		url             = "http://host.example/file.bin",
+		expected_bytes  = 4,
+		expected_sha256 = "0000000000000000000000000000000000000000000000000000000000000000",
+	}
+	result := download(spec, destination, context.allocator)
+
+	testing.expect_value(t, result.fault, Download_Fault.Not_Secure)
+	testing.expect_value(t, result.status, 0)
+	testing.expect(
+		t,
+		!os.exists(destination),
+		"a refused download must never reach the destination",
+	)
+}
+
+@(test)
+a_body_larger_than_expected_is_refused_rather_than_written_in_full :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "net", "transfer-body-too-long", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	part := fmt.aprintf("%s\\flood.part", cache, allocator = context.allocator)
+	defer delete(part, context.allocator)
+
+	body := Fixture_Body {
+		data = []u8{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20},
+	}
+	source := Body_Source {
+		read = fixture_read,
+		user = &body,
+	}
+	spec := Download_Spec {
+		expected_bytes = 10,
+	}
+	result := receive_and_write(200, 0, spec, part, source, nil, nil)
+
+	testing.expect_value(t, result.fault, Download_Fault.Write_Failed)
+	written, unreadable := os.read_entire_file(part, context.allocator)
+	defer delete(written, context.allocator)
+	testing.expect(t, unreadable == nil, "could not read the part file back")
+	testing.expect(
+		t,
+		i64(len(written)) <= spec.expected_bytes,
+		"a body longer than expected must not be written past the expected size",
+	)
 }
 
 @(test)

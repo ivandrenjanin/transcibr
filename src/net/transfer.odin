@@ -97,6 +97,9 @@ write_body :: proc(
 		if read == 0 {
 			break
 		}
+		if written + i64(read) > spec.expected_bytes {
+			return false
+		}
 		put, unwritable := os.write(handle, buffer[:read])
 		if unwritable != nil || put != int(read) {
 			return false

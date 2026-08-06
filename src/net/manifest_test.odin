@@ -103,6 +103,28 @@ a_negative_expected_bytes_is_rejected_rather_than_stored :: proc(t: ^testing.T) 
 }
 
 @(test)
+an_absurdly_large_expected_bytes_is_rejected_rather_than_stored :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "net", "manifest-huge-bytes", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	manifest_path := fmt.aprintf("%s\\engine.json", cache, allocator = context.allocator)
+	defer delete(manifest_path, context.allocator)
+	manifest_json := `{"expected_bytes":1e300}`
+	testing.expect(
+		t,
+		os.write_entire_file(manifest_path, transmute([]u8)manifest_json) == nil,
+		"could not write the fixture manifest",
+	)
+
+	spec, applied := manifest_override(DEFAULT_SPEC, manifest_path, context.allocator)
+	defer destroy_spec(spec, context.allocator)
+
+	testing.expect(t, applied, "a manifest that parsed clean must report itself applied")
+	testing.expect_value(t, spec.expected_bytes, DEFAULT_SPEC.expected_bytes)
+}
+
+@(test)
 an_empty_url_field_is_rejected_rather_than_stored :: proc(t: ^testing.T) {
 	cache := testkit.made_scratch_cache(t, "net", "manifest-empty-url", context.allocator)
 	defer delete(cache, context.allocator)

@@ -167,7 +167,7 @@ point the two environment variables at binaries you have pinned by hand, before 
 The style itself is `odinfmt.json` at the repository root, which is the name odinfmt looks for on
 its own — an editor formatting on save and the build cannot disagree about it. A misformatted file
 fails `just fmt-check`, not merely a check somebody remembers to run. `fmt` and `fmt-check` each
-spell the same three directories — `src`, `tools`, `docs\reference` — but only `fmt-check` iterates
+spell the same two directories — `src`, `tools` — but only `fmt-check` iterates
 them file by file: `fmt` hands each directory whole to `odinfmt -w`, while `fmt-check` walks each
 directory with a `for /r` loop per file, running odinfmt per file without `-w`, comparing its
 output against the file on disk byte for byte, and never consulting `git` -- the per-file loop is

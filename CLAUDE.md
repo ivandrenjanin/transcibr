@@ -34,8 +34,9 @@ example and the linked original differ, the rule is the same and the linked docu
 The operative contract is self-documenting code with comments driven toward minimal. Comments are banned inside procedure bodies. IF a comment is needed, it must be a comment that explains why the code is doing what it is doing, not a comment that repeats the code's logic.
 
 Enforced mechanically, repository-wide, and it fails `just check`: `collect_comment_violations` in
-`tools\policy\check.odin` reads every `.odin` file `discover_odin_files` walks — `docs\reference\`
-included — and names the file, line and procedure of anything it finds. It reads with
+`tools\policy\check.odin` reads every `.odin` file `discover_odin_files` walks — every directory the
+repository holds `.odin` files under, `src` and `tools` included — and names the file, line and
+procedure of anything it finds. It reads with
 `core:odin/parser`, inside `tools\policy` itself (ADR-0028), so a `//` inside a raw string is text and not
 a comment, and a procedure declared inside a `when` block is covered like any other.
 
