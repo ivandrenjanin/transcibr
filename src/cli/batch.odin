@@ -45,11 +45,16 @@ cancel_requested: bool
 // ADR-0011's runtime half, lent out to the pipeline through `Health_Watch`
 // and read/written by that single transcription Worker only, in strict
 // sequence (`pipeline.checked_first_recording_health`'s own doc comment).
-// Its safety rests entirely on ADR-0006's one-transcription-Worker invariant
-// -- asserted at the count itself in `pipeline.bump`, and, since this flag's
-// address is lent out from here, asserted again at the lending in
-// `pipeline.claim_health_watch` (issue #111), the A4 pair to `bump` that
-// `run_the_batch` below claims and releases around every Batch.
+// Its safety rests entirely on ADR-0006's one-transcription-Worker invariant.
+// That invariant is asserted where the live count itself changes,
+// `pipeline.bump` (1c67c11) -- the reviewer's own hazard mutation for issue
+// #111 (a second `spawn_transcribe_worker` wired into `run.odin`) trips
+// `bump` before either Worker reaches this flag at all, so `bump` is what
+// actually holds this flag safe. `run_the_batch` below additionally claims
+// and releases `pipeline.claim_health_watch` around every Batch -- a
+// narrower, separate invariant (one concurrent Batch lending this flag's
+// address out at a time), asserted here because `src/cli` holds no tests of
+// its own (ADR-0009) and this is the one caller.
 @(private)
 gpu_health_checked: bool
 

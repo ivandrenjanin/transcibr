@@ -203,22 +203,29 @@ bump :: proc(c: ^Counters, which: Metric, delta: int) {
 	}
 }
 
-// The address `Health_Watch.checked` gets lent out from, claimed once per
-// Batch and released when the Batch ends -- the A4 partner to `bump`'s
-// ADR-0006 assert above, carrying its identical message, both in this file
-// and both walked by `defaults_test.odin`. `bump` catches a second
-// transcription Worker at the moment the live count itself changes; this
-// catches a second concurrent Batch reaching for the same lent address
-// before either Worker exists to trip `bump` at all. `src/cli/batch.odin`'s
-// `run_the_batch` is the one caller -- ADR-0009 keeps that package itself
-// test-less, which is why the claim is asserted here instead, where a test
-// can drive it.
+// Claimed once per `run_the_batch` call (`src/cli/batch.odin`) and released
+// when it returns -- a reentrancy guard on one concurrent Batch lending
+// `Health_Watch.checked`'s address out, not the one-transcription-Worker
+// invariant itself: it is claimed before either Worker exists, so a second
+// transcription Worker inside one Batch passes through it untouched. That
+// hazard -- the one issue #111 names -- is caught where the live count
+// actually changes, `bump`'s own ADR-0006 assert above; a hazard mutation
+// wiring a second `spawn_transcribe_worker` into `run.odin` trips `bump`,
+// never this. The message below is deliberately its own, naming what this
+// procedure actually checks, so it cannot be mistaken for `bump`'s cover.
+// `claim_health_watch_can_be_claimed_again_once_released` (`defaults_test.odin`)
+// is this procedure's own cover; `bump`'s is `exactly_one_transcription_-`
+// `runs_at_a_time_however_many_are_queued` (`topology_test.odin`), named in
+// the comment above `bump`.
 @(private)
 health_watch_claimed: bool
 
 claim_health_watch :: proc() {
 	_, claimed := sync.atomic_compare_exchange_strong(&health_watch_claimed, false, true)
-	assert(claimed, "ADR-0006's one transcription Worker is asserted, not merely intended")
+	assert(
+		claimed,
+		"run_the_batch was re-entered while a prior Batch's Health_Watch was still claimed",
+	)
 }
 
 release_health_watch :: proc() {
