@@ -43,8 +43,8 @@ script — its defaults carry no username and derive everything from the repo pa
 
 The repo's binding constraints are baked into every role's prompt: CLAUDE.md's mechanical rules
 (comment ban, 70-line cap, `@(require_results)`, vet tags), A8 boundary discipline, the issue #22
-assert-hostile-runner rules, the #68-era flake etiquette, validation via `.\scripts\build.ps1` and
-`.\scripts\test.ps1`, worktrees OUTSIDE the repo under the `-worktrees` sibling of the checkout
+assert-hostile-runner rules, the #68-era flake etiquette, validation via `just ci`, worktrees OUTSIDE
+the repo under the `-worktrees` sibling of the checkout
 (`issue-<N>` for the implementer/fixer, `review-<N>-r<R>` disposable for each reviewer round), the
 prior-refutation check before structural proposals, and report files under
 `%TEMP%\transcibr-sdd\issue-<N>-report.md`. Per-ticket `implNotes`/`reviewNotes` are for what the

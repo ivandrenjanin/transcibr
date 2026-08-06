@@ -1,10 +1,8 @@
 name: CI
 
-# Nothing here but the repository's own scripts. Every check CI performs a
-# developer performs too, by running the same script -- a check that lives only
-# in this file is one that lets someone break main while both local commands
-# pass. That is why the binary smoke test and the PE-header subsystem check are
-# in build.ps1 rather than in a step below.
+# Nothing here but `just`. Every check CI performs a developer performs too,
+# by running the same recipe -- a check that lives only in this file is one
+# that lets someone break main while `just ci` still passes locally.
 on:
   push:
   workflow_dispatch:
@@ -18,86 +16,34 @@ jobs:
     name: Build and test (Windows)
     runs-on: windows-latest
 
-    # Stated, never left to the platform's six-hour default. The scripts carry
-    # their own per-invocation ceiling ($OdinCommandTimeoutSeconds), and this is
-    # the backstop for everything they do not run: the toolchain download, and
-    # any future step. Generous against the minutes this job actually takes, so
-    # a slow runner is never mistaken for a hang -- the point is that a wedged
-    # job says so within the hour instead of holding a runner until tea time
-    # tomorrow.
+    # Stated, never left to the platform's six-hour default. Nothing in the
+    # justfile's own recipes carries a wall-clock ceiling of its own (issue
+    # #152's ADR records this as an accepted risk), so this job timeout is the
+    # only backstop for a hang -- the toolchain download, or any recipe below.
+    # Generous against the minutes this job actually takes, so a slow runner
+    # is never mistaken for one: the point is that a wedged job says so within
+    # the hour instead of holding a runner until tea time tomorrow.
     timeout-minutes: 30
 
     steps:
       - name: Check out
         uses: actions/checkout@v5
 
+      - name: Install just
+        uses: extractions/setup-just@v3
+
       # Pinned to a tagged release, never `latest`: an unpinned toolchain turns
       # an upstream change into a build failure on an unrelated commit, and
-      # makes "it passed yesterday" unanswerable. Every pin is read out of
-      # scripts/common.ps1 rather than copied here, so the release CI installs
-      # and the version string the scripts check cannot drift apart -- and
-      # because $env:CI is set here, those scripts refuse an unpinned tool
-      # outright instead of warning as they do locally.
-      #
-      # Both installs are one script, because they were the same twenty lines
-      # twice: download a tagged zip, find the executable inside it by pattern,
-      # and name it in the variable scripts/common.ps1 already resolves from.
-      # odinfmt is the odd one only in where it comes from -- it ships in the ols
-      # release zip rather than with the Odin distribution -- and in how it is
-      # pinned, by SHA-256, because it has no version flag to ask.
-      - name: Install the pinned Odin release
-        shell: pwsh
-        run: .\scripts\install-pinned-tool.ps1 -Tool odin
+      # makes "it passed yesterday" unanswerable. Every pin is read out of the
+      # justfile rather than copied here, so the release tag this installs
+      # cannot drift from the one recorded in source -- but installing is all
+      # this step does; no recipe below verifies the downloaded binaries'
+      # version or hash (ADR-0035's "What did not move" section).
+      - name: Install the pinned Odin release and odinfmt
+        run: just install-tools
 
-      - name: Install the pinned odinfmt
-        shell: pwsh
-        run: .\scripts\install-pinned-tool.ps1 -Tool odinfmt
-
-      # Every .odin file in the repository against odinfmt.json. Its own step as
-      # well as part of the build below, because "which file" is the answer a
-      # developer wants and a build that stopped before compiling does not say
-      # it as plainly as the command whose whole job is to.
-      - name: Check formatting
-        shell: pwsh
-        run: .\scripts\format.ps1
-
-      # Builds every target in $OdinTargets, then reads the subsystem back out
-      # of each PE header and runs the ones that can report their version. The
-      # formatting check runs here too -- rule S1 fails the BUILD, not merely a
-      # step somebody could reorder away.
-      - name: Build (debug)
-        shell: pwsh
-        run: .\scripts\build.ps1
-
-      # Both configurations, so neither rots. -o:speed is a different code path
-      # through the compiler and a release that only builds at tagging time is
-      # a release that breaks at tagging time.
-      - name: Build (release)
-        shell: pwsh
-        run: .\scripts\build.ps1 -Configuration release
-
-      - name: Test
-        shell: pwsh
-        run: .\scripts\test.ps1
-
-      # The default sweep runs every package's tests at ODIN_TEST_THREADS'
-      # default, which the #97 review found cannot see a class of defect in
-      # src\child -- the package owning process/pipe/directory lifecycle --
-      # that only shows up single-threaded (issue #104). No step-level
-      # timeout-minutes: test.ps1 imposes its own $OdinSweepTimeoutSeconds
-      # (900s) ceiling on every invocation regardless of package count, and a
-      # step timeout below that reaches the platform before the sweep does,
-      # so a hang would be reported by the job, which names nothing, instead
-      # of by the sweep naming the package. The job's own 30-minute
-      # timeout-minutes above is the backstop for this step too.
-      - name: Test (child, single-threaded)
-        shell: pwsh
-        run: .\scripts\test.ps1 -Threads1
-
-      # The two commands above, checked against repositories built to make them
-      # fail: the sweep because its failure mode is silence, and the build
-      # because its smoke test and PE-header read are the acceptance criteria
-      # of this repository and nothing else guards them.
-      - name: Self-test the build and test commands
-        shell: pwsh
-        run: .\scripts\selftest.ps1
+      # Everything a developer runs locally: fmt-check, check, build, release,
+      # test, test-single, smoke, in that order. `just ci`'s own definition is
+      # the one place that order is spelled out.
+      - name: just ci
+        run: just ci

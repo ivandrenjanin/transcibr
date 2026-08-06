@@ -57,6 +57,9 @@ ggml-*.bin
 # Working notes and throwaway prototypes.
 /.scratch/
 
+# `just install-tools` extracts the pinned Odin release and odinfmt here.
+/.tools/
+
 # Skills are restored from skills-lock.json (committed); the installed copies
 # are third-party content and stay out of this repository.
 /.claude/skills/

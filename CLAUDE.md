@@ -33,10 +33,10 @@ example and the linked original differ, the rule is the same and the linked docu
 
 The operative contract is self-documenting code with comments driven toward minimal. Comments are banned inside procedure bodies. IF a comment is needed, it must be a comment that explains why the code is doing what it is doing, not a comment that repeats the code's logic.
 
-Enforced mechanically, repository-wide, and it fails the build: `Assert-OdinCommentPolicy` in
-`scripts\common.ps1` reads every `.odin` file `Get-OdinSource` discovers — `docs\reference\`
+Enforced mechanically, repository-wide, and it fails `just check`: `collect_comment_violations` in
+`tools\policy\check.odin` reads every `.odin` file `discover_odin_files` walks — `docs\reference\`
 included — and names the file, line and procedure of anything it finds. It reads with
-`core:odin/parser`, through `tools\policy` (ADR-0028), so a `//` inside a raw string is text and not
+`core:odin/parser`, inside `tools\policy` itself (ADR-0028), so a `//` inside a raw string is text and not
 a comment, and a procedure declared inside a `when` block is covered like any other.
 
 ## 1. Assertions
@@ -150,7 +150,7 @@ Counted from the line containing `::` through the closing brace, comments and bl
 procedure that fits on one screen reads as a unit; one that scrolls does not. The limit is
 checkable by machine and has no exceptions without a maintainer decision recorded at the site.
 
-Checked by machine, and it fails the build: `Assert-OdinProcedureLength` in `scripts\common.ps1`
+Checked by machine, and it fails `just check`: `collect_length_violations` in `tools\policy\check.odin`
 reads the same procedure spans section 0 and rule F2 read (ADR-0028) and names the file, line, name
 and length of anything over.
 
@@ -186,8 +186,8 @@ Two halves enforce it. The **compiler** refuses a dropped result at the call sit
 attribute on a procedure with no results — so it cannot be sprayed wider than the rule says, and
 deleting a procedure's return values fails the build until the attribute goes too. What it says
 nothing about is a procedure declared *without* it, which is the direction every bare one here
-arrived from; `Assert-OdinResultPolicy` in `scripts\common.ps1` fails the build on one, reading the
-same procedure spans rule F1 and section 0 read (ADR-0028). It asks only where an attribute can be
+arrived from; `collect_result_violations` in `tools\policy\check.odin` fails `just check` on one,
+reading the same procedure spans rule F1 and section 0 read (ADR-0028). It asks only where an attribute can be
 written: a procedure TYPE and a literal passed as an argument are outside the rule because the
 compiler will not let anybody satisfy it there.
 
@@ -247,20 +247,20 @@ progress_test.odin(40:2) Error: Parameter 'allocator' of type 'Allocator' must b
 
 There is no command-line flag for it — `odin build -vet-explicit-allocators` answers `Unknown flag`
 at the pin, so unlike S1's set this one cannot be passed once. It is a **file tag**, it goes above
-the `package` clause, and `scripts\common.ps1` holds the names in `$OdinFileVetTags`. Adding a name
-there is what puts it on the files it is scoped for; do not spell one at a call site.
+the `package` clause, and `tools\policy\check.odin` holds the names in `vet_tag_roster`. Adding a
+name there is what puts it on the files it is scoped for; do not spell one at a call site.
 
 **Above the clause is the whole of the placement rule — not the first line.** What makes a tag do
 anything is that the compiler reads it, and it reads every `#+` line above `package`: stacked with
 another tag, or under a twenty-line doc comment, all the same. Nothing checks position among them,
 deliberately, because issue #48 puts `#+private` on these files too and one of the two would then
-have to be second. Each entry in `$OdinFileVetTags` also says **which files** it is for, and
-`Get-OdinRequiredVetTag` refuses the two ways that can be silent: a name that turns a check *off*
+have to be second. Each entry in `vet_tag_roster` also says **which files** it is for (its `scope`),
+and `required_vet_tags` refuses the two ways that can be silent: a name that turns a check *off*
 declared for every file, and a scope nothing resolves. A name is not repository-wide because the
 list is called a list.
 
-**The tag is read per file, and that is why `Assert-OdinVetTagPolicy` fails the build over a missing
-one.** Measured: a package holding one tagged file and one untagged sibling compiles clean, with the
+**The tag is read per file, and that is why `just check` fails over a missing one.** Measured: a
+package holding one tagged file and one untagged sibling compiles clean, with the
 sibling's implicit allocators never looked at. The two ways a tag can be wrong are already loud — a
 misspelled name is `Syntax Error: Invalid vet flag name` and a tag below the `package` clause is
 `Lines starting with #+ (file tags) are only allowed before the package line` — so absence is the
@@ -279,19 +279,30 @@ invocation passes the full vet set. A style rule that fights the toolchain becom
 runs; the formatter plus the vet flags are the rule.
 
 The set is `-vet -vet-tabs -strict-style -vet-style -warnings-as-errors -disallow-do`. Do not spell
-it out at a call site: `scripts\common.ps1` holds the only executable copy (`$OdinVetFlags`), and
-both commands pass all of it.
+it out at a call site: the `justfile` at the repository root holds the only executable copy (the
+`vet` variable), and every recipe that builds or tests passes all of it.
 
 The formatter half is `odinfmt.json` at the repository root — the one copy, and the name odinfmt
 looks for on its own, so an editor formatting on save and the build agree by construction. Do not
-reformat a file by hand or with a different config; `.\scripts\format.ps1 -Fix` is the way. A
-misformatted file fails the build, and the sweep covers every `.odin` file in the repository by
-discovery rather than by a list.
+reformat a file by hand or with a different config; `just fmt` is the way. A misformatted file fails
+`just ci` (`just fmt-check`), which walks `src`, `tools` and `docs\reference` — each spelled once in
+`fmt` and once in `fmt-check` — comparing odinfmt's own reformatted output for each file against the
+file on disk, byte for byte, never `git diff`. That three-directory scope is NARROWER than `check`'s:
+`check_repository` calls `discover_odin_files` with the repository root itself, excluding only
+`.git`, `build`, `.scratch` and `.tools` (ADR-0035's "same repository-wide scope"), so a `.odin` file
+added anywhere outside `src`, `tools` and `docs\reference` — under `examples\`, say — is read against
+every source policy by `just check` but never read by `just fmt-check` at all. `fmt`/`fmt-check` do
+not yet have a way to name a scope by exclusion the way `discover_odin_files` does; keeping the two
+in sync is a manual discipline until they do.
 
 ```powershell
-.\scripts\build.ps1     # every target in $OdinTargets, vet set, formatting, subsystem and smoke checked
-.\scripts\test.ps1      # every package under src\, vet set, memory failures fatal
-.\scripts\format.ps1    # every .odin file against odinfmt.json  (-Fix rewrites them)
+just build       # debug build of src/cli, vet set, subsystem console
+just release     # -o:speed build of src/cli, vet set
+just check       # tools/policy: CLAUDE.md's source policies and the package-accounting check
+just test        # every package under src\ and tools\policy, vet set, memory failures fatal
+just fmt         # every .odin file under src, tools and docs/reference against odinfmt.json, rewritten in place
+just fmt-check   # per file, odinfmt's own output byte-compared against the file on disk (no git diff)
+just ci          # fmt-check, check, build, release, test, test-single, smoke, in that order
 ```
 
 ### S2. Braces on every block
@@ -352,33 +363,36 @@ their own thread, and issue #97 measured `os.remove_all` faulting on that thread
 directory — a crash with no summary and no JSON report, the same failure mode issue #22 already
 names for concurrent assertions. Nothing needs a whole-subtree delete: `src\testkit\testkit.odin`'s
 `remove_cache` is the sanctioned teardown, a per-entry hand loop that never recurses through
-`core:os`. `scripts\common.ps1`'s `Assert-OdinRemoveAllPolicy` fails the build on any
+`core:os`. `collect_remove_all_violations` in `tools\policy\check.odin` fails `just check` on any
 `os.remove_all(...)` call expression, wherever it appears and however the `core:os` import is
 aliased, riding the same `tools\policy` AST read as the four CLAUDE.md source policies above — the
 one difference being that this is the #97 review's own finding rather than a rule this document
 states as one of those four.
 
 **Testing is built in; there is no framework to choose.** Mark procedures `@(test)`, import
-`core:testing`, and assert with `testing.expect` and `testing.expect_value`. `.\scripts\test.ps1`
-sweeps every package; `.\scripts\test.ps1 -TestName version.banner_names_the_program_and_its_version`
-runs one. A name written here is checked against the real suite by `scripts\selftest.ps1`, so it
-cannot go stale unnoticed.
-Do not hand-roll the compiler invocation — the sweep also enforces that every package either
-collects tests or is declared test-less in `$OdinPackagesWithoutTests`.
+`core:testing`, and assert with `testing.expect` and `testing.expect_value`. `just test` sweeps
+every package with one explicit `odin test` line each (the `justfile`'s own `test` recipe is the one
+place that list is spelled); `just test-one version banner_names_the_program_and_its_version` runs
+one. Issue #152 retired the PowerShell layer's own suite that used to check a name written here
+against the real one; no mechanism pins these names against the tree any more, so treat every `just
+test-one` example as a claim worth re-running, not a pinned fact (ADR-0035's third accepted risk).
+Do not hand-roll the compiler invocation — `tools\policy`'s package-accounting check covers both
+package roots, `src\` and `tools\`, in both directions: every package under either root holding a
+`*_test.odin` file must be named in the `justfile`'s `test` recipe, and every package under either
+root holding none at all is a violation (issue #152). `cli` is the one declared exemption
+(ADR-0009), and it is a `src\` name — `tools\` has no exemption roster at all, so a tool added
+there is denied by default until it holds tests and the `test` recipe names it.
 
 `core:testing`'s runner caps the thread pool at the test count: `thread_count = min(thread_count,
 total_test_count)` in `runner.odin`, right after thread count is chosen from
 `ODIN_TEST_THREADS`/core count. A package used to check a thread-count define — for example, that
 concurrent asserts really do run concurrently — needs at least two `@(test)` procedures in that
 package, or the cap silently pins it to one thread regardless of what the define asked for and the
-check asserts nothing. `.\scripts\test.ps1 -Threads1` restricts the sweep to `src\child`
-(`$ThreadsPackageName` in `scripts\test.ps1`, currently `child`, and fixed rather than
-parameterised per the script's own comment) and runs it under `ODIN_TEST_THREADS=1`, alongside the
-existing `-TestName`. `child` is real production source — process/pipe/directory lifecycle, not a
-fixture — kept there because the default 12-thread sweep cannot see the #97 defect class on it
-(issue #104). The package that exists purely to check the thread-count define above is a fixture
-`selftest.ps1` plants at run time (`Add-FixturePackage -Name 'child' -Test 'passing'
--PassingCount 4`), whose `-PassingCount` must stay at 2 or more for that reason.
+check asserts nothing. `just test-single` runs `src\child` under `ODIN_TEST_THREADS=1` (the recipe
+is fixed to that one package rather than parameterised, for the reason the recipe's own comment
+gives) alongside `just test-one`. `child` is real production source — process/pipe/directory
+lifecycle, not a fixture — kept there because the default 12-thread sweep cannot see the #97 defect
+class on it (issue #104).
 
 The notes below name identifiers in the compiler's `core` sources and never line numbers in them. A
 name is greppable, survives an upstream edit, and says which thing is meant; a line number in another
@@ -393,10 +407,13 @@ The Windows signal handler records into a single global slot and returns `EXCEPT
 so the faulting thread races a main loop that has to `TerminateThread` it before the OS kills the
 process; a second concurrent assertion overwrites that slot, and `TerminateThread` on a thread killed
 mid-log abandons its locks. Nothing in the toolchain has a timeout: `testing.set_fail_timeout` is
-opt-in per test. `scripts\common.ps1` therefore runs every `odin` invocation under
-`$OdinCommandTimeoutSeconds` and kills the tree — the compiler spawns the test binary, so killing the
-compiler alone orphans it — and `.github/workflows/ci.yml` carries an explicit `timeout-minutes`.
-Do not remove either; a sweep with no ceiling is a CI job that burns six hours to say nothing.
+opt-in per test. Issue #152 retired the PowerShell layer's process-tree-kill wrapper along with
+everything else it held — no `odin` invocation the `justfile` runs carries a wall-clock ceiling
+of its own; ADR-0035 records this as an accepted risk, mitigated instead by the repository-wide
+no-test-trips-an-assert discipline these Odin notes exist to uphold. A local hang is a `Ctrl+C`
+away; `.github/workflows/ci.yml`'s job-level `timeout-minutes` is what bounds one in CI. Do not
+remove that job timeout; a sweep with no ceiling anywhere is a CI job that burns six hours to say
+nothing.
 
 **`core:encoding/json` does not parse integers, silently wraps the ones it does, leaks when it
 refuses a file, and crashes on deep nesting.** Four traps, all measured, all with a worked example in
@@ -481,8 +498,8 @@ error would measure none of the brackets after it — which the decoder still de
 reaches the error and gives up — so the bound would under-count exactly the region that can crash the
 process. Switch on `token.kind`, discard the error, and stop on `.EOF`.
 
-`.\scripts\test.ps1 -TestName transcript.parses_real_engine_output_into_cues` is the test that
-catches the integer default against real Engine output.
+`just test-one transcript parses_real_engine_output_into_cues` is the test that catches the integer
+default against real Engine output.
 
 **`core:odin/parser` carries the same unbounded recursion, and it runs out of stack an order of
 magnitude sooner.** The build reads Odin with it (ADR-0028), so this is not a hypothetical: measured
@@ -500,10 +517,11 @@ carries no bracket at all and overflows at about **eighty** carets with a counte
 `+` chains and `if`/`else if` chains go at about 1600. A counter over `(`, `[` and `{` cannot be made
 to see any of them without becoming a second model of the grammar, which is the defect ADR-0028 is
 about. Nor does odinfmt cover the gap — it formats the eighty-caret file without complaint and
-survives 400 nested parentheses. So `tools\policy` writes each file's **name before it reads it**
-(`render_file`), and `Get-OdinSourceFact` reports the last name written when the tool exits non-zero.
-The residual is a crash that fails the build naming one file, rather than one that says only that
-something died somewhere in seventy-odd.
+survives 400 nested parentheses. So `check_one_file` in `tools\policy\main.odin` writes each file's
+**name before it reads it** (`checking: <name>`, to standard error), which is what says which file a
+crash was reading when `just check` dies naming nothing else. The residual is a crash that fails
+`just check` naming one file, rather than one that says only that something died somewhere in
+seventy-odd.
 
 **`core:odin/tokenizer` fills its keyword table behind a double-checked lock that never re-checks.**
 Two threads calling `tokenizer.init` for the first time both find `_global_keyword_lut_initialized`
@@ -519,9 +537,10 @@ thread exists. `@(init)` procedures must be `proc "contextless"`, so they build 
 named anything at all builds to an executable as long as it declares `main :: proc()`. That is what
 lets `tools\policy` be `package policy` rather than `package main`, so the test runner reports its
 tests under the name the directory has and
-`.\scripts\test.ps1 -TestName policy.a_body_that_never_closes_at_column_zero_is_read` selects one.
-The runner matches `ODIN_TEST_NAMES` on the ODIN package name, and `test.ps1` picks the package by
-DIRECTORY, so a `package main` in a directory called `policy` can be swept but never focused.
+`just test-one policy a_body_that_never_closes_at_column_zero_is_read` selects one. The runner
+matches `ODIN_TEST_NAMES` on the ODIN package name, and `just test-one`'s `pkg` argument resolves to
+a package DIRECTORY (`tools/policy` for `policy`, `src/<pkg>` for everything else), so a `package
+main` in a directory called `policy` can be swept but never focused.
 
 **`core:fmt` pads an integer's width with ZEROS, not spaces.** `fmt_write_padding` picks `'0'` unless
 the verb carried the space flag, and `_pad` calls it on whichever side `-` selects, so `%3d` of 0
@@ -531,8 +550,9 @@ a real run before the width verb came out of it. What a width would have bought 
 the trailing run of spaces in the format string: the reading only ever grows, so the number cannot
 leave a digit behind, but the annotation beside it goes from eleven characters (`(estimated)`) to
 none, and without that padding the carriage return leaves the old annotation sitting after the new
-line. No test can catch a regression here — ADR-0009 names `src\cli` in `$OdinPackagesWithoutTests`
-and `test.ps1` requires it to collect zero tests — so this one line is held by review alone.
+line. No test can catch a regression here — ADR-0009 names `cli` in `tools\policy\packages.odin`'s
+`TEST_LESS_SRC_PACKAGES`, the one `src\` package the package-accounting check does not require of
+the `justfile`'s `test` recipe — so this one line is held by review alone.
 
 **An enumerated array and an exhaustive `switch` give the same compiler guard.** Measured against the
 pinned compiler: add a member to an enum, leave its `[Key]Value{...}` table alone, and the build fails
@@ -562,9 +582,12 @@ it builds through a command line it does not quote, so a space is re-parsed as a
 separator and the compiler exits `-1` with `Unknown argument encountered '<second word>'`. The
 default output path comes from the working directory, so a checkout under `C:\Users\John Smith\`
 fails before a single test runs, and CI never catches it because a runner's path has no spaces.
-`scripts\common.ps1` CHOOSES a space-free directory rather than sanitising one out of the 8.3 short
-name — 8.3 generation is a per-volume policy that can be off, and it does not apply retroactively to
-a directory that already exists. `odin build` is unaffected.
+Issue #152 retired the PowerShell layer's space-free out-dir selection (a `build\odin-test\`
+preference with a `%ProgramData%` fallback, chosen rather than sanitised out of the 8.3 short name)
+along with everything else it held; every `justfile` recipe writes its test executables
+under a plain `build\odin-test\` and nothing falls back. ADR-0035 records this as an accepted risk:
+the failure is loud, never silent, so the fix is a checkout path with no space in it, not a wrapper.
+`odin build` is unaffected.
 
 **Win32 subprocess handling needs hand-rolled `CreateProcessW`.** `core:os` spawns children with
 `CREATE_UNICODE_ENVIRONMENT` and `NORMAL_PRIORITY_CLASS` only, and `Process_Desc` has no field for
