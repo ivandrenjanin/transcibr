@@ -1,6 +1,7 @@
 #+vet explicit-allocators
 package doctor
 
+import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:testing"
@@ -143,6 +144,7 @@ a_finished_engine_probe_calls_the_wav_remover_exactly_once :: proc(t: ^testing.T
 		"model.bin",
 		context.allocator,
 		spy_wav_remove,
+		probe_executable,
 	)
 	defer destroy_check(check, context.allocator)
 
@@ -150,6 +152,55 @@ a_finished_engine_probe_calls_the_wav_remover_exactly_once :: proc(t: ^testing.T
 		t,
 		calls == 1,
 		"model_load_check called its remover %d time(s) for a finished engine probe, wanted 1",
+		calls,
+	)
+}
+
+// `a_finished_engine_probe_calls_the_wav_remover_exactly_once` above and the
+// mutated `remove(wav)` an unconditional removal would compile to both call
+// the remover exactly once for a `.Finished` probe -- so on its own it
+// cannot tell a guarded call site from an unconditional one. This stub
+// supplies the probe's INPUT directly (`Probe{run = .Unstoppable}`, with no
+// real unstoppable child constructible on Windows per this ticket's own
+// round-1 report) while `model_load_check_using` still supplies the
+// DECISION, so a call site reverted to a bare `remove(wav)` turns this test
+// red (issue #125's round-2 review, finding 1).
+@(private)
+@(require_results)
+stub_unstoppable_probe :: proc(
+	group: ^child.Job_Object,
+	executable: string,
+	arguments: []string,
+	allocator: mem.Allocator,
+	bound_ms: i64,
+) -> Probe {
+	return Probe{run = .Unstoppable}
+}
+
+@(test)
+an_unstoppable_engine_probe_never_calls_the_wav_remover :: proc(t: ^testing.T) {
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	calls := 0
+	context.user_ptr = &calls
+	check := model_load_check_using(
+		&group,
+		"where.exe",
+		"model.bin",
+		context.allocator,
+		spy_wav_remove,
+		stub_unstoppable_probe,
+	)
+	defer destroy_check(check, context.allocator)
+
+	testing.expectf(
+		t,
+		calls == 0,
+		"model_load_check called its remover %d time(s) for an unstoppable engine probe, wanted 0",
 		calls,
 	)
 }

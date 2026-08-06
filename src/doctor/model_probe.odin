@@ -114,6 +114,24 @@ remove_probe_wav_if_settled :: proc(wav: string, settled: bool, remove: Wav_Remo
 	}
 }
 
+// `model_load_check_using`'s spawn of the probe itself is threaded through
+// this type rather than calling `probe_executable` inline, so a test can
+// supply the probe's INPUT (a `Probe{run = .Unstoppable}`, with no real
+// unstoppable child needed) while the code under test still supplies the
+// DECISION -- `model_probe_wav_settled` plus `remove_probe_wav_if_settled`
+// -- distinguishing a guarded call site from an unconditional `remove(wav)`
+// the way the equivalent `Answer_Remove` spy already distinguishes it for
+// `probe_using` in `src\audio\run.odin` (issue #125's round-2 review,
+// finding 1).
+@(private)
+Probe_Maker :: #type proc(
+	group: ^child.Job_Object,
+	executable: string,
+	arguments: []string,
+	allocator: mem.Allocator,
+	bound_ms: i64,
+) -> Probe
+
 // The authoritative half of the Model check: `model_check`'s size floor and
 // magic bytes are a cheap pre-filter for obviously broken files, but only
 // actually spawning the Engine against the Model proves it loads.
@@ -124,13 +142,21 @@ model_load_check :: proc(
 	model_path: string,
 	allocator: mem.Allocator,
 ) -> Check {
-	return model_load_check_using(group, engine_executable, model_path, allocator, os_remove_wav)
+	return model_load_check_using(
+		group,
+		engine_executable,
+		model_path,
+		allocator,
+		os_remove_wav,
+		probe_executable,
+	)
 }
 
-// The real body of `model_load_check`, taking its remover as a parameter
-// rather than a package variable so a test can swap it without racing every
-// other test in this package that calls `model_load_check` concurrently
-// (issue #125's round-1 review, finding 1).
+// The real body of `model_load_check`, taking its remover and its probe
+// maker as parameters rather than package variables so a test can swap
+// either without racing every other test in this package that calls
+// `model_load_check` concurrently (issue #125's round-1 review, finding 1;
+// the probe maker parameter is round-2's finding 1).
 @(private)
 @(require_results)
 model_load_check_using :: proc(
@@ -139,6 +165,7 @@ model_load_check_using :: proc(
 	model_path: string,
 	allocator: mem.Allocator,
 	remove: Wav_Remove,
+	make_probe: Probe_Maker,
 ) -> Check {
 	assert(group != nil, "a child started outside a job object outlives transcibr")
 	assert(len(engine_executable) > 0, "there is no engine here to load the model with")
@@ -157,13 +184,7 @@ model_load_check_using :: proc(
 	defer delete(wav, allocator)
 
 	arguments := []string{"-m", model_path, "-f", wav, "--no-prints"}
-	probe := probe_executable(
-		group,
-		engine_executable,
-		arguments,
-		allocator,
-		MODEL_LOAD_PROBE_BOUND_MS,
-	)
+	probe := make_probe(group, engine_executable, arguments, allocator, MODEL_LOAD_PROBE_BOUND_MS)
 	defer delete(probe.captured, allocator)
 
 	remove_probe_wav_if_settled(wav, model_probe_wav_settled(probe.run), remove)

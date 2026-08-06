@@ -130,10 +130,25 @@ settle :: proc(
 // be reading, short of `TerminateThread`, which CLAUDE.md's own notes on
 // this repository's test runner already found abandons locks mid-use
 // (issue #125, filed from the #66 review).
+//
+// An exhaustive switch, not `!= .Did_Not_Finish`: issue #33's compile guard
+// applies to a switch that names every member itself exactly as it does to
+// an enumerated array, and it is what makes a member added to `Read_Fault`
+// without a case here a build failure rather than a silent
+// settled-for-removal default (issue #125's round-2 review -- the `!=` form
+// fails OPEN, toward removing a file a child may still hold, the identical
+// shape `model_probe_wav_settled` in `src\doctor\model_probe.odin` already
+// closed for `child.Run`).
 @(private)
 @(require_results)
 answer_read_settled :: proc(fault: child.Read_Fault) -> bool {
-	return fault != .Did_Not_Finish
+	switch fault {
+	case .None, .Not_Started, .Unreadable:
+		return true
+	case .Did_Not_Finish:
+		return false
+	}
+	unreachable()
 }
 
 // `probe`'s removal of `answer` is threaded through this type rather than
