@@ -281,6 +281,22 @@ a_sample_count_that_rounds_to_no_time_at_all_is_refused :: proc(t: ^testing.T) {
 }
 
 @(test)
+a_sample_count_of_zero_is_refused :: proc(t: ^testing.T) {
+	_, ok := samples_ms("0")
+	testing.expect(t, !ok, "a sample count of zero still read as a duration")
+}
+
+@(test)
+a_sample_count_past_the_longest_container_is_refused :: proc(t: ^testing.T) {
+	_, ok := samples_ms("57600008000")
+	testing.expect(
+		t,
+		!ok,
+		"a sample count past the longest Recording this package will believe still read as a duration",
+	)
+}
+
+@(test)
 a_banner_that_reports_no_audio_at_all_is_refused :: proc(t: ^testing.T) {
 	for line in ([?]string {
 			"main: processing 'a.wav' (0 samples, 0.0 sec), 4 threads",
