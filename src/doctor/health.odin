@@ -112,6 +112,13 @@ first_recording_health :: proc(
 	return .None, true
 }
 
+// A switch, not a table (CLAUDE.md, Odin notes: enumerated arrays and
+// switches): a Health_Fault member added without a case here fails the
+// build (`Unhandled enumerated array case`). That guard does not reach a
+// case whose arm compiles but returns nothing, the way `.None`'s does --
+// `health_fault_test.odin` walks the enumeration to prove every non-`.None`
+// case still carries a sentence, rather than the renderer asserting it on
+// the first Recording that hits the gap.
 @(private)
 @(require_results)
 health_fault_says :: proc(fault: Health_Fault) -> string {
@@ -148,11 +155,14 @@ health_error_message :: proc(
 	)
 
 	says := health_fault_says(fault)
-	assert(len(says) > 0, "a fault was added to Health_Fault without a sentence")
+	sentence := says
+	if len(sentence) == 0 {
+		sentence = NO_SENTENCE_FALLBACK
+	}
 
 	message := fmt.aprintf(
 		"%s (measured %.1fx realtime; the baseline is %.0fx)",
-		says,
+		sentence,
 		realtime_factor,
 		MEASURED_BASELINE_REALTIME_FACTOR,
 		allocator = allocator,
