@@ -20,6 +20,16 @@ import "transcibr:child"
 @(rodata)
 FFMPEG_PROBE_ARGUMENTS := []string{"-hide_banner"}
 
+// The smallest real ggml/gguf whisper Model ships tens of megabytes; this
+// floor sits an order of magnitude below that and comfortably above both
+// broken-install shapes a round-3 adversarial review measured live: a
+// 27-byte stub file and a 1,048,576-byte head-truncation of a real
+// 1,624,555,275-byte install, both of which the prior `<= 0` guard let
+// through as PASS.
+MODEL_MIN_PLAUSIBLE_BYTES :: i64(8 * 1024 * 1024)
+
+#assert(MODEL_MIN_PLAUSIBLE_BYTES > 0)
+
 @(require_results)
 extraction_tool_check :: proc(
 	group: ^child.Job_Object,
@@ -103,6 +113,15 @@ model_check :: proc(path: string, allocator: mem.Allocator) -> Check {
 		message := combined_message(
 			path,
 			"is zero bytes; the download is missing or was never completed",
+			"",
+			allocator,
+		)
+		return failed("model", message)
+	}
+	if identified.bytes < MODEL_MIN_PLAUSIBLE_BYTES {
+		message := combined_message(
+			path,
+			"is far smaller than any real Model; the download is truncated or incomplete",
 			"",
 			allocator,
 		)

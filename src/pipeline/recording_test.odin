@@ -185,7 +185,7 @@ health_check_job :: proc(
 	elapsed_ms := i64(3_000),
 ) -> (
 	job: Recording_Job,
-	checked, abort: bool,
+	checked, abort, unhealthy: bool,
 ) {
 	dir := testkit.made_scratch_cache(t, "Pipeline", tag, context.allocator)
 	defer delete(dir, context.allocator)
@@ -209,7 +209,7 @@ health_check_job :: proc(
 		"whisper.cpp 1.9.9",
 		transcript.DEFAULT_PROFILE,
 		engine.Report{},
-		Health_Watch{checked = &checked, abort = &abort},
+		Health_Watch{checked = &checked, abort = &abort, unhealthy = &unhealthy},
 	)
 	defer abandon_recording_job(job)
 	defer delete(output, context.allocator)
@@ -224,38 +224,54 @@ health_check_job :: proc(
 
 @(test)
 a_healthy_first_recording_is_checked_once_and_never_aborts_the_batch :: proc(t: ^testing.T) {
-	_, checked, abort := health_check_job(
+	_, checked, abort, unhealthy := health_check_job(
 		t,
 		"healthy",
 		`{"systeminfo": "WHISPER : CUDA : ARCHS = 500,610,700"}`,
 	)
 	testing.expect_value(t, checked, true)
 	testing.expect_value(t, abort, false)
+	testing.expect_value(t, unhealthy, false)
 }
 
+// The finding this pins: `abort` alone is the identical pointer a Ctrl+C
+// press sets, and `pipeline.batch_succeeded` reads a cancelled Batch as a
+// success -- correct for an operator's own Ctrl+C, wrong for a Batch stopped
+// because the GPU is not being used. `unhealthy` is the SEPARATE signal the
+// CLI reads to answer a nonzero exit code specifically for this case, without
+// changing what Ctrl+C itself still means.
 @(test)
-an_unhealthy_first_recording_sets_the_same_flag_a_ctrl_c_press_sets :: proc(t: ^testing.T) {
-	_, checked, abort := health_check_job(
+an_unhealthy_first_recording_sets_both_the_shared_abort_flag_and_its_own_unhealthy_flag :: proc(
+	t: ^testing.T,
+) {
+	_, checked, abort, unhealthy := health_check_job(
 		t,
 		"unhealthy",
 		`{"systeminfo": "WHISPER : no gpu backend at all"}`,
 	)
 	testing.expect_value(t, checked, true)
 	testing.expect_value(t, abort, true)
+	testing.expect_value(t, unhealthy, true)
 }
 
 @(test)
 review_engine_output_with_no_systeminfo_field_must_not_abort_the_batch :: proc(t: ^testing.T) {
-	_, checked, abort := health_check_job(t, "nosysteminfo", `{"result": {"language": "en"}}`)
+	_, checked, abort, unhealthy := health_check_job(
+		t,
+		"nosysteminfo",
+		`{"result": {"language": "en"}}`,
+	)
 	testing.expect_value(t, checked, true)
 	testing.expect_value(t, abort, false)
+	testing.expect_value(t, unhealthy, false)
 }
 
 @(test)
 review_unparseable_engine_output_must_not_abort_the_batch :: proc(t: ^testing.T) {
-	_, checked, abort := health_check_job(t, "unparseable", `not json at all`)
+	_, checked, abort, unhealthy := health_check_job(t, "unparseable", `not json at all`)
 	testing.expect_value(t, checked, true)
 	testing.expect_value(t, abort, false)
+	testing.expect_value(t, unhealthy, false)
 }
 
 // The exact shape a healthy `--batch` reaches on real hardware: the Engine's
@@ -266,7 +282,7 @@ review_unparseable_engine_output_must_not_abort_the_batch :: proc(t: ^testing.T)
 // quantity the factor must be computed against instead.
 @(test)
 review_a_real_engine_duration_reading_must_not_abort_a_healthy_batch :: proc(t: ^testing.T) {
-	_, checked, abort := health_check_job(
+	_, checked, abort, unhealthy := health_check_job(
 		t,
 		"realengine",
 		`{"systeminfo": "WHISPER : CUDA : ARCHS = 500,610,700"}`,
@@ -276,4 +292,5 @@ review_a_real_engine_duration_reading_must_not_abort_a_healthy_batch :: proc(t: 
 	)
 	testing.expect_value(t, checked, true)
 	testing.expect_value(t, abort, false)
+	testing.expect_value(t, unhealthy, false)
 }

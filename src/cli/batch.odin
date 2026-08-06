@@ -48,6 +48,16 @@ cancel_requested: bool
 @(private)
 gpu_health_checked: bool
 
+// Set by the same Worker at the moment it aborts the Batch for an unhealthy
+// GPU, distinct from `cancel_requested` -- which an operator's Ctrl+C also
+// sets, and which `pipeline.batch_succeeded` reads as a successful stop. This
+// is what lets `run_the_batch` tell the two endings apart after the Batch
+// finishes and answer a nonzero exit code for the one that means the run
+// happened on the wrong device rather than the one an operator asked for
+// (round-3 adversarial review).
+@(private)
+gpu_health_unhealthy: bool
+
 // `"system"`, because Windows calls this from a thread transcibr never
 // started, on no context of this program's own -- and needs none: an atomic
 // store is `proc "contextless"`-safe, and nothing else happens here.
@@ -159,6 +169,7 @@ run_the_batch :: proc(
 ) -> int {
 	sync.atomic_store(&cancel_requested, false)
 	gpu_health_checked = false
+	sync.atomic_store(&gpu_health_unhealthy, false)
 	win32.SetConsoleCtrlHandler(console_ctrl_handler, true)
 	defer win32.SetConsoleCtrlHandler(console_ctrl_handler, false)
 
@@ -180,6 +191,7 @@ run_the_batch :: proc(
 			health = pipeline.Health_Watch {
 				checked = &gpu_health_checked,
 				abort = &cancel_requested,
+				unhealthy = &gpu_health_unhealthy,
 			},
 		},
 		context.allocator,
@@ -196,6 +208,9 @@ run_the_batch :: proc(
 		summary.skipped,
 		summary.cancelled,
 	)
+	if sync.atomic_load(&gpu_health_unhealthy) {
+		return OPERATING_ERROR
+	}
 	if !pipeline.batch_succeeded(summary) {
 		return OPERATING_ERROR
 	}

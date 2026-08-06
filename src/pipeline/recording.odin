@@ -37,12 +37,19 @@ Tools :: struct {
 // its own; `abort` is `sync.atomic_store`d because `run_batch`'s admission
 // loop reads it from a different thread -- the identical `cancelled` flag a
 // Ctrl+C press already sets (`src/cli/batch.odin`), reused rather than
-// inventing a second way to stop a Batch early. Both nil is a real value:
-// `--transcribe`'s Batch of one has no "first of several" to gate and no
-// admission loop left to stop.
+// inventing a second way to stop a Batch early. `unhealthy` is a SEPARATE
+// flag, also `sync.atomic_store`d, set at the same moment as `abort` --
+// `abort` alone cannot tell a machine-detected fault apart from an operator's
+// Ctrl+C once `pipeline.batch_succeeded` folds a cancelled Batch into success
+// (a round-3 adversarial review measured a Batch aborted for an unhealthy GPU
+// exiting 0), so the CLI reads `unhealthy` after the Batch finishes to force
+// a nonzero exit specifically for this reason, without touching what Ctrl+C
+// itself still means. Both nil is a real value: `--transcribe`'s Batch of one
+// has no "first of several" to gate and no admission loop left to stop.
 Health_Watch :: struct {
-	checked: ^bool,
-	abort:   ^bool,
+	checked:   ^bool,
+	abort:     ^bool,
+	unhealthy: ^bool,
 }
 
 // One Recording's share of a Batch: everything its two Stages need, borrowed
@@ -204,6 +211,9 @@ checked_first_recording_health :: proc(
 	fmt.eprintfln("%s: %s", job.source, message)
 	if job.health.abort != nil {
 		sync.atomic_store(job.health.abort, true)
+	}
+	if job.health.unhealthy != nil {
+		sync.atomic_store(job.health.unhealthy, true)
 	}
 }
 
