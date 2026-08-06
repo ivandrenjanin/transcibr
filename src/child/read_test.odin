@@ -18,9 +18,10 @@ READ_SHORT_BOUND_MS :: i64(300)
 
 // Windows' default timer resolution quantizes both `time.sleep` calls this
 // case makes: the poll loop's own sleeps and the granularity `tick_since`
-// is read against. See child/run_test.odin's `spin_for` comment for the
-// figures this was measured against; the margin here is generous rather than
-// tight because nothing in this case pins READ_POLL itself.
+// is read against -- measured elsewhere in this suite at 3.70-3.79s for what
+// a 2ms-per-chunk nominal cost predicts as 512ms, a 7.4x inflation from the
+// 15.625ms timer period. The margin here is generous rather than tight
+// because nothing in this case pins READ_POLL itself.
 @(private)
 READ_BOUND_SLACK :: 2 * time.Second
 

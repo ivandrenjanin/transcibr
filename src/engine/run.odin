@@ -1,9 +1,13 @@
 #+vet explicit-allocators
 package engine
 
+import "base:runtime"
 import "core:fmt"
 import "core:mem"
 import "core:os"
+import "core:strings"
+import "core:thread"
+import "core:time"
 import "transcibr:child"
 import "transcibr:process"
 
@@ -16,7 +20,7 @@ import "transcibr:process"
 @(private)
 Ending :: struct {
 	run:         child.Run,
-	silent:      bool,
+	reason:      child.Stop_Reason,
 	duration_ms: i64,
 	elapsed_ms:  i64,
 	child:       child.Error,
@@ -65,7 +69,7 @@ transcribe :: proc(
 	if refusal := refused(ending); refusal.fault != .None {
 		return {}, refusal
 	}
-	if missing := landed(output); missing != .None {
+	if missing := landed_bounded(output, child.READ_BOUND_MS); missing != .None {
 		return {}, Error{fault = missing}
 	}
 	return Transcribed {
@@ -102,7 +106,13 @@ refused :: proc(ending: Ending) -> Error {
 	case .Unstoppable:
 		return Error{fault = .Not_Stopped}
 	case .Stopped:
-		return Error{fault = .Went_Silent if ending.silent else .Did_Not_Finish}
+		switch ending.reason {
+		case .Poll_Asked:
+			return Error{fault = .Went_Silent}
+		case .None, .Bound_Expired, .Drain_Failed:
+			return Error{fault = .Did_Not_Finish}
+		}
+		return Error{fault = .Did_Not_Finish}
 	case .Finished:
 	}
 	return Error{}
@@ -110,9 +120,9 @@ refused :: proc(ending: Ending) -> Error {
 
 // One open and no stat, so the length belongs to the same file the handle does.
 //
-// Known-open, not silent: `os.open` below is unbounded and can wedge on the
-// same stalled scratch cache `child.read_bounded` guards the read that
-// follows this one against, in `artifact.complete`. Issue #65 tracks it.
+// Runs only on `landed_bounded`'s worker thread below: `os.open` can wedge on
+// the same stalled scratch cache `child.read_bounded` guards the read that
+// follows this one against, in `artifact.complete` (issue #65).
 @(private)
 @(require_results)
 landed :: proc(output: string) -> Fault {
@@ -134,6 +144,89 @@ landed :: proc(output: string) -> Fault {
 	return .None
 }
 
+// `landed`'s own worker, bounded the same shape as `audio.read_head_bounded`
+// and `artifact.digest_of_bounded`: a small worker thread plus
+// `child.await_or_abandon`, its job on `runtime.heap_allocator`'s heap so an
+// abandoned thread has somewhere safe to keep writing after this procedure
+// has already returned to its caller.
+@(private)
+Landed_Job :: struct {
+	output:   string,
+	fault:    Fault,
+	stall_ms: i64,
+}
+
+@(private)
+landed_worker :: proc(data: rawptr) {
+	job := (^Landed_Job)(data)
+	assert(job != nil, "a landed-check thread was started with no job to check")
+	assert(len(job.output) > 0, "a landed-check thread was started with no path to check")
+
+	if job.stall_ms > 0 {
+		time.sleep(time.Duration(job.stall_ms) * time.Millisecond)
+	}
+	job.fault = landed(job.output)
+}
+
+// Every wait outcome that is not `.Finished` collapses onto `.No_Output`, the
+// same fault `landed` itself already answers for an output it could not
+// open: a caller cannot tell a wedge from an ordinary open failure apart, and
+// A8 asks it to reject the read rather than assert on it either way.
+@(private)
+@(require_results)
+landed_bounded :: proc(output: string, bound_ms: i64) -> Fault {
+	return landed_bounded_stalled(output, bound_ms, 0)
+}
+
+// `landed_bounded`'s own body, plus a worker-side stall no production caller
+// ever passes: `landed_bounded_stalled(output, bound_ms, 0)` behaves
+// identically to the code above it. A stall greater than `bound_ms` is what
+// `engine_test.odin` uses to reach the `.Stopped` branch with a real,
+// running thread rather than a mocked wait outcome (issue #65's coverage
+// finding).
+@(private)
+@(require_results)
+landed_bounded_stalled :: proc(output: string, bound_ms: i64, stall_ms: i64) -> Fault {
+	assert(len(output) > 0, "there is nowhere here to look for the Engine's output")
+	assert(bound_ms > 0, "a check given no time at all cannot do anything")
+	assert(stall_ms >= 0, "a stall cannot run for negative time")
+
+	job := new(Landed_Job, runtime.heap_allocator())
+	job.output = strings.clone(output, runtime.heap_allocator())
+	job.stall_ms = stall_ms
+
+	context.allocator = runtime.heap_allocator()
+	t := thread.create_and_start_with_data(job, landed_worker)
+	if t == nil {
+		delete(job.output, runtime.heap_allocator())
+		free(job, runtime.heap_allocator())
+		return .No_Output
+	}
+
+	switch child.await_or_abandon(t, bound_ms) {
+	case .Finished:
+		fault := job.fault
+		release_landed_job(t, job)
+		return fault
+	case .Stopped:
+		release_landed_job(t, job)
+		return .No_Output
+	case .Unstoppable:
+		return .No_Output
+	}
+	unreachable()
+}
+
+@(private)
+release_landed_job :: proc(t: ^thread.Thread, job: ^Landed_Job) {
+	assert(t != nil, "there is no thread here to release")
+	assert(job != nil, "there is no job here to release")
+
+	delete(job.output, runtime.heap_allocator())
+	free(job, runtime.heap_allocator())
+	thread.destroy(t)
+}
+
 // The caller's own reading of a chunk: a Tracker fed through a Line_Reader,
 // exactly what transcibr:child knows nothing about.
 @(private)
@@ -143,7 +236,6 @@ Watch_State :: struct {
 	report:     Report,
 	watch:      process.Watch,
 	painted:    process.Progress,
-	silent:     bool,
 	elapsed_ms: i64,
 }
 
@@ -187,19 +279,6 @@ watched_end :: proc(elapsed_ns: i64, user: rawptr) {
 // bar with a hundred positions and three annotations can have. Called once
 // more after the child finishes, so the display's last paint reflects the
 // Engine's true final reading.
-//
-// It also carries a second duty `on_poll`'s `-> bool` signature has no room
-// for: `child.Run` collapses a bound expiry, this callback asking to stop,
-// and a drain failure into one `.Stopped`, so this writes the distinction
-// into `watch_state.silent` for `ending_for` to read back once `run_bounded`
-// has already returned. Correct only because a `true` return here exits the
-// loop immediately, so nothing between the write and `ending_for`'s read can
-// see a stale value. A future `on_poll` that sets the flag and returns
-// `false` -- a "warn, don't stop" reading -- would leave a wall-clock-expiry
-// ending reporting `.Went_Silent` for a run that was never silent. Carrying
-// the stop reason in `child.Run`'s own return would close this, but that is
-// a shape change to a type two other callers already share; recorded here
-// rather than done in this pass.
 @(private)
 @(require_results)
 watched_poll :: proc(elapsed_ns: i64, user: rawptr) -> bool {
@@ -209,7 +288,6 @@ watched_poll :: proc(elapsed_ns: i64, user: rawptr) -> bool {
 	watch_state := (^Watch_State)(user)
 	now := process.shown(watch_state.tracker, elapsed_ns, watch_state.watch)
 	tell(watch_state.report, now, &watch_state.painted)
-	watch_state.silent = now.silent
 	return now.silent
 }
 
@@ -243,7 +321,7 @@ run_engine :: proc(
 		painted = process.Progress{percent = UNPAINTED},
 	}
 
-	run, refusal := child.run_bounded(
+	run, reason, refusal := child.run_bounded(
 		group,
 		executable,
 		arguments,
@@ -256,7 +334,7 @@ run_engine :: proc(
 			on_poll = watched_poll,
 		},
 	)
-	return ending_for(run, watch_state, refusal)
+	return ending_for(run, reason, watch_state, refusal)
 }
 
 // What run_engine's loop measured survives every ending, stopped or not: an
@@ -265,21 +343,26 @@ run_engine :: proc(
 // exactly the caller that most needs to know how long it had been running.
 @(private)
 @(require_results)
-ending_for :: proc(run: child.Run, watch_state: Watch_State, refusal: child.Error) -> Ending {
+ending_for :: proc(
+	run: child.Run,
+	reason: child.Stop_Reason,
+	watch_state: Watch_State,
+	refusal: child.Error,
+) -> Ending {
 	switch run {
 	case .Not_Started:
 		return Ending{run = .Not_Started, child = refusal}
 	case .Unstoppable:
 		return Ending {
 			run = .Unstoppable,
-			silent = watch_state.silent,
+			reason = reason,
 			duration_ms = watch_state.tracker.duration_ms,
 			elapsed_ms = watch_state.elapsed_ms,
 		}
 	case .Stopped:
 		return Ending {
 			run = .Stopped,
-			silent = watch_state.silent,
+			reason = reason,
 			duration_ms = watch_state.tracker.duration_ms,
 			elapsed_ms = watch_state.elapsed_ms,
 		}

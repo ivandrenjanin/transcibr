@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:mem"
 import "core:os"
 import "core:strings"
+import win32 "core:sys/windows"
 import "core:testing"
 import "core:time"
 import "transcibr:testkit"
@@ -17,21 +18,6 @@ CHILD_RUN_BOUND_MS :: i64(60_000)
 @(private)
 CHILD_SHORT_BOUND_MS :: i64(500)
 
-// Not measuring anything a test asserts on, so ordinary Sleep quantization is
-// fine here: this only has to be generous enough that `cmd.exe` has actually
-// started running `type` before the first drain looks at the pipe.
-@(private)
-CHILD_STARTUP_HEAD_START :: 100 * time.Millisecond
-
-// Gives the spawned `type` a head start on filling the pipe, so the first
-// drain a caller runs afterward finds a steady trickle waiting rather than
-// reading the pipe as momentarily empty and returning before a ceiling is
-// ever reached.
-@(private)
-let_the_flood_start_filling_the_pipe :: proc() {
-	time.sleep(CHILD_STARTUP_HEAD_START)
-}
-
 @(test)
 a_child_that_exits_inside_its_bound_ran_to_completion :: proc(t: ^testing.T) {
 	group, ok := open_group(t)
@@ -40,7 +26,7 @@ a_child_that_exits_inside_its_bound_ran_to_completion :: proc(t: ^testing.T) {
 		return
 	}
 
-	ending, err := run_bounded(
+	ending, reason, err := run_bounded(
 		&group,
 		CMD,
 		{"/c", "exit 3"},
@@ -49,6 +35,7 @@ a_child_that_exits_inside_its_bound_ran_to_completion :: proc(t: ^testing.T) {
 	)
 	testing.expect_value(t, err.fault, Fault.None)
 	testing.expect_value(t, ending, Run.Finished)
+	testing.expect_value(t, reason, Stop_Reason.None)
 }
 
 @(test)
@@ -69,7 +56,7 @@ a_child_that_outlives_its_bound_is_stopped_rather_than_waited_for :: proc(t: ^te
 		return
 	}
 
-	ending, err := run_bounded(
+	ending, reason, err := run_bounded(
 		&group,
 		CMD,
 		{"/c", command},
@@ -78,6 +65,7 @@ a_child_that_outlives_its_bound_is_stopped_rather_than_waited_for :: proc(t: ^te
 	)
 	testing.expect_value(t, err.fault, Fault.None)
 	testing.expect_value(t, ending, Run.Stopped)
+	testing.expect_value(t, reason, Stop_Reason.Bound_Expired)
 }
 
 @(test)
@@ -88,7 +76,7 @@ a_child_that_will_not_start_is_reported_rather_than_asserted :: proc(t: ^testing
 		return
 	}
 
-	ending, err := run_bounded(
+	ending, reason, err := run_bounded(
 		&group,
 		"transcibr-no-such-executable.exe",
 		{},
@@ -96,6 +84,7 @@ a_child_that_will_not_start_is_reported_rather_than_asserted :: proc(t: ^testing
 		context.allocator,
 	)
 	testing.expect_value(t, ending, Run.Not_Started)
+	testing.expect_value(t, reason, Stop_Reason.None)
 	testing.expect_value(t, err.fault, Fault.Not_Started)
 }
 
@@ -157,7 +146,7 @@ a_run_hands_every_chunk_and_the_end_of_stream_to_its_callbacks :: proc(t: ^testi
 	}
 	defer free_collected(&collected, context.allocator)
 
-	ending, err := run_bounded(
+	ending, reason, err := run_bounded(
 		&group,
 		CMD,
 		{"/c", "echo said something 1>&2"},
@@ -172,6 +161,7 @@ a_run_hands_every_chunk_and_the_end_of_stream_to_its_callbacks :: proc(t: ^testi
 	)
 	testing.expect_value(t, err.fault, Fault.None)
 	testing.expect_value(t, ending, Run.Finished)
+	testing.expect_value(t, reason, Stop_Reason.None)
 
 	testing.expect(
 		t,
@@ -220,7 +210,7 @@ a_run_stops_early_when_its_own_callback_asks_it_to :: proc(t: ^testing.T) {
 	}
 
 	started := time.tick_now()
-	ending, err := run_bounded(
+	ending, reason, err := run_bounded(
 		&group,
 		CMD,
 		{"/c", command},
@@ -232,6 +222,7 @@ a_run_stops_early_when_its_own_callback_asks_it_to :: proc(t: ^testing.T) {
 
 	testing.expect_value(t, err.fault, Fault.None)
 	testing.expect_value(t, ending, Run.Stopped)
+	testing.expect_value(t, reason, Stop_Reason.Poll_Asked)
 	testing.expect(
 		t,
 		elapsed < time.Duration(CHILD_RUN_BOUND_MS) * time.Millisecond,
@@ -305,7 +296,7 @@ a_flood_on_the_diagnostic_stream_does_not_stop_the_bound_from_being_reached :: p
 	defer free_collected(&collected, context.allocator)
 
 	started := time.tick_now()
-	ending, err := run_bounded(
+	ending, reason, err := run_bounded(
 		&group,
 		CMD,
 		{"/c", command},
@@ -317,6 +308,7 @@ a_flood_on_the_diagnostic_stream_does_not_stop_the_bound_from_being_reached :: p
 
 	testing.expect_value(t, err.fault, Fault.None)
 	testing.expect_value(t, ending, Run.Stopped)
+	testing.expect_value(t, reason, Stop_Reason.Bound_Expired)
 	testing.expect(
 		t,
 		elapsed <
@@ -331,72 +323,180 @@ a_flood_on_the_diagnostic_stream_does_not_stop_the_bound_from_being_reached :: p
 	testing.expect(t, total > 0, "the flood was never drained at all")
 }
 
-// Sleep is quantized to Windows' default timer resolution -- measured in this
-// suite at 3.70-3.79s for 256 chunks nominally costing 512ms at 2ms each,
-// 7.4x, which is the 15.625ms granularity divided by 2ms -- unless something
-// else on the machine has already lowered it with timeBeginPeriod, in which
-// case the nominal 2ms holds instead and the margin this delay exists to give
-// the flooding child shrinks by the same 7.4x with it. A busy wait reads the
-// same monotonic clock this suite times its bounds with, rather than asking
-// the scheduler for a wake-up, so the two-millisecond gap holds regardless of
-// what else on the machine touches the system timer.
+// Builds a buffer at least `minimum_bytes` long by repeating `filler_line`, so
+// a pipe filled from it in one write is provably still holding data once a
+// drain has taken its ceiling's worth. The caller frees the result.
 @(private)
-spin_for :: proc(minimum: time.Duration) {
-	assert(minimum > 0, "a spin with no minimum duration would spin forever or not at all")
+@(require_results)
+build_flood_bytes :: proc(
+	minimum_bytes: int,
+	filler_line: string,
+	allocator: mem.Allocator,
+) -> []u8 {
+	assert(minimum_bytes > 0, "a flood of nothing at all floods nothing")
+	assert(len(filler_line) > 0, "a flood built from an empty line floods nothing per line")
 
-	started := time.tick_now()
-	for time.tick_since(started) < minimum {}
+	built := strings.builder_make(allocator)
+	for strings.builder_len(built) < minimum_bytes {
+		strings.write_string(&built, filler_line)
+	}
+	return built.buf[:]
 }
 
-// A quarter of what MAX_DRAIN_BYTES/DRAIN_BYTES iterations would need to add
-// up to the ceiling at all -- see slow_collect_chunk below for what it holds
-// the pipe open for. It is also the margin spin_for's busy wait depends on:
-// the child must be scheduled at least once per SLOW_CHUNK_DELAY to keep
-// feeding the pipe, and 2ms sits 10-100x above the measured failure cliff --
-// 200us passed 3 of 3 runs, 20us failed 1 of 3.
+// `capacity` sizes the pipe's own kernel buffer -- not a hint here, because the
+// whole flood is written to it before anything ever reads it back (below), and
+// a write past that capacity with no reader running would block forever. The
+// pipe's read end is private; nothing spawned here ever needs to inherit it.
 @(private)
-SLOW_CHUNK_DELAY :: 2 * time.Millisecond
+@(require_results)
+open_flood_pipe :: proc(
+	capacity: win32.DWORD,
+) -> (
+	read: win32.HANDLE,
+	write: win32.HANDLE,
+	ok: bool,
+) {
+	assert(capacity > 0, "a pipe opened with no capacity at all cannot hold a flood")
 
-// A pipe holds at most DIAGNOSTIC_PIPE_BYTES (64 KiB), so nothing a real child
-// writes can hand a single, unthrottled read loop much more than that at once
-// -- measured, `type` on a multi-megabyte file into an unread pipe still
-// leaves one drain reading only the pipe's own capacity, because the child
-// cannot refill it faster than a tight loop empties it. The ceiling exists for
-// the case a real Engine's diagnostic output resembles instead: many small
-// writes arriving steadily, which is what a per-chunk delay on the CONSUMER
-// side reproduces here -- it gives the child time to keep the pipe topped up
-// between reads, so a single drain sees a steady trickle for as long as the
-// flood file lasts. Deliberately several times MAX_DRAIN_BYTES, so the loop's
-// only way out is the ceiling and not running out of flood to read.
-@(private)
-slow_collect_chunk :: proc(chunk: string, elapsed_ns: i64, user: rawptr) {
-	collect_chunk(chunk, elapsed_ns, user)
-	spin_for(SLOW_CHUNK_DELAY)
+	ok = bool(win32.CreatePipe(&read, &write, nil, capacity))
+	return read, write, ok
 }
 
+// Whether `bytes` fits the plain DWORD `CreatePipe` takes as a capacity:
+// pulled out on its own so the boundary can be proven false -- issue #98's
+// 4*(1<<30) case -- without an `int` -> `win32.DWORD` narrowing wrapping
+// silently past it (T1: the width is meaning at this Win32 boundary). A
+// truncating `win32.DWORD(bytes)` here previously turned a too-large capacity
+// into a too-small one instead of a refusal, which is what let
+// `a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood` go red on
+// pipe setup rather than on the ceiling it exists to prove.
+@(private)
+@(require_results)
+capacity_expressible :: proc(bytes: int) -> bool {
+	assert(bytes > 0, "a pipe capacity of zero or fewer bytes was never a capacity")
+	return bytes <= int(max(win32.DWORD))
+}
+
+// Mirrors `a_bound_of_infinite_itself_is_not_expressible_to_wait_for_single_object`
+// in `src/child/read_test.odin`, the boundary test for `bound_expressible`
+// that `capacity_expressible`'s own doc comment claims as its precedent.
+// `capacity_expressible` admits `max(win32.DWORD)` itself -- unlike
+// `bound_expressible`, nothing here is bit-identical to `win32.INFINITE` --
+// so the true/false split sits one byte later than the read-bound version.
 @(test)
-a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood :: proc(t: ^testing.T) {
-	path, command := flood_command(t, "onedrain", 4 * MAX_DRAIN_BYTES, context.allocator)
-	defer delete(path, context.allocator)
-	defer os.remove(path)
-	defer delete(command, context.allocator)
-	if len(command) == 0 {
-		return
+a_capacity_one_past_the_dword_maximum_is_not_expressible_to_create_pipe :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		capacity_expressible(int(max(win32.DWORD)) - 1),
+		"a capacity one below the DWORD maximum was refused as inexpressible",
+	)
+	testing.expect(
+		t,
+		capacity_expressible(int(max(win32.DWORD))),
+		"a capacity bit-identical to the DWORD maximum was refused as inexpressible",
+	)
+	testing.expect(
+		t,
+		!capacity_expressible(int(max(win32.DWORD)) + 1),
+		"a capacity past the DWORD maximum was accepted as an expressible pipe capacity",
+	)
+}
+
+// Opens a pipe sized for the whole of `flood_bytes` and writes it all in one
+// call before handing back the read end, so a caller's drain finds the pipe
+// already holding the flood rather than racing anything to fill it. `ok` is
+// false on either failure, and the read end is already closed by the time it
+// is: there is nothing left for the caller to clean up.
+@(private)
+@(require_results)
+fill_flood_pipe :: proc(t: ^testing.T, flood_bytes: []u8) -> (read: win32.HANDLE, ok: bool) {
+	assert(t != nil, "there is no test here to report a refusal through")
+	assert(len(flood_bytes) > 0, "a pipe filled with nothing at all floods nothing")
+
+	write: win32.HANDLE
+	opened: bool
+	capacity_bytes := len(flood_bytes) + DRAIN_BYTES
+	if !testing.expectf(
+		t,
+		capacity_expressible(capacity_bytes),
+		"a flood pipe capacity of %d bytes does not fit in a DWORD (max %d)",
+		capacity_bytes,
+		max(win32.DWORD),
+	) {
+		return read, false
+	}
+	capacity := win32.DWORD(capacity_bytes)
+	read, write, opened = open_flood_pipe(capacity)
+	if !testing.expect(
+		t,
+		opened,
+		"could not open a pipe large enough to hold the whole flood at once",
+	) {
+		return read, false
 	}
 
-	group, ok := open_group(t)
-	defer job_object_close(&group)
+	written: win32.DWORD
+	filled := win32.WriteFile(
+		write,
+		raw_data(flood_bytes),
+		win32.DWORD(len(flood_bytes)),
+		&written,
+		nil,
+	)
+	win32.CloseHandle(write)
+	if !testing.expectf(
+		t,
+		bool(filled) && int(written) == len(flood_bytes),
+		"could not fill the pipe with the whole flood before draining it (ok %v, wrote %d of %d bytes)",
+		filled,
+		written,
+		len(flood_bytes),
+	) {
+		win32.CloseHandle(read)
+		return read, false
+	}
+	return read, true
+}
+
+// The property under test -- one drain stops at its ceiling and leaves the
+// rest waiting in the pipe -- only needs the pipe to be non-empty when the
+// ceiling is reached; it does not need a live child racing this drain to keep
+// it that way. Filling a pipe sized for the whole flood in a single write,
+// before drain_bounded ever runs, makes the pipe non-empty at the ceiling by
+// construction rather than by scheduling luck: several times MAX_DRAIN_BYTES,
+// so the drain's only way out is the ceiling and not running out of flood to
+// read.
+//
+// `expected_stop` mirrors drain_bounded's own loop exactly (src/child/run.odin
+// -- `for taken < MAX_DRAIN_BYTES`, reading DRAIN_BYTES at a time) rather than
+// naming MAX_DRAIN_BYTES a second time as a tolerance window: the loop can
+// only ever stop on a DRAIN_BYTES boundary, so the one correct `total` is the
+// smallest multiple of DRAIN_BYTES at or above MAX_DRAIN_BYTES, and nothing
+// else. That is what pins the VALUE the ceiling holds, not merely that a
+// ceiling exists -- issue #98. The canonical proof that this test still holds
+// that relationship is mutating the loop bound at src/child/run.odin:132
+// (an 8x mutation turns `total` far past `expected_stop`); a 1<<30 mutation of
+// MAX_DRAIN_BYTES itself is no longer the recipe, since capacity_expressible
+// above now refuses that capacity outright instead of an int -> DWORD wrap
+// manufacturing a false red.
+@(test)
+a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood :: proc(t: ^testing.T) {
+	flood_bytes := build_flood_bytes(
+		4 * MAX_DRAIN_BYTES,
+		"a line this test has no reading for\r\n",
+		context.allocator,
+	)
+	defer delete(flood_bytes, context.allocator)
+
+	read, ok := fill_flood_pipe(t, flood_bytes)
 	if !ok {
 		return
 	}
 
-	c, err := start(&group, CMD, {"/c", command}, context.allocator)
-	defer close(&c)
-	if !testing.expectf(t, err.fault == .None, "the child did not start: %v", err.fault) {
-		return
+	c := Child {
+		diagnostics = read,
 	}
-
-	let_the_flood_start_filling_the_pipe()
+	defer close(&c)
 
 	collected := Collected {
 		chunks = make([dynamic]string, context.allocator),
@@ -406,7 +506,7 @@ a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood :: proc(t: ^testing
 	readable := drain_bounded(
 		&c,
 		time.tick_now(),
-		Run_Callbacks{user = &collected, on_chunk = slow_collect_chunk},
+		Run_Callbacks{user = &collected, on_chunk = collect_chunk},
 	)
 
 	total := 0
@@ -414,19 +514,23 @@ a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood :: proc(t: ^testing
 		total += len(chunk)
 	}
 
+	expected_stop := ((MAX_DRAIN_BYTES + DRAIN_BYTES - 1) / DRAIN_BYTES) * DRAIN_BYTES
+
 	testing.expect(t, readable, "a drain that hit its ceiling reported the pipe as unreadable")
 	testing.expectf(
 		t,
-		total <= MAX_DRAIN_BYTES + DRAIN_BYTES,
-		"one drain took %d bytes, more than its %d-byte ceiling permits even though more was waiting",
+		total == expected_stop,
+		"one drain took %d bytes; its %d-byte ceiling and %d-byte reads only ever stop it at %d",
 		total,
 		MAX_DRAIN_BYTES,
+		DRAIN_BYTES,
+		expected_stop,
 	)
 	testing.expectf(
 		t,
-		total >= MAX_DRAIN_BYTES,
-		"one drain stopped at %d bytes, well short of its %d-byte ceiling, so the flood ran out rather than the ceiling being reached",
+		total < len(flood_bytes),
+		"one drain took the whole flood (%d of %d bytes) instead of stopping at its ceiling with data still waiting in the pipe",
 		total,
-		MAX_DRAIN_BYTES,
+		len(flood_bytes),
 	)
 }

@@ -66,7 +66,7 @@ probe_executable :: proc(
 		builder = strings.builder_make(allocator),
 	}
 
-	run, err := child.run_bounded(
+	run, _, err := child.run_bounded(
 		group,
 		executable,
 		arguments,

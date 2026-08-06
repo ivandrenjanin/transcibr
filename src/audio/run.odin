@@ -1,9 +1,12 @@
 #+vet explicit-allocators
 package audio
 
+import "base:runtime"
 import "core:fmt"
 import "core:mem"
 import "core:os"
+import "core:strings"
+import "core:thread"
 import "core:time"
 import "transcibr:child"
 import "transcibr:process"
@@ -117,10 +120,11 @@ settle :: proc(
 	unreachable()
 }
 
-// Known-open, not silent: the read of ffprobe's own answer file below is
-// unbounded and can wedge on a stalled scratch cache the same way the reads
-// issue #27 bounded could -- tracked as issue #65 rather than closed here,
-// the way ADR-0020 records a gap by name instead of leaving it unmentioned.
+// The read of ffprobe's own answer file below is bounded the same way
+// `child.read_bounded` bounds a hand-typed `--from-json` path (issue #27): a
+// stalled scratch cache wedges this identically, and this is already a
+// whole-file read of a path this program itself built -- `child.read_bounded`
+// fits directly, with no caller-specific worker needed around it (issue #65).
 @(require_results)
 probe :: proc(
 	group: ^child.Job_Object,
@@ -139,7 +143,7 @@ probe :: proc(
 	arguments := process.probe_arguments(source, answer, allocator)
 	defer delete(arguments, allocator)
 
-	ending, refusal := child.run_bounded(
+	ending, _, refusal := child.run_bounded(
 		group,
 		tools.ffprobe,
 		arguments,
@@ -158,8 +162,8 @@ probe :: proc(
 		return {}, Error{fault = .Probe_Did_Not_Finish}
 	}
 
-	said, unreadable := os.read_entire_file(answer, allocator)
-	if unreadable != nil {
+	said, unreadable := child.read_bounded(answer, child.READ_BOUND_MS, allocator)
+	if unreadable.fault != .None {
 		return {}, Error{fault = .Probe_Answer_Unreadable}
 	}
 	defer delete(said, allocator)
@@ -177,18 +181,20 @@ check_audio :: proc(
 	part: string,
 	container_ms: i64,
 	tolerance: Tolerance,
+	allocator: mem.Allocator,
 ) -> (
 	produced_ms: Measured_Ms,
 	err: Error,
 ) {
 	assert(len(part) > 0, "there is no audio here to check")
 	assert(container_ms > 0, "a container with no duration was never accepted by the probe")
+	assert(allocator.procedure != nil, "a bounded head read needs an allocator for its answer")
 
-	buffer: [AUDIO_HEAD_BYTES]u8 = ---
-	head, bytes, unreadable := read_head(part, buffer[:])
+	head, bytes, unreadable := read_head_bounded(part, child.READ_BOUND_MS, allocator)
 	if unreadable.fault != .None {
 		return 0, unreadable
 	}
+	defer delete(head, allocator)
 
 	facts, malformed := read_wav_facts(head, bytes)
 	if malformed != .None {
@@ -209,8 +215,10 @@ check_audio :: proc(
 // file the bytes came from: a stat taken separately can name a file something
 // has replaced in between.
 //
-// Known-open, not silent: `os.open` and `os.read_at` below are unbounded and
-// can wedge on a stalled scratch cache the same way. Issue #65 tracks it.
+// Runs only on `read_head_bounded`'s worker thread below: `os.open` and
+// `os.read_at` can wedge on a stalled scratch cache the same way a hand-typed
+// `--from-json` path wedges `child.read_bounded` (issue #27), and nothing
+// about a blocked Win32 call can be polled from outside it (issue #65).
 @(private)
 @(require_results)
 read_head :: proc(path: string, into: []u8) -> (head: []u8, bytes: i64, err: Error) {
@@ -229,12 +237,148 @@ read_head :: proc(path: string, into: []u8) -> (head: []u8, bytes: i64, err: Err
 	}
 
 	wanted := into[:min(int(length), len(into))]
-	read, unreadable := os.read_at(handle, wanted, 0)
-	if unreadable != nil && read == 0 {
+	read, _ := os.read_at(handle, wanted, 0)
+	if read == 0 {
 		return nil, 0, Error{fault = .Audio_Unreadable}
 	}
 	assert(read <= len(wanted), "more of the head came back than there was room for it")
 	return wanted[:read], length, Error{}
+}
+
+// `read_head`'s own worker: the buffer it reads into has to outlive the
+// caller's stack frame the way `child.Read_Job.bytes` does, because a
+// `.Stopped` or `.Unstoppable` wait leaves this thread abandoned rather than
+// joined -- so it lives on `runtime.heap_allocator`'s heap and never on the
+// caller's own `allocator`, the identical reasoning `child.job_allocator`
+// and `artifact.digest_of_bounded`'s `Digest_Job` give for the same shape.
+@(private)
+Head_Job :: struct {
+	path:     string,
+	buffer:   []u8,
+	head:     []u8,
+	bytes:    i64,
+	err:      Error,
+	stall_ms: i64,
+}
+
+@(private)
+head_worker :: proc(data: rawptr) {
+	job := (^Head_Job)(data)
+	assert(job != nil, "a head-read thread was started with no job to read")
+	assert(len(job.path) > 0, "a head-read thread was started with no path to read")
+
+	if job.stall_ms > 0 {
+		time.sleep(time.Duration(job.stall_ms) * time.Millisecond)
+	}
+	job.head, job.bytes, job.err = read_head(job.path, job.buffer)
+}
+
+// Bounded the same shape as `artifact.digest_of_bounded` and
+// `planning.transcript_state_bounded`: a small worker thread plus
+// `child.await_or_abandon`. Every wait outcome that is not `.Finished`
+// collapses onto `.Audio_Unreadable`, the same fault a `read_head` that
+// genuinely could not open the file already answers -- a caller cannot tell
+// a wedge from an ordinary open failure apart, and does not need to (A8: an
+// external read that times out is reported against the file that caused it).
+@(private)
+@(require_results)
+read_head_bounded :: proc(
+	path: string,
+	bound_ms: i64,
+	allocator: mem.Allocator,
+) -> (
+	head: []u8,
+	bytes: i64,
+	err: Error,
+) {
+	return read_head_bounded_stalled(path, bound_ms, allocator, 0)
+}
+
+// `read_head_bounded`'s own body, plus a worker-side stall no production
+// caller ever passes: `read_head_bounded_stalled(path, bound_ms, allocator,
+// 0)` behaves identically to the code above it. A stall greater than
+// `bound_ms` is what `run_test.odin` uses to reach the `.Stopped` branch with
+// a real, running thread rather than a mocked wait outcome (issue #65's
+// coverage finding).
+@(private)
+@(require_results)
+read_head_bounded_stalled :: proc(
+	path: string,
+	bound_ms: i64,
+	allocator: mem.Allocator,
+	stall_ms: i64,
+) -> (
+	head: []u8,
+	bytes: i64,
+	err: Error,
+) {
+	assert(len(path) > 0, "there is no audio here to read")
+	assert(bound_ms > 0, "a read given no time at all cannot do anything")
+	assert(allocator.procedure != nil, "a head outliving this procedure needs an allocator")
+	assert(stall_ms >= 0, "a stall cannot run for negative time")
+
+	job := new(Head_Job, runtime.heap_allocator())
+	job.path = strings.clone(path, runtime.heap_allocator())
+	job.buffer = make([]u8, AUDIO_HEAD_BYTES, runtime.heap_allocator())
+	job.stall_ms = stall_ms
+
+	context.allocator = runtime.heap_allocator()
+	t := thread.create_and_start_with_data(job, head_worker)
+	if t == nil {
+		delete(job.buffer, runtime.heap_allocator())
+		delete(job.path, runtime.heap_allocator())
+		free(job, runtime.heap_allocator())
+		return nil, 0, Error{fault = .Audio_Unreadable}
+	}
+
+	switch child.await_or_abandon(t, bound_ms) {
+	case .Finished:
+		return head_finished(t, job, allocator)
+	case .Stopped:
+		release_head_job(t, job)
+		return nil, 0, Error{fault = .Audio_Unreadable}
+	case .Unstoppable:
+		return nil, 0, Error{fault = .Audio_Unreadable}
+	}
+	unreachable()
+}
+
+@(private)
+release_head_job :: proc(t: ^thread.Thread, job: ^Head_Job) {
+	assert(t != nil, "there is no thread here to release")
+	assert(job != nil, "there is no job here to release")
+
+	delete(job.buffer, runtime.heap_allocator())
+	delete(job.path, runtime.heap_allocator())
+	free(job, runtime.heap_allocator())
+	thread.destroy(t)
+}
+
+// Where a completed head's answer crosses from `runtime.heap_allocator`'s
+// heap onto the allocator the caller actually asked for -- the same
+// copy-then-release shape `child.read.odin`'s `finished` uses.
+@(private)
+@(require_results)
+head_finished :: proc(
+	t: ^thread.Thread,
+	job: ^Head_Job,
+	allocator: mem.Allocator,
+) -> (
+	head: []u8,
+	bytes: i64,
+	err: Error,
+) {
+	assert(t != nil, "there is no thread here to close out")
+	assert(job != nil, "a finished head read has no job to read its answer from")
+
+	err = job.err
+	bytes = job.bytes
+	if err.fault == .None {
+		head = make([]u8, len(job.head), allocator)
+		copy(head, job.head)
+	}
+	release_head_job(t, job)
+	return
 }
 
 // Why the two intermediates carry the process id and `<name>.wav` does not, and
@@ -313,7 +457,7 @@ produce :: proc(
 
 	arguments := process.extract_arguments(job.source, part, allocator)
 	defer delete(arguments, allocator)
-	ending, refusal := child.run_bounded(
+	ending, _, refusal := child.run_bounded(
 		group,
 		tools.ffmpeg,
 		arguments,
@@ -330,7 +474,7 @@ produce :: proc(
 	case .Finished:
 	}
 
-	measured, unusable := check_audio(part, container_ms, tolerance)
+	measured, unusable := check_audio(part, container_ms, tolerance, allocator)
 	if unusable.fault != .None {
 		return {}, unusable
 	}

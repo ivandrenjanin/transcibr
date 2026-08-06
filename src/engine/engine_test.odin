@@ -4,6 +4,7 @@ package engine
 import "core:fmt"
 import "core:os"
 import "core:testing"
+import "core:time"
 import "transcibr:child"
 import "transcibr:process"
 import "transcibr:testkit"
@@ -244,6 +245,92 @@ an_engine_that_produced_an_empty_file_is_a_failure :: proc(t: ^testing.T) {
 	defer delete(produced.output, context.allocator)
 
 	testing.expect_value(t, err.fault, Fault.Output_Empty)
+}
+
+@(test)
+a_bounded_landed_check_of_a_real_output_on_disk_finds_it :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "engine", "landed", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	output := fmt.aprintf("%s\\lecture.json", cache, allocator = context.allocator)
+	defer delete(output, context.allocator)
+	testing.expect(
+		t,
+		os.write_entire_file(output, []u8{'{', '}'}) == nil,
+		"could not write a stand-in output file",
+	)
+
+	testing.expect_value(t, landed_bounded(output, child.READ_BOUND_MS), Fault.None)
+}
+
+@(test)
+a_bounded_landed_check_of_an_output_that_is_not_there_is_refused :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "engine", "landed-missing", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	output := fmt.aprintf("%s\\never-written.json", cache, allocator = context.allocator)
+	defer delete(output, context.allocator)
+
+	testing.expect_value(t, landed_bounded(output, child.READ_BOUND_MS), Fault.No_Output)
+}
+
+// Short enough that a worker stalled `LANDED_STALL_MS` past it forces
+// `landed_bounded`'s wait to time out rather than finish, without the suite
+// waiting long for it.
+@(private)
+LANDED_STALL_BOUND_MS :: i64(50)
+
+// Comfortably past `LANDED_STALL_BOUND_MS`, and comfortably inside
+// `transcibr:child`'s own `CANCEL_BOUND_MS` (5 s), so the worker's real
+// `time.sleep` finishes -- and `await_or_abandon`'s poll notices it done --
+// well before the `.Unstoppable` leak path would ever be reached.
+@(private)
+LANDED_STALL_MS :: i64(1_500)
+
+// Generous against the worst case a correctly working bound could ever
+// legitimately take -- `LANDED_STALL_BOUND_MS` plus a cancellation running
+// its own full course -- rather than tuned to equal it, the same reasoning
+// `artifact.model_test.odin`'s `MODEL_BOUND_TEST_SLACK` documents.
+@(private)
+LANDED_STALL_SLACK :: 30 * time.Second
+
+// Finding of the PR #99 review: nothing in this suite before this case ran a
+// `landed_bounded` worker for longer than its own bound, so a mutant that
+// multiplied `bound_ms` by 1000 -- an effectively unbounded wait -- passed
+// every test unchanged. `landed_bounded_stalled` puts a real,
+// `time.sleep`-stalled worker on the far side of a short bound, the same way
+// `child`'s own `a_read_that_cannot_finish_is_abandoned_at_its_bound` puts a
+// real stalled pipe read on the far side of one.
+@(test)
+a_landed_check_that_cannot_finish_within_its_bound_is_reported_rather_than_awaited_forever :: proc(
+	t: ^testing.T,
+) {
+	cache := testkit.made_scratch_cache(t, "engine", "landed-stalled", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	output := fmt.aprintf("%s\\lecture.json", cache, allocator = context.allocator)
+	defer delete(output, context.allocator)
+	testing.expect(
+		t,
+		os.write_entire_file(output, []u8{'{', '}'}) == nil,
+		"could not write a stand-in output file",
+	)
+
+	started := time.tick_now()
+	fault := landed_bounded_stalled(output, LANDED_STALL_BOUND_MS, LANDED_STALL_MS)
+	elapsed := time.tick_since(started)
+
+	testing.expect_value(t, fault, Fault.No_Output)
+	testing.expectf(
+		t,
+		elapsed < LANDED_STALL_SLACK,
+		"a landed check bounded at %d ms took %v to be reported, which is not being bounded at all",
+		LANDED_STALL_BOUND_MS,
+		elapsed,
+	)
 }
 
 @(test)
@@ -498,10 +585,20 @@ every_way_a_run_can_end_is_the_fault_that_names_it :: proc(t: ^testing.T) {
 	testing.expect_value(t, refused(Ending{run = .Unstoppable}).fault, Fault.Not_Stopped)
 	testing.expect_value(
 		t,
-		refused(Ending{run = .Stopped, silent = true}).fault,
+		refused(Ending{run = .Stopped, reason = .Poll_Asked}).fault,
 		Fault.Went_Silent,
 	)
 	testing.expect_value(t, refused(Ending{run = .Stopped}).fault, Fault.Did_Not_Finish)
+	testing.expect_value(
+		t,
+		refused(Ending{run = .Stopped, reason = .Drain_Failed}).fault,
+		Fault.Did_Not_Finish,
+	)
+	testing.expect_value(
+		t,
+		refused(Ending{run = .Stopped, reason = .Bound_Expired}).fault,
+		Fault.Did_Not_Finish,
+	)
 	testing.expect_value(t, refused(Ending{run = .Finished}).fault, Fault.None)
 }
 
@@ -512,13 +609,12 @@ every_way_a_run_can_end_is_the_fault_that_names_it :: proc(t: ^testing.T) {
 an_unstoppable_run_still_carries_what_it_measured :: proc(t: ^testing.T) {
 	watch_state := Watch_State {
 		tracker = process.Tracker{duration_ms = 4_200},
-		silent = true,
 	}
-	ending := ending_for(.Unstoppable, watch_state, child.Error{})
+	ending := ending_for(.Unstoppable, .Poll_Asked, watch_state, child.Error{})
 
 	testing.expect_value(t, ending.run, child.Run.Unstoppable)
 	testing.expect_value(t, ending.duration_ms, i64(4_200))
-	testing.expect_value(t, ending.silent, true)
+	testing.expect_value(t, ending.reason, child.Stop_Reason.Poll_Asked)
 }
 
 // The realtime-factor calculation divides a Recording's audio length by how
@@ -532,7 +628,7 @@ a_finished_run_carries_the_wall_clock_it_actually_took :: proc(t: ^testing.T) {
 		tracker = process.Tracker{duration_ms = 10_000},
 		elapsed_ms = 588,
 	}
-	ending := ending_for(.Finished, watch_state, child.Error{})
+	ending := ending_for(.Finished, .None, watch_state, child.Error{})
 
 	testing.expect_value(t, ending.elapsed_ms, i64(588))
 }
