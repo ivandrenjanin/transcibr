@@ -61,6 +61,13 @@ Sidecar :: struct {
 	source_bytes:       i64,
 	source_modified_ns: i64,
 	// The container probe's answer, and never the scratch audio's own header.
+	// `recordable` below accepts zero here because a Sidecar read back from a
+	// file is external input (rule A8), not a fresh probe -- every
+	// `container_ms > 0` assert elsewhere in this repository (#129, #132)
+	// traces to `process.read_probe`'s own guarantee, never to a value read
+	// out of a Sidecar. A future resume path that feeds a RECORDED
+	// `container_ms` into one of those asserts must re-probe or re-check it
+	// first; this field alone does not carry the guarantee.
 	container_ms:       i64,
 }
 
