@@ -27,6 +27,42 @@ combined_message_with_no_sentence_still_renders_something_a_reader_can_act_on ::
 	)
 }
 
+// #139's own extra AC: emptying NO_SENTENCE_FALLBACK left every existing
+// test here green, because the other assertions only check that something
+// non-empty renders. Pin the text itself.
+@(test)
+the_no_sentence_fallback_text_is_pinned :: proc(t: ^testing.T) {
+	testing.expect_value(t, NO_SENTENCE_FALLBACK, "failed, but this build has no sentence for why")
+}
+
+@(test)
+combined_message_with_no_sentence_falls_back_to_the_pinned_text :: proc(t: ^testing.T) {
+	rendered := combined_message("engine", "", "", context.allocator)
+	defer delete(rendered, context.allocator)
+
+	testing.expect(
+		t,
+		strings.contains(rendered, NO_SENTENCE_FALLBACK),
+		"a missing sentence did not fall back to the pinned text",
+	)
+}
+
+// #139 fix round 1: health_error_message pasted this same branch inline
+// rather than calling combined_message, so the mutation that deletes the
+// fallback branch from health.odin left every test here green -- nothing
+// exercised health.odin's copy of the logic. Testing the shared helper
+// directly means both callers' fallback behavior is pinned by one test,
+// however many callers end up delegating to it.
+@(test)
+sentence_or_fallback_falls_back_when_the_lookup_is_empty :: proc(t: ^testing.T) {
+	testing.expect_value(t, sentence_or_fallback(""), NO_SENTENCE_FALLBACK)
+}
+
+@(test)
+sentence_or_fallback_passes_a_real_sentence_through_unchanged :: proc(t: ^testing.T) {
+	testing.expect_value(t, sentence_or_fallback("a real sentence"), "a real sentence")
+}
+
 @(test)
 report_ok_ignores_an_advisory_failed_check :: proc(t: ^testing.T) {
 	checks := []Check {
