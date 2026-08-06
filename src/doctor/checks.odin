@@ -11,10 +11,14 @@ import "core:strings"
 import "transcibr:artifact"
 import "transcibr:child"
 
-// `-version` costs nothing and both ffmpeg and ffprobe answer it instantly,
-// the same probe shape the Engine check uses for `--help`.
+// `-hide_banner` costs nothing and both ffmpeg and ffprobe answer it
+// instantly, the same probe shape the Engine check uses for `--help`. Unlike
+// `-version`, which both tools write to stdout -- a stream this program never
+// captures (ADR-0004) -- `-hide_banner` alone is missing its required input
+// file, so both tools print their usage message to stderr and exit nonzero;
+// the probe reads only whether something was captured, never the exit code.
 @(rodata)
-FFMPEG_PROBE_ARGUMENTS := []string{"-version"}
+FFMPEG_PROBE_ARGUMENTS := []string{"-hide_banner"}
 
 @(require_results)
 extraction_tool_check :: proc(
@@ -101,7 +105,7 @@ gpu_diagnostic_check :: proc(allocator: mem.Allocator) -> Check {
 			"no GPU could be enumerated at all; the engine will have nothing to reach even if it starts",
 			allocator,
 		)
-		return failed("gpu (diagnostic)", message)
+		return failed("gpu (diagnostic)", message, advisory = true)
 	}
-	return passed("gpu (diagnostic)")
+	return passed("gpu (diagnostic)", advisory = true)
 }

@@ -35,24 +35,27 @@ combined_message :: proc(
 // One line of a doctor Report: what was checked, whether it passed, and an
 // actionable reason when it did not -- owned, and freed with delete and the
 // allocator handed in whichever way the check ended, so a passing check that
-// allocated no reason frees an empty string safely.
+// allocated no reason frees an empty string safely. `advisory` marks a check
+// that is printed like any other but never turns `report_ok` false on its
+// own (ADR-0011: GPU enumeration is diagnostic only, never the verdict).
 Check :: struct {
-	name:   string,
-	ok:     bool,
-	reason: string,
+	name:     string,
+	ok:       bool,
+	reason:   string,
+	advisory: bool,
 }
 
 @(require_results)
-passed :: proc(name: string) -> Check {
+passed :: proc(name: string, advisory := false) -> Check {
 	assert(len(name) > 0, "a check with no name reports nothing a user can act on")
-	return Check{name = name, ok = true}
+	return Check{name = name, ok = true, advisory = advisory}
 }
 
 @(require_results)
-failed :: proc(name: string, reason: string) -> Check {
+failed :: proc(name: string, reason: string, advisory := false) -> Check {
 	assert(len(name) > 0, "a check with no name reports nothing a user can act on")
 	assert(len(reason) > 0, "a failed check with no reason gives a user nothing to act on")
-	return Check{name = name, ok = false, reason = reason}
+	return Check{name = name, ok = false, reason = reason, advisory = advisory}
 }
 
 destroy_check :: proc(check: Check, allocator: mem.Allocator) {
@@ -61,10 +64,14 @@ destroy_check :: proc(check: Check, allocator: mem.Allocator) {
 
 // Every check this Batch's doctor ran, front to back -- `passed` and `failed`
 // are the only two Check constructors, so a Report can never hold a Check
-// answering neither.
+// answering neither. An advisory check is printed like any other but never
+// turns this false on its own.
 @(require_results)
 report_ok :: proc(checks: []Check) -> bool {
 	for check in checks {
+		if check.advisory {
+			continue
+		}
 		if !check.ok {
 			return false
 		}

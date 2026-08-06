@@ -34,6 +34,16 @@ health_threshold :: proc() -> f64 {
 	return MEASURED_BASELINE_REALTIME_FACTOR / BASELINE_ORDER_OF_MAGNITUDE
 }
 
+// Measured against the reference GPU install, ggml-large-v3-turbo, beam 5: a
+// 2s clip's factor (1.41x) sits below health_threshold() purely from the
+// Engine's fixed per-run overhead (model load, CUDA init), while a 4s clip
+// (2.78x) and an 8s clip (5.60x) both clear it. Below this many container
+// milliseconds, that fixed overhead dominates the measurement and the speed
+// half of the check is not trusted to carry a verdict either way.
+MIN_HEALTH_CHECK_CONTAINER_MS :: i64(5_000)
+
+#assert(MIN_HEALTH_CHECK_CONTAINER_MS > 0)
+
 Health_Fault :: enum u8 {
 	None = 0,
 	// The Engine's own `systeminfo` line names no CUDA support at all -- the
@@ -54,16 +64,27 @@ Health_Fault :: enum u8 {
 // long the Engine actually took, both already measured before this is
 // called, which is why an invalid factor is asserted rather than refused --
 // this procedure's own precondition, not anything read from outside the
-// program.
+// program. An empty `systeminfo` means no evidence either way -- the caller
+// passes it that way when the Engine's own output named no systeminfo field
+// or could not be parsed at all -- and this never turns absence of evidence
+// into `.No_Cuda_Reported`; the speed half of the check still applies.
 @(require_results)
-first_recording_health :: proc(systeminfo: string, realtime_factor: f64) -> Health_Fault {
+first_recording_health :: proc(
+	systeminfo: string,
+	realtime_factor: f64,
+	container_ms: i64,
+) -> Health_Fault {
 	assert(
 		realtime_factor > 0,
 		"a Recording that took no measurable time reached the health check",
 	)
+	assert(container_ms > 0, "a Recording nobody could time reached the health check")
 
-	if !strings.contains(systeminfo, "CUDA") {
+	if len(systeminfo) > 0 && !strings.contains(systeminfo, "CUDA") {
 		return .No_Cuda_Reported
+	}
+	if container_ms < MIN_HEALTH_CHECK_CONTAINER_MS {
+		return .None
 	}
 	if realtime_factor < health_threshold() {
 		return .Realtime_Factor_Too_Low

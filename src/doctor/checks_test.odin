@@ -50,6 +50,71 @@ an_extraction_tool_that_cannot_be_started_is_reported_rather_than_asserted :: pr
 	testing.expect(t, strings.contains(check.reason, "no-such-tool"), "the tool is not named")
 }
 
+// The real reference toolchain this dev machine carries, exercised end to
+// end so the probe argument is proved against a genuine ffmpeg/ffprobe
+// build rather than only against cmd.exe, which writes to a different
+// stream than either real tool does. Skipped, not failed, wherever that
+// install is absent -- CI carries no such directory.
+@(private)
+REFERENCE_FFMPEG :: `C:\tools\ffmpeg\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe`
+
+@(private)
+REFERENCE_FFPROBE :: `C:\tools\ffmpeg\ffmpeg-master-latest-win64-gpl\bin\ffprobe.exe`
+
+@(test)
+review_a_real_healthy_ffmpeg_passes_the_extraction_check :: proc(t: ^testing.T) {
+	if !os.exists(REFERENCE_FFMPEG) {
+		return
+	}
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	check := extraction_tool_check(
+		&group,
+		"ffmpeg",
+		REFERENCE_FFMPEG,
+		FFMPEG_PROBE_ARGUMENTS,
+		context.allocator,
+	)
+	defer destroy_check(check, context.allocator)
+
+	if !check.ok {
+		testing.expectf(t, false, "%s", check.reason)
+		return
+	}
+	testing.expect_value(t, check.ok, true)
+}
+
+@(test)
+review_a_real_healthy_ffprobe_passes_the_extraction_check :: proc(t: ^testing.T) {
+	if !os.exists(REFERENCE_FFPROBE) {
+		return
+	}
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	check := extraction_tool_check(
+		&group,
+		"ffprobe",
+		REFERENCE_FFPROBE,
+		FFMPEG_PROBE_ARGUMENTS,
+		context.allocator,
+	)
+	defer destroy_check(check, context.allocator)
+
+	if !check.ok {
+		testing.expectf(t, false, "%s", check.reason)
+		return
+	}
+	testing.expect_value(t, check.ok, true)
+}
+
 @(test)
 a_model_that_hashes_cleanly_passes :: proc(t: ^testing.T) {
 	dir := testkit.made_scratch_cache(t, "Doctor", "modelcheck", context.allocator)

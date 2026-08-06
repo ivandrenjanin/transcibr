@@ -188,9 +188,13 @@ checked_first_recording_health :: proc(
 
 	systeminfo := transcript.parse_systeminfo(string(json_bytes), job.allocator)
 	defer delete(systeminfo, job.allocator)
+	evidence := systeminfo
+	if evidence == transcript.UNKNOWN {
+		evidence = ""
+	}
 
 	factor := f64(container_ms) / f64(produced.duration_ms)
-	fault := doctor.first_recording_health(systeminfo, factor)
+	fault := doctor.first_recording_health(evidence, factor, container_ms)
 	if fault == .None {
 		return
 	}

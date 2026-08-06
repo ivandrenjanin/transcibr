@@ -240,3 +240,17 @@ an_unhealthy_first_recording_sets_the_same_flag_a_ctrl_c_press_sets :: proc(t: ^
 	testing.expect_value(t, checked, true)
 	testing.expect_value(t, abort, true)
 }
+
+@(test)
+review_engine_output_with_no_systeminfo_field_must_not_abort_the_batch :: proc(t: ^testing.T) {
+	_, checked, abort := health_check_job(t, "nosysteminfo", `{"result": {"language": "en"}}`)
+	testing.expect_value(t, checked, true)
+	testing.expect_value(t, abort, false)
+}
+
+@(test)
+review_unparseable_engine_output_must_not_abort_the_batch :: proc(t: ^testing.T) {
+	_, checked, abort := health_check_job(t, "unparseable", `not json at all`)
+	testing.expect_value(t, checked, true)
+	testing.expect_value(t, abort, false)
+}
