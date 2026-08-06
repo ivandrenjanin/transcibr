@@ -119,6 +119,110 @@ settle :: proc(
 	unreachable()
 }
 
+// Whether the answer file `probe` below wrote is safe to remove:
+// `child.read_bounded` answers `Read_Fault.Did_Not_Finish` for BOTH a
+// worker `child.await_or_abandon` cancelled and reclaimed and one it gave up
+// on outright, and `Read_Error` carries nothing this far that tells those two
+// apart -- so this treats the fault conservatively and refuses removal on
+// it, leaking the answer file deliberately the same way `child.Read_Job`'s
+// own doc comment (`src\child\read.odin`) states its worker leaks for the
+// identical reason: there is no safe way to touch a file a thread may still
+// be reading, short of `TerminateThread`, which CLAUDE.md's own notes on
+// this repository's test runner already found abandons locks mid-use
+// (issue #125, filed from the #66 review).
+//
+// An exhaustive switch, not `!= .Did_Not_Finish`: issue #33's compile guard
+// applies to a switch that names every member itself exactly as it does to
+// an enumerated array, and it is what makes a member added to `Read_Fault`
+// without a case here a build failure rather than a silent
+// settled-for-removal default (issue #125's round-2 review -- the `!=` form
+// fails OPEN, toward removing a file a child may still hold, the identical
+// shape `model_probe_wav_settled` in `src\doctor\model_probe.odin` already
+// closed for `child.Run`).
+@(private)
+@(require_results)
+answer_read_settled :: proc(fault: child.Read_Fault) -> bool {
+	switch fault {
+	case .None, .Not_Started, .Unreadable:
+		return true
+	case .Did_Not_Finish:
+		return false
+	}
+	unreachable()
+}
+
+// `probe`'s removal of `answer` is threaded through this type rather than
+// calling `os.remove` inline, so a test can prove the ordering by passing a
+// counting stand-in through `probe_using` below instead of calling
+// `os.remove` and inspecting the file afterward: `DeleteFileW` is measured
+// to be a complete no-op against a named pipe -- the wedge this file's own
+// tests use to reach `Read_Fault.Did_Not_Finish` -- returning
+// `ERROR_INVALID_PARAMETER` with no connected reader and `ERROR_PIPE_BUSY`
+// with one, in both cases leaving the pipe exactly as it was, so "was
+// removal attempted" is unobservable from outside a pipe path by any
+// filesystem effect (issue #125's round-1 review, finding 1). A package
+// variable would race every other test in this package calling `probe`
+// concurrently (`test.ps1` runs 12 threads by default), so this is a
+// parameter, not shared state.
+@(private)
+Answer_Remove :: #type proc(path: string)
+
+@(private)
+os_remove_answer :: proc(path: string) {
+	os.remove(path)
+}
+
+// Pulled out of `probe_using` so its removal effect is provable directly, by
+// handing it a `settled` value straight from a test, rather than only ever
+// proving `answer_read_settled` classifies a `Read_Fault` correctly in
+// isolation from anything that touches disk.
+@(private)
+remove_answer_if_settled :: proc(answer: string, settled: bool, remove: Answer_Remove) {
+	assert(len(answer) > 0, "there is no answer file here to conditionally remove")
+	if settled {
+		remove(answer)
+	}
+}
+
+// `probe_using`'s spawn of ffprobe itself is threaded through this type
+// rather than calling `child.run_bounded` inline, so a test can supply the
+// run's INPUT (a `child.Run.Stopped`, with no real 60 s `PROBE_BOUND_MS`
+// wait needed) while `probe_using` still supplies the DECISION -- the
+// `.Stopped` branch's own guarded removal -- distinguishing a covered call
+// site from a dead one, the same way `Probe_Maker` already does for
+// `src\doctor\model_probe.odin`'s `.Unstoppable` arm (issue #125's round-4
+// review, finding 2: nothing in the tree drove `probe` onto its own
+// `.Stopped` branch, so deleting that branch's `remove(answer)` left all
+// 588 tests green).
+@(private)
+Probe_Run :: #type proc(
+	group: ^child.Job_Object,
+	executable: string,
+	arguments: []string,
+	bound_ms: i64,
+	allocator: mem.Allocator,
+) -> (
+	ending: child.Run,
+	reason: child.Stop_Reason,
+	err: child.Error,
+)
+
+@(private)
+@(require_results)
+run_probe_child :: proc(
+	group: ^child.Job_Object,
+	executable: string,
+	arguments: []string,
+	bound_ms: i64,
+	allocator: mem.Allocator,
+) -> (
+	ending: child.Run,
+	reason: child.Stop_Reason,
+	err: child.Error,
+) {
+	return child.run_bounded(group, executable, arguments, bound_ms, allocator)
+}
+
 // The read of ffprobe's own answer file below is bounded the same way
 // `child.read_bounded` bounds a hand-typed `--from-json` path (issue #27): a
 // stalled scratch cache wedges this identically, and this is already a
@@ -135,6 +239,28 @@ probe :: proc(
 	probed: process.Probe,
 	err: Error,
 ) {
+	return probe_using(group, tools, source, answer, allocator, os_remove_answer, run_probe_child)
+}
+
+// The real body of `probe`, taking its remover and its child runner as
+// parameters rather than package variables so a test can swap either
+// without racing every other test in this package that calls `probe`
+// concurrently (issue #125's round-1 review, finding 1; the runner
+// parameter is round-4's finding 2).
+@(private)
+@(require_results)
+probe_using :: proc(
+	group: ^child.Job_Object,
+	tools: Tools,
+	source: string,
+	answer: string,
+	allocator: mem.Allocator,
+	remove: Answer_Remove,
+	run: Probe_Run,
+) -> (
+	probed: process.Probe,
+	err: Error,
+) {
 	assert(group != nil, "a child started outside a job object outlives transcibr")
 	assert(len(answer) > 0, "a probe with nowhere to write its answer says nothing")
 	assert(len(source) > 0, "there is no Recording here to probe")
@@ -142,13 +268,7 @@ probe :: proc(
 	arguments := process.probe_arguments(source, answer, allocator)
 	defer delete(arguments, allocator)
 
-	ending, _, refusal := child.run_bounded(
-		group,
-		tools.ffprobe,
-		arguments,
-		PROBE_BOUND_MS,
-		allocator,
-	)
+	ending, _, refusal := run(group, tools.ffprobe, arguments, PROBE_BOUND_MS, allocator)
 	switch ending {
 	case .Not_Started:
 		return {}, Error{fault = .Probe_Not_Started, child = refusal}
@@ -156,12 +276,13 @@ probe :: proc(
 		return {}, Error{fault = .Probe_Not_Stopped}
 	case .Stopped, .Finished:
 	}
-	defer os.remove(answer)
 	if ending == .Stopped {
+		remove_answer_if_settled(answer, true, remove)
 		return {}, Error{fault = .Probe_Did_Not_Finish}
 	}
 
 	said, unreadable := child.read_bounded(answer, child.READ_BOUND_MS, allocator)
+	remove_answer_if_settled(answer, answer_read_settled(unreadable.fault), remove)
 	if unreadable.fault != .None {
 		return {}, Error{fault = .Probe_Answer_Unreadable}
 	}

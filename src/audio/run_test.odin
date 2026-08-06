@@ -2,6 +2,7 @@
 package audio
 
 import "core:fmt"
+import "core:mem"
 import "core:os"
 import win32 "core:sys/windows"
 import "core:testing"
@@ -532,5 +533,400 @@ a_flood_on_the_diagnostic_stream_does_not_stop_the_bound_from_being_reached :: p
 		t,
 		elapsed < time.Duration(SHORT_BOUND_MS) * time.Millisecond + testkit.FLOOD_STOP_SLACK,
 		"the flood delayed the bound from being reached at all",
+	)
+}
+
+// Far shorter than child.READ_BOUND_MS, so this case measures the bound
+// rather than a real caller's patience -- the same reasoning
+// `child.READ_SHORT_BOUND_MS` states for itself, duplicated here for the
+// identical reason `open_group` above is: a testkit shared with `child`
+// would import back into the package whose own tests define this bound.
+@(private)
+PROBE_ANSWER_WEDGE_BOUND_MS :: i64(300)
+
+// A named pipe with a server end and nobody ever writing to it or closing
+// it -- the same idiom `child.read_test.odin`'s `pipe_with_no_writer` uses
+// for its own package, duplicated rather than shared for the reason
+// `open_group` above states. The caller closes `server` and frees `path`.
+@(private)
+@(require_results)
+answer_pipe_with_no_writer :: proc(
+	t: ^testing.T,
+	tag: string,
+) -> (
+	path: string,
+	server: win32.HANDLE,
+	ok: bool,
+) {
+	assert(t != nil, "there is no test here to report a refusal through")
+	assert(len(tag) > 0, "a pipe name shared by two cases is a pipe one of them cannot claim")
+
+	path = fmt.aprintf(
+		`\\.\pipe\transcibr-probe-answer-%d-%s`,
+		win32.GetCurrentProcessId(),
+		tag,
+		allocator = context.allocator,
+	)
+
+	wide := win32.utf8_to_utf16(path, context.allocator)
+	defer delete(wide, context.allocator)
+
+	server = win32.CreateNamedPipeW(
+		win32.wstring(raw_data(wide)),
+		win32.PIPE_ACCESS_OUTBOUND,
+		win32.PIPE_TYPE_BYTE | win32.PIPE_WAIT,
+		1,
+		4096,
+		4096,
+		0,
+		nil,
+	)
+	if server == win32.INVALID_HANDLE_VALUE {
+		delete(path, context.allocator)
+		testing.expect(t, false, "could not create a named pipe with nobody writing to it")
+		return "", nil, false
+	}
+	return path, server, true
+}
+
+// `answer_read_settled` is `probe`'s own ordering guard, pulled out so it can
+// be proven without spawning ffprobe at all: `child.read_bounded` answers
+// `Read_Fault.Did_Not_Finish` for BOTH a cancelled-and-reclaimed worker and
+// one `child.await_or_abandon` gave up on, and `Read_Error` carries nothing
+// that tells those two apart from here -- so this treats the fault
+// conservatively, leaking the answer file deliberately the same way
+// `child.Read_Job`'s own doc comment states its worker leaks for the
+// identical reason (issue #125, filed from the #66 review).
+@(test)
+a_probe_answer_read_that_is_known_done_is_settled_for_removal :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		answer_read_settled(child.Read_Fault.None),
+		"a finished read was not settled",
+	)
+	testing.expect(
+		t,
+		answer_read_settled(child.Read_Fault.Not_Started),
+		"a read whose thread never started was not settled",
+	)
+	testing.expect(
+		t,
+		answer_read_settled(child.Read_Fault.Unreadable),
+		"a read that finished with an OS error was not settled",
+	)
+}
+
+@(test)
+an_abandoned_probe_answer_read_is_never_settled_for_removal :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		!answer_read_settled(child.Read_Fault.Did_Not_Finish),
+		"an abandoned read was treated as settled, which would remove a file a live worker might still hold open",
+	)
+
+	path, server, ok := answer_pipe_with_no_writer(t, "abandoned")
+	if !ok {
+		return
+	}
+	defer win32.CloseHandle(server)
+	defer delete(path, context.allocator)
+
+	_, unreadable := child.read_bounded(path, PROBE_ANSWER_WEDGE_BOUND_MS, context.allocator)
+	testing.expect_value(t, unreadable.fault, child.Read_Fault.Did_Not_Finish)
+	testing.expect(
+		t,
+		!answer_read_settled(unreadable.fault),
+		"a real abandoned read's own fault was treated as settled for removal",
+	)
+}
+
+// `answer_read_settled` on its own only ever proves the BOOLEAN is right --
+// nothing above reaches the file-system effect that boolean is supposed to
+// gate. `remove_answer_if_settled` is the exact code `probe` calls with that
+// boolean, so handing it a real, disk-backed answer file and a genuine
+// `settled` value proves the removal itself, not only the predicate that
+// decides it (issue #125's round-1 review, finding 1).
+@(test)
+a_settled_probe_answer_is_actually_removed_from_disk :: proc(t: ^testing.T) {
+	cache := testkit.scratch_cache(t, "audio", "answer-settled", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
+
+	answer := fmt.aprintf("%s\\answer.json", cache, allocator = context.allocator)
+	defer delete(answer, context.allocator)
+	testing.expect(
+		t,
+		os.write_entire_file(answer, []u8{'{', '}'}) == nil,
+		"could not write the fixture",
+	)
+
+	remove_answer_if_settled(answer, true, os_remove_answer)
+	testing.expect(t, !os.exists(answer), "a settled answer was left on disk")
+}
+
+@(test)
+an_unsettled_probe_answer_is_left_on_disk :: proc(t: ^testing.T) {
+	cache := testkit.scratch_cache(t, "audio", "answer-unsettled", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
+
+	answer := fmt.aprintf("%s\\answer.json", cache, allocator = context.allocator)
+	defer delete(answer, context.allocator)
+	testing.expect(
+		t,
+		os.write_entire_file(answer, []u8{'{', '}'}) == nil,
+		"could not write the fixture",
+	)
+
+	remove_answer_if_settled(answer, false, os_remove_answer)
+	testing.expect(
+		t,
+		os.exists(answer),
+		"an unsettled answer was removed, which would race a worker that might still hold it open",
+	)
+}
+
+// A real, fast-exiting stand-in for ffprobe: `probe`'s own call site never
+// inspects what its child prints, only whether it exited, so any short-lived
+// process reachable off PATH stands in for it without a committed fixture.
+// Measured at ~13 ms against garbage `probe_arguments`, comfortably inside
+// `PROBE_BOUND_MS`.
+@(private)
+FFPROBE_STAND_IN :: "where.exe"
+
+// Drives `probe` itself onto its guarded-removal branch, rather than only
+// `remove_answer_if_settled` directly: a real answer file, read to
+// completion, must vanish through `probe`'s own call site, not merely
+// through a test that hands the helper a hand-picked `settled` value.
+@(test)
+a_probe_whose_answer_read_finishes_removes_the_answer_file_at_the_call_site :: proc(
+	t: ^testing.T,
+) {
+	cache := testkit.scratch_cache(t, "audio", "probe-call-site-settled", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
+
+	answer := fmt.aprintf("%s\\answer.json", cache, allocator = context.allocator)
+	defer delete(answer, context.allocator)
+	testing.expect(
+		t,
+		os.write_entire_file(answer, []u8{'{', '}'}) == nil,
+		"could not write the fixture",
+	)
+
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	tools := Tools {
+		ffprobe = FFPROBE_STAND_IN,
+	}
+	_, err := probe(&group, tools, "source.mp4", answer, context.allocator)
+	testing.expect_value(t, err.fault, Fault.Probe_Unreadable)
+	testing.expect(
+		t,
+		!os.exists(answer),
+		"probe's own call site left a settled answer file on disk",
+	)
+}
+
+// The abandoned-read counterpart: `probe` hard-codes `child.READ_BOUND_MS`
+// (30 s), so this genuinely pays that bound rather than a shortened stand-in
+// -- the same trade `a_worst_case_sized_engine_output_reads_well_within_its_bound`
+// makes in `child\read_test.odin` for the identical constant. Proves `probe`
+// itself, not only `answer_read_settled`, reaches `Read_Fault.Did_Not_Finish`
+// deterministically off a real abandoned worker (issue #125's round-1
+// review, finding 1).
+@(test)
+a_probe_whose_answer_read_is_abandoned_is_reported_at_the_call_site :: proc(t: ^testing.T) {
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	path, server, ok2 := answer_pipe_with_no_writer(t, "call-site")
+	if !ok2 {
+		return
+	}
+	defer win32.CloseHandle(server)
+	defer delete(path, context.allocator)
+
+	tools := Tools {
+		ffprobe = FFPROBE_STAND_IN,
+	}
+	started := time.tick_now()
+	_, err := probe(&group, tools, "source.mp4", path, context.allocator)
+	elapsed := time.tick_since(started)
+
+	testing.expect_value(t, err.fault, Fault.Probe_Answer_Unreadable)
+	testing.expectf(
+		t,
+		elapsed >= time.Duration(child.READ_BOUND_MS) * time.Millisecond,
+		"probe reported an abandoned answer read faster than its own %d ms bound: %v",
+		child.READ_BOUND_MS,
+		elapsed,
+	)
+}
+
+// A named pipe's `DeleteFileW` failure is a no-op whether or not it was ever
+// attempted (measured: `ERROR_INVALID_PARAMETER` with no reader connected,
+// `ERROR_PIPE_BUSY` with one blocked inside it, and the pipe is left exactly
+// as it was either way) -- so no file-system effect can tell the two apart
+// from outside a pipe path. `probe_using`'s `remove` parameter is `probe`'s
+// only route to removing `answer`; passing a counting spy through it is
+// what reads the ordering off the call site the file-existence checks above
+// cannot reach for the abandoned arm. The count lives behind
+// `context.user_ptr`, which `test.ps1`'s 12 concurrent test threads each
+// carry their own copy of, rather than a package variable every other test
+// calling `probe` would race (issue #125's round-1 review, finding 1).
+@(private)
+spy_answer_remove :: proc(path: string) {
+	calls := (^int)(context.user_ptr)
+	calls^ += 1
+}
+
+@(test)
+a_probe_whose_answer_read_finishes_calls_the_remover_exactly_once :: proc(t: ^testing.T) {
+	cache := testkit.scratch_cache(t, "audio", "probe-spy-settled", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
+
+	answer := fmt.aprintf("%s\\answer.json", cache, allocator = context.allocator)
+	defer delete(answer, context.allocator)
+	testing.expect(
+		t,
+		os.write_entire_file(answer, []u8{'{', '}'}) == nil,
+		"could not write the fixture",
+	)
+
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	calls := 0
+	context.user_ptr = &calls
+	tools := Tools {
+		ffprobe = FFPROBE_STAND_IN,
+	}
+	_, err := probe_using(
+		&group,
+		tools,
+		"source.mp4",
+		answer,
+		context.allocator,
+		spy_answer_remove,
+		run_probe_child,
+	)
+	testing.expect_value(t, err.fault, Fault.Probe_Unreadable)
+	testing.expect_value(t, calls, 1)
+	testing.expect(
+		t,
+		os.exists(answer),
+		"the spy stood in for removal but the real answer still vanished",
+	)
+}
+
+@(test)
+a_probe_whose_answer_read_is_abandoned_never_calls_the_remover :: proc(t: ^testing.T) {
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	path, server, ok2 := answer_pipe_with_no_writer(t, "spy-abandoned")
+	if !ok2 {
+		return
+	}
+	defer win32.CloseHandle(server)
+	defer delete(path, context.allocator)
+
+	calls := 0
+	context.user_ptr = &calls
+	tools := Tools {
+		ffprobe = FFPROBE_STAND_IN,
+	}
+	_, err := probe_using(
+		&group,
+		tools,
+		"source.mp4",
+		path,
+		context.allocator,
+		spy_answer_remove,
+		run_probe_child,
+	)
+	testing.expect_value(t, err.fault, Fault.Probe_Answer_Unreadable)
+	testing.expectf(
+		t,
+		calls == 0,
+		"probe called its remover %d time(s) on an abandoned answer read, which would race a worker that might still hold it open",
+		calls,
+	)
+}
+
+// `a_probe_whose_answer_read_finishes_calls_the_remover_exactly_once` and
+// `a_probe_whose_answer_read_is_abandoned_never_calls_the_remover` above
+// only ever reach ffprobe's `.Finished` ending -- neither of them, nor
+// anything else in this package, ever drives `probe_using` onto its own
+// `.Stopped` branch, so a mutation deleting that branch's removal call left
+// the whole 588-test suite green (issue #125's round-4 review, finding 2).
+// This stub supplies ffprobe's run OUTCOME directly (`child.Run.Stopped`,
+// with no real 60 s `PROBE_BOUND_MS` wait needed), while `probe_using`
+// itself still supplies the DECISION -- the guarded removal on that branch
+// -- the same way `src\doctor\model_probe.odin`'s `stub_unstoppable_probe`
+// already does for its own otherwise-unconstructible ending.
+@(private)
+@(require_results)
+stub_stopped_probe_run :: proc(
+	group: ^child.Job_Object,
+	executable: string,
+	arguments: []string,
+	bound_ms: i64,
+	allocator: mem.Allocator,
+) -> (
+	ending: child.Run,
+	reason: child.Stop_Reason,
+	err: child.Error,
+) {
+	return .Stopped, .Bound_Expired, child.Error{}
+}
+
+@(test)
+a_probe_whose_ffprobe_run_stops_calls_the_remover_exactly_once :: proc(t: ^testing.T) {
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	calls := 0
+	context.user_ptr = &calls
+	tools := Tools {
+		ffprobe = FFPROBE_STAND_IN,
+	}
+	_, err := probe_using(
+		&group,
+		tools,
+		"source.mp4",
+		"answer.json",
+		context.allocator,
+		spy_answer_remove,
+		stub_stopped_probe_run,
+	)
+	testing.expect_value(t, err.fault, Fault.Probe_Did_Not_Finish)
+	testing.expectf(
+		t,
+		calls == 1,
+		"probe called its remover %d time(s) for a stopped ffprobe run, wanted 1",
+		calls,
 	)
 }
