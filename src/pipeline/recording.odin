@@ -296,7 +296,8 @@ placed_and_reported :: proc(
 // `transcribe_and_place`, passes the same `extracted` that
 // `checked_first_recording_health` above already asserted this exact field
 // positive on, itself traced to `audio.Extracted.container_ms`;
-// recording_test.odin's cases pass only positive literals.
+// batch_test.odin's fake_resume_extract feeds this path RESUME_FIXTURE_MS,
+// itself a positive literal.
 @(private)
 @(require_results)
 placed_from_engine_output :: proc(
