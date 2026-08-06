@@ -117,6 +117,16 @@ report_fault :: proc(message: string, allocator: mem.Allocator) {
 	fmt.eprintln(message)
 }
 
+// report_fault's stdout sibling (issue #119): a line that belongs on standard
+// output rather than standard error -- a dry run's plan rows -- but still
+// follows the same build/delete/print shape report_fault owns for stderr.
+report_line :: proc(message: string, allocator: mem.Allocator) {
+	assert(len(message) > 0, "reported a line with no message to show")
+
+	defer delete(message, allocator)
+	fmt.println(message)
+}
+
 @(require_results)
 extract_recording :: proc(job: Recording_Job) -> (extracted: Recording_Extracted, ok: bool) {
 	assert(job.arena != nil, "a Recording Job with no arena reached extraction")
