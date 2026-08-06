@@ -31,10 +31,10 @@ a_scratch_cache_directory_is_created_within_its_bound :: proc(t: ^testing.T) {
 	level_a := fmt.aprintf("%s\\a", root, allocator = context.allocator)
 	defer delete(level_a, context.allocator)
 
-	defer os.remove(nested)
-	defer os.remove(level_b)
-	defer os.remove(level_a)
 	defer os.remove(root)
+	defer os.remove(level_a)
+	defer os.remove(level_b)
+	defer os.remove(nested)
 
 	testing.expect(
 		t,
