@@ -8,6 +8,15 @@ package doctor
 import "core:fmt"
 import "core:mem"
 
+// The renderer's answer when a Fault vocabulary's own lookup comes back
+// empty -- report.odin's caller (combined_message) and health.odin's own
+// (health_error_message, whose numbers-only shape cannot route through
+// combined_message) both fall back to this instead of asserting on a gap in
+// a switch, per #137/#139: an assert here fires on the first report of a
+// fault that is already failing in front of somebody. Pinned by
+// report_test.odin so emptying it cannot leave every caller's tests green.
+NO_SENTENCE_FALLBACK :: "failed, but this build has no sentence for why"
+
 @(require_results)
 combined_message :: proc(
 	subject: string,
@@ -23,7 +32,7 @@ combined_message :: proc(
 
 	sentence := says
 	if len(sentence) == 0 {
-		sentence = "failed, but this build has no sentence for why"
+		sentence = NO_SENTENCE_FALLBACK
 	}
 
 	message: string

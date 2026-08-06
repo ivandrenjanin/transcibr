@@ -27,6 +27,26 @@ combined_message_with_no_sentence_still_renders_something_a_reader_can_act_on ::
 	)
 }
 
+// #139's own extra AC: emptying NO_SENTENCE_FALLBACK left every existing
+// test here green, because the other assertions only check that something
+// non-empty renders. Pin the text itself.
+@(test)
+the_no_sentence_fallback_text_is_pinned :: proc(t: ^testing.T) {
+	testing.expect_value(t, NO_SENTENCE_FALLBACK, "failed, but this build has no sentence for why")
+}
+
+@(test)
+combined_message_with_no_sentence_falls_back_to_the_pinned_text :: proc(t: ^testing.T) {
+	rendered := combined_message("engine", "", "", context.allocator)
+	defer delete(rendered, context.allocator)
+
+	testing.expect(
+		t,
+		strings.contains(rendered, NO_SENTENCE_FALLBACK),
+		"a missing sentence did not fall back to the pinned text",
+	)
+}
+
 @(test)
 report_ok_ignores_an_advisory_failed_check :: proc(t: ^testing.T) {
 	checks := []Check {
