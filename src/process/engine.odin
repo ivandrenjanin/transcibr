@@ -137,6 +137,14 @@ read_engine_line :: proc(line: string) -> Engine_Line {
 	return Engine_Line{}
 }
 
+// `said.duration_ms > 0` in the `.Duration` case below is internal, not a
+// check on external input: `checked`'s only caller for a `.Duration` reading
+// is `read_engine_line`, by way of `read_banner`, and `read_banner` only
+// returns `ok = true` after `samples_ms` and `seconds_ms` have each refused a
+// non-positive value. `said.duration_ms` is filled from `from_samples`
+// specifically, whose positivity is `samples_ms`'s own `rounded <= 0`
+// refusal, not `seconds_ms`'s -- the two are only cross-checked for
+// agreement by `banner_agrees`, not substituted for each other.
 @(private)
 @(require_results)
 checked :: proc(said: Engine_Line) -> Engine_Line {
