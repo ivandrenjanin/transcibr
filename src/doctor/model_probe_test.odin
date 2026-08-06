@@ -4,6 +4,7 @@ package doctor
 import "core:mem"
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:testing"
 import "transcibr:child"
 
@@ -128,39 +129,130 @@ spy_wav_remove :: proc(path: string) {
 	calls^ += 1
 }
 
+// `a_finished_engine_probe_calls_the_wav_remover_exactly_once` (round-1/round-2)
+// drove `model_load_check_using` directly, which can never see whether the
+// public `model_load_check` wrapper below it actually passes `os_remove_wav`
+// through -- no test called that wrapper at all, so a mutation swapping its
+// hard-coded `os_remove_wav` argument for a no-op left the full suite green
+// (issue #125's round-3 review, finding 1). This drives `model_load_check`
+// itself, the same way `src\audio\run_test.odin`'s
+// `a_probe_whose_answer_read_finishes_removes_the_answer_file_at_the_call_site`
+// drives the public `probe` wrapper, and reads the removal off disk rather
+// than off a spy, because the public wrapper has no seam left to inject one
+// through.
+//
+// `probe_wav_scan_guard` -- round-3 review, finding 2 -- keeps this scan and
+// `an_unstoppable_engine_probe_never_calls_the_wav_remover`'s scan below from
+// reading each other's scratch wav mid-flight: `test.ps1` runs a package's
+// tests across 12 threads by default, and both tests watch the same `TEMP`
+// directory for the same file-name shape.
+@(private)
+probe_wav_scan_guard: sync.Mutex
+
+// `os.temp_directory` is on this ticket's own refuted list (round-1's
+// report). `os.get_env("TEMP", ...)` is the same call `testkit.scratch_cache`
+// already makes for the identical reason.
+@(private)
+@(require_results)
+probe_wav_paths :: proc(allocator: mem.Allocator) -> []string {
+	assert(allocator.procedure != nil, "a path listing outlives this call and needs an allocator")
+
+	directory := os.get_env("TEMP", allocator)
+	defer delete(directory, allocator)
+	assert(len(directory) > 0, "TEMP names nowhere to find the doctor's scratch wav")
+
+	paths := make([dynamic]string, allocator)
+	listing, unreadable := os.read_all_directory_by_path(directory, allocator)
+	if unreadable != nil {
+		return paths[:]
+	}
+	defer os.file_info_slice_delete(listing, allocator)
+	for info in listing {
+		if is_probe_wav_name(info.name) {
+			append(&paths, strings.clone(info.fullpath, allocator))
+		}
+	}
+	return paths[:]
+}
+
+// `write_probe_wav` names its file `transcibr-doctor-probe-*.wav`; this
+// file's own settled/unsettled fixtures above deliberately share that same
+// prefix (`transcibr-doctor-probe-settled-*.wav`,
+// `transcibr-doctor-probe-unsettled-*.wav`), so a bare prefix match would
+// count them too.
+@(private)
+@(require_results)
+is_probe_wav_name :: proc(name: string) -> bool {
+	if !strings.has_prefix(name, "transcibr-doctor-probe-") {
+		return false
+	}
+	if strings.contains(name, "-settled-") {
+		return false
+	}
+	if strings.contains(name, "-unsettled-") {
+		return false
+	}
+	return true
+}
+
+@(private)
+destroy_probe_wav_paths :: proc(paths: []string, allocator: mem.Allocator) {
+	for path in paths {
+		delete(path, allocator)
+	}
+	delete(paths, allocator)
+}
+
+@(private)
+@(require_results)
+contains_path :: proc(paths: []string, path: string) -> bool {
+	for candidate in paths {
+		if candidate == path {
+			return true
+		}
+	}
+	return false
+}
+
 @(test)
-a_finished_engine_probe_calls_the_wav_remover_exactly_once :: proc(t: ^testing.T) {
+a_finished_engine_probe_removes_its_scratch_wav_at_the_call_site :: proc(t: ^testing.T) {
 	group, ok := open_group(t)
 	defer child.job_object_close(&group)
 	if !ok {
 		return
 	}
 
-	calls := 0
-	context.user_ptr = &calls
-	check := model_load_check_using(
-		&group,
-		"where.exe",
-		"model.bin",
-		context.allocator,
-		spy_wav_remove,
-		probe_executable,
-	)
+	sync.mutex_lock(&probe_wav_scan_guard)
+	defer sync.mutex_unlock(&probe_wav_scan_guard)
+
+	before := probe_wav_paths(context.allocator)
+	defer destroy_probe_wav_paths(before, context.allocator)
+
+	check := model_load_check(&group, "where.exe", "model.bin", context.allocator)
 	defer destroy_check(check, context.allocator)
 
+	after := probe_wav_paths(context.allocator)
+	defer destroy_probe_wav_paths(after, context.allocator)
+
+	leaked := 0
+	for path in after {
+		if !contains_path(before, path) {
+			leaked += 1
+		}
+	}
 	testing.expectf(
 		t,
-		calls == 1,
-		"model_load_check called its remover %d time(s) for a finished engine probe, wanted 1",
-		calls,
+		leaked == 0,
+		"model_load_check's own call site left %d scratch wav(s) on disk",
+		leaked,
 	)
 }
 
-// `a_finished_engine_probe_calls_the_wav_remover_exactly_once` above and the
-// mutated `remove(wav)` an unconditional removal would compile to both call
-// the remover exactly once for a `.Finished` probe -- so on its own it
-// cannot tell a guarded call site from an unconditional one. This stub
-// supplies the probe's INPUT directly (`Probe{run = .Unstoppable}`, with no
+// `a_finished_engine_probe_removes_its_scratch_wav_at_the_call_site` above
+// drives the public wrapper, which would also leave no file behind under the
+// mutated `remove(wav)` an unconditional removal would compile to -- so on
+// its own it cannot tell a guarded call site from an unconditional one. This
+// stub supplies the probe's INPUT directly (`Probe{run = .Unstoppable}`, with no
 // real unstoppable child constructible on Windows per this ticket's own
 // round-1 report) while `model_load_check_using` still supplies the
 // DECISION, so a call site reverted to a bare `remove(wav)` turns this test
@@ -177,6 +269,15 @@ stub_unstoppable_probe :: proc(
 	return Probe{run = .Unstoppable}
 }
 
+// `stub_unstoppable_probe` skips the real Engine spawn, but
+// `model_load_check_using` still calls the real `write_probe_wav` before it
+// ever reaches the stub -- so this test's own scratch wav is real, and
+// because the guard under test deliberately never removes it (the point of
+// the assertion below), nothing else ever will. Left alone, that is a real
+// ~5.7 KB file per run leaking into `%TEMP%` unbounded (issue #125's round-3
+// review, finding 2); the scan below finds exactly the file this run created
+// and removes it directly, after the assertion it exists to protect has
+// already run.
 @(test)
 an_unstoppable_engine_probe_never_calls_the_wav_remover :: proc(t: ^testing.T) {
 	group, ok := open_group(t)
@@ -184,6 +285,12 @@ an_unstoppable_engine_probe_never_calls_the_wav_remover :: proc(t: ^testing.T) {
 	if !ok {
 		return
 	}
+
+	sync.mutex_lock(&probe_wav_scan_guard)
+	defer sync.mutex_unlock(&probe_wav_scan_guard)
+
+	before := probe_wav_paths(context.allocator)
+	defer destroy_probe_wav_paths(before, context.allocator)
 
 	calls := 0
 	context.user_ptr = &calls
@@ -203,4 +310,12 @@ an_unstoppable_engine_probe_never_calls_the_wav_remover :: proc(t: ^testing.T) {
 		"model_load_check called its remover %d time(s) for an unstoppable engine probe, wanted 0",
 		calls,
 	)
+
+	after := probe_wav_paths(context.allocator)
+	defer destroy_probe_wav_paths(after, context.allocator)
+	for path in after {
+		if !contains_path(before, path) {
+			os.remove(path)
+		}
+	}
 }
