@@ -205,8 +205,11 @@ unrecorded :: proc(found: Found) -> Outcome {
 // re-probed or re-checked.
 //
 // `>= 0` and not every sibling `container_ms` assert's `> 0`: the assert
-// above runs only when `known` is true, which means `recorded` came from a
-// real Sidecar file on disk (walk.odin's `sidecar_at` -> `read_sidecar`).
+// above runs only when `known` is true, which in production means
+// `recorded` came from a real Sidecar file on disk (walk.odin's
+// `sidecar_at` -> `read_sidecar`) -- the test beside it constructs one
+// directly, so this is today's sole production producer, not an invariant
+// of the `artifact.Sidecar` type itself.
 // `read_sidecar` accepts a zero `container_ms`, and `artifact.recordable`
 // refuses only a negative one (see sidecar.odin's `container_ms` field
 // note) -- so a Sidecar written with `container_ms: 0` is a value this

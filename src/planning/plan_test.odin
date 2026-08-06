@@ -41,11 +41,13 @@ matching_sidecar :: proc(found: Found) -> artifact.Sidecar {
 	)
 }
 
-// A Sidecar file on disk carrying `container_ms: 0` -- a value `read_sidecar`
-// accepts and `artifact.recordable` allows (sidecar.odin's `container_ms`
-// field note), never a value this program's own probe can produce (probed
-// durations are refused at zero, per process/ffmpeg.odin). It is the value
-// this file's `current_of` asserts `>= 0` and not `> 0` over.
+// Constructed in memory (never read from a file here) with `container_ms: 0`
+// -- the value a Sidecar file on disk carrying that field would produce
+// through `read_sidecar`, which accepts it, and `artifact.recordable`
+// allows (sidecar.odin's `container_ms` field note), never a value this
+// program's own probe can produce (probed durations are refused at zero,
+// per process/ffmpeg.odin). It is the value this file's `current_of`
+// asserts `>= 0` and not `> 0` over.
 @(private)
 @(require_results)
 zero_duration_sidecar :: proc(found: Found) -> artifact.Sidecar {
