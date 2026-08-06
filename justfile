@@ -39,15 +39,28 @@ check:
 	if not exist build mkdir build
 	{{ odin }} run tools/policy {{ collection }} -out:build/transcibr-policy.exe {{ vet }}
 
-# Rewrite every .odin file under src and tools as odinfmt.json says.
+# Rewrite every .odin file under src, tools and docs/reference as
+# odinfmt.json says -- the same repository-wide scope `check` walks (minus
+# the build/vendor directories tools/policy also excludes), so the one
+# committed .odin file outside src and tools does not go unformatted
+# (round 2 review finding 2).
 fmt:
 	{{ odinfmt }} -w -path:src -config:odinfmt.json
 	{{ odinfmt }} -w -path:tools -config:odinfmt.json
+	{{ odinfmt }} -w -path:docs/reference -config:odinfmt.json
 
-# The same rewrite, refused if it changed anything -- the CI variant, which
-# only ever sees a byte identical to what was already committed.
-fmt-check: fmt
-	git diff --exit-code -- src tools
+# The same check, refused if odinfmt would change anything -- compared file
+# by file against odinfmt's own un-written output, never against `git diff`,
+# so a developer's own uncommitted-but-already-formatted edits elsewhere in
+# the tree never trip this (round 2 review finding 1: `git diff` judges git
+# state, not byte-formatting, and CI/the ticket-loop always run this on a
+# dirty tree). Same scope as `fmt` above.
+fmt-check:
+	if not exist build mkdir build
+	for /r src %f in (*.odin) do @({{ odinfmt }} -path:"%f" -config:odinfmt.json > build\fmt-check.tmp & fc /b "%f" build\fmt-check.tmp >nul || (echo NOT FORMATTED: %f & exit /b 1))
+	for /r tools %f in (*.odin) do @({{ odinfmt }} -path:"%f" -config:odinfmt.json > build\fmt-check.tmp & fc /b "%f" build\fmt-check.tmp >nul || (echo NOT FORMATTED: %f & exit /b 1))
+	for /r docs\reference %f in (*.odin) do @({{ odinfmt }} -path:"%f" -config:odinfmt.json > build\fmt-check.tmp & fc /b "%f" build\fmt-check.tmp >nul || (echo NOT FORMATTED: %f & exit /b 1))
+	del /q build\fmt-check.tmp
 
 # One explicit line per package: the 11 src/ packages that hold tests, plus
 # tools/policy, which reads Odin and is tested in Odin (ADR-0028). `cli` is
