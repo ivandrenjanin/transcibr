@@ -9,10 +9,11 @@ import "core:testing"
 // that fault, which is a build already failing in front of somebody, and a test
 // that trips an assertion takes the whole runner down (issue #22). This is the
 // only guard on fault_says's switch: an arm compiles clean whether it returns real
-// words or an empty string, and an empty arm reaches `main.odin`'s
-// `report_violations`, which reports it against a real refused file -- a source
-// file is external input (rule A8), so what stops that file crashing the build is
-// this test staying red until every arm says something.
+// words or an empty string, and an empty arm crashes at check.odin's
+// `make_violation`, whose `assert(len(message) > 0, ...)` aborts the process
+// before the violation is ever reported -- a source file is external input (rule
+// A8), so what stops that file crashing the build is this test staying red until
+// every arm says something.
 @(test)
 every_fault_says_something_of_its_own :: proc(t: ^testing.T) {
 	seen: [dynamic]string
