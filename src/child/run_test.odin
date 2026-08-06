@@ -362,6 +362,21 @@ open_flood_pipe :: proc(
 	return read, write, ok
 }
 
+// Whether `bytes` fits the plain DWORD `CreatePipe` takes as a capacity:
+// pulled out on its own so the boundary can be proven false -- issue #98's
+// 4*(1<<30) case -- without an `int` -> `win32.DWORD` narrowing wrapping
+// silently past it (T1: the width is meaning at this Win32 boundary). A
+// truncating `win32.DWORD(bytes)` here previously turned a too-large capacity
+// into a too-small one instead of a refusal, which is what let
+// `a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood` go red on
+// pipe setup rather than on the ceiling it exists to prove.
+@(private)
+@(require_results)
+capacity_expressible :: proc(bytes: int) -> bool {
+	assert(bytes > 0, "a pipe capacity of zero or fewer bytes was never a capacity")
+	return bytes <= int(max(win32.DWORD))
+}
+
 // Opens a pipe sized for the whole of `flood_bytes` and writes it all in one
 // call before handing back the read end, so a caller's drain finds the pipe
 // already holding the flood rather than racing anything to fill it. `ok` is
@@ -375,7 +390,17 @@ fill_flood_pipe :: proc(t: ^testing.T, flood_bytes: []u8) -> (read: win32.HANDLE
 
 	write: win32.HANDLE
 	opened: bool
-	capacity := win32.DWORD(len(flood_bytes) + DRAIN_BYTES)
+	capacity_bytes := len(flood_bytes) + DRAIN_BYTES
+	if !testing.expectf(
+		t,
+		capacity_expressible(capacity_bytes),
+		"a flood pipe capacity of %d bytes does not fit in a DWORD (max %d)",
+		capacity_bytes,
+		max(win32.DWORD),
+	) {
+		return read, false
+	}
+	capacity := win32.DWORD(capacity_bytes)
 	read, write, opened = open_flood_pipe(capacity)
 	if !testing.expect(
 		t,
@@ -416,6 +441,19 @@ fill_flood_pipe :: proc(t: ^testing.T, flood_bytes: []u8) -> (read: win32.HANDLE
 // construction rather than by scheduling luck: several times MAX_DRAIN_BYTES,
 // so the drain's only way out is the ceiling and not running out of flood to
 // read.
+//
+// `expected_stop` mirrors drain_bounded's own loop exactly (src/child/run.odin
+// -- `for taken < MAX_DRAIN_BYTES`, reading DRAIN_BYTES at a time) rather than
+// naming MAX_DRAIN_BYTES a second time as a tolerance window: the loop can
+// only ever stop on a DRAIN_BYTES boundary, so the one correct `total` is the
+// smallest multiple of DRAIN_BYTES at or above MAX_DRAIN_BYTES, and nothing
+// else. That is what pins the VALUE the ceiling holds, not merely that a
+// ceiling exists -- issue #98. The canonical proof that this test still holds
+// that relationship is mutating the loop bound at src/child/run.odin:132
+// (an 8x mutation turns `total` far past `expected_stop`); a 1<<30 mutation of
+// MAX_DRAIN_BYTES itself is no longer the recipe, since capacity_expressible
+// above now refuses that capacity outright instead of an int -> DWORD wrap
+// manufacturing a false red.
 @(test)
 a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood :: proc(t: ^testing.T) {
 	flood_bytes := build_flood_bytes(
@@ -451,20 +489,17 @@ a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood :: proc(t: ^testing
 		total += len(chunk)
 	}
 
+	expected_stop := ((MAX_DRAIN_BYTES + DRAIN_BYTES - 1) / DRAIN_BYTES) * DRAIN_BYTES
+
 	testing.expect(t, readable, "a drain that hit its ceiling reported the pipe as unreadable")
 	testing.expectf(
 		t,
-		total <= MAX_DRAIN_BYTES + DRAIN_BYTES,
-		"one drain took %d bytes, more than its %d-byte ceiling permits even though more was waiting",
+		total == expected_stop,
+		"one drain took %d bytes; its %d-byte ceiling and %d-byte reads only ever stop it at %d",
 		total,
 		MAX_DRAIN_BYTES,
-	)
-	testing.expectf(
-		t,
-		total >= MAX_DRAIN_BYTES,
-		"one drain stopped at %d bytes, well short of its %d-byte ceiling, so the flood ran out rather than the ceiling being reached",
-		total,
-		MAX_DRAIN_BYTES,
+		DRAIN_BYTES,
+		expected_stop,
 	)
 	testing.expectf(
 		t,
