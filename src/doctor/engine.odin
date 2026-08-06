@@ -8,13 +8,16 @@ package doctor
 // beside the executable catches a mislaid install, and actually spawning the
 // Engine and reading what it says catches everything that check cannot --
 // a driver too old for the bundled CUDA runtime, or a GPU in a reset state --
-// neither of which leaves the DLL missing.
+// neither of which leaves the DLL missing. That same spawn is what proves the
+// executable is a genuine, working Engine -- a round-5 adversarial review
+// found the hash this file used to compute over the executable was read by
+// nothing and proved nothing a mutation to a bare `os.is_file` check did not
+// already pass; the spawn below is the verification, not a digest beside it.
 
 import "core:mem"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
-import "transcibr:artifact"
 import "transcibr:child"
 
 // `ggml-cuda.dll`: the one backend library ADR-0011 names by its actual
@@ -34,7 +37,6 @@ Engine_Fault :: enum u8 {
 	None = 0,
 	Executable_Not_Found,
 	Backend_Library_Missing,
-	Unreadable,
 	Not_Started,
 	Did_Not_Finish,
 	Backend_Not_Loaded,
@@ -44,9 +46,6 @@ Engine_Check :: struct {
 	fault: Engine_Fault,
 	// Only meaningful when fault == .Not_Started.
 	child: child.Error,
-	// Owned; free with destroy_model and the same allocator, whichever way
-	// this ends -- a refusal that never reached hashing identifies nothing.
-	model: artifact.Model,
 }
 
 // `executable` is the same path `--engine-exe` already names -- ADR-0011's
@@ -72,25 +71,20 @@ verify_engine :: proc(
 		return Engine_Check{fault = .Backend_Library_Missing}
 	}
 
-	identified, unreadable := artifact.identify_model(executable, allocator)
-	if unreadable != .None {
-		return Engine_Check{fault = .Unreadable, model = identified}
-	}
-
 	probe := probe_executable(group, executable, ENGINE_PROBE_ARGUMENTS, allocator)
 	defer delete(probe.captured, allocator)
 
 	switch probe.run {
 	case .Not_Started:
-		return Engine_Check{fault = .Not_Started, child = probe.child, model = identified}
+		return Engine_Check{fault = .Not_Started, child = probe.child}
 	case .Stopped, .Unstoppable:
-		return Engine_Check{fault = .Did_Not_Finish, model = identified}
+		return Engine_Check{fault = .Did_Not_Finish}
 	case .Finished:
 	}
 	if !strings.contains(probe.captured, "loaded CUDA backend from") {
-		return Engine_Check{fault = .Backend_Not_Loaded, model = identified}
+		return Engine_Check{fault = .Backend_Not_Loaded}
 	}
-	return Engine_Check{fault = .None, model = identified}
+	return Engine_Check{fault = .None}
 }
 
 @(private)
@@ -120,8 +114,6 @@ engine_fault_says :: proc(fault: Engine_Fault) -> string {
 		return(
 			"ggml-cuda.dll is not beside the engine's executable; the install is incomplete and the engine will transcribe on the cpu without saying so" \
 		)
-	case .Unreadable:
-		return "the engine's executable could not be read and hashed"
 	case .Not_Started:
 		return "the engine could not be started"
 	case .Did_Not_Finish:

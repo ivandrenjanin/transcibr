@@ -103,7 +103,6 @@ engine_check :: proc(
 	assert(len(executable) > 0, "there is no engine here to check")
 
 	verified := verify_engine(group, executable, allocator)
-	defer artifact.destroy_model(verified.model, allocator)
 
 	if verified.fault != .None {
 		message := engine_error_message(verified, executable, allocator)
@@ -135,7 +134,14 @@ model_magic_present :: proc(path: string) -> bool {
 }
 
 @(require_results)
-model_check :: proc(path: string, allocator: mem.Allocator) -> Check {
+model_check :: proc(
+	group: ^child.Job_Object,
+	engine_executable: string,
+	path: string,
+	allocator: mem.Allocator,
+) -> Check {
+	assert(group != nil, "a child started outside a job object outlives transcibr")
+	assert(len(engine_executable) > 0, "there is no engine here to load the model with")
 	assert(len(path) > 0, "there is no model here to check")
 
 	identified, unreadable := artifact.identify_model(path, allocator)
@@ -172,7 +178,7 @@ model_check :: proc(path: string, allocator: mem.Allocator) -> Check {
 		)
 		return failed("model", message)
 	}
-	return passed("model")
+	return model_load_check(group, engine_executable, path, allocator)
 }
 
 // Diagnostic only, and never the verdict on GPU usability (ADR-0011): this

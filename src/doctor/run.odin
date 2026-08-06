@@ -37,7 +37,7 @@ run_preflight :: proc(group: ^child.Job_Object, o: Options, allocator: mem.Alloc
 		extraction_tool_check(group, "ffprobe", o.ffprobe, FFMPEG_PROBE_ARGUMENTS, allocator),
 	)
 	append(&checks, engine_check(group, o.engine, allocator))
-	append(&checks, model_check(o.model, allocator))
+	append(&checks, model_check(group, o.engine, o.model, allocator))
 	append(&checks, gpu_diagnostic_check(allocator))
 
 	assert(len(checks) == 5, "a doctor run reported a different number of checks than it ran")

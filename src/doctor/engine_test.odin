@@ -5,7 +5,6 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
-import "transcibr:artifact"
 import "transcibr:child"
 import "transcibr:testkit"
 
@@ -69,7 +68,6 @@ review_a_nonexistent_engine_exe_is_reported_before_the_backend_library_check :: 
 	}
 
 	check := verify_engine(&group, `C:\nope\whisper-cli.exe`, context.allocator)
-	defer artifact.destroy_model(check.model, context.allocator)
 
 	testing.expect_value(t, check.fault, Engine_Fault.Executable_Not_Found)
 }
@@ -95,7 +93,6 @@ review_a_directory_passed_as_the_engine_exe_is_reported_as_missing_not_as_a_back
 	}
 
 	check := verify_engine(&group, dir, context.allocator)
-	defer artifact.destroy_model(check.model, context.allocator)
 
 	testing.expect_value(t, check.fault, Engine_Fault.Executable_Not_Found)
 }
@@ -117,7 +114,6 @@ an_install_with_no_backend_library_fails_before_anything_is_spawned :: proc(t: ^
 	testing.expect(t, written(executable, {1, 2, 3}), "the case could not write its own fixture")
 
 	check := verify_engine(&group, executable, context.allocator)
-	defer artifact.destroy_model(check.model, context.allocator)
 
 	testing.expect_value(t, check.fault, Engine_Fault.Backend_Library_Missing)
 }
@@ -149,7 +145,6 @@ an_engine_that_starts_but_never_names_cuda_loaded_is_reported_rather_than_truste
 	testing.expect(t, written(executable, real_cmd), "the case could not write its own fixture")
 
 	check := verify_engine(&group, executable, context.allocator)
-	defer artifact.destroy_model(check.model, context.allocator)
 
 	testing.expect_value(t, check.fault, Engine_Fault.Backend_Not_Loaded)
 }
@@ -179,16 +174,15 @@ an_engine_that_will_not_start_is_reported_rather_than_asserted :: proc(t: ^testi
 	)
 
 	check := verify_engine(&group, executable, context.allocator)
-	defer artifact.destroy_model(check.model, context.allocator)
 
 	testing.expect_value(t, check.fault, Engine_Fault.Not_Started)
 	testing.expect(t, check.child.fault != .None, "an engine that would not start named no reason")
 }
 
 // The real reference install this dev machine carries, exercised end to end
-// exactly once so the whole wire-up -- backend detection, hashing, spawning,
-// and reading `--help`'s own stderr for the line the Engine actually writes
-// -- is proved against a genuine release rather than only against fixtures.
+// exactly once so the whole wire-up -- backend detection, spawning, and
+// reading `--help`'s own stderr for the line the Engine actually writes --
+// is proved against a genuine release rather than only against fixtures.
 // Skipped, not failed, wherever that install is absent: this is GPU behaviour
 // (docs/spec/0001-transcibr-v1.md's Testing Decisions names it out of every
 // automated seam) and CI carries no such directory.
@@ -208,7 +202,6 @@ the_reference_engine_install_reports_cuda_loaded_when_it_is_present :: proc(t: ^
 	}
 
 	check := verify_engine(&group, REFERENCE_ENGINE, context.allocator)
-	defer artifact.destroy_model(check.model, context.allocator)
 
 	if check.fault != .None {
 		message := engine_error_message(check, REFERENCE_ENGINE, context.allocator)

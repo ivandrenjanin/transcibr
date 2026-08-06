@@ -145,12 +145,22 @@ review_a_real_healthy_ffprobe_passes_the_extraction_check :: proc(t: ^testing.T)
 // the front, then seeking to the last byte of the floor and writing one
 // byte there, gives the filesystem a file exactly at
 // `MODEL_MIN_PLAUSIBLE_BYTES` with a genuine header without this test
-// actually paying for the I/O a real Model's size would cost.
+// actually paying for the I/O a real Model's size would cost. It clears
+// the size floor and the magic bytes, but it is not a real Model, and a
+// round-5 review's own point is that a screen this cheap cannot be the
+// verdict -- only the load probe below can tell this fixture apart from a
+// genuine, truncated-past-70-MiB Model, so this fixture must now FAIL.
 @(test)
-a_model_that_hashes_cleanly_and_clears_the_size_floor_passes :: proc(t: ^testing.T) {
+a_fixture_that_only_clears_the_cheap_screen_still_fails_the_load_probe :: proc(t: ^testing.T) {
 	dir := testkit.made_scratch_cache(t, "Doctor", "modelcheck", context.allocator)
 	defer delete(dir, context.allocator)
 	defer testkit.remove_cache(dir, context.allocator)
+
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
 
 	path := fmt.aprintf("%s\\model.bin", dir, allocator = context.allocator)
 	defer delete(path, context.allocator)
@@ -165,7 +175,35 @@ a_model_that_hashes_cleanly_and_clears_the_size_floor_passes :: proc(t: ^testing
 	testing.expect(t, unwritable == nil, "the case could not write its own fixture")
 	os.close(handle)
 
-	check := model_check(path, context.allocator)
+	check := model_check(&group, CMD, path, context.allocator)
+	defer destroy_check(check, context.allocator)
+
+	testing.expect_value(t, check.ok, false)
+}
+
+// The other half of the same fact, proved against the real reference Engine
+// and a real, complete Model: a genuine Model still passes the load probe,
+// so the screen above is refusing this fixture for being fake, not merely
+// for being different. Skipped, not failed, wherever the reference install
+// or the reference Model is absent -- CI carries neither.
+@(private)
+REFERENCE_MODEL :: `C:\Users\drenj\models\ggml-large-v3-turbo.bin`
+
+@(test)
+review_a_real_healthy_model_passes_the_full_check_including_the_load_probe :: proc(t: ^testing.T) {
+	if !os.exists(REFERENCE_ENGINE) {
+		return
+	}
+	if !os.exists(REFERENCE_MODEL) {
+		return
+	}
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	check := model_check(&group, REFERENCE_ENGINE, REFERENCE_MODEL, context.allocator)
 	defer destroy_check(check, context.allocator)
 
 	if !check.ok {
@@ -173,6 +211,89 @@ a_model_that_hashes_cleanly_and_clears_the_size_floor_passes :: proc(t: ^testing
 		return
 	}
 	testing.expect_value(t, check.ok, true)
+}
+
+// The exact defect a round-5 adversarial review measured live: a
+// 209,715,200-byte (200 MiB) head-truncation of the real 1,624,555,275-byte
+// ggml-large-v3-turbo.bin, well above the 70 MiB floor and carrying the
+// genuine magic bytes, which the cheap screen alone passed while the real
+// Engine refused the same file in well under a second. Skipped, not
+// failed, wherever the reference install or Model is absent.
+@(test)
+review_a_200_mib_head_truncation_above_the_floor_must_not_pass_the_model_check :: proc(
+	t: ^testing.T,
+) {
+	if !os.exists(REFERENCE_ENGINE) {
+		return
+	}
+	if !os.exists(REFERENCE_MODEL) {
+		return
+	}
+	dir := testkit.made_scratch_cache(t, "Doctor", "headtruncation200mib", context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	path := fmt.aprintf("%s\\model.bin", dir, allocator = context.allocator)
+	defer delete(path, context.allocator)
+	testing.expect(
+		t,
+		wrote_head_truncation(REFERENCE_MODEL, path, 200 * 1024 * 1024),
+		"the case could not write its own fixture",
+	)
+
+	check := model_check(&group, REFERENCE_ENGINE, path, context.allocator)
+	defer destroy_check(check, context.allocator)
+
+	testing.expect_value(t, check.ok, false)
+	testing.expect(
+		t,
+		strings.contains(check.reason, "failed to load"),
+		"a head truncation was refused for the wrong reason",
+	)
+}
+
+@(private)
+@(require_results)
+wrote_head_truncation :: proc(source: string, destination: string, bytes: i64) -> bool {
+	assert(len(source) > 0, "there is no source file here to truncate")
+	assert(len(destination) > 0, "there is nowhere here to write a truncation")
+	assert(bytes > 0, "a truncation of nothing is not a fixture")
+
+	src, unopenable_src := os.open(source)
+	if unopenable_src != nil {
+		return false
+	}
+	defer os.close(src)
+
+	dst, unopenable_dst := os.open(destination, {.Write, .Create, .Trunc})
+	if unopenable_dst != nil {
+		return false
+	}
+	defer os.close(dst)
+
+	buffer := make([]u8, 4 * 1024 * 1024, context.allocator)
+	defer delete(buffer, context.allocator)
+
+	remaining := bytes
+	for remaining > 0 {
+		want := min(i64(len(buffer)), remaining)
+		read, unreadable := os.read(src, buffer[:want])
+		if unreadable != nil || read <= 0 {
+			return false
+		}
+		_, unwritable := os.write(dst, buffer[:read])
+		if unwritable != nil {
+			return false
+		}
+		remaining -= i64(read)
+	}
+	return true
 }
 
 // The exact case a round-4 adversarial review measured live: a
@@ -188,6 +309,12 @@ review_a_64_mib_head_truncation_must_not_pass_the_model_check :: proc(t: ^testin
 	defer delete(dir, context.allocator)
 	defer testkit.remove_cache(dir, context.allocator)
 
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
 	path := fmt.aprintf("%s\\model.bin", dir, allocator = context.allocator)
 	defer delete(path, context.allocator)
 	handle, unopenable := os.open(path, {.Write, .Create, .Trunc})
@@ -201,7 +328,7 @@ review_a_64_mib_head_truncation_must_not_pass_the_model_check :: proc(t: ^testin
 	testing.expect(t, unwritable == nil, "the case could not write its own fixture")
 	os.close(handle)
 
-	check := model_check(path, context.allocator)
+	check := model_check(&group, CMD, path, context.allocator)
 	defer destroy_check(check, context.allocator)
 
 	testing.expect_value(t, check.ok, false)
@@ -218,6 +345,12 @@ review_a_plausibly_sized_non_model_file_must_not_pass_the_model_check :: proc(t:
 	defer delete(dir, context.allocator)
 	defer testkit.remove_cache(dir, context.allocator)
 
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
 	path := fmt.aprintf("%s\\model.bin", dir, allocator = context.allocator)
 	defer delete(path, context.allocator)
 	handle, unopenable := os.open(path, {.Write, .Create, .Trunc})
@@ -228,7 +361,7 @@ review_a_plausibly_sized_non_model_file_must_not_pass_the_model_check :: proc(t:
 	testing.expect(t, unwritable == nil, "the case could not write its own fixture")
 	os.close(handle)
 
-	check := model_check(path, context.allocator)
+	check := model_check(&group, CMD, path, context.allocator)
 	defer destroy_check(check, context.allocator)
 
 	testing.expect_value(t, check.ok, false)
@@ -246,6 +379,12 @@ review_a_truncated_model_head_must_not_pass_the_model_check :: proc(t: ^testing.
 	defer delete(dir, context.allocator)
 	defer testkit.remove_cache(dir, context.allocator)
 
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
 	path := fmt.aprintf("%s\\model.bin", dir, allocator = context.allocator)
 	defer delete(path, context.allocator)
 	handle, unopenable := os.open(path, {.Write, .Create, .Trunc})
@@ -256,7 +395,7 @@ review_a_truncated_model_head_must_not_pass_the_model_check :: proc(t: ^testing.
 	testing.expect(t, unwritable == nil, "the case could not write its own fixture")
 	os.close(handle)
 
-	check := model_check(path, context.allocator)
+	check := model_check(&group, CMD, path, context.allocator)
 	defer destroy_check(check, context.allocator)
 
 	testing.expect_value(t, check.ok, false)
@@ -273,13 +412,19 @@ review_a_zero_byte_model_must_not_pass_the_model_check :: proc(t: ^testing.T) {
 	defer delete(dir, context.allocator)
 	defer testkit.remove_cache(dir, context.allocator)
 
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
 	path := fmt.aprintf("%s\\model.bin", dir, allocator = context.allocator)
 	defer delete(path, context.allocator)
 	handle, unopenable := os.open(path, {.Write, .Create, .Trunc})
 	testing.expect(t, unopenable == nil, "the case could not write its own fixture")
 	os.close(handle)
 
-	check := model_check(path, context.allocator)
+	check := model_check(&group, CMD, path, context.allocator)
 	defer destroy_check(check, context.allocator)
 
 	testing.expect_value(t, check.ok, false)
@@ -287,7 +432,13 @@ review_a_zero_byte_model_must_not_pass_the_model_check :: proc(t: ^testing.T) {
 
 @(test)
 a_model_that_does_not_exist_fails_with_an_actionable_reason :: proc(t: ^testing.T) {
-	check := model_check(`Z:\nothing\here.bin`, context.allocator)
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	check := model_check(&group, CMD, `Z:\nothing\here.bin`, context.allocator)
 	defer destroy_check(check, context.allocator)
 
 	testing.expect_value(t, check.ok, false)
