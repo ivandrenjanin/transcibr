@@ -174,6 +174,11 @@ probe :: proc(
 	return answered, Error{}
 }
 
+// Issue #112: `container_ms > 0` below is internal, not a check on external
+// input. `check_audio`'s only caller is `produce`, which takes the same
+// value straight from `extract`'s `probed.duration_ms` -- and
+// `process.read_probe` (see its own doc comment) guarantees that value is
+// positive on every path that returns `fault == .None`.
 @(private)
 @(require_results)
 check_audio :: proc(
@@ -417,6 +422,14 @@ extract :: proc(
 	return produce(group, tools, job, probed.duration_ms, tolerance, allocator)
 }
 
+// Issue #112: `container_ms > 0` below is internal, not a check on external
+// input. `extract` is the only caller, and it passes `probed.duration_ms`
+// straight through -- `probed` only reaches here when `probe`'s call to
+// `process.read_probe` returned `fault == .None`, which that procedure's own
+// doc comment establishes never happens with a non-positive duration. The
+// `probed.audio_streams == 0` guard above this call in `extract` answers a
+// different question (whether there is audio to extract at all) and is not
+// what keeps this value positive.
 @(private)
 @(require_results)
 produce :: proc(
