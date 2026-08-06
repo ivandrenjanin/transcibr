@@ -509,6 +509,14 @@ discard_part :: proc(part: string, fault: Fault) {
 // runs a whole-file read, so a scratch cache on a share that stops
 // answering is reported rather than wedging the Batch before its first
 // Recording (PR #64's third review, finding 6).
+//
+// A regular file at the cache path is refused here, by name, rather than
+// left to fail confusingly later in `sweep_cache` (issue #120). A cache
+// whose immediate parent directory does not exist is refused rather than
+// created: `--cache` is hand-typed, and creating an implausible multi-level
+// tree for a typo (`C:\this\does\not\exist\x`) is worse than refusing it --
+// the one level `make_directory_bounded` still creates below an existing
+// parent is what a fresh, not-yet-used cache directory actually needs.
 @(require_results)
 open_cache :: proc(cache: string, allocator: mem.Allocator) -> Cache_Fault {
 	assert(len(cache) > 0, "there is no scratch cache here to open")
@@ -522,6 +530,15 @@ open_cache :: proc(cache: string, allocator: mem.Allocator) -> Cache_Fault {
 
 	if !process.ascii_only(resolved) {
 		return .Path_Not_Ascii
+	}
+	if os.is_file(resolved) {
+		return .Not_A_Directory
+	}
+	if !os.exists(resolved) {
+		parent := os.dir(resolved)
+		if !os.exists(parent) {
+			return .Parent_Missing
+		}
 	}
 	if !child.make_directory_bounded(cache, child.READ_BOUND_MS) {
 		return .Unusable

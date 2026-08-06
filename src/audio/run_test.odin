@@ -174,6 +174,64 @@ a_cache_under_a_path_the_engine_cannot_open_is_refused_before_it_is_created :: p
 }
 
 @(test)
+a_cache_pointing_at_an_existing_regular_file_is_refused_before_extraction :: proc(t: ^testing.T) {
+	directory := os.get_env("TEMP", context.allocator)
+	defer delete(directory, context.allocator)
+	cache := fmt.aprintf(
+		"%s\\transcibr-audio-%d-not-a-directory",
+		directory,
+		os.get_pid(),
+		allocator = context.allocator,
+	)
+	defer delete(cache, context.allocator)
+	defer os.remove(cache)
+
+	testing.expect(
+		t,
+		os.write_entire_file(cache, []u8{}) == nil,
+		"could not plant the blocking file",
+	)
+
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.Not_A_Directory)
+}
+
+@(test)
+a_cache_whose_immediate_parent_directory_already_exists_is_created :: proc(t: ^testing.T) {
+	cache := testkit.scratch_cache(t, "audio", "new-leaf", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	testing.expect(t, !os.exists(cache), "the fixture already made the cache this case creates")
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
+	testing.expect(
+		t,
+		os.exists(cache),
+		"open_cache did not create a leaf under an existing parent",
+	)
+}
+
+@(test)
+a_cache_whose_parent_directory_is_also_missing_is_refused_rather_than_invented :: proc(
+	t: ^testing.T,
+) {
+	root := testkit.scratch_cache(t, "audio", "missing-parent", context.allocator)
+	defer delete(root, context.allocator)
+	defer testkit.remove_cache(root, context.allocator)
+
+	cache := fmt.aprintf("%s\\nested\\deeper", root, allocator = context.allocator)
+	defer delete(cache, context.allocator)
+
+	testing.expect(t, !os.exists(root), "the fixture already made the tree this case must refuse")
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.Parent_Missing)
+	testing.expect(t, !os.exists(cache), "a cache with no plausible parent was created anyway")
+	testing.expect(
+		t,
+		!os.exists(root),
+		"open_cache invented an implausible tree instead of refusing it",
+	)
+}
+
+@(test)
 the_head_of_a_real_wav_on_disk_walks_to_its_data_chunk :: proc(t: ^testing.T) {
 	cache := testkit.scratch_cache(t, "audio", "head", context.allocator)
 	defer delete(cache, context.allocator)
