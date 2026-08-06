@@ -3,6 +3,7 @@ package main
 
 import "core:fmt"
 import "transcibr:artifact"
+import "transcibr:pipeline"
 import "transcibr:planning"
 import "transcibr:transcript"
 
@@ -147,14 +148,10 @@ print_plan :: proc(plan: planning.Plan, inventory: planning.Inventory) {
 	)
 
 	for entry in plan.entries {
-		line := planning.plan_line(entry, context.allocator)
-		defer delete(line, context.allocator)
-		fmt.println(line)
+		pipeline.report_line(planning.plan_line(entry, context.allocator), context.allocator)
 	}
 	for note in inventory.notes {
-		line := planning.note_line(note, context.allocator)
-		defer delete(line, context.allocator)
-		fmt.eprintln(line)
+		pipeline.report_fault(planning.note_line(note, context.allocator), context.allocator)
 	}
 }
 
