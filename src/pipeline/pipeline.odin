@@ -203,28 +203,6 @@ bump :: proc(c: ^Counters, which: Metric, delta: int) {
 	}
 }
 
-// Issue #111's own invariant -- ADR-0006's one transcription Worker, the fact
-// `src/cli/batch.odin`'s `gpu_health_checked` leans on for its own safety --
-// is exactly what `bump` asserts above, at the one place the live
-// transcription count changes; a hazard mutation wiring a second
-// `spawn_transcribe_worker` into `run.odin` trips `bump` before either Worker
-// reaches `gpu_health_checked` at all (PR #128's own review history). That
-// assert predates this file's involvement in issue #111 (1c67c11) and is
-// what "made structural" in the ticket's own AC1 wording refers to.
-//
-// PR #128 also carried `claim_health_watch`/`release_health_watch`, a
-// same-file, same-CAS-shaped reentrancy guard on `run_the_batch` itself
-// (`src/cli/batch.odin`'s one caller). Removed here: `run_the_batch` has
-// exactly one call chain in production (`main.odin` -> `run_batch_command`
-// -> `run_the_batch`, `os.exit` immediately after), so the guard's CAS could
-// never observe contention and its assert could never fire outside a test
-// calling it twice by hand -- CLAUDE.md's assertion policy opens "assertions
-// detect programmer errors," and one whose condition is structurally
-// constant detects none. It guarded a different invariant (Batch
-// reentrancy) from the one issue #111 names, and did so with zero mechanical
-// hold, so it added nothing toward closing #111 and was dead weight against
-// it.
-
 // The channel's own occupancy right after a successful send, read through
 // `core:sync/chan`'s own mutex (`chan.len`) rather than kept by a second,
 // separately-incremented counter. A counter bumped after `chan.send` returns

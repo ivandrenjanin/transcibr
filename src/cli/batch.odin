@@ -43,21 +43,12 @@ Batch_Options :: struct {
 cancel_requested: bool
 
 // ADR-0011's runtime half, lent out to the pipeline through `Health_Watch`
-// and read/written by that single transcription Worker only, in strict
-// sequence (`pipeline.checked_first_recording_health`'s own doc comment).
-// Its safety rests entirely on ADR-0006's one-transcription-Worker invariant.
-// That invariant is asserted where the live count itself changes,
-// `pipeline.bump` (1c67c11, predating issue #111) -- a hazard mutation
-// wiring a second `spawn_transcribe_worker` into `run.odin` trips `bump`
-// before either Worker reaches this flag at all, so `bump` is what actually
-// holds this flag safe, and is what issue #111's AC1 ("asserted, or made
-// structural, at the flag's own site") resolves to: `src/cli` holds no
-// tests of its own (ADR-0009), and `src/pipeline/recording.odin` -- where
-// this flag's actual read/write site lives -- is out of bounds for this
-// ticket (issue #89's live sweep, and a prior attempt at asserting there
-// hung the 12-thread test sweep, PR #128 fix round 3). No assert lives here
-// or in `run_the_batch` below for this flag; `bump` is the whole of the
-// answer.
+// and read and written there by the single transcription Worker.
+// `run_the_batch` below resets it between Batches, from this thread rather
+// than the Worker's, which is why the reset is an atomic store like the
+// flag's own two accesses. `pipeline.Health_Watch`'s doc comment carries the
+// whole story, including the `pipeline.bump` assert that holds ADR-0006's
+// one-transcription-Worker invariant.
 @(private)
 gpu_health_checked: bool
 
