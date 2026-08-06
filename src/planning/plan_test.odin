@@ -41,11 +41,11 @@ matching_sidecar :: proc(found: Found) -> artifact.Sidecar {
 	)
 }
 
-// What the Batch above would have written for this Recording last time, had
-// the container's own probed duration rounded to zero milliseconds -- a value
-// `read_sidecar` accepts and `artifact.recordable` allows (sidecar.odin's
-// `container_ms` field note), and the value this file's `current_of` asserts
-// `>= 0` and not `> 0` over.
+// A Sidecar file on disk carrying `container_ms: 0` -- a value `read_sidecar`
+// accepts and `artifact.recordable` allows (sidecar.odin's `container_ms`
+// field note), never a value this program's own probe can produce (probed
+// durations are refused at zero, per process/ffmpeg.odin). It is the value
+// this file's `current_of` asserts `>= 0` and not `> 0` over.
 @(private)
 @(require_results)
 zero_duration_sidecar :: proc(found: Found) -> artifact.Sidecar {
@@ -203,8 +203,9 @@ a_recording_already_done_is_skipped_even_where_nothing_may_be_written :: proc(t:
 // A recorded Sidecar carrying `container_ms: 0` reaches `current_of`'s
 // `recorded.container_ms >= 0` assert with `known == true` -- the exact case
 // that assert exists to tolerate (see its doc comment in plan.odin). A
-// Recording whose container probed to zero milliseconds last time and has not
-// changed since is settled the same as any other, not refused or crashed.
+// Recording whose Sidecar file was last written with a zero-millisecond
+// container duration and has not changed since is settled the same as any
+// other, not refused or crashed.
 @(test)
 a_recording_whose_recorded_duration_is_zero_is_not_refused :: proc(t: ^testing.T) {
 	found := a_recording()
