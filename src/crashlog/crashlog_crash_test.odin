@@ -89,6 +89,36 @@ an_assertion_failure_leaves_its_message_and_location_in_the_log :: proc(t: ^test
 	)
 }
 
+// Issue #76 review round 1: a `-debug` build with a real PDB produced zero
+// `"stack frame"` lines for an assertion crash, because `trace.init`'s result
+// was discarded and `assertion_hook`'s stack walk allocated through
+// `context.temp_allocator` on top of that. This is the weaker-but-real
+// assertion the implementer's own report flagged as missing: at least one
+// symbolized frame, naming this test file, reaches the log.
+@(test)
+an_assertion_failure_leaves_a_symbolized_stack_frame_in_the_log :: proc(t: ^testing.T) {
+	dir := testkit.scratch_cache(t, "crashlog", "assert_drill_stack", context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	if !run_crash_drill(t, "assert", dir) {
+		return
+	}
+
+	text := read_log(t, dir)
+	defer delete(text, context.allocator)
+	testing.expect(
+		t,
+		strings.contains(text, "stack frame: "),
+		"no symbolized stack frame reached the log",
+	)
+	testing.expect(
+		t,
+		strings.contains(text, "stack frame: main::run_crash_drill"),
+		"the symbolized stack frame did not name the drill's own call site",
+	)
+}
+
 @(test)
 an_assertion_failure_on_a_worker_thread_leaves_its_message_in_the_log :: proc(t: ^testing.T) {
 	dir := testkit.scratch_cache(t, "crashlog", "assert_thread_drill", context.allocator)

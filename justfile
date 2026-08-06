@@ -60,9 +60,9 @@ fmt:
 # dirty tree). Same scope as `fmt` above.
 fmt-check:
 	if not exist build mkdir build
-	for /r src %f in (*.odin) do @({{ odinfmt }} -path:"%f" -config:odinfmt.json > build\fmt-check.tmp & fc /b "%f" build\fmt-check.tmp >nul || (echo NOT FORMATTED: %f & exit /b 1))
-	for /r tools %f in (*.odin) do @({{ odinfmt }} -path:"%f" -config:odinfmt.json > build\fmt-check.tmp & fc /b "%f" build\fmt-check.tmp >nul || (echo NOT FORMATTED: %f & exit /b 1))
-	for /r docs\reference %f in (*.odin) do @({{ odinfmt }} -path:"%f" -config:odinfmt.json > build\fmt-check.tmp & fc /b "%f" build\fmt-check.tmp >nul || (echo NOT FORMATTED: %f & exit /b 1))
+	for /r src %f in (*.odin) do @({{ odinfmt }} -path:"%f" -config:odinfmt.json > build\fmt-check.tmp & fc /b "%f" build\fmt-check.tmp >nul || (echo NOT FORMATTED: %f & del /q build\fmt-check.tmp & exit /b 1))
+	for /r tools %f in (*.odin) do @({{ odinfmt }} -path:"%f" -config:odinfmt.json > build\fmt-check.tmp & fc /b "%f" build\fmt-check.tmp >nul || (echo NOT FORMATTED: %f & del /q build\fmt-check.tmp & exit /b 1))
+	for /r docs\reference %f in (*.odin) do @({{ odinfmt }} -path:"%f" -config:odinfmt.json > build\fmt-check.tmp & fc /b "%f" build\fmt-check.tmp >nul || (echo NOT FORMATTED: %f & del /q build\fmt-check.tmp & exit /b 1))
 	del /q build\fmt-check.tmp
 
 # One explicit line per package: the 12 src/ packages that hold tests, plus
@@ -122,5 +122,11 @@ install-tools:
 
 # Everything CI runs, in the order a developer would want to know about a
 # failure: formatting first, source policy second, both builds, the full
-# test sweep, the single-threaded detector, then the smoke test.
-ci: fmt-check check build release test test-single smoke
+# test sweep, the single-threaded detector, then the smoke test. `release`
+# runs before `build`, not after: both write to the same
+# `build/transcibr-cli.exe` path, and `test`'s crashlog crash-drill tests
+# (`src/crashlog/crashlog_crash_test.odin`) spawn whichever one is on disk
+# when they run -- putting `build` last means `test` always spawns the
+# `-debug` binary its own doc comment promises, with a PDB present for
+# `assertion_hook`'s stack symbolization (issue #76 review round 1).
+ci: fmt-check check release build test test-single smoke

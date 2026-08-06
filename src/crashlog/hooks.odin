@@ -12,6 +12,17 @@ import win32 "core:sys/windows"
 @(private)
 g_trace: trace.Context
 
+// Whether `trace.init` actually succeeded -- its own doc comment marks the
+// result required-checking, and issue #76 review round 1 measured it
+// silently discarded and false on a machine where `register` runs twice in
+// one process (`--crash-drill` installs a second time over `main`'s own
+// install, per `src/cli/main.odin`'s comment on that call site; SymInitialize
+// fails when called again for a process already initialized). `assertion_hook`
+// reads this instead of attempting a stack walk against a DbgHelp session
+// that never opened.
+@(private)
+g_trace_ok: bool
+
 // `context.assertion_failure_proc`'s replacement. Odin's implicit `context`
 // does not propagate back out of a call that returns -- only forward, into
 // what a scope calls next -- so `context.assertion_failure_proc =
@@ -41,18 +52,56 @@ assertion_hook :: proc(prefix, message: string, loc: runtime.Source_Code_Locatio
 	}
 	runtime.print_byte('\n')
 
-	if !trace.in_resolve(&g_trace) {
+	if g_trace_ok {
 		buf: [64]trace.Frame
 		frames := trace.frames(&g_trace, 1, buf[:])
+		hProcess := win32.GetCurrentProcess()
 		for f in frames {
-			fl := trace.resolve(&g_trace, f, context.temp_allocator)
-			if fl.loc.file_path == "" && fl.loc.line == 0 {
-				continue
-			}
-			record_assert_line(g_log.file, "stack frame", "", fl.loc)
+			resolve_frame(hProcess, f)
 		}
 	}
 	runtime.trap()
+}
+
+// Resolves one captured frame and writes it, without ever reaching an
+// allocator: issue #76 review round 1 measured `core:debug/trace`'s own
+// `resolve` making eight allocator calls through `context.temp_allocator` in
+// this exact path (its `Frame_Location.procedure`/`.file_path` are copied out
+// with `win32.wstring_to_utf8_alloc`, one `make` per string), which the
+// maintainer ruling and AC4 hold this path to zero of. `SymFromAddrW`/
+// `SymGetLineFromAddrW64` write into caller-owned buffers already --
+// `win32.wstring_to_utf8_buf` (the buffer overload, never the allocating one)
+// is what copies their UTF-16 output into `name_buf`/`file_buf` below.
+@(private)
+resolve_frame :: proc(hProcess: win32.HANDLE, frame: trace.Frame) {
+	assert(hProcess != nil, "cannot resolve a stack frame with no process handle")
+	assert(frame != 0, "cannot resolve a nil stack frame")
+
+	data: [size_of(win32.SYMBOL_INFOW) + size_of([256]win32.WCHAR)]byte
+	symbol := (^win32.SYMBOL_INFOW)(&data[0])
+	symbol.SizeOfStruct = size_of(symbol^)
+	symbol.MaxNameLen = 255
+
+	procedure := ""
+	name_buf: [256]byte
+	if win32.SymFromAddrW(hProcess, win32.DWORD64(frame), &{}, symbol) {
+		procedure = win32.wstring_to_utf8_buf(name_buf[:], cstring16(&symbol.Name[0]), -1)
+	}
+
+	line: win32.IMAGEHLP_LINE64
+	line.SizeOfStruct = size_of(line)
+	file_path := ""
+	file_buf: [512]byte
+	line_number: i32
+	if win32.SymGetLineFromAddrW64(hProcess, win32.DWORD64(frame), &{}, &line) {
+		file_path = win32.wstring_to_utf8_buf(file_buf[:], line.FileName, -1)
+		line_number = i32(line.LineNumber)
+	}
+
+	if len(file_path) == 0 && line_number == 0 {
+		return
+	}
+	record_stack_frame_line(g_log.file, procedure, file_path, line_number)
 }
 
 // The bounds/slice-check path: `base:runtime`'s own `bounds_check_error` and
@@ -79,6 +128,9 @@ register :: proc(h: Log_Handle) {
 	assert(handle_is_open(h), "cannot register crash hooks with no open log handle")
 
 	g_log = h
-	_ = trace.init(&g_trace)
+	if g_trace_ok {
+		_ = trace.destroy(&g_trace)
+	}
+	g_trace_ok = trace.init(&g_trace)
 	win32.SetUnhandledExceptionFilter(exception_filter)
 }

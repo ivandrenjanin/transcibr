@@ -28,6 +28,27 @@ record_assert_line :: proc "contextless" (
 	write_str(h, "\n")
 }
 
+// One line: "stack frame: <procedure> <file>(<line>)\n" for a symbolized
+// frame `hooks.odin`'s `resolve_frame` resolved without allocating. Empty
+// `procedure`/`file_path` print as empty spans rather than being special-
+// cased -- `resolve_frame` already refuses to call this at all when both
+// `file_path` and `line` came back empty.
+@(private)
+record_stack_frame_line :: proc "contextless" (
+	h: win32.HANDLE,
+	procedure, file_path: string,
+	line: i32,
+) {
+	write_str(h, "stack frame: ")
+	write_str(h, procedure)
+	write_str(h, " ")
+	write_str(h, file_path)
+	write_str(h, "(")
+	buf: [20]byte
+	write_str(h, format_int(buf[:], i64(line)))
+	write_str(h, ")\n")
+}
+
 // One line: "CRASH exception=0x.. address=0x..\n" -- the exception code and
 // faulting address are the two fields `EXCEPTION_POINTERS` carries that
 // identify what happened without symbolizing anything, which the exception
