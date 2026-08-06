@@ -203,6 +203,14 @@ unrecorded :: proc(found: Found) -> Outcome {
 // `read_natural`, which accepts digits only and no sign, so a negative value
 // cannot come out of a file; it does not hold because `recorded` has been
 // re-probed or re-checked.
+//
+// `>= 0` and not every sibling `container_ms` assert's `> 0`: the assert
+// above runs only when `known` is true, which means `recorded` came from a
+// real Sidecar file on disk (walk.odin's `sidecar_at` -> `read_sidecar`).
+// `read_sidecar` accepts a zero `container_ms`, and `artifact.recordable`
+// refuses only a negative one (see sidecar.odin's `container_ms` field
+// note) -- so a Sidecar written with `container_ms: 0` is a value this
+// assert must tolerate, not a defect it exists to catch.
 @(private)
 @(require_results)
 current_of :: proc(
