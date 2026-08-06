@@ -11,9 +11,13 @@ import "core:os"
 import "core:strings"
 
 // Directories no walk here ever descends into: git's own object store, this
-// program's own build output, and the throwaway prototypes .gitignore already
-// keeps out of the repository. None of them holds authored Odin.
-EXCLUDED_DIRECTORY_NAMES :: []string{".git", "build", ".scratch"}
+// program's own build output, the throwaway prototypes .gitignore already
+// keeps out of the repository, and `.tools`, where `just install-tools`
+// extracts the pinned Odin distribution -- 1,330 `.odin` files of core
+// library source that are not this repository's own and must never be read
+// against its policies (measured: 19,965 violations before this exclusion
+// existed). None of these directories holds authored Odin.
+EXCLUDED_DIRECTORY_NAMES :: []string{".git", "build", ".scratch", ".tools"}
 
 @(require_results)
 is_excluded_directory :: proc(name: string) -> bool {

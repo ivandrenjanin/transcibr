@@ -172,6 +172,20 @@ check_package_accounting :: proc(
 		return
 	}
 
+	exempt_with_tests := exempt_packages_holding_tests(tested, allocator)
+	defer delete(exempt_with_tests, allocator)
+	defer for name in exempt_with_tests {
+		delete(name, allocator)
+	}
+	for name in exempt_with_tests {
+		message := fmt.aprintf(
+			"src/%s is declared test-less but holds a *_test.odin file that no recipe compiles or runs",
+			name,
+			allocator = allocator,
+		)
+		append(into, make_violation(src_root, 0, message, allocator))
+	}
+
 	justfile_path := strings.concatenate({root, "/justfile"}, allocator)
 	defer delete(justfile_path, allocator)
 	justfile_bytes, read_error := os.read_entire_file(justfile_path, allocator)

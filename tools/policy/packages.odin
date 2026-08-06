@@ -88,6 +88,27 @@ is_test_less_package :: proc(name: string) -> bool {
 	return false
 }
 
+// Every name in `tested` that is also declared exempt in
+// `TEST_LESS_SRC_PACKAGES`. The exemption is for a package that holds no
+// tests at all (ADR-0009: an entry point thin enough to read); a package
+// that IS exempt but DOES hold a `*_test.odin` file has tests no recipe ever
+// compiles or runs, which is the exact silence this check exists to end.
+@(require_results)
+exempt_packages_holding_tests :: proc(tested: []string, allocator: mem.Allocator) -> []string {
+	assert(
+		allocator.procedure != nil,
+		"the offending package names outlive this call and need a chosen allocator",
+	)
+
+	offending := make([dynamic]string, 0, allocator)
+	for name in tested {
+		if is_test_less_package(name) {
+			append(&offending, strings.clone(name, allocator))
+		}
+	}
+	return offending[:]
+}
+
 // The `test:` recipe's own body: every line strictly between its header and
 // the next recipe header (a line starting at column zero), joined back into
 // one string. SCOPED, and not a search of the whole file: `test-single`

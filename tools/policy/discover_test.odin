@@ -8,6 +8,7 @@ excluded_directories_are_named_exactly :: proc(t: ^testing.T) {
 	testing.expect_value(t, is_excluded_directory(".git"), true)
 	testing.expect_value(t, is_excluded_directory("build"), true)
 	testing.expect_value(t, is_excluded_directory(".scratch"), true)
+	testing.expect_value(t, is_excluded_directory(".tools"), true)
 	testing.expect_value(t, is_excluded_directory("src"), false)
 	testing.expect_value(t, is_excluded_directory(".gitignore"), false)
 }

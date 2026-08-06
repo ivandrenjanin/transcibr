@@ -16,7 +16,6 @@ memory := "-define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true"
 
 odin_release := "dev-2026-07a"
 odinfmt_release := "dev-2026-06"
-odinfmt_sha256 := "130742513F9F6029E7D3CF8705A1303CEF5B9B5126FA5FA030587662B83E3B9F"
 
 # List every recipe.
 default:
@@ -86,14 +85,15 @@ test-single:
 # banner printed to stderr instead leaves the file empty and findstr fails.
 smoke: build
 	build\transcibr-cli.exe > build\smoke.out
-	findstr /b /r "transcibr-cli [0-9][0-9]*.[0-9][0-9]*.[0-9][0-9]*" build\smoke.out >nul
+	findstr /b /r /c:"transcibr-cli [0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*" build\smoke.out >nul
 
 # The pinned toolchain, absorbed from scripts\install-pinned-tool.ps1: a
 # tagged Odin release and the odinfmt build inside ols's release zip, both by
-# curl.exe and tar.exe rather than a PowerShell web request. Pinned versions
-# are checked by the tools themselves the moment a recipe above runs them.
-# Writes ODIN and ODINFMT to %GITHUB_ENV% when it is set, so every later step
-# in the same job picks up the extracted paths without a second lookup.
+# curl.exe and tar.exe rather than a PowerShell web request. This INSTALLS
+# the pinned release; it does not VERIFY what it downloaded -- no version or
+# hash check runs (ADR-0035's "What did not move" section). Writes
+# ODIN and ODINFMT to %GITHUB_ENV% when it is set, so every later step in the
+# same job picks up the extracted paths without a second lookup.
 install-tools:
 	if not exist .tools mkdir .tools
 	curl.exe -fsSL -o .tools/odin.zip "https://github.com/odin-lang/Odin/releases/download/{{ odin_release }}/odin-windows-amd64-{{ odin_release }}.zip"

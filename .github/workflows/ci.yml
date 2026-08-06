@@ -35,8 +35,10 @@ jobs:
       # Pinned to a tagged release, never `latest`: an unpinned toolchain turns
       # an upstream change into a build failure on an unrelated commit, and
       # makes "it passed yesterday" unanswerable. Every pin is read out of the
-      # justfile rather than copied here, so the release this installs and the
-      # version string every recipe below checks cannot drift apart.
+      # justfile rather than copied here, so the release tag this installs
+      # cannot drift from the one recorded in source -- but installing is all
+      # this step does; no recipe below verifies the downloaded binaries'
+      # version or hash (ADR-0035's "What did not move" section).
       - name: Install the pinned Odin release and odinfmt
         run: just install-tools
 

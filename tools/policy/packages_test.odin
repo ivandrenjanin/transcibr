@@ -62,6 +62,36 @@ a_package_named_only_in_another_recipe_is_still_missing :: proc(t: ^testing.T) {
 	testing.expect_value(t, missing[0], "child")
 }
 
+// An exempt package (`cli`) that itself holds a `*_test.odin` file must be
+// reported -- the exemption is for a package with no tests at all, not a
+// package whose tests are silently never run by any recipe.
+@(test)
+an_exempt_package_holding_tests_is_reported :: proc(t: ^testing.T) {
+	offending := exempt_packages_holding_tests([]string{"cli", "child"}, context.allocator)
+	defer {
+		for name in offending {
+			delete(name, context.allocator)
+		}
+		delete(offending, context.allocator)
+	}
+
+	testing.expect_value(t, len(offending), 1)
+	testing.expect_value(t, offending[0], "cli")
+}
+
+@(test)
+no_exempt_package_holding_tests_reports_nothing :: proc(t: ^testing.T) {
+	offending := exempt_packages_holding_tests([]string{"child", "audio"}, context.allocator)
+	defer {
+		for name in offending {
+			delete(name, context.allocator)
+		}
+		delete(offending, context.allocator)
+	}
+
+	testing.expect_value(t, len(offending), 0)
+}
+
 @(test)
 every_tested_package_is_missing_when_the_test_recipe_cannot_be_found :: proc(t: ^testing.T) {
 	missing := missing_from_test_recipe(
