@@ -11,14 +11,16 @@
 // answered by a column-zero text scan written in PowerShell -- a second model of
 // Odin, in a second language, that was silently wrong three times.
 //
-// The build runs this; it is not part of transcibr. `just check` builds it
-// (`odin run tools/policy`) before the checks that read it and says so where
-// it happens.
+// The build runs this; it is not part of transcibr. `just check` is
+// `odin run tools/policy` -- one program that builds, walks the source and
+// prints its own verdicts, with no separate stage reading a report back.
 //
 // This file holds the fault vocabulary, the shape of one file's facts, and the
 // bounded read that produces them. collect.odin holds the walk that finds
-// procedures, comments and tags; report.odin renders what the build reads;
-// main.odin is the entry point.
+// procedures, comments and tags; report.odin renders a report shape retired
+// alongside the two-language seam it used to serve, kept only because
+// report_test.odin pins it; main.odin is the entry point and does its own
+// printing directly.
 package policy
 
 import "base:runtime"
