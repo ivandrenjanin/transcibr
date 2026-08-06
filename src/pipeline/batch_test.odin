@@ -217,3 +217,111 @@ a_folder_processed_once_is_skipped_on_the_next_pass :: proc(t: ^testing.T) {
 	testing.expect_value(t, second_summary.skipped, 2)
 	testing.expect_value(t, second_summary.transcribed, 0)
 }
+
+// The corpus-level claim issue #70 is about, pinned where both --batch and
+// --plan actually converge: `settled_engine_version` (src/pipeline/recording.odin)
+// runs AFTER `planning.plan_batch` decides, never before, so a flagless
+// --batch's Maybe(string) reaches planning as nil and skips exactly where a
+// flagless --plan does -- not as a Settings_Changed retranscribe caused by
+// UNKNOWN leaking in ahead of the decision.
+@(private)
+@(require_results)
+settled_options :: proc(tree: string, settings: planning.Settings) -> Batch_Options {
+	o := resume_options(tree, settings)
+	o.engine_version = settled_engine_version(settings.engine_version)
+	return o
+}
+
+@(test)
+a_flagless_batch_skips_a_recording_and_keeps_its_recorded_engine_version :: proc(t: ^testing.T) {
+	tree := testkit.made_scratch_cache(t, "pipeline", "provenance", context.allocator)
+	defer testkit.remove_cache(tree, context.allocator)
+	defer delete(tree, context.allocator)
+
+	one := resume_recording(t, tree, "one")
+	defer delete(one, context.allocator)
+
+	named := resume_settings()
+	defer delete(string(named.model.digest), context.allocator)
+
+	first_inventory, first_plan := planned_resume(t, tree, named)
+	defer planning.destroy_inventory(first_inventory, context.allocator)
+	defer planning.destroy_plan(first_plan, context.allocator)
+	first := run_recordings(
+		first_plan,
+		settled_options(tree, named),
+		context.allocator,
+		nil,
+		FAKE_RESUME_STAGES,
+	)
+	testing.expect_value(t, first.transcribed, 1)
+
+	unnamed := named
+	unnamed.engine_version = nil
+	second_inventory, second_plan := planned_resume(t, tree, unnamed)
+	defer planning.destroy_inventory(second_inventory, context.allocator)
+	defer planning.destroy_plan(second_plan, context.allocator)
+	second := run_recordings(
+		second_plan,
+		settled_options(tree, unnamed),
+		context.allocator,
+		nil,
+		FAKE_RESUME_STAGES,
+	)
+	testing.expect_value(t, second.skipped, 1)
+	testing.expect_value(t, second.transcribed, 0)
+
+	third_inventory, third_plan := planned_resume(t, tree, unnamed)
+	defer planning.destroy_inventory(third_inventory, context.allocator)
+	defer planning.destroy_plan(third_plan, context.allocator)
+	for entry in third_plan.entries {
+		recorded, known := entry.found.recorded.?
+		testing.expect(t, known, "no Sidecar survived the flagless pass")
+		testing.expect_value(t, recorded.engine_version, RESUME_ENGINE_VERSION)
+	}
+}
+
+// Sensitivity check on the test above: naming transcript.UNKNOWN as if it
+// were a real Engine -- exactly what a pre-fix `defaulted_batch` put into
+// Settings before planning ever saw it -- makes the second pass retranscribe
+// rather than skip, so the guard above is not passing regardless of what
+// planning decided.
+@(test)
+a_batch_naming_unknown_as_its_engine_retranscribes_rather_than_skips :: proc(t: ^testing.T) {
+	tree := testkit.made_scratch_cache(t, "pipeline", "provenance-defect", context.allocator)
+	defer testkit.remove_cache(tree, context.allocator)
+	defer delete(tree, context.allocator)
+
+	one := resume_recording(t, tree, "one")
+	defer delete(one, context.allocator)
+
+	named := resume_settings()
+	defer delete(string(named.model.digest), context.allocator)
+
+	first_inventory, first_plan := planned_resume(t, tree, named)
+	defer planning.destroy_inventory(first_inventory, context.allocator)
+	defer planning.destroy_plan(first_plan, context.allocator)
+	first := run_recordings(
+		first_plan,
+		settled_options(tree, named),
+		context.allocator,
+		nil,
+		FAKE_RESUME_STAGES,
+	)
+	testing.expect_value(t, first.transcribed, 1)
+
+	defaulted := named
+	defaulted.engine_version = transcript.UNKNOWN
+	second_inventory, second_plan := planned_resume(t, tree, defaulted)
+	defer planning.destroy_inventory(second_inventory, context.allocator)
+	defer planning.destroy_plan(second_plan, context.allocator)
+	second := run_recordings(
+		second_plan,
+		settled_options(tree, defaulted),
+		context.allocator,
+		nil,
+		FAKE_RESUME_STAGES,
+	)
+	testing.expect_value(t, second.transcribed, 1)
+	testing.expect_value(t, second.skipped, 0)
+}

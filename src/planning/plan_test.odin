@@ -380,3 +380,33 @@ a_transcript_whose_recorded_settings_still_match_is_skipped :: proc(t: ^testing.
 	testing.expect_value(t, outcome.decision, Decision.Skip)
 	testing.expect_value(t, outcome.reason, Reason.Up_To_Date)
 }
+
+// Issue #70: a flagless `--batch` must decide exactly what a flagless
+// `--plan` decides for the identical corpus. `src/cli` used to default
+// `Batch_Options.engine_version` to `transcript.UNKNOWN` before this
+// package ever saw it, so the implicit string-to-`Maybe(string)` conversion
+// at its one call site made a Batch that named nothing read as a Batch that
+// named the literal word "unknown" -- disagreeing with `--plan`, which left
+// `engine_version` nil. `Batch_Options.engine_version` is `Maybe(string)`
+// now, forwarded to this same `decide` call unchanged, so this pins the nil
+// case against a real recorded version the way `--plan` already exercised
+// it.
+@(test)
+a_recording_with_a_real_engine_version_is_skipped_when_the_batch_names_none :: proc(
+	t: ^testing.T,
+) {
+	found := a_recording()
+	found.transcript = .Transcibrs
+	found.engine_output = true
+	recorded := matching_sidecar(found)
+	recorded.engine_version = "whisper.cpp 1.9.9"
+	found.recorded = recorded
+
+	unnamed := settings()
+	unnamed.engine_version = nil
+
+	outcome := decide(found, unnamed)
+
+	testing.expect_value(t, outcome.decision, Decision.Skip)
+	testing.expect_value(t, outcome.reason, Reason.Up_To_Date)
+}
