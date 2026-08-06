@@ -85,9 +85,9 @@ This is structural, not a promise: all network code lives in one file, `src/net/
 called from exactly two places. `grep -ri --include=*.odin -r winhttp src/` is the whole audit —
 case-insensitive, because a case-sensitive grep refuses the spelling nobody writes and admits
 `WinHttpOpen`, the Win32 headers' own capitalisation — and it is not merely run by hand:
-`Assert-OdinNetworkConfinement` in `scripts\common.ps1` fails `build.ps1` -- and so CI, which runs
-nothing else -- the moment the name appears, in any case, in any `.odin` file anywhere under `src\`
-outside that one.
+`collect_network_violations` in `tools\policy\check.odin` fails `just check` -- and so `just ci`,
+which runs nothing else -- the moment the name appears, in any case, in any `.odin` file anywhere
+under `src\` outside that one.
 
 ## Requirements and installation
 
@@ -109,23 +109,26 @@ through on Windows.
 
 ## Building from source
 
-Four scripts a developer runs by hand. CI runs those same four on every push, plus
-`install-pinned-tool.ps1` — twice, once per pinned tool — to fetch what a developer's own machine
-already has; nothing in the workflow does anything those five scripts cannot do locally too.
+A [`justfile`](justfile) (casey/just) at the repository root, run by hand or by CI -- `just ci` is
+exactly what the workflow runs, so nothing there does anything a developer's own machine cannot do
+too. `just install-tools` fetches the two pinned tools a developer's own machine usually already has.
 
 ```powershell
-.\scripts\build.ps1     # -> build\transcibr-cli.exe   (add -Configuration release for -o:speed)
-.\scripts\test.ps1      # every package under src\ and tools\
-.\scripts\format.ps1    # every .odin file against odinfmt.json (add -Fix to rewrite them)
-.\scripts\selftest.ps1  # checks that the three above still fail when they should
+just build         # -> build\transcibr-cli.exe, debug
+just release        # -> build\transcibr-cli.exe, -o:speed
+just check          # tools\policy: CLAUDE.md's source policies and the package-accounting check
+just test           # every package under src\ and tools\policy
+just fmt            # every .odin file under src and tools against odinfmt.json, rewritten in place
+just ci             # fmt-check, check, build, release, test, test-single, smoke
 ```
 
-`build.ps1` also builds `tools\policy`, a small Odin program that reads the repository's own source
-with `core:odin/parser` and answers four of the source rules the build enforces — the line limit, the
-comment ban, `@(require_results)`, and the `#+vet` tags. It is not part of transcibr and ships with
-nothing; ADR-0028 records why the build reads Odin with the compiler's parser rather than with a
-text scan of its own. The fifth rule, network confinement (see [Network access](#network-access)),
-answers a literal substring and needs no parser, so it is not one of `tools\policy`'s.
+`check` builds and runs `tools\policy`, a small Odin program that reads the repository's own source
+with `core:odin/parser` and answers every source rule `just ci` enforces — the line limit, the
+comment ban, `@(require_results)`, the `#+vet` tags, the `os.remove_all` ban, network confinement
+(see [Network access](#network-access)), and the package-accounting check that every `src\` package
+holding tests is named in the `justfile`'s own `test` recipe. It is not part of transcibr and ships
+with nothing; ADR-0028 records why the build reads Odin with the compiler's parser rather than with
+a text scan of its own, and ADR-0035 records the move off PowerShell onto `just`.
 
 The command-line binary re-renders a transcript from retained engine output, without touching the
 GPU — which is what makes tuning the paragraphing cost seconds instead of hours:
@@ -142,53 +145,42 @@ engine version and reports every large model as `large` (ADR-0003) — so anythi
 recorded as `unknown` rather than guessed at. The detected language *is* read out of that output,
 because it is the one such fact the engine does report (ADR-0001).
 
-The Odin compiler is pinned to release `dev-2026-07a`. The pin lives in `scripts/common.ps1` and
-nowhere else — CI dot-sources that file for the release tag rather than keeping a second copy that
-can drift. The scripts look for the compiler in `$env:ODIN`, then on `PATH`, then at
-`C:\Odin\dist\odin.exe`, so it does not need to be on `PATH`.
+The Odin compiler is pinned to release `dev-2026-07a`. The pin lives in the `justfile` and nowhere
+else — `just install-tools` downloads exactly that tag rather than keeping a second copy that can
+drift. Every recipe looks for the compiler at `$env:ODIN`, falling back to `C:\Odin\dist\odin.exe`,
+so it does not need to be on `PATH`.
 
-The formatter is pinned the same way and resolved the same way — `$env:ODINFMT`, then `PATH`, then
+The formatter is pinned the same way and resolved the same way — `$env:ODINFMT`, falling back to
 `C:\Odin\dist\odinfmt.exe`. It is **not** part of the Odin distribution: `odinfmt` ships in
 `ols-x86_64-pc-windows-msvc.zip` on the [ols](https://github.com/DanielGavin/ols) releases, pinned
-here to `dev-2026-06`. It has no version flag to ask, so the pin is the binary's SHA-256 — a
-stronger claim than a version string, since it names the exact build rather than a name several
-builds can share. A different build is refused in CI and warned about locally, exactly as the
-compiler is.
+here to `dev-2026-06`.
 
-A compiler reporting a different version is **refused in CI and warned about locally**. The shared
-answer — what CI says about a branch — comes from the pinned compiler and nothing else, which is
-what the pin is for; but a pin that makes the repository unbuildable for everyone the day upstream
-retags is a pin nobody keeps. Locally you get a warning, and CI still catches anything that only
-compiles on your compiler.
-
-"In CI" means `$env:CI` is set, which is how GitHub Actions marks its runners. Some devcontainers
-and toolchains set it locally too, and some CI systems do not set it at all — so if the scripts
-refuse your compiler on your own machine, clear `$env:CI` for the shell and you get the warning
-instead. The reverse also holds: on a CI system that leaves `$env:CI` unset, set it in the job to
-get the refusal.
+Unlike the PowerShell layer issue #152 retired, the `justfile` itself does not verify which build of
+either tool it finds — it runs whatever `$env:ODIN` / `$env:ODINFMT` (or the `C:\Odin\dist\` fallback)
+resolves to, pinned or not. `just install-tools` is what guarantees the pinned build: run it, or
+point the two environment variables at binaries you have pinned by hand, before trusting a local
+`just ci` the way CI's own run can be trusted.
 
 The style itself is `odinfmt.json` at the repository root, which is the name odinfmt looks for on
 its own — an editor formatting on save and the build cannot disagree about it. A misformatted file
-fails `build.ps1`, not merely a check somebody remembers to run, and the sweep covers every `.odin`
-file in the repository by walking for them rather than by a list anyone maintains. It is
-line-ending-sensitive on purpose: `core.autocrlf` is on, a Windows checkout holds CRLF, and
-`newline_style` is pinned to match rather than left to odinfmt's own default, which is CRLF on
-Windows and LF everywhere else.
+fails `just fmt-check`, not merely a check somebody remembers to run, and the sweep covers every
+`.odin` file under `src` and `tools` by walking odinfmt's own `-path:` argument rather than by a
+list anyone maintains. It is line-ending-sensitive on purpose: `core.autocrlf` is on, a Windows
+checkout holds CRLF, and `newline_style` is pinned to match rather than left to odinfmt's own
+default, which is CRLF on Windows and LF everywhere else.
 
-Both commands pass the full vet set with warnings as errors, and the test command additionally sets
-`ODIN_TEST_FAIL_ON_BAD_MEMORY=true` — it defaults to false, which would let a procedure that leaks
-its returned slice pass with a warning (ADR-0010). The build reads the subsystem back out of each
-binary's PE header (ADR-0004) and runs the ones that can report their version.
+Every build and test recipe passes the full vet set with warnings as errors, and the test recipes
+additionally set `ODIN_TEST_FAIL_ON_BAD_MEMORY=true` — it defaults to false, which would let a
+procedure that leaks its returned slice pass with a warning (ADR-0010).
 
 **`odin test` collects test procedures from one package only**, and on a package with none it prints
-`No tests to run.` and exits 0. `test.ps1` therefore discovers every package under `src\` and
-`tools\` rather than naming one, and reads the runner's own JSON report to see what each package
-actually collected. A package that collects nothing fails the run unless it is declared test-less in
-`$OdinPackagesWithoutTests`, and one declared there that grows tests fails too — a run that executes
-nothing is a failure, not a pass. To run a single test:
+`No tests to run.` and exits 0. `just test` therefore spells one explicit line per package that holds
+tests under `src\` and `tools\policy`, rather than naming one and hoping; `tools\policy`'s own
+package-accounting check fails `just check` the moment a tested package's line goes missing from
+that list. To run a single test:
 
 ```powershell
-.\scripts\test.ps1 -TestName version.banner_names_the_program_and_its_version
+just test-one version banner_names_the_program_and_its_version
 ```
 
 ## License
