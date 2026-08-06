@@ -18,6 +18,14 @@ import "core:mem"
 NO_SENTENCE_FALLBACK :: "failed, but this build has no sentence for why"
 
 @(require_results)
+sentence_or_fallback :: proc(says: string) -> string {
+	if len(says) == 0 {
+		return NO_SENTENCE_FALLBACK
+	}
+	return says
+}
+
+@(require_results)
 combined_message :: proc(
 	subject: string,
 	says: string,
@@ -30,10 +38,7 @@ combined_message :: proc(
 		"the message outlives this procedure and needs an allocator",
 	)
 
-	sentence := says
-	if len(sentence) == 0 {
-		sentence = NO_SENTENCE_FALLBACK
-	}
+	sentence := sentence_or_fallback(says)
 
 	message: string
 	if len(reason) > 0 {

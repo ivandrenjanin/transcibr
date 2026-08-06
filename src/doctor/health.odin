@@ -136,6 +136,36 @@ health_fault_says :: proc(fault: Health_Fault) -> string {
 	return ""
 }
 
+// Split out from health_error_message so health_fault_test.odin can exercise
+// the fallback branch directly against `.None`, whose sentence is genuinely
+// empty (health_fault_says' own deliberately-empty case) -- health_error_message's
+// own precondition assert refuses `.None` before this ever runs for a real
+// caller.
+@(private)
+@(require_results)
+render_health_fault_message :: proc(
+	fault: Health_Fault,
+	realtime_factor: f64,
+	allocator: mem.Allocator,
+) -> string {
+	assert(
+		allocator.procedure != nil,
+		"the message outlives this procedure and needs an allocator",
+	)
+
+	sentence := sentence_or_fallback(health_fault_says(fault))
+
+	message := fmt.aprintf(
+		"%s (measured %.1fx realtime; the baseline is %.0fx)",
+		sentence,
+		realtime_factor,
+		MEASURED_BASELINE_REALTIME_FACTOR,
+		allocator = allocator,
+	)
+	assert(len(message) > 0, "a refusal rendered as nothing at all")
+	return message
+}
+
 // The realtime factor is reported to one decimal place because a user acting
 // on this message is comparing it against the baseline printed beside it,
 // not reading it back into anything this program parses.
@@ -149,24 +179,6 @@ health_error_message :: proc(
 		fault != .None,
 		"there is no message for a first recording that passed its health check",
 	)
-	assert(
-		allocator.procedure != nil,
-		"the message outlives this procedure and needs an allocator",
-	)
 
-	says := health_fault_says(fault)
-	sentence := says
-	if len(sentence) == 0 {
-		sentence = NO_SENTENCE_FALLBACK
-	}
-
-	message := fmt.aprintf(
-		"%s (measured %.1fx realtime; the baseline is %.0fx)",
-		sentence,
-		realtime_factor,
-		MEASURED_BASELINE_REALTIME_FACTOR,
-		allocator = allocator,
-	)
-	assert(len(message) > 0, "a refusal rendered as nothing at all")
-	return message
+	return render_health_fault_message(fault, realtime_factor, allocator)
 }
