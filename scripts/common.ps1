@@ -1323,12 +1323,13 @@ function Read-OdinPolicyReport {
 		switch ($fields[0]) {
 			'file' {
 				$current = [pscustomobject]@{
-					Path       = $fields[1]
-					Name       = ''
-					Fault      = ''
-					Procedures = [System.Collections.Generic.List[object]]::new()
-					Comments   = [System.Collections.Generic.List[object]]::new()
-					VetTags    = [System.Collections.Generic.List[string]]::new()
+					Path           = $fields[1]
+					Name           = ''
+					Fault          = ''
+					Procedures     = [System.Collections.Generic.List[object]]::new()
+					Comments       = [System.Collections.Generic.List[object]]::new()
+					VetTags        = [System.Collections.Generic.List[string]]::new()
+					RemoveAllLines = [System.Collections.Generic.List[int]]::new()
 				}
 				$byPath[$fields[1]] = $current
 			}
@@ -1354,6 +1355,9 @@ function Read-OdinPolicyReport {
 			}
 			'tag' {
 				$current.VetTags.Add($fields[1])
+			}
+			'remove_all' {
+				$current.RemoveAllLines.Add([int] $fields[1])
 			}
 			default {
 				throw "the policy tool wrote a '$($fields[0])' record, which this reader does not know. The two are in different languages and nothing checks across the gap, so an unknown record is refused rather than dropped."
@@ -1606,6 +1610,38 @@ function Assert-OdinVetTagPolicy {
 	}
 
 	throw "$($missing.Count) file(s) do not declare a +vet name their scope requires (CLAUDE.md rule M2):`n$($missing -join "`n")`nPut it on a ``#+vet`` line above the package clause. The tag is read per FILE: an untagged one compiles with its implicit allocators never looked at, whatever its siblings carry."
+}
+
+# Issue #105, filed from the #97 review: an `os.remove_all(...)` CALL
+# EXPRESSION, anywhere in the tree, re-arms the crash #97 fixed. Measured
+# there: a second `os.remove_all` on a non-empty directory faults on a
+# `core:testing` runner thread, and the fix that landed was prose in
+# CLAUDE.md and four stacked `os.remove` calls in one test -- nothing
+# mechanical stopped the next test written in that file's own idiom from
+# reintroducing the call PR #100 removed.
+#
+# A STATEMENT and not a name: tools\policy reads with `core:odin/parser`, so
+# `os.remove_all(...)` inside a comment is a comment and never trips this --
+# directory_test.odin carries two such lines today, explaining the ban this
+# check now enforces, and they must keep passing.
+function Assert-OdinRemoveAllPolicy {
+	param(
+		# Read for this verdict alone by default; build.ps1 reads once and hands
+		# the same answer to all five. See Get-OdinSourceFact.
+		[object[]] $Facts = @(Get-OdinSourceFact -Sources (Get-OdinCheckedSource))
+	)
+
+	$found = @()
+	foreach ($fact in $Facts) {
+		foreach ($line in $fact.RemoveAllLines) {
+			$found += "  - $($fact.Name):$($line)"
+		}
+	}
+	if ($found.Count -eq 0) {
+		return
+	}
+
+	throw "$($found.Count) os.remove_all(...) call(s) found, which can fault on a core:testing runner thread over a non-empty directory (issue #97):`n$($found -join "`n")`nUse testkit's per-entry hand teardown loop (src\testkit\testkit.odin's remove_cache) instead."
 }
 
 # README.md's Network access section, made true rather than merely corrected

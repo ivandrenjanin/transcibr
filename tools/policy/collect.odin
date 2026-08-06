@@ -333,6 +333,134 @@ one_line :: proc(text: string, allocator: mem.Allocator) -> string {
 	return strings.clone(head, allocator)
 }
 
+// Every line in one file where an `os.remove_all(...)` call expression
+// appears -- the #97 review's own finding, not a rule any policy document
+// states (see build.ps1's comment above the call into this check).
+//
+// A file that never imports `core:os` is answered with no lines and no walk at
+// all: nothing it could write can be a call through a name this never bound,
+// and note_declared's own `named` map has no equivalent question to answer
+// here, so there is nothing this walk would otherwise double-count.
+@(require_results)
+collect_remove_all_calls :: proc(
+	file: ^ast.File,
+	tree: mem.Allocator,
+	allocator: mem.Allocator,
+) -> []int {
+	assert(file != nil, "asked for the remove_all calls of no file at all")
+	assert(allocator.procedure != nil, "the lines outlive this walk and need a chosen allocator")
+
+	found := make([dynamic]int, 0, 0, tree)
+
+	os_name, has_os_import := os_import_name(file)
+	if has_os_import {
+		state := Remove_All_State {
+			found   = &found,
+			os_name = os_name,
+		}
+		walker := ast.Visitor {
+			visit = note_remove_all_node,
+			data  = &state,
+		}
+		for declaration in file.decls {
+			ast.walk(&walker, declaration)
+		}
+	}
+
+	return slice.clone(found[:], allocator)
+}
+
+// The local name one file's own import binds `core:os` to, and whether it
+// imports it at all -- a file that never imports it cannot call anything
+// through a name this ban means.
+@(require_results)
+os_import_name :: proc(file: ^ast.File) -> (name: string, found: bool) {
+	assert(file != nil, "asked for the os import of no file at all")
+
+	for declaration in file.imports {
+		assert(declaration != nil, "an import list holding a hole is a parser defect")
+		path := strings.trim(declaration.fullpath, `"`)
+		if path != REMOVE_ALL_PACKAGE {
+			continue
+		}
+		if len(declaration.name.text) > 0 {
+			return declaration.name.text, true
+		}
+		return default_import_name(path), true
+	}
+	return "", false
+}
+
+// The local name an import binds when the source writes no explicit alias --
+// the last path component, which is the convention every import in this
+// repository already follows (`import "core:os"` reads as `os`).
+@(require_results)
+default_import_name :: proc(path: string) -> string {
+	assert(len(path) > 0, "an import path with no text is a parser defect")
+
+	cut := strings.last_index_any(path, ":/")
+	if cut < 0 {
+		return path
+	}
+	return path[cut + 1:]
+}
+
+// What the remove_all walk is accumulating: the lines found so far, and the
+// local name this file's own import binds `core:os` to.
+Remove_All_State :: struct {
+	found:   ^[dynamic]int,
+	os_name: string,
+}
+
+// One node of the remove_all walk, in the same shape note_node walks
+// procedures: returning the visitor carries the descent into a node's
+// children, and nil stops it.
+@(require_results)
+note_remove_all_node :: proc(walker: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
+	if node == nil {
+		return nil
+	}
+	assert(walker != nil, "ast.walk called a visit procedure through no visitor")
+	assert(walker.data != nil, "the walk carries no state to record anything into")
+
+	state := (^Remove_All_State)(walker.data)
+	#partial switch found in node.derived {
+	case ^ast.Call_Expr:
+		if is_remove_all_call(found, state.os_name) {
+			append(state.found, found.pos.line)
+		}
+	}
+	return walker
+}
+
+// Whether one call expression is `<os_name>.remove_all(...)`.
+//
+// `os_name` is what the file's own import bound, never the literal text
+// `"os"` -- a file that imports `core:os` under a different local name is
+// matched under that name and not under the convention every other file
+// happens to follow.
+@(require_results)
+is_remove_all_call :: proc(call: ^ast.Call_Expr, os_name: string) -> bool {
+	assert(call != nil, "asked whether no call expression at all is a remove_all call")
+	assert(len(os_name) > 0, "asked to match against no import name at all")
+	assert(call.expr != nil, "a call expression with no callee is a parser defect")
+
+	selector, is_selector := call.expr.derived.(^ast.Selector_Expr)
+	if !is_selector {
+		return false
+	}
+	assert(selector.field != nil, "a selector with no field is a parser defect")
+	if selector.field.name != REMOVE_ALL_PROCEDURE {
+		return false
+	}
+
+	target, is_ident := selector.expr.derived.(^ast.Ident)
+	if !is_ident {
+		return false
+	}
+	return target.name == os_name
+}
+
 // The `#+vet` names one file declares for itself.
 //
 // Read off the file's TAGS, which the parser collects only from above the package

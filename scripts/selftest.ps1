@@ -74,7 +74,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 69
+$ExpectedCaseCount = 72
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -1967,6 +1967,73 @@ Test-Case 'the vet tag rule the build enforces is written down' {
 			'per file'
 			'Get-OdinRequiredVetTag'
 		) + @($OdinFileVetTags | ForEach-Object { $_.Name }))
+}
+
+# ------------------------------------------------ cases for the remove_all gate --
+#
+# Issue #105: no `os.remove_all(...)` call expression anywhere in the tree.
+# tools\policy's own remove_all_test.odin already proves the Odin-side reader
+# finds and skips the right lines; nothing before this pinned the OTHER half of
+# the check -- Read-OdinPolicyReport's 'remove_all' record arm and
+# Assert-OdinRemoveAllPolicy reading it -- so a PowerShell-side regression there
+# had nothing to fail against. Measured: discarding the 'remove_all' record
+# instead of collecting it left build.ps1, the full test sweep and every prior
+# selftest case green, with the tool's answer read and silently thrown away.
+# These two cases are what a fixture build going red over a planted call, and
+# passing clean without one, actually proves against that regression.
+Test-Case 'a stray os.remove_all call fails the build' {
+	$repo = New-FixtureRepo 'build-stray-remove-all'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+
+	$dir = Join-Path (Join-Path $repo 'src') 'purge'
+	New-Item -ItemType Directory -Path $dir -Force | Out-Null
+	Write-FixtureSource -Path (Join-Path $dir 'purge.odin') -Text (
+		"$FixtureVetTags`npackage purge`n`nimport `"core:os`"`n`n" +
+		"held :: proc() {`n`t_ = os.remove_all(`"x`")`n}`n"
+	)
+
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Fails -Matching 'os\.remove_all\(\.\.\.\) call'
+	# The FILE and LINE, for the reason every other checker here names one: a
+	# refusal somebody has to go and search the tree for is a refusal nobody
+	# actually reads.
+	Assert-Result -Result $result -Fails -Matching 'src/purge/purge\.odin:7'
+}
+
+Test-Case 'a comment naming os.remove_all does not fail the build' {
+	# The negative space (rule A3): a check that refused every file mentioning
+	# the name in prose, rather than calling it, would pass the case above for
+	# the wrong reason. directory_test.odin carries exactly this shape today
+	# and has to keep passing.
+	$repo = New-FixtureRepo 'build-remove-all-comment'
+	Add-FixtureBinary -RepoRoot $repo -Body (New-FixtureMain -Line $SmokeBanner) | Out-Null
+
+	$dir = Join-Path (Join-Path $repo 'src') 'purge'
+	New-Item -ItemType Directory -Path $dir -Force | Out-Null
+	Write-FixtureSource -Path (Join-Path $dir 'purge.odin') -Text (
+		"$FixtureVetTags`npackage purge`n`n// never call os.remove_all here`n" +
+		"held :: proc() {`n`treturn`n}`n"
+	)
+
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
+	Assert-Result -Result $result -Matching 'no \.odin file calls os\.remove_all'
+	Assert-Result -Result $result -Matching 'Built 1 target'
+}
+
+Test-Case 'the remove_all ban is written down' {
+	# Sixth caller of Assert-PolicyClaim, and the one Assert-OdinRemoveAllPolicy
+	# was missing: the other five build-failing enforcers (procedure length,
+	# comment ban, result policy, vet tags, network confinement) all pin a
+	# claim in the document that states the rule they enforce. This one had no
+	# document at all -- a scan replicating Assert-PolicyClaim's own Contains
+	# check, run over CLAUDE.md, README.md, CONTEXT.md and every file under
+	# docs\, found zero hits for 'remove_all', 'Assert-OdinRemoveAllPolicy' or
+	# '#105' anywhere in the tree. A contributor who trips the gate had a good
+	# error message and nothing to read.
+	Assert-PolicyClaim -Enforcer 'Assert-OdinRemoveAllPolicy' -Claims @(
+		'No `os.remove_all(...)` call anywhere in the tree (issue #97/#105)'
+		'Assert-OdinRemoveAllPolicy'
+	)
 }
 
 # ------------------------------------------------- cases for the network gate --
