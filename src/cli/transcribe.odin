@@ -44,9 +44,7 @@ transcribe_one :: proc(arguments: []string) -> int {
 	group, opening := child.job_object_open()
 	defer child.job_object_close(&group)
 	if opening.fault != .None {
-		reason := child.error_message(opening, context.allocator)
-		defer delete(reason, context.allocator)
-		fmt.eprintln(reason)
+		pipeline.report_fault(child.error_message(opening, context.allocator), context.allocator)
 		return OPERATING_ERROR
 	}
 
