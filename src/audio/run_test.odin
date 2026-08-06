@@ -534,3 +534,107 @@ a_flood_on_the_diagnostic_stream_does_not_stop_the_bound_from_being_reached :: p
 		"the flood delayed the bound from being reached at all",
 	)
 }
+
+// Far shorter than child.READ_BOUND_MS, so this case measures the bound
+// rather than a real caller's patience -- the same reasoning
+// `child.READ_SHORT_BOUND_MS` states for itself, duplicated here for the
+// identical reason `open_group` above is: a testkit shared with `child`
+// would import back into the package whose own tests define this bound.
+@(private)
+PROBE_ANSWER_WEDGE_BOUND_MS :: i64(300)
+
+// A named pipe with a server end and nobody ever writing to it or closing
+// it -- the same idiom `child.read_test.odin`'s `pipe_with_no_writer` uses
+// for its own package, duplicated rather than shared for the reason
+// `open_group` above states. The caller closes `server` and frees `path`.
+@(private)
+@(require_results)
+answer_pipe_with_no_writer :: proc(
+	t: ^testing.T,
+	tag: string,
+) -> (
+	path: string,
+	server: win32.HANDLE,
+	ok: bool,
+) {
+	assert(t != nil, "there is no test here to report a refusal through")
+	assert(len(tag) > 0, "a pipe name shared by two cases is a pipe one of them cannot claim")
+
+	path = fmt.aprintf(
+		`\\.\pipe\transcibr-probe-answer-%d-%s`,
+		win32.GetCurrentProcessId(),
+		tag,
+		allocator = context.allocator,
+	)
+
+	wide := win32.utf8_to_utf16(path, context.allocator)
+	defer delete(wide, context.allocator)
+
+	server = win32.CreateNamedPipeW(
+		win32.wstring(raw_data(wide)),
+		win32.PIPE_ACCESS_OUTBOUND,
+		win32.PIPE_TYPE_BYTE | win32.PIPE_WAIT,
+		1,
+		4096,
+		4096,
+		0,
+		nil,
+	)
+	if server == win32.INVALID_HANDLE_VALUE {
+		delete(path, context.allocator)
+		testing.expect(t, false, "could not create a named pipe with nobody writing to it")
+		return "", nil, false
+	}
+	return path, server, true
+}
+
+// `answer_read_settled` is `probe`'s own ordering guard, pulled out so it can
+// be proven without spawning ffprobe at all: `child.read_bounded` answers
+// `Read_Fault.Did_Not_Finish` for BOTH a cancelled-and-reclaimed worker and
+// one `child.await_or_abandon` gave up on, and `Read_Error` carries nothing
+// that tells those two apart from here -- so this treats the fault
+// conservatively, leaking the answer file deliberately the same way
+// `child.Read_Job`'s own doc comment states its worker leaks for the
+// identical reason (issue #125, filed from the #66 review).
+@(test)
+a_probe_answer_read_that_is_known_done_is_settled_for_removal :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		answer_read_settled(child.Read_Fault.None),
+		"a finished read was not settled",
+	)
+	testing.expect(
+		t,
+		answer_read_settled(child.Read_Fault.Not_Started),
+		"a read whose thread never started was not settled",
+	)
+	testing.expect(
+		t,
+		answer_read_settled(child.Read_Fault.Unreadable),
+		"a read that finished with an OS error was not settled",
+	)
+}
+
+@(test)
+an_abandoned_probe_answer_read_is_never_settled_for_removal :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		!answer_read_settled(child.Read_Fault.Did_Not_Finish),
+		"an abandoned read was treated as settled, which would remove a file a live worker might still hold open",
+	)
+
+	path, server, ok := answer_pipe_with_no_writer(t, "abandoned")
+	if !ok {
+		return
+	}
+	defer win32.CloseHandle(server)
+	defer delete(path, context.allocator)
+
+	_, unreadable := child.read_bounded(path, PROBE_ANSWER_WEDGE_BOUND_MS, context.allocator)
+	testing.expect_value(t, unreadable.fault, child.Read_Fault.Did_Not_Finish)
+	testing.expect(
+		t,
+		!answer_read_settled(unreadable.fault),
+		"a real abandoned read's own fault was treated as settled for removal",
+	)
+}

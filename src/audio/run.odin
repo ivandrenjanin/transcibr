@@ -119,6 +119,23 @@ settle :: proc(
 	unreachable()
 }
 
+// Whether the answer file `probe` below wrote is safe to remove:
+// `child.read_bounded` answers `Read_Fault.Did_Not_Finish` for BOTH a
+// worker `child.await_or_abandon` cancelled and reclaimed and one it gave up
+// on outright, and `Read_Error` carries nothing this far that tells those two
+// apart -- so this treats the fault conservatively and refuses removal on
+// it, leaking the answer file deliberately the same way `child.Read_Job`'s
+// own doc comment (`src\child\read.odin`) states its worker leaks for the
+// identical reason: there is no safe way to touch a file a thread may still
+// be reading, short of `TerminateThread`, which CLAUDE.md's own notes on
+// this repository's test runner already found abandons locks mid-use
+// (issue #125, filed from the #66 review).
+@(private)
+@(require_results)
+answer_read_settled :: proc(fault: child.Read_Fault) -> bool {
+	return fault != .Did_Not_Finish
+}
+
 // The read of ffprobe's own answer file below is bounded the same way
 // `child.read_bounded` bounds a hand-typed `--from-json` path (issue #27): a
 // stalled scratch cache wedges this identically, and this is already a
@@ -156,12 +173,15 @@ probe :: proc(
 		return {}, Error{fault = .Probe_Not_Stopped}
 	case .Stopped, .Finished:
 	}
-	defer os.remove(answer)
 	if ending == .Stopped {
+		os.remove(answer)
 		return {}, Error{fault = .Probe_Did_Not_Finish}
 	}
 
 	said, unreadable := child.read_bounded(answer, child.READ_BOUND_MS, allocator)
+	if answer_read_settled(unreadable.fault) {
+		os.remove(answer)
+	}
 	if unreadable.fault != .None {
 		return {}, Error{fault = .Probe_Answer_Unreadable}
 	}
