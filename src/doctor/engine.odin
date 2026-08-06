@@ -119,12 +119,12 @@ backend_library_present :: proc(executable: string) -> bool {
 
 // A switch, not a table (CLAUDE.md, Odin notes: enumerated arrays and
 // switches): a member added without a case here fails the build
-// (`Unhandled enumerated array case`). Measured false, per #139: that guard
-// does not reach a case whose arm compiles but returns nothing, the way
-// `.None`'s does -- an empty arm is not a build failure, only a missing one
-// is. `engine_fault_test.odin` walks the enumeration to prove every
-// non-`.None` case still carries a sentence, rather than the renderer
-// asserting it on the first Recording that hits the gap.
+// (`Unhandled switch case`). That guard does not reach a case whose arm
+// compiles but returns nothing, the way `.None`'s does -- an empty arm is
+// not a build failure, only a missing one is. `engine_fault_test.odin`
+// walks the enumeration to prove every non-`.None` case still carries a
+// sentence, rather than the renderer asserting it on the first Recording
+// that hits the gap.
 @(private)
 @(require_results)
 engine_fault_says :: proc(fault: Engine_Fault) -> string {

@@ -114,8 +114,8 @@ first_recording_health :: proc(
 
 // A switch, not a table (CLAUDE.md, Odin notes: enumerated arrays and
 // switches): a Health_Fault member added without a case here fails the
-// build (`Unhandled enumerated array case`). That guard does not reach a
-// case whose arm compiles but returns nothing, the way `.None`'s does --
+// build (`Unhandled switch case`). That guard does not reach a case whose
+// arm compiles but returns nothing, the way `.None`'s does --
 // `health_fault_test.odin` walks the enumeration to prove every non-`.None`
 // case still carries a sentence, rather than the renderer asserting it on
 // the first Recording that hits the gap.
