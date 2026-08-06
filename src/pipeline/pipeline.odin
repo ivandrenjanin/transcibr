@@ -54,6 +54,34 @@ worker_count_within_ceiling :: proc(count: int, ceiling: int) -> bool {
 	return count > 0 && count <= ceiling
 }
 
+// The pairing itself, owned here rather than spelled out again at each
+// `src/cli/batch.odin` call site: which option name refuses against which
+// ceiling. `read_batch_option` looks an option's ceiling up in this table
+// instead of naming `MAX_EXTRACT_WORKERS` or `MAX_QUEUE_DEPTH` by hand at the
+// call site, so a mispairing can only live here, where
+// `worker_option_ceilings_pair_each_option_with_its_own_max`
+// (defaults_test.odin) walks the table and can catch it.
+Worker_Option_Ceiling :: struct {
+	name:    string,
+	ceiling: int,
+}
+
+WORKER_OPTION_CEILINGS := [?]Worker_Option_Ceiling {
+	{name = "--extract-workers", ceiling = MAX_EXTRACT_WORKERS},
+	{name = "--queue-depth", ceiling = MAX_QUEUE_DEPTH},
+}
+
+@(require_results)
+worker_option_ceiling :: proc(name: string) -> (ceiling: int, ok: bool) {
+	assert(len(name) > 0, "there is no option name here to look a ceiling up for")
+	for entry in WORKER_OPTION_CEILINGS {
+		if entry.name == name {
+			return entry.ceiling, true
+		}
+	}
+	return 0, false
+}
+
 // One or two extraction workers feeding exactly one transcription worker
 // through a bounded channel of depth one or two (ADR-0006) -- the shipped
 // defaults `--batch` puts back when its own command line left either unset,

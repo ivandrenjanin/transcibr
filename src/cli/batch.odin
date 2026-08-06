@@ -301,19 +301,9 @@ read_batch_option :: proc(o: ^Batch_Options, name, value: string) -> (ok: bool) 
 	case BATCH:
 		o.root = value
 	case "--extract-workers":
-		return read_batch_worker_option(
-			&o.extract_workers,
-			"--extract-workers",
-			value,
-			pipeline.MAX_EXTRACT_WORKERS,
-		)
+		return read_batch_worker_option(&o.extract_workers, name, value)
 	case "--queue-depth":
-		return read_batch_worker_option(
-			&o.queue_depth,
-			"--queue-depth",
-			value,
-			pipeline.MAX_QUEUE_DEPTH,
-		)
+		return read_batch_worker_option(&o.queue_depth, name, value)
 	case "--follow-reparse-points":
 		return read_follow(&o.follow, value)
 	case:
@@ -334,9 +324,11 @@ read_batch_option :: proc(o: ^Batch_Options, name, value: string) -> (ok: bool) 
 
 @(private)
 @(require_results)
-read_batch_worker_option :: proc(into: ^int, name, value: string, ceiling: int) -> (ok: bool) {
+read_batch_worker_option :: proc(into: ^int, name, value: string) -> (ok: bool) {
 	assert(into != nil, "there is nowhere here to read a worker count into")
-	assert(ceiling > 0, "there is no ceiling here to refuse a worker count against")
+
+	ceiling, registered := pipeline.worker_option_ceiling(name)
+	assert(registered, "no ceiling registered for a worker option this switch dispatches")
 
 	count, readable := read_worker_count(value, ceiling)
 	if !readable {

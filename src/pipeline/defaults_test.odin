@@ -97,3 +97,36 @@ worker_count_within_ceiling_checks_its_own_ceiling_and_not_the_others :: proc(t:
 		"MAX_QUEUE_DEPTH itself was refused against its own ceiling",
 	)
 }
+
+// Issue #94, fix round 1: `worker_count_within_ceiling` alone proves that
+// expression is that expression -- it says nothing about WHICH ceiling
+// `src/cli/batch.odin` hands each option, which is what the original defect
+// was actually about. `WORKER_OPTION_CEILINGS` now holds that pairing, and
+// `read_batch_option` looks an option's ceiling up in it by name instead of
+// naming `MAX_EXTRACT_WORKERS`/`MAX_QUEUE_DEPTH` at the call site, so a
+// mispairing can only live in the table -- where this test walks it.
+@(test)
+worker_option_ceilings_pair_each_option_with_its_own_max :: proc(t: ^testing.T) {
+	extract_ceiling, extract_found := worker_option_ceiling("--extract-workers")
+	testing.expect(t, extract_found, "--extract-workers has no ceiling registered")
+	testing.expectf(
+		t,
+		extract_ceiling == MAX_EXTRACT_WORKERS,
+		"--extract-workers is paired with ceiling %d, not MAX_EXTRACT_WORKERS (%d)",
+		extract_ceiling,
+		MAX_EXTRACT_WORKERS,
+	)
+
+	queue_ceiling, queue_found := worker_option_ceiling("--queue-depth")
+	testing.expect(t, queue_found, "--queue-depth has no ceiling registered")
+	testing.expectf(
+		t,
+		queue_ceiling == MAX_QUEUE_DEPTH,
+		"--queue-depth is paired with ceiling %d, not MAX_QUEUE_DEPTH (%d)",
+		queue_ceiling,
+		MAX_QUEUE_DEPTH,
+	)
+
+	_, unknown_found := worker_option_ceiling("--not-a-real-option")
+	testing.expect(t, !unknown_found, "an unregistered option name found a ceiling anyway")
+}
