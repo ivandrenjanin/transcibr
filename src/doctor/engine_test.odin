@@ -1,0 +1,190 @@
+#+vet explicit-allocators
+package doctor
+
+import "core:fmt"
+import "core:os"
+import "core:strings"
+import "core:testing"
+import "transcibr:artifact"
+import "transcibr:child"
+import "transcibr:testkit"
+
+@(private)
+REAL_CMD :: `C:\Windows\System32\cmd.exe`
+
+@(private)
+@(require_results)
+written :: proc(path: string, bytes: []u8) -> bool {
+	assert(len(path) > 0, "there is nowhere here to write a fixture file")
+
+	handle, unopenable := os.open(path, {.Write, .Create, .Trunc})
+	if unopenable != nil {
+		return false
+	}
+	defer os.close(handle)
+
+	n, unwritable := os.write(handle, bytes)
+	return unwritable == nil && n == len(bytes)
+}
+
+@(test)
+the_backend_library_is_reported_present_only_when_it_sits_beside_the_executable :: proc(
+	t: ^testing.T,
+) {
+	dir := testkit.made_scratch_cache(t, "Doctor", "backendlib", context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	executable := fmt.aprintf("%s\\whisper-cli.exe", dir, allocator = context.allocator)
+	defer delete(executable, context.allocator)
+	testing.expect(t, written(executable, {1, 2, 3}), "the case could not write its own fixture")
+	testing.expect(
+		t,
+		!backend_library_present(executable),
+		"an install with no backend dll passed",
+	)
+
+	beside := fmt.aprintf("%s\\%s", dir, GPU_BACKEND_LIBRARY, allocator = context.allocator)
+	defer delete(beside, context.allocator)
+	testing.expect(t, written(beside, {1, 2, 3}), "the case could not write its own fixture")
+	testing.expect(
+		t,
+		backend_library_present(executable),
+		"an install with the backend dll failed",
+	)
+}
+
+@(test)
+an_install_with_no_backend_library_fails_before_anything_is_spawned :: proc(t: ^testing.T) {
+	dir := testkit.made_scratch_cache(t, "Doctor", "nobackend", context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	executable := fmt.aprintf("%s\\whisper-cli.exe", dir, allocator = context.allocator)
+	defer delete(executable, context.allocator)
+	testing.expect(t, written(executable, {1, 2, 3}), "the case could not write its own fixture")
+
+	check := verify_engine(&group, executable, context.allocator)
+	defer artifact.destroy_model(check.model, context.allocator)
+
+	testing.expect_value(t, check.fault, Engine_Fault.Backend_Library_Missing)
+}
+
+@(test)
+an_engine_that_starts_but_never_names_cuda_loaded_is_reported_rather_than_trusted :: proc(
+	t: ^testing.T,
+) {
+	dir := testkit.made_scratch_cache(t, "Doctor", "silentcpu", context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	beside := fmt.aprintf("%s\\%s", dir, GPU_BACKEND_LIBRARY, allocator = context.allocator)
+	defer delete(beside, context.allocator)
+	testing.expect(t, written(beside, {1, 2, 3}), "the case could not write its own fixture")
+
+	real_cmd, unreadable := os.read_entire_file(REAL_CMD, context.allocator)
+	testing.expect(t, unreadable == nil, "the case could not read a real cmd.exe to copy")
+	defer delete(real_cmd, context.allocator)
+
+	executable := fmt.aprintf("%s\\whisper-cli.exe", dir, allocator = context.allocator)
+	defer delete(executable, context.allocator)
+	testing.expect(t, written(executable, real_cmd), "the case could not write its own fixture")
+
+	check := verify_engine(&group, executable, context.allocator)
+	defer artifact.destroy_model(check.model, context.allocator)
+
+	testing.expect_value(t, check.fault, Engine_Fault.Backend_Not_Loaded)
+}
+
+@(test)
+an_engine_that_will_not_start_is_reported_rather_than_asserted :: proc(t: ^testing.T) {
+	dir := testkit.made_scratch_cache(t, "Doctor", "willnotstart", context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	beside := fmt.aprintf("%s\\%s", dir, GPU_BACKEND_LIBRARY, allocator = context.allocator)
+	defer delete(beside, context.allocator)
+	testing.expect(t, written(beside, {1, 2, 3}), "the case could not write its own fixture")
+
+	executable := fmt.aprintf("%s\\whisper-cli.exe", dir, allocator = context.allocator)
+	defer delete(executable, context.allocator)
+	testing.expect(
+		t,
+		written(executable, {'n', 'o', 't', ' ', 'a', ' ', 'p', 'e'}),
+		"the case could not write its own fixture",
+	)
+
+	check := verify_engine(&group, executable, context.allocator)
+	defer artifact.destroy_model(check.model, context.allocator)
+
+	testing.expect_value(t, check.fault, Engine_Fault.Not_Started)
+	testing.expect(t, check.child.fault != .None, "an engine that would not start named no reason")
+}
+
+// The real reference install this dev machine carries, exercised end to end
+// exactly once so the whole wire-up -- backend detection, hashing, spawning,
+// and reading `--help`'s own stderr for the line the Engine actually writes
+// -- is proved against a genuine release rather than only against fixtures.
+// Skipped, not failed, wherever that install is absent: this is GPU behaviour
+// (docs/spec/0001-transcibr-v1.md's Testing Decisions names it out of every
+// automated seam) and CI carries no such directory.
+@(private)
+REFERENCE_ENGINE :: `C:\tools\whisper\Release\whisper-cli.exe`
+
+@(test)
+the_reference_engine_install_reports_cuda_loaded_when_it_is_present :: proc(t: ^testing.T) {
+	if !os.exists(REFERENCE_ENGINE) {
+		return
+	}
+
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	check := verify_engine(&group, REFERENCE_ENGINE, context.allocator)
+	defer artifact.destroy_model(check.model, context.allocator)
+
+	if check.fault != .None {
+		message := engine_error_message(check, REFERENCE_ENGINE, context.allocator)
+		defer delete(message, context.allocator)
+		testing.expectf(t, false, "%s", message)
+		return
+	}
+	testing.expect_value(t, check.fault, Engine_Fault.None)
+}
+
+@(test)
+an_engine_fault_message_names_the_executable_and_an_actionable_reason :: proc(t: ^testing.T) {
+	check := Engine_Check {
+		fault = .Backend_Library_Missing,
+	}
+	message := engine_error_message(check, `C:\engines\whisper-cli.exe`, context.allocator)
+	defer delete(message, context.allocator)
+
+	testing.expect(t, strings.contains(message, "whisper-cli.exe"), "the executable is missing")
+	testing.expect(
+		t,
+		strings.contains(message, "ggml-cuda.dll"),
+		"the actionable reason is missing",
+	)
+}
