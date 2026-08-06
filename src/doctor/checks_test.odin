@@ -9,6 +9,30 @@ import "core:testing"
 import "transcibr:child"
 import "transcibr:testkit"
 
+// Proves the caller-side refusal without spawning a flooding child: an
+// overflowed Probe is a caller-constructed value, and `extraction_tool_verdict`
+// is the pure procedure `extraction_tool_check` hands it to before anything
+// else. Mutation check per the ticket's own acceptance criterion: deleting
+// the `if probe.overflowed` guard in `extraction_tool_verdict`
+// (src/doctor/checks.odin) leaves this red, because the overflowed Probe
+// would then fall through to `switch probe.run`, which this Probe leaves at
+// its zero value `.Not_Started` and reports a different, wrong message.
+@(test)
+an_overflowed_probe_is_refused_by_name_rather_than_judged_on_its_capture :: proc(t: ^testing.T) {
+	probe := Probe {
+		overflowed = true,
+	}
+	check := extraction_tool_verdict(probe, "ffmpeg", "ffmpeg.exe", context.allocator)
+	defer destroy_check(check, context.allocator)
+
+	testing.expect_value(t, check.ok, false)
+	testing.expect(
+		t,
+		strings.contains(check.reason, "MAX_PROBE_CAPTURE_BYTES"),
+		"an overflow refusal did not name its own ceiling",
+	)
+}
+
 @(test)
 an_extraction_tool_that_reports_its_version_passes :: proc(t: ^testing.T) {
 	group, ok := open_group(t)

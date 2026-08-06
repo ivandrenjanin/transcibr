@@ -58,6 +58,23 @@ extraction_tool_check :: proc(
 	probe := probe_executable(group, executable, arguments, allocator)
 	defer delete(probe.captured, allocator)
 
+	return extraction_tool_verdict(probe, name, executable, allocator)
+}
+
+// Split out of `extraction_tool_check` so the overflow refusal -- and every
+// other branch here -- takes a caller-constructed `Probe` and can be proved
+// without spawning a real flooding child (`checks_test.odin`).
+@(private)
+@(require_results)
+extraction_tool_verdict :: proc(
+	probe: Probe,
+	name: string,
+	executable: string,
+	allocator: mem.Allocator,
+) -> Check {
+	assert(len(name) > 0, "a check with no name reports nothing a user can act on")
+	assert(len(executable) > 0, "there is no tool here to report a verdict against")
+
 	if probe.overflowed {
 		return failed(name, probe_overflow_message(executable, allocator))
 	}

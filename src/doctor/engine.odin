@@ -75,6 +75,15 @@ verify_engine :: proc(
 	probe := probe_executable(group, executable, ENGINE_PROBE_ARGUMENTS, allocator)
 	defer delete(probe.captured, allocator)
 
+	return engine_probe_verdict(probe)
+}
+
+// Split out of `verify_engine` so the overflow refusal -- and every other
+// branch here -- takes a caller-constructed `Probe` and can be proved
+// without spawning a real flooding child (`engine_test.odin`).
+@(private)
+@(require_results)
+engine_probe_verdict :: proc(probe: Probe) -> Engine_Check {
 	if probe.overflowed {
 		return Engine_Check{fault = .Capture_Overflowed}
 	}

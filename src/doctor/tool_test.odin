@@ -4,6 +4,7 @@ package doctor
 import "core:fmt"
 import "core:strings"
 import "core:testing"
+import "core:time"
 import "transcibr:child"
 import "transcibr:testkit"
 
@@ -70,6 +71,14 @@ a_probe_of_an_executable_that_will_not_start_is_reported_rather_than_asserted ::
 // in captured_chunk (src/doctor/tool.odin) leaves `probe.overflowed` always
 // false and turns this red, because the flood would then finish draining
 // inside the probe's bound with no refusal to report.
+//
+// The elapsed-time assertion at the end pins the VALUE `capture_overflow_poll`'s
+// wiring buys, not merely that the probe was eventually stopped: removing
+// `on_poll = capture_overflow_poll` from the `Run_Callbacks` literal in
+// `probe_executable` (src/doctor/tool.odin) leaves the child running for the
+// rest of `bound_ms` even though its verdict was already decided, and this
+// assertion goes red on the extra wall time (issue #98's standard: pin the
+// value a ceiling holds, not merely that a ceiling exists).
 @(test)
 a_probe_refuses_a_flood_past_its_capture_ceiling_rather_than_growing_without_bound :: proc(
 	t: ^testing.T,
@@ -101,7 +110,10 @@ a_probe_refuses_a_flood_past_its_capture_ceiling_rather_than_growing_without_bou
 	command := testkit.flood_type_command(flood, 25, signal, context.allocator)
 	defer delete(command, context.allocator)
 
-	probe := probe_executable(&group, CMD, {"/c", command}, context.allocator, 30_000)
+	bound_ms := i64(30_000)
+	started := time.tick_now()
+	probe := probe_executable(&group, CMD, {"/c", command}, context.allocator, bound_ms)
+	elapsed := time.tick_since(started)
 	defer delete(probe.captured, context.allocator)
 
 	testing.expect(
@@ -118,6 +130,11 @@ a_probe_refuses_a_flood_past_its_capture_ceiling_rather_than_growing_without_bou
 		t,
 		probe.run == .Stopped || probe.run == .Unstoppable,
 		"an overflowing probe was not stopped once its verdict could no longer change",
+	)
+	testing.expect(
+		t,
+		elapsed < time.Duration(bound_ms) * time.Millisecond - testkit.FLOOD_STOP_SLACK,
+		"an overflowing probe was not stopped early -- it ran out its full bound",
 	)
 }
 
