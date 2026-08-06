@@ -15,6 +15,7 @@ import "core:fmt"
 import "core:mem"
 import "core:os"
 import "core:strings"
+import win32 "core:sys/windows"
 import "transcibr:child"
 
 // A committed fixture already exercised elsewhere (`transcibr:audio`'s own
@@ -39,12 +40,23 @@ MODEL_LOAD_PROBE_BOUND_MS :: i64(15_000)
 // never reaches the code that prints this.
 MODEL_LOAD_FAILURE_MARKER :: "error: failed to initialize whisper context"
 
+// The current OS thread id is folded into the file name, between the
+// package-wide prefix and `os.create_temp_file`'s own random `*` component:
+// `test.ps1` runs a package's tests across 12 threads, one test to
+// completion per thread, and `src\doctor\checks_test.odin` drives this same
+// procedure from eight tests of its own -- so a scan of `%TEMP%` for the
+// bare prefix during one test's own call cannot tell its own wav from a
+// sibling's, and a 430 ms scheduling shift is enough to prove it in
+// practice. Two calls on the same thread never overlap, so the thread id
+// alone is already a scan identity nothing outside this thread can produce
+// (issue #125's round-4 review, finding 1).
 @(private)
 @(require_results)
 write_probe_wav :: proc(allocator: mem.Allocator) -> (path: string, ok: bool) {
 	assert(allocator.procedure != nil, "a probe wav outlives this call and needs an allocator")
 
-	f, unopenable := os.create_temp_file("", "transcibr-doctor-probe-*.wav")
+	pattern := fmt.tprintf("transcibr-doctor-probe-%d-*.wav", win32.GetCurrentThreadId())
+	f, unopenable := os.create_temp_file("", pattern)
 	if unopenable != nil {
 		return "", false
 	}

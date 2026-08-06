@@ -2,6 +2,7 @@
 package audio
 
 import "core:fmt"
+import "core:mem"
 import "core:os"
 import win32 "core:sys/windows"
 import "core:testing"
@@ -823,6 +824,7 @@ a_probe_whose_answer_read_finishes_calls_the_remover_exactly_once :: proc(t: ^te
 		answer,
 		context.allocator,
 		spy_answer_remove,
+		run_probe_child,
 	)
 	testing.expect_value(t, err.fault, Fault.Probe_Unreadable)
 	testing.expect_value(t, calls, 1)
@@ -853,12 +855,78 @@ a_probe_whose_answer_read_is_abandoned_never_calls_the_remover :: proc(t: ^testi
 	tools := Tools {
 		ffprobe = FFPROBE_STAND_IN,
 	}
-	_, err := probe_using(&group, tools, "source.mp4", path, context.allocator, spy_answer_remove)
+	_, err := probe_using(
+		&group,
+		tools,
+		"source.mp4",
+		path,
+		context.allocator,
+		spy_answer_remove,
+		run_probe_child,
+	)
 	testing.expect_value(t, err.fault, Fault.Probe_Answer_Unreadable)
 	testing.expectf(
 		t,
 		calls == 0,
 		"probe called its remover %d time(s) on an abandoned answer read, which would race a worker that might still hold it open",
+		calls,
+	)
+}
+
+// `a_probe_whose_answer_read_finishes_calls_the_remover_exactly_once` and
+// `a_probe_whose_answer_read_is_abandoned_never_calls_the_remover` above
+// only ever reach ffprobe's `.Finished` ending -- neither of them, nor
+// anything else in this package, ever drives `probe_using` onto its own
+// `.Stopped` branch, so a mutation deleting that branch's removal call left
+// the whole 588-test suite green (issue #125's round-4 review, finding 2).
+// This stub supplies ffprobe's run OUTCOME directly (`child.Run.Stopped`,
+// with no real 60 s `PROBE_BOUND_MS` wait needed), while `probe_using`
+// itself still supplies the DECISION -- the guarded removal on that branch
+// -- the same way `src\doctor\model_probe.odin`'s `stub_unstoppable_probe`
+// already does for its own otherwise-unconstructible ending.
+@(private)
+@(require_results)
+stub_stopped_probe_run :: proc(
+	group: ^child.Job_Object,
+	executable: string,
+	arguments: []string,
+	bound_ms: i64,
+	allocator: mem.Allocator,
+) -> (
+	ending: child.Run,
+	reason: child.Stop_Reason,
+	err: child.Error,
+) {
+	return .Stopped, .Bound_Expired, child.Error{}
+}
+
+@(test)
+a_probe_whose_ffprobe_run_stops_calls_the_remover_exactly_once :: proc(t: ^testing.T) {
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	calls := 0
+	context.user_ptr = &calls
+	tools := Tools {
+		ffprobe = FFPROBE_STAND_IN,
+	}
+	_, err := probe_using(
+		&group,
+		tools,
+		"source.mp4",
+		"answer.json",
+		context.allocator,
+		spy_answer_remove,
+		stub_stopped_probe_run,
+	)
+	testing.expect_value(t, err.fault, Fault.Probe_Did_Not_Finish)
+	testing.expectf(
+		t,
+		calls == 1,
+		"probe called its remover %d time(s) for a stopped ffprobe run, wanted 1",
 		calls,
 	)
 }

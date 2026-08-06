@@ -184,6 +184,45 @@ remove_answer_if_settled :: proc(answer: string, settled: bool, remove: Answer_R
 	}
 }
 
+// `probe_using`'s spawn of ffprobe itself is threaded through this type
+// rather than calling `child.run_bounded` inline, so a test can supply the
+// run's INPUT (a `child.Run.Stopped`, with no real 60 s `PROBE_BOUND_MS`
+// wait needed) while `probe_using` still supplies the DECISION -- the
+// `.Stopped` branch's own guarded removal -- distinguishing a covered call
+// site from a dead one, the same way `Probe_Maker` already does for
+// `src\doctor\model_probe.odin`'s `.Unstoppable` arm (issue #125's round-4
+// review, finding 2: nothing in the tree drove `probe` onto its own
+// `.Stopped` branch, so deleting that branch's `remove(answer)` left all
+// 588 tests green).
+@(private)
+Probe_Run :: #type proc(
+	group: ^child.Job_Object,
+	executable: string,
+	arguments: []string,
+	bound_ms: i64,
+	allocator: mem.Allocator,
+) -> (
+	ending: child.Run,
+	reason: child.Stop_Reason,
+	err: child.Error,
+)
+
+@(private)
+@(require_results)
+run_probe_child :: proc(
+	group: ^child.Job_Object,
+	executable: string,
+	arguments: []string,
+	bound_ms: i64,
+	allocator: mem.Allocator,
+) -> (
+	ending: child.Run,
+	reason: child.Stop_Reason,
+	err: child.Error,
+) {
+	return child.run_bounded(group, executable, arguments, bound_ms, allocator)
+}
+
 // The read of ffprobe's own answer file below is bounded the same way
 // `child.read_bounded` bounds a hand-typed `--from-json` path (issue #27): a
 // stalled scratch cache wedges this identically, and this is already a
@@ -200,13 +239,14 @@ probe :: proc(
 	probed: process.Probe,
 	err: Error,
 ) {
-	return probe_using(group, tools, source, answer, allocator, os_remove_answer)
+	return probe_using(group, tools, source, answer, allocator, os_remove_answer, run_probe_child)
 }
 
-// The real body of `probe`, taking its remover as a parameter rather than a
-// package variable so a test can swap it without racing every other test in
-// this package that calls `probe` concurrently (issue #125's round-1
-// review, finding 1).
+// The real body of `probe`, taking its remover and its child runner as
+// parameters rather than package variables so a test can swap either
+// without racing every other test in this package that calls `probe`
+// concurrently (issue #125's round-1 review, finding 1; the runner
+// parameter is round-4's finding 2).
 @(private)
 @(require_results)
 probe_using :: proc(
@@ -216,6 +256,7 @@ probe_using :: proc(
 	answer: string,
 	allocator: mem.Allocator,
 	remove: Answer_Remove,
+	run: Probe_Run,
 ) -> (
 	probed: process.Probe,
 	err: Error,
@@ -227,13 +268,7 @@ probe_using :: proc(
 	arguments := process.probe_arguments(source, answer, allocator)
 	defer delete(arguments, allocator)
 
-	ending, _, refusal := child.run_bounded(
-		group,
-		tools.ffprobe,
-		arguments,
-		PROBE_BOUND_MS,
-		allocator,
-	)
+	ending, _, refusal := run(group, tools.ffprobe, arguments, PROBE_BOUND_MS, allocator)
 	switch ending {
 	case .Not_Started:
 		return {}, Error{fault = .Probe_Not_Started, child = refusal}
@@ -242,7 +277,7 @@ probe_using :: proc(
 	case .Stopped, .Finished:
 	}
 	if ending == .Stopped {
-		remove(answer)
+		remove_answer_if_settled(answer, true, remove)
 		return {}, Error{fault = .Probe_Did_Not_Finish}
 	}
 

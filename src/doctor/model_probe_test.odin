@@ -1,10 +1,12 @@
 #+vet explicit-allocators
 package doctor
 
+import "core:fmt"
 import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:sync"
+import win32 "core:sys/windows"
 import "core:testing"
 import "transcibr:child"
 
@@ -152,6 +154,30 @@ probe_wav_scan_guard: sync.Mutex
 // `os.temp_directory` is on this ticket's own refuted list (round-1's
 // report). `os.get_env("TEMP", ...)` is the same call `testkit.scratch_cache`
 // already makes for the identical reason.
+//
+// `write_probe_wav` folds the calling OS thread's id into its file name
+// (`src\doctor\model_probe.odin`); this scans for that same thread's own
+// prefix rather than the bare `transcibr-doctor-probe-` one, which is what
+// makes this scan a scan of THIS call's own wav and nothing else's --
+// neither this file's own settled/unsettled fixtures below, nor a wav
+// `src\doctor\checks_test.odin`'s eight `model_check` tests write from a
+// different thread while this test's own call is in flight. Before this,
+// diffing the bare prefix across the whole of `%TEMP%` counted any
+// concurrently-created sibling wav as this call's own leak -- proven by a
+// single 430 ms sleep added to one of those eight tests, with this file
+// untouched, turning the call-site test red (issue #125's round-4 review,
+// finding 1).
+@(private)
+@(require_results)
+own_probe_wav_prefix :: proc(allocator: mem.Allocator) -> string {
+	assert(allocator.procedure != nil, "a scan prefix outlives this call and needs an allocator")
+	return fmt.aprintf(
+		"transcibr-doctor-probe-%d-",
+		win32.GetCurrentThreadId(),
+		allocator = allocator,
+	)
+}
+
 @(private)
 @(require_results)
 probe_wav_paths :: proc(allocator: mem.Allocator) -> []string {
@@ -161,6 +187,9 @@ probe_wav_paths :: proc(allocator: mem.Allocator) -> []string {
 	defer delete(directory, allocator)
 	assert(len(directory) > 0, "TEMP names nowhere to find the doctor's scratch wav")
 
+	prefix := own_probe_wav_prefix(allocator)
+	defer delete(prefix, allocator)
+
 	paths := make([dynamic]string, allocator)
 	listing, unreadable := os.read_all_directory_by_path(directory, allocator)
 	if unreadable != nil {
@@ -168,31 +197,11 @@ probe_wav_paths :: proc(allocator: mem.Allocator) -> []string {
 	}
 	defer os.file_info_slice_delete(listing, allocator)
 	for info in listing {
-		if is_probe_wav_name(info.name) {
+		if strings.has_prefix(info.name, prefix) {
 			append(&paths, strings.clone(info.fullpath, allocator))
 		}
 	}
 	return paths[:]
-}
-
-// `write_probe_wav` names its file `transcibr-doctor-probe-*.wav`; this
-// file's own settled/unsettled fixtures above deliberately share that same
-// prefix (`transcibr-doctor-probe-settled-*.wav`,
-// `transcibr-doctor-probe-unsettled-*.wav`), so a bare prefix match would
-// count them too.
-@(private)
-@(require_results)
-is_probe_wav_name :: proc(name: string) -> bool {
-	if !strings.has_prefix(name, "transcibr-doctor-probe-") {
-		return false
-	}
-	if strings.contains(name, "-settled-") {
-		return false
-	}
-	if strings.contains(name, "-unsettled-") {
-		return false
-	}
-	return true
 }
 
 @(private)
