@@ -1,9 +1,10 @@
 # Line endings belong to the repository, not to the machine.
 #
 # odinfmt.json pins newline_style to CRLF and `just fmt-check` compares BYTES,
-# so what puts CRLF in a working tree decides whether this repository builds at
-# all. Until this line, nothing here did: the blobs are stored LF, and the only
-# thing converting them on the way out was Git for Windows' SYSTEM gitconfig
+# so what puts CRLF in a working tree decides whether this repository passes
+# `just fmt-check` -- not whether it builds. Until this line, nothing here
+# did: the blobs are stored LF, and the only thing converting them on the way
+# out was Git for Windows' SYSTEM gitconfig
 # setting core.autocrlf=true -- an uncommitted, machine-global setting that
 # happened to be on. `git -c core.autocrlf=false clone` produced a checkout
 # where all thirteen .odin files were misformatted, but `just fmt-check`
