@@ -5,10 +5,10 @@ package main
 // passes, what an actionable reason says -- is transcibr:doctor's; what is
 // here is argument reading, wiring the shared spawner, and a write.
 
-import "core:fmt"
 import "transcibr:audio"
 import "transcibr:child"
 import "transcibr:doctor"
+import "transcibr:pipeline"
 
 DOCTOR :: "--doctor"
 
@@ -42,9 +42,7 @@ run_doctor :: proc(arguments: []string) -> int {
 	defer doctor.destroy_report(checks, context.allocator)
 
 	for check in checks {
-		line := doctor.render_check(check, context.allocator)
-		defer delete(line, context.allocator)
-		fmt.println(line)
+		pipeline.report_line(doctor.render_check(check, context.allocator), context.allocator)
 	}
 	if !doctor.report_ok(checks) {
 		return OPERATING_ERROR
