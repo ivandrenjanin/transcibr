@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:mem"
 import "core:strings"
 import "transcibr:process"
+import "transcibr:transcript"
 
 // The Sidecar: what it records, the bytes it is written as, and the comparison
 // that answers whether a Transcript is stale (ADR-0003). Writing it into place
@@ -237,28 +238,9 @@ write_text :: proc(out: ^strings.Builder, key: Key, value: string) {
 	assert(len(KEY[key]) > 0, "a key was given an empty name in KEY")
 
 	strings.write_string(out, KEY[key])
-	strings.write_string(out, ": \"")
-	for at in 0 ..< len(value) {
-		switch value[at] {
-		case '\\':
-			strings.write_string(out, `\\`)
-		case '"':
-			strings.write_string(out, `\"`)
-		case '\n':
-			strings.write_string(out, `\n`)
-		case '\r':
-			strings.write_string(out, `\r`)
-		case '\t':
-			strings.write_string(out, `\t`)
-		case:
-			if value[at] < 0x20 || value[at] == 0x7F {
-				fmt.sbprintf(out, `\x%02x`, value[at])
-			} else {
-				strings.write_byte(out, value[at])
-			}
-		}
-	}
-	strings.write_string(out, "\"\n")
+	strings.write_string(out, ": ")
+	transcript.write_quoted_scalar(out, value)
+	strings.write_byte(out, '\n')
 }
 
 // Unquoted, so a reader can tell a number from a string by the byte after the
