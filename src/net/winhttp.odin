@@ -3,15 +3,14 @@
 // engine archive and the model, each behind a confirmation dialog
 // (ADR-0014) -- resumably, and refuses to use what it fetched unless it
 // verifies (ADR-0015). This file is the only one that ever spells the
-// network API by name; `manifest.odin`, `verify.odin` and `resume.odin`
-// hold everything provable without a socket, and carry this package's
-// tests. `docs/reference/winhttp-download.odin` was the working prototype
-// this absorbs; see its own header for the facts it established about this
-// compiler's WinHTTP bindings.
+// network API by name; `manifest.odin`, `verify.odin`, `resume.odin` and
+// `transfer.odin` hold everything provable without a socket, and carry this
+// package's tests. `docs/reference/winhttp-download.odin` was the working
+// prototype this absorbs; see its own header for the facts it established
+// about this compiler's WinHTTP bindings.
 package net
 
 import "core:mem"
-import "core:os"
 import "core:strings"
 import win32 "core:sys/windows"
 
@@ -71,6 +70,7 @@ Download_Fault :: enum u8 {
 	Write_Failed,
 	Verify_Failed,
 	Not_Placed,
+	Stale_Part,
 }
 
 Download_Progress :: struct {
@@ -114,7 +114,7 @@ download :: proc(
 
 	part := part_path(destination, allocator)
 	defer delete(part, allocator)
-	existing := existing_partial_bytes(part, allocator)
+	existing := discard_stale_part(part, existing_partial_bytes(part, allocator), spec)
 
 	fetched := fetch_body(spec, existing, part, progress, progress_user)
 	if fetched.fault != .None {
@@ -123,23 +123,7 @@ download :: proc(
 		return
 	}
 
-	result.verify = verify_download(part, spec, allocator)
-	if result.verify.fault != .None {
-		os.remove(part)
-		result.fault = .Verify_Failed
-		return
-	}
-	if os.rename(part, destination) != nil {
-		os.remove(part)
-		result.fault = .Not_Placed
-	}
-	return
-}
-
-@(private)
-Fetch_Result :: struct {
-	fault:  Download_Fault,
-	status: int,
+	return finalize_download(part, destination, spec, allocator)
 }
 
 // The WinHTTP conversation, session through response body, kept to one
@@ -147,6 +131,11 @@ Fetch_Result :: struct {
 // opened them rather than smeared across openers of their own (the same
 // call this repository's prototype made). Split out from `download` purely
 // to hold the 70-line procedure limit; the two together are the seam.
+// The status and the body itself are both read here and handed to
+// `receive_and_write` as plain values (round 1 review finding 3): that
+// procedure and `write_body` never touch a WinHTTP handle, only this one
+// does, so what they decide is provable against a fixture rather than a
+// socket.
 @(private)
 @(require_results)
 fetch_body :: proc(
@@ -190,7 +179,24 @@ fetch_body :: proc(
 	}
 	defer WinHttpCloseHandle(request)
 
-	return receive_and_write(request, existing, spec, part, progress, progress_user)
+	status := response_status(request)
+	source := Body_Source {
+		read = winhttp_read_chunk,
+		user = request,
+	}
+	return receive_and_write(status, existing, spec, part, source, progress, progress_user)
+}
+
+@(private)
+@(require_results)
+winhttp_read_chunk :: proc(buffer: []u8, user: rawptr) -> (read: u32, ok: bool) {
+	assert(len(buffer) > 0, "there is nowhere here to read a chunk into")
+	assert(user != nil, "there is no request here to read a chunk from")
+
+	request: HINTERNET = user
+	got: win32.DWORD
+	success := WinHttpReadData(request, &buffer[0], win32.DWORD(len(buffer)), &got)
+	return u32(got), bool(success)
 }
 
 @(private)
@@ -244,101 +250,6 @@ open_and_send :: proc(
 		return nil, false
 	}
 	return request, true
-}
-
-// The status line decides whether the response is trusted at all before a
-// single body byte is written -- an unauthorised response is reported as
-// unavailable and never reaches anything that could prompt for
-// credentials (ADR-0015).
-@(private)
-@(require_results)
-receive_and_write :: proc(
-	request: HINTERNET,
-	existing: i64,
-	spec: Download_Spec,
-	part: string,
-	progress: Progress_Callback,
-	progress_user: rawptr,
-) -> (
-	result: Fetch_Result,
-) {
-	assert(request != nil, "there is no request here to read a response from")
-
-	result.status = response_status(request)
-	outcome := classify_response(existing > 0, result.status)
-	switch outcome {
-	case .Unavailable:
-		result.fault = .Unavailable
-		return
-	case .Failed:
-		result.fault = .Unexpected_Status
-		return
-	case .Fresh, .Restarted:
-		if !write_body(
-			request,
-			part,
-			{.Write, .Create, .Trunc},
-			0,
-			spec,
-			progress,
-			progress_user,
-		) {
-			result.fault = .Write_Failed
-		}
-	case .Resumed:
-		if !write_body(request, part, {.Write, .Append}, existing, spec, progress, progress_user) {
-			result.fault = .Write_Failed
-		}
-	}
-	return
-}
-
-@(private)
-VERIFY_READ_BYTES_NETWORK :: 64 * 1024
-
-@(private)
-@(require_results)
-write_body :: proc(
-	request: HINTERNET,
-	part: string,
-	flags: os.File_Flags,
-	base: i64,
-	spec: Download_Spec,
-	progress: Progress_Callback,
-	progress_user: rawptr,
-) -> bool {
-	assert(request != nil, "there is no request here to read a body from")
-	assert(len(part) > 0, "there is nowhere here to write a body")
-
-	handle, unopenable := os.open(part, flags)
-	if unopenable != nil {
-		return false
-	}
-	defer os.close(handle)
-
-	buffer: [VERIFY_READ_BYTES_NETWORK]u8 = ---
-	written := base
-	for {
-		read: win32.DWORD
-		if !WinHttpReadData(request, &buffer[0], len(buffer), &read) {
-			return false
-		}
-		if read == 0 {
-			break
-		}
-		put, unwritable := os.write(handle, buffer[:read])
-		if unwritable != nil || put != int(read) {
-			return false
-		}
-		written += i64(read)
-		if progress != nil {
-			progress(
-				Download_Progress{bytes_received = written, total_bytes = spec.expected_bytes},
-				progress_user,
-			)
-		}
-	}
-	return true
 }
 
 @(private)

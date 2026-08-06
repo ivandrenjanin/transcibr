@@ -15,6 +15,7 @@ Resume_Outcome :: enum u8 {
 	Restarted,
 	Unavailable,
 	Failed,
+	Range_Not_Satisfiable,
 }
 
 // A 200 to a request that asked to resume means the server ignored the
@@ -36,11 +37,32 @@ classify_response :: proc(requested_resume: bool, status: int) -> Resume_Outcome
 			return .Resumed
 		}
 		return .Failed
+	case 416:
+		return .Range_Not_Satisfiable
 	case 401, 403:
 		return .Unavailable
 	case:
 		return .Failed
 	}
+}
+
+// A part file at or above what the artifact should be -- left behind when a
+// process dies between the last body write and the rename, or a `.part`
+// from a different/larger artifact sitting at the same destination -- can
+// never be resumed: the server has nothing beyond that offset to send and
+// answers 416, which without this check bricks the download forever (round
+// 1 review finding 2). Discarding it here, before a Range header is ever
+// built, means the request that follows starts fresh instead.
+@(require_results)
+discard_stale_part :: proc(part: string, existing: i64, spec: Download_Spec) -> i64 {
+	assert(len(part) > 0, "there is no part file here to judge stale")
+	assert(spec.expected_bytes > 0, "a spec with nothing expected cannot judge a part file stale")
+
+	if existing < spec.expected_bytes {
+		return existing
+	}
+	os.remove(part)
+	return 0
 }
 
 // The canonical URL is the only URL this package ever keeps: there is no

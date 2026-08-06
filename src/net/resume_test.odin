@@ -83,3 +83,73 @@ a_range_header_names_the_bytes_already_held :: proc(t: ^testing.T) {
 	defer delete(built, context.allocator)
 	testing.expect_value(t, built, "Range: bytes=1000-\r\n")
 }
+
+@(test)
+a_416_is_range_not_satisfiable :: proc(t: ^testing.T) {
+	testing.expect_value(t, classify_response(true, 416), Resume_Outcome.Range_Not_Satisfiable)
+}
+
+@(test)
+a_part_file_at_the_expected_size_is_discarded_rather_than_left_stale :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "net", "discard-exact", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	part := fmt.aprintf("%s\\stuck.part", cache, allocator = context.allocator)
+	defer delete(part, context.allocator)
+	testing.expect(
+		t,
+		os.write_entire_file(part, []u8{1, 2, 3, 4}) == nil,
+		"could not write the fixture",
+	)
+
+	spec := Download_Spec {
+		expected_bytes = 4,
+	}
+	kept := discard_stale_part(part, existing_partial_bytes(part, context.allocator), spec)
+
+	testing.expect_value(t, kept, i64(0))
+	testing.expect(t, !os.exists(part), "a stale exact-size part file must be removed")
+}
+
+@(test)
+an_oversized_part_file_is_also_discarded :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "net", "discard-oversized", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	part := fmt.aprintf("%s\\stuck.part", cache, allocator = context.allocator)
+	defer delete(part, context.allocator)
+	testing.expect(
+		t,
+		os.write_entire_file(part, []u8{1, 2, 3, 4, 5, 6}) == nil,
+		"could not write the fixture",
+	)
+
+	spec := Download_Spec {
+		expected_bytes = 4,
+	}
+	kept := discard_stale_part(part, existing_partial_bytes(part, context.allocator), spec)
+
+	testing.expect_value(t, kept, i64(0))
+	testing.expect(t, !os.exists(part), "an oversized part file must be removed")
+}
+
+@(test)
+a_genuinely_partial_part_file_is_kept_for_resume :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "net", "discard-keep", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	part := fmt.aprintf("%s\\partial.part", cache, allocator = context.allocator)
+	defer delete(part, context.allocator)
+	testing.expect(t, os.write_entire_file(part, []u8{1, 2}) == nil, "could not write the fixture")
+
+	spec := Download_Spec {
+		expected_bytes = 4,
+	}
+	kept := discard_stale_part(part, existing_partial_bytes(part, context.allocator), spec)
+
+	testing.expect_value(t, kept, i64(2))
+	testing.expect(t, os.exists(part), "a genuinely partial part file must not be removed")
+}
