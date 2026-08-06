@@ -100,5 +100,8 @@ render_check :: proc(check: Check, allocator: mem.Allocator) -> string {
 	if check.ok {
 		return fmt.aprintf("PASS  %s", check.name, allocator = allocator)
 	}
+	if check.advisory {
+		return fmt.aprintf("INFO  %s: %s", check.name, check.reason, allocator = allocator)
+	}
 	return fmt.aprintf("FAIL  %s: %s", check.name, check.reason, allocator = allocator)
 }

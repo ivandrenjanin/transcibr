@@ -180,6 +180,9 @@ health_check_job :: proc(
 	t: ^testing.T,
 	tag: string,
 	output_json: string,
+	container_ms := i64(60_000),
+	duration_ms := i64(3_000),
+	elapsed_ms := i64(3_000),
 ) -> (
 	job: Recording_Job,
 	checked, abort: bool,
@@ -213,8 +216,8 @@ health_check_job :: proc(
 
 	checked_first_recording_health(
 		job,
-		60_000,
-		engine.Transcribed{output = output, duration_ms = 3_000},
+		container_ms,
+		engine.Transcribed{output = output, duration_ms = duration_ms, elapsed_ms = elapsed_ms},
 	)
 	return
 }
@@ -251,6 +254,26 @@ review_engine_output_with_no_systeminfo_field_must_not_abort_the_batch :: proc(t
 @(test)
 review_unparseable_engine_output_must_not_abort_the_batch :: proc(t: ^testing.T) {
 	_, checked, abort := health_check_job(t, "unparseable", `not json at all`)
+	testing.expect_value(t, checked, true)
+	testing.expect_value(t, abort, false)
+}
+
+// The exact shape a healthy `--batch` reaches on real hardware: the Engine's
+// own reported audio duration equals the Recording's container length on
+// every healthy run (both name the same audio), so a factor computed against
+// `duration_ms` is always ~1.0x and always aborts. `elapsed_ms` here is the
+// wall clock a fast GPU run actually takes for a 10-second clip -- the
+// quantity the factor must be computed against instead.
+@(test)
+review_a_real_engine_duration_reading_must_not_abort_a_healthy_batch :: proc(t: ^testing.T) {
+	_, checked, abort := health_check_job(
+		t,
+		"realengine",
+		`{"systeminfo": "WHISPER : CUDA : ARCHS = 500,610,700"}`,
+		container_ms = 10_000,
+		duration_ms = 10_000,
+		elapsed_ms = 600,
+	)
 	testing.expect_value(t, checked, true)
 	testing.expect_value(t, abort, false)
 }

@@ -172,7 +172,7 @@ checked_first_recording_health :: proc(
 		return
 	}
 	job.health.checked^ = true
-	if produced.duration_ms <= 0 {
+	if produced.elapsed_ms <= 0 {
 		return
 	}
 
@@ -193,7 +193,7 @@ checked_first_recording_health :: proc(
 		evidence = ""
 	}
 
-	factor := f64(container_ms) / f64(produced.duration_ms)
+	factor := f64(container_ms) / f64(produced.elapsed_ms)
 	fault := doctor.first_recording_health(evidence, factor, container_ms)
 	if fault == .None {
 		return

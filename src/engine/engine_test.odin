@@ -521,6 +521,22 @@ an_unstoppable_run_still_carries_what_it_measured :: proc(t: ^testing.T) {
 	testing.expect_value(t, ending.silent, true)
 }
 
+// The realtime-factor calculation divides a Recording's audio length by how
+// long the Engine actually ran, wall clock -- never by `duration_ms`, which
+// is the Engine's own reported audio duration and equals the divisor on
+// every healthy run. `Ending.elapsed_ms` is what that calculation reads, and
+// this pins it as carried from `Watch_State` through every ending shape.
+@(test)
+a_finished_run_carries_the_wall_clock_it_actually_took :: proc(t: ^testing.T) {
+	watch_state := Watch_State {
+		tracker = process.Tracker{duration_ms = 10_000},
+		elapsed_ms = 588,
+	}
+	ending := ending_for(.Finished, watch_state, child.Error{})
+
+	testing.expect_value(t, ending.elapsed_ms, i64(588))
+}
+
 @(test)
 an_executable_that_is_not_there_is_reported_and_not_asserted :: proc(t: ^testing.T) {
 	group, ok := open_group(t)

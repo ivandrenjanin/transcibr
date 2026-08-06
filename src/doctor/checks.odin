@@ -55,6 +55,17 @@ extraction_tool_check :: proc(
 		message := combined_message(executable, "ran, but reported nothing at all", "", allocator)
 		return failed(name, message)
 	}
+	signature := strings.concatenate({"usage: ", name}, allocator)
+	defer delete(signature, allocator)
+	if !strings.contains(probe.captured, signature) {
+		message := combined_message(
+			executable,
+			"ran, but did not report itself as this tool",
+			"",
+			allocator,
+		)
+		return failed(name, message)
+	}
 	return passed(name)
 }
 
@@ -86,6 +97,15 @@ model_check :: proc(path: string, allocator: mem.Allocator) -> Check {
 
 	if unreadable != .None {
 		message := artifact.model_error_message(unreadable, path, allocator)
+		return failed("model", message)
+	}
+	if identified.bytes <= 0 {
+		message := combined_message(
+			path,
+			"is zero bytes; the download is missing or was never completed",
+			"",
+			allocator,
+		)
 		return failed("model", message)
 	}
 	return passed("model")

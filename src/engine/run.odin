@@ -18,6 +18,7 @@ Ending :: struct {
 	run:         child.Run,
 	silent:      bool,
 	duration_ms: i64,
+	elapsed_ms:  i64,
 	child:       child.Error,
 }
 
@@ -67,7 +68,11 @@ transcribe :: proc(
 	if missing := landed(output); missing != .None {
 		return {}, Error{fault = missing}
 	}
-	return Transcribed{output = output, duration_ms = ending.duration_ms}, Error{}
+	return Transcribed {
+		output = output,
+		duration_ms = ending.duration_ms,
+		elapsed_ms = ending.elapsed_ms,
+	}, Error{}
 }
 
 // Why all three paths, and why this does not subsume `open_cache`: ADR-0025.
@@ -133,12 +138,13 @@ landed :: proc(output: string) -> Fault {
 // exactly what transcibr:child knows nothing about.
 @(private)
 Watch_State :: struct {
-	tracker: process.Tracker,
-	reader:  process.Line_Reader,
-	report:  Report,
-	watch:   process.Watch,
-	painted: process.Progress,
-	silent:  bool,
+	tracker:    process.Tracker,
+	reader:     process.Line_Reader,
+	report:     Report,
+	watch:      process.Watch,
+	painted:    process.Progress,
+	silent:     bool,
+	elapsed_ms: i64,
 }
 
 // Called for every read that produced bytes, whether or not any of them read
@@ -173,6 +179,7 @@ watched_end :: proc(elapsed_ns: i64, user: rawptr) {
 	if line, held := process.last_line(&watch_state.reader); held {
 		process.tracker_said(&watch_state.tracker, process.read_engine_line(line), elapsed_ns)
 	}
+	watch_state.elapsed_ms = elapsed_ns / 1_000_000
 }
 
 // Only on a change: this is called four times a second, so a three-hour
@@ -267,16 +274,22 @@ ending_for :: proc(run: child.Run, watch_state: Watch_State, refusal: child.Erro
 			run = .Unstoppable,
 			silent = watch_state.silent,
 			duration_ms = watch_state.tracker.duration_ms,
+			elapsed_ms = watch_state.elapsed_ms,
 		}
 	case .Stopped:
 		return Ending {
 			run = .Stopped,
 			silent = watch_state.silent,
 			duration_ms = watch_state.tracker.duration_ms,
+			elapsed_ms = watch_state.elapsed_ms,
 		}
 	case .Finished:
 	}
-	return Ending{run = .Finished, duration_ms = watch_state.tracker.duration_ms}
+	return Ending {
+		run = .Finished,
+		duration_ms = watch_state.tracker.duration_ms,
+		elapsed_ms = watch_state.elapsed_ms,
+	}
 }
 
 // Below any percentage `shown` can answer, so the first poll of a run always

@@ -20,13 +20,38 @@ an_extraction_tool_that_reports_its_version_passes :: proc(t: ^testing.T) {
 		&group,
 		"ffmpeg",
 		CMD,
-		{"/c", "echo ffmpeg version 6.1 1>&2"},
+		{"/c", "echo usage: ffmpeg [options] input 1>&2"},
 		context.allocator,
 	)
 	defer destroy_check(check, context.allocator)
 
 	testing.expect_value(t, check.ok, true)
 	testing.expect_value(t, check.name, "ffmpeg")
+}
+
+// The exact failure mode measured live: `--ffmpeg` pointed at some other
+// executable entirely (`whisper-cli.exe` in the reviewer's run), which still
+// writes plenty to stderr, so the old "anything at all was captured" test
+// passed it as a healthy ffmpeg. This one reports itself by a different name
+// and must fail.
+@(test)
+review_a_non_ffmpeg_executable_must_not_pass_as_ffmpeg :: proc(t: ^testing.T) {
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	check := extraction_tool_check(
+		&group,
+		"ffmpeg",
+		CMD,
+		{"/c", "echo whisper-cli.exe -h [options] 1>&2"},
+		context.allocator,
+	)
+	defer destroy_check(check, context.allocator)
+
+	testing.expect_value(t, check.ok, false)
 }
 
 @(test)
@@ -133,6 +158,29 @@ a_model_that_hashes_cleanly_passes :: proc(t: ^testing.T) {
 	defer destroy_check(check, context.allocator)
 
 	testing.expect_value(t, check.ok, true)
+}
+
+// The single most common broken-install shape a preflight doctor exists to
+// catch: an interrupted or truncated model download. `identify_model` hashes
+// a zero-byte file cleanly (there is nothing wrong with hashing nothing), so
+// the doctor has to guard on the byte count itself rather than trust that a
+// clean hash means a real Model.
+@(test)
+review_a_zero_byte_model_must_not_pass_the_model_check :: proc(t: ^testing.T) {
+	dir := testkit.made_scratch_cache(t, "Doctor", "zerobytemodel", context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	path := fmt.aprintf("%s\\model.bin", dir, allocator = context.allocator)
+	defer delete(path, context.allocator)
+	handle, unopenable := os.open(path, {.Write, .Create, .Trunc})
+	testing.expect(t, unopenable == nil, "the case could not write its own fixture")
+	os.close(handle)
+
+	check := model_check(path, context.allocator)
+	defer destroy_check(check, context.allocator)
+
+	testing.expect_value(t, check.ok, false)
 }
 
 @(test)
