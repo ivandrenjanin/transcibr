@@ -129,8 +129,11 @@ _Avoid_: temp, working directory, staging, intermediate
 **Check**:
 One line of a doctor Report: what was checked, and how it came out — PASS, FAIL with an actionable
 reason, SKIP with the reason it was never judged, or an advisory INFO that never turns the Report's
-own verdict false on its own (ADR-0033). The doctor's only unit of verdict — `passed`, `failed` and
-`skipped` are the only three constructors, so a Report can never hold one answering something else.
+own verdict false on its own (ADR-0033). `passed`, `failed` and `skipped` are the three constructors
+that produce a Check meant to reach a Report. The Model check also builds a bare, unnamed `Check{}` as
+an internal screened-clean sentinel (`model_screened_further`, `checks.odin:200`) — never one of the
+three, and never handed to a Report itself; `model_check` discriminates it by `len(refusal.name) > 0`
+and, once past it, always returns a Check one of the three constructors made.
 _Avoid_: result, verdict, test, probe
 
 **Preflight**:
@@ -198,10 +201,13 @@ _Avoid_: GPU check, hardware check, GPU probe
 **Baseline**:
 The one realtime factor this repository has actually measured against a working CUDA path — roughly
 17x at beam size 5 over the reference corpus (docs/spec/0001-transcibr-v1.md) — and the frame of
-reference both halves of the GPU guard read against. Not a promise about any one machine's own GPU:
-the health watch's threshold sits a full order of magnitude below it, because a factor that far under
-the Baseline is the CPU-fallback signature the guard exists to catch, not ordinary machine-to-machine
-variance.
+reference the health watch's speed half reads against. Not read by the preflight's Engine check at
+all: that half of the GPU guard decides on a systeminfo string instead
+(`strings.contains(probe.captured, "loaded CUDA backend from")`, `engine.odin:84`), so the Baseline is
+the health watch's own number, not one both halves share. Not a promise about any one machine's own
+GPU: the health watch's threshold sits a full order of magnitude below it, because a factor that far
+under the Baseline is the CPU-fallback signature the guard exists to catch, not ordinary
+machine-to-machine variance.
 _Avoid_: benchmark, target speed, expected throughput
 
 ## Pipeline
