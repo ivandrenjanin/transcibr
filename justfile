@@ -65,7 +65,7 @@ fmt-check:
 	for /r docs\reference %f in (*.odin) do @({{ odinfmt }} -path:"%f" -config:odinfmt.json > build\fmt-check.tmp & fc /b "%f" build\fmt-check.tmp >nul || (echo NOT FORMATTED: %f & exit /b 1))
 	del /q build\fmt-check.tmp
 
-# One explicit line per package: the 11 src/ packages that hold tests, plus
+# One explicit line per package: the 12 src/ packages that hold tests, plus
 # tools/policy, which reads Odin and is tested in Odin (ADR-0028). `cli` is
 # the one src/ package with none, by ADR-0009 -- an entry point thin enough
 # to read, with no logic of its own worth testing.
@@ -74,6 +74,7 @@ test:
 	{{ odin }} test src/artifact {{ collection }} -out:build/odin-test/artifact.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/audio {{ collection }} -out:build/odin-test/audio.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/child {{ collection }} -out:build/odin-test/child.exe {{ memory }} {{ vet }}
+	{{ odin }} test src/crashlog {{ collection }} -out:build/odin-test/crashlog.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/doctor {{ collection }} -out:build/odin-test/doctor.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/engine {{ collection }} -out:build/odin-test/engine.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/pipeline {{ collection }} -out:build/odin-test/pipeline.exe {{ memory }} {{ vet }}
