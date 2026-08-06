@@ -32,18 +32,27 @@ Tools :: struct {
 
 // The runtime half of ADR-0011's guard, threaded through every Recording_Job
 // in a Batch so the ONE transcription Worker (ADR-0006) can check the first
-// Recording it finishes and abort the rest. `checked` is read and written
-// only from that single Worker, in strict sequence, so it needs no atomics of
-// its own; `abort` is `sync.atomic_store`d because `run_batch`'s admission
-// loop reads it from a different thread -- the identical `cancelled` flag a
-// Ctrl+C press already sets (`src/cli/batch.odin`), reused rather than
-// inventing a second way to stop a Batch early. `unhealthy` is a SEPARATE
-// flag, also `sync.atomic_store`d, set at the same moment as `abort` --
-// `abort` alone cannot tell a machine-detected fault apart from an operator's
-// Ctrl+C once `pipeline.batch_succeeded` folds a cancelled Batch into success
-// (a round-3 adversarial review measured a Batch aborted for an unhealthy GPU
-// exiting 0), so the CLI reads `unhealthy` after the Batch finishes to force
-// a nonzero exit specifically for this reason, without touching what Ctrl+C
+// Recording it finishes and abort the rest. `checked` is read and written by
+// that single Worker, at `checked_first_recording_health` below, and reset by
+// the CLI between Batches (`run_the_batch`, `src/cli/batch.odin`) -- a
+// different thread from the Worker's, so the reset's visibility is a real
+// question rather than a sequential one. The one-Worker invariant itself is
+// held mechanically, by the assert inside `bump` (`pipeline.odin`, commit
+// 1c67c11), at the one place the live transcription count changes; the
+// `sync.atomic_load`/`sync.atomic_store` pair at this flag's own site is that
+// assert's A4 partner, making the cross-thread reset well-defined and keeping
+// a second Worker -- if one is ever wired in -- a logic bug `bump` catches
+// rather than a data race nothing does. `abort` is `sync.atomic_store`d
+// because `run_batch`'s admission loop reads it from a different thread --
+// the identical `cancelled` flag a Ctrl+C press already sets
+// (`src/cli/batch.odin`), reused rather than inventing a second way to stop
+// a Batch early. `unhealthy` is a SEPARATE flag, also `sync.atomic_store`d,
+// set at the same moment as `abort` -- `abort` alone cannot tell a
+// machine-detected fault apart from an operator's Ctrl+C once
+// `pipeline.batch_succeeded` folds a cancelled Batch into success (a round-3
+// adversarial review measured a Batch aborted for an unhealthy GPU exiting
+// 0), so the CLI reads `unhealthy` after the Batch finishes to force a
+// nonzero exit specifically for this reason, without touching what Ctrl+C
 // itself still means. Both nil is a real value: `--transcribe`'s Batch of one
 // has no "first of several" to gate and no admission loop left to stop.
 Health_Watch :: struct {
@@ -202,7 +211,7 @@ checked_first_recording_health :: proc(
 ) {
 	assert(container_ms > 0, "a Recording nobody could time reached the health check")
 
-	if job.health.checked == nil || job.health.checked^ {
+	if job.health.checked == nil || sync.atomic_load(job.health.checked) {
 		return
 	}
 	if produced.elapsed_ms <= 0 {
@@ -231,7 +240,7 @@ checked_first_recording_health :: proc(
 	if !conclusive {
 		return
 	}
-	job.health.checked^ = true
+	sync.atomic_store(job.health.checked, true)
 	if fault == .None {
 		return
 	}

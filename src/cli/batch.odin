@@ -42,9 +42,13 @@ Batch_Options :: struct {
 @(private)
 cancel_requested: bool
 
-// ADR-0011's runtime half: written only by the transcription Worker,
-// sequentially -- see `pipeline.Health_Watch`'s own doc comment for why that
-// needs no atomics of its own.
+// ADR-0011's runtime half, lent out to the pipeline through `Health_Watch`
+// and read and written there by the single transcription Worker.
+// `run_the_batch` below resets it between Batches, from this thread rather
+// than the Worker's, which is why the reset is an atomic store like the
+// flag's own two accesses. `pipeline.Health_Watch`'s doc comment carries the
+// whole story, including the `pipeline.bump` assert that holds ADR-0006's
+// one-transcription-Worker invariant.
 @(private)
 gpu_health_checked: bool
 
@@ -170,7 +174,7 @@ run_the_batch :: proc(
 	plan: planning.Plan,
 ) -> int {
 	sync.atomic_store(&cancel_requested, false)
-	gpu_health_checked = false
+	sync.atomic_store(&gpu_health_checked, false)
 	sync.atomic_store(&gpu_health_unhealthy, false)
 	win32.SetConsoleCtrlHandler(console_ctrl_handler, true)
 	defer win32.SetConsoleCtrlHandler(console_ctrl_handler, false)
