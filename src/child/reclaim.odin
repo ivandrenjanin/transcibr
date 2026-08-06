@@ -3,6 +3,12 @@ package child
 
 import "core:thread"
 
+// The one spelling of the abandonment sentence (issue #66): what a bounded
+// one-shot call says once its own thread has been reported `.Stopped` or
+// `.Unstoppable` -- `read_fault_says` (`read.odin`, this package) and
+// `artifact.model_fault_says` both used to carry this exact string by hand.
+DID_NOT_FINISH_SAYS :: "could not be read within its bound and was abandoned"
+
 // The `.Unstoppable`-do-not-release contract, spelled once (issue #66):
 // every bounded one-shot call in this tree -- `read_bounded`,
 // `make_directory_bounded`, `list_directory_bounded`,

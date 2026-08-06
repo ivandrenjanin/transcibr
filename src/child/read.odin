@@ -314,7 +314,7 @@ read_fault_says :: proc(fault: Read_Fault) -> string {
 	case .Not_Started:
 		return "a thread to read it on could not be started"
 	case .Did_Not_Finish:
-		return "could not be read within its bound and was abandoned"
+		return DID_NOT_FINISH_SAYS
 	case .Unreadable, .None:
 	}
 	return ""

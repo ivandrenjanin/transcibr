@@ -271,7 +271,7 @@ model_fault_says :: proc(fault: Model_Fault) -> string {
 	case .Unreadable:
 		return "the Model could not be read"
 	case .Did_Not_Finish:
-		return "could not be read within its bound and was abandoned"
+		return child.DID_NOT_FINISH_SAYS
 	case .Not_Started:
 		return "a thread to hash it on could not be started"
 	case .None:
