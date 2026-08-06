@@ -52,18 +52,16 @@ make_directory_bounded :: proc(path: string, bound_ms: i64) -> (ok: bool) {
 		return false
 	}
 
-	switch await_or_abandon(t, bound_ms) {
-	case .Finished:
+	finished, reclaim := await_and_reclaim(t, bound_ms)
+	if finished {
 		err := job.err
 		release_make_directory_job(t, job)
 		return err == nil || os.exists(path)
-	case .Stopped:
-		release_make_directory_job(t, job)
-		return false
-	case .Unstoppable:
-		return false
 	}
-	unreachable()
+	if reclaim {
+		release_make_directory_job(t, job)
+	}
+	return false
 }
 
 @(private)
@@ -120,16 +118,14 @@ list_directory_bounded :: proc(
 		return nil, false
 	}
 
-	switch await_or_abandon(t, bound_ms) {
-	case .Finished:
+	finished, reclaim := await_and_reclaim(t, bound_ms)
+	if finished {
 		return directory_listing_finished(t, job, allocator)
-	case .Stopped:
-		release_directory_listing_job(t, job)
-		return nil, false
-	case .Unstoppable:
-		return nil, false
 	}
-	unreachable()
+	if reclaim {
+		release_directory_listing_job(t, job)
+	}
+	return nil, false
 }
 
 @(private)

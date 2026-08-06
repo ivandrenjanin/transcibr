@@ -331,16 +331,14 @@ read_head_bounded_stalled :: proc(
 		return nil, 0, Error{fault = .Audio_Unreadable}
 	}
 
-	switch child.await_or_abandon(t, bound_ms) {
-	case .Finished:
+	finished, reclaim := child.await_and_reclaim(t, bound_ms)
+	if finished {
 		return head_finished(t, job, allocator)
-	case .Stopped:
-		release_head_job(t, job)
-		return nil, 0, Error{fault = .Audio_Unreadable}
-	case .Unstoppable:
-		return nil, 0, Error{fault = .Audio_Unreadable}
 	}
-	unreachable()
+	if reclaim {
+		release_head_job(t, job)
+	}
+	return nil, 0, Error{fault = .Audio_Unreadable}
 }
 
 @(private)

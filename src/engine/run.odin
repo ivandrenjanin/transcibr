@@ -203,18 +203,16 @@ landed_bounded_stalled :: proc(output: string, bound_ms: i64, stall_ms: i64) -> 
 		return .No_Output
 	}
 
-	switch child.await_or_abandon(t, bound_ms) {
-	case .Finished:
+	finished, reclaim := child.await_and_reclaim(t, bound_ms)
+	if finished {
 		fault := job.fault
 		release_landed_job(t, job)
 		return fault
-	case .Stopped:
-		release_landed_job(t, job)
-		return .No_Output
-	case .Unstoppable:
-		return .No_Output
 	}
-	unreachable()
+	if reclaim {
+		release_landed_job(t, job)
+	}
+	return .No_Output
 }
 
 @(private)

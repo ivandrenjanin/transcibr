@@ -200,16 +200,14 @@ digest_of_bounded :: proc(
 		return "", 0, .Not_Started
 	}
 
-	switch child.await_or_abandon(t, bound_ms) {
-	case .Finished:
+	finished, reclaim := child.await_and_reclaim(t, bound_ms)
+	if finished {
 		return digest_finished(t, job, allocator)
-	case .Stopped:
-		release_digest_job(t, job)
-		return "", 0, .Did_Not_Finish
-	case .Unstoppable:
-		return "", 0, .Did_Not_Finish
 	}
-	unreachable()
+	if reclaim {
+		release_digest_job(t, job)
+	}
+	return "", 0, .Did_Not_Finish
 }
 
 @(private)

@@ -273,16 +273,14 @@ await_bounded :: proc(
 	assert(t != nil, "there is no thread here to wait for")
 	assert(job != nil, "there is no job here to wait for an answer from")
 
-	switch await_or_abandon(t, bound_ms) {
-	case .Finished:
+	finished_ok, reclaim := await_and_reclaim(t, bound_ms)
+	if finished_ok {
 		return finished(t, job, allocator)
-	case .Stopped:
-		release_job(t, job)
-		return nil, Read_Error{fault = .Did_Not_Finish}
-	case .Unstoppable:
-		return nil, Read_Error{fault = .Did_Not_Finish}
 	}
-	unreachable()
+	if reclaim {
+		release_job(t, job)
+	}
+	return nil, Read_Error{fault = .Did_Not_Finish}
 }
 
 // Frees everything a Read_Job and its thread hold, on the allocator they were

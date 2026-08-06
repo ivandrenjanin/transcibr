@@ -262,10 +262,10 @@ close_and_join :: proc(
 			continue
 		}
 		any_started = true
-		switch child.await_or_abandon(t, bound_ms) {
-		case .Finished, .Stopped:
+		_, reclaim := child.await_and_reclaim(t, bound_ms)
+		if reclaim {
 			thread.destroy(t)
-		case .Unstoppable:
+		} else {
 			all_joined = false
 		}
 	}

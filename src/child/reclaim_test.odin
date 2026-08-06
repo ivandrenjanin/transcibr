@@ -17,7 +17,11 @@ reclaim_for_matches_the_documented_contract_for_every_wait_outcome :: proc(t: ^t
 	testing.expect(t, reclaim, "a finished thread was not reported safe to reclaim")
 
 	finished, reclaim = reclaim_for(.Stopped)
-	testing.expect(t, !finished, "a stopped wait was reported finished, but it never ran to completion")
+	testing.expect(
+		t,
+		!finished,
+		"a stopped wait was reported finished, but it never ran to completion",
+	)
 	testing.expect(t, reclaim, "a stopped thread, known idle, was not reported safe to reclaim")
 
 	finished, reclaim = reclaim_for(.Unstoppable)
