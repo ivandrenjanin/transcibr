@@ -20,10 +20,10 @@ DEFAULT_TOLERANCE :: Tolerance {
 MAX_PER_MILLE :: i64(1000)
 
 // Issue #112: `container_ms > 0` below is internal, not a check on external
-// input -- its callers are `durations_agree` in production and the literals
-// `duration_test.odin` passes directly, and both only ever pass a value that
+// input -- its callers are `durations_agree` in production, whose value
 // traces back to `process.read_probe`'s success path, which that procedure's
-// own doc comment establishes is always positive.
+// own doc comment establishes is always positive, and the tests, which pass
+// only positive literals.
 @(require_results)
 allowed_difference_ms :: proc(container_ms: i64, tolerance: Tolerance) -> i64 {
 	assert(container_ms > 0, "a container with no duration was never accepted by the probe")
