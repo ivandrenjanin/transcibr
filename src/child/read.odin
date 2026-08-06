@@ -1,7 +1,6 @@
 #+vet explicit-allocators
 package child
 
-import "base:runtime"
 import "core:fmt"
 import "core:mem"
 import "core:os"
@@ -188,26 +187,6 @@ Read_Job :: struct {
 	path:     string,
 	bytes:    []u8,
 	os_error: os.Error,
-}
-
-// A thread this package cannot safely stop still needs somewhere to put what
-// it reads, and the caller's own `allocator` is the wrong place for that: a
-// worker in a future pipeline (issue #12) may hand this a per-Recording
-// arena that gets destroyed once that Recording's stage finishes, and a read
-// thread abandoned past its bound has no way to know that happened -- an
-// arena-backed allocation reached after the arena is gone is a
-// use-after-free, not a leak. Under `odin test` the same hazard shows up as
-// a per-test tracking allocator torn down the moment the test that started
-// this read returns, which is what caught it here. Every allocation a read
-// thread might still touch after its caller has stopped waiting on it goes
-// through this fixed, always-valid heap instead -- `finished` is where a
-// completed read's answer crosses back onto the caller's own allocator, and
-// `release_job` is why nothing here is freed while a read is genuinely
-// abandoned instead.
-@(private)
-@(require_results)
-job_allocator :: proc() -> mem.Allocator {
-	return runtime.heap_allocator()
 }
 
 @(private)

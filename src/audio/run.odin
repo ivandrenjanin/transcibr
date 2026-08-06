@@ -1,7 +1,6 @@
 #+vet explicit-allocators
 package audio
 
-import "base:runtime"
 import "core:fmt"
 import "core:mem"
 import "core:os"
@@ -248,7 +247,7 @@ read_head :: proc(path: string, into: []u8) -> (head: []u8, bytes: i64, err: Err
 // `read_head`'s own worker: the buffer it reads into has to outlive the
 // caller's stack frame the way `child.Read_Job.bytes` does, because a
 // `.Stopped` or `.Unstoppable` wait leaves this thread abandoned rather than
-// joined -- so it lives on `runtime.heap_allocator`'s heap and never on the
+// joined -- so it lives on `child.job_allocator`'s heap and never on the
 // caller's own `allocator`, the identical reasoning `child.job_allocator`
 // and `artifact.digest_of_bounded`'s `Digest_Job` give for the same shape.
 @(private)
@@ -317,17 +316,17 @@ read_head_bounded_stalled :: proc(
 	assert(allocator.procedure != nil, "a head outliving this procedure needs an allocator")
 	assert(stall_ms >= 0, "a stall cannot run for negative time")
 
-	job := new(Head_Job, runtime.heap_allocator())
-	job.path = strings.clone(path, runtime.heap_allocator())
-	job.buffer = make([]u8, AUDIO_HEAD_BYTES, runtime.heap_allocator())
+	job := new(Head_Job, child.job_allocator())
+	job.path = strings.clone(path, child.job_allocator())
+	job.buffer = make([]u8, AUDIO_HEAD_BYTES, child.job_allocator())
 	job.stall_ms = stall_ms
 
-	context.allocator = runtime.heap_allocator()
+	context.allocator = child.job_allocator()
 	t := thread.create_and_start_with_data(job, head_worker)
 	if t == nil {
-		delete(job.buffer, runtime.heap_allocator())
-		delete(job.path, runtime.heap_allocator())
-		free(job, runtime.heap_allocator())
+		delete(job.buffer, child.job_allocator())
+		delete(job.path, child.job_allocator())
+		free(job, child.job_allocator())
 		return nil, 0, Error{fault = .Audio_Unreadable}
 	}
 
@@ -346,13 +345,13 @@ release_head_job :: proc(t: ^thread.Thread, job: ^Head_Job) {
 	assert(t != nil, "there is no thread here to release")
 	assert(job != nil, "there is no job here to release")
 
-	delete(job.buffer, runtime.heap_allocator())
-	delete(job.path, runtime.heap_allocator())
-	free(job, runtime.heap_allocator())
+	delete(job.buffer, child.job_allocator())
+	delete(job.path, child.job_allocator())
+	free(job, child.job_allocator())
 	thread.destroy(t)
 }
 
-// Where a completed head's answer crosses from `runtime.heap_allocator`'s
+// Where a completed head's answer crosses from `child.job_allocator`'s
 // heap onto the allocator the caller actually asked for -- the same
 // copy-then-release shape `child.read.odin`'s `finished` uses.
 @(private)
