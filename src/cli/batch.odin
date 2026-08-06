@@ -42,6 +42,24 @@ Batch_Options :: struct {
 @(private)
 cancel_requested: bool
 
+// ADR-0011's runtime half: written only by the transcription Worker,
+// sequentially -- see `pipeline.Health_Watch`'s own doc comment for why that
+// needs no atomics of its own.
+@(private)
+gpu_health_checked: bool
+
+// Set by the same Worker at the moment it aborts the Batch for an unhealthy
+// GPU, distinct from `cancel_requested` -- which an operator's Ctrl+C also
+// sets, and which `pipeline.batch_succeeded` reads as a successful stop on
+// its own. Threaded into `Health_Watch.unhealthy` and read back through
+// `pipeline.Summary.unhealthy`, which `batch_succeeded` now folds into its
+// own verdict -- a round-4 review found the two endings told apart by a
+// second check living here in `src/cli` instead, untested (ADR-0009 keeps
+// this package to a bool-to-exit-code map) and unheld by anything: removing
+// it left the full suite green.
+@(private)
+gpu_health_unhealthy: bool
+
 // `"system"`, because Windows calls this from a thread transcibr never
 // started, on no context of this program's own -- and needs none: an atomic
 // store is `proc "contextless"`-safe, and nothing else happens here.
@@ -152,6 +170,8 @@ run_the_batch :: proc(
 	plan: planning.Plan,
 ) -> int {
 	sync.atomic_store(&cancel_requested, false)
+	gpu_health_checked = false
+	sync.atomic_store(&gpu_health_unhealthy, false)
 	win32.SetConsoleCtrlHandler(console_ctrl_handler, true)
 	defer win32.SetConsoleCtrlHandler(console_ctrl_handler, false)
 
@@ -169,6 +189,11 @@ run_the_batch :: proc(
 				extract_workers = o.extract_workers,
 				queue_depth = o.queue_depth,
 				join_bound_ms = pipeline.DEFAULT_JOIN_BOUND_MS,
+			},
+			health = pipeline.Health_Watch {
+				checked = &gpu_health_checked,
+				abort = &cancel_requested,
+				unhealthy = &gpu_health_unhealthy,
 			},
 		},
 		context.allocator,

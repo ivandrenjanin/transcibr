@@ -534,3 +534,105 @@ a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood :: proc(t: ^testing
 		len(flood_bytes),
 	)
 }
+
+@(private)
+Exit_Observation :: struct {
+	code:   u32,
+	called: int,
+}
+
+@(private)
+observed_exit :: proc(code: u32, user: rawptr) {
+	assert(user != nil, "there is no observation here to record an exit status into")
+
+	observation := (^Exit_Observation)(user)
+	observation.code = code
+	observation.called += 1
+}
+
+// `Run.Finished` says only that the child stopped on its own; a child that
+// aborted and one that succeeded reach it identically, which is exactly the
+// distinction issue #13's Model load probe has to make. The status arrives
+// through a callback rather than through run_bounded's own results so that
+// every caller that never asked for it pays nothing.
+@(test)
+a_finished_run_reports_the_status_the_child_actually_exited_with :: proc(t: ^testing.T) {
+	group, ok := open_group(t)
+	defer job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	observation: Exit_Observation
+	ending, reason, err := run_bounded(
+		&group,
+		CMD,
+		{"/c", "exit 3"},
+		CHILD_RUN_BOUND_MS,
+		context.allocator,
+		Run_Callbacks{user = &observation, on_exit = observed_exit},
+	)
+	testing.expect_value(t, err.fault, Fault.None)
+	testing.expect_value(t, ending, Run.Finished)
+	testing.expect_value(t, reason, Stop_Reason.None)
+	testing.expect_value(t, observation.called, 1)
+	testing.expect_value(t, observation.code, u32(3))
+}
+
+@(test)
+a_child_that_exits_cleanly_reports_a_zero_status :: proc(t: ^testing.T) {
+	group, ok := open_group(t)
+	defer job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	observation: Exit_Observation
+	ending, _, err := run_bounded(
+		&group,
+		CMD,
+		{"/c", "exit 0"},
+		CHILD_RUN_BOUND_MS,
+		context.allocator,
+		Run_Callbacks{user = &observation, on_exit = observed_exit},
+	)
+	testing.expect_value(t, err.fault, Fault.None)
+	testing.expect_value(t, ending, Run.Finished)
+	testing.expect_value(t, observation.called, 1)
+	testing.expect_value(t, observation.code, u32(0))
+}
+
+// A halted child's status is this program's own kill and not the child's
+// answer, so there is nothing here worth reporting and the caller is left
+// able to tell "it never answered" from "it answered zero".
+@(test)
+a_run_stopped_at_its_bound_reports_no_exit_status_at_all :: proc(t: ^testing.T) {
+	signal := testkit.lonely_signal("Child", "exitstatusbound", context.allocator)
+	defer delete(signal, context.allocator)
+	command := fmt.aprintf(
+		"waitfor /t %d %s",
+		LONGER_SECONDS,
+		signal,
+		allocator = context.allocator,
+	)
+	defer delete(command, context.allocator)
+
+	group, ok := open_group(t)
+	defer job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	observation: Exit_Observation
+	ending, reason, _ := run_bounded(
+		&group,
+		CMD,
+		{"/c", command},
+		CHILD_SHORT_BOUND_MS,
+		context.allocator,
+		Run_Callbacks{user = &observation, on_exit = observed_exit},
+	)
+	testing.expect_value(t, ending, Run.Stopped)
+	testing.expect_value(t, reason, Stop_Reason.Bound_Expired)
+	testing.expect_value(t, observation.called, 0)
+}

@@ -80,6 +80,20 @@ jobs:
         shell: pwsh
         run: .\scripts\test.ps1
 
+      # The default sweep runs every package's tests at ODIN_TEST_THREADS'
+      # default, which the #97 review found cannot see a class of defect in
+      # src\child -- the package owning process/pipe/directory lifecycle --
+      # that only shows up single-threaded (issue #104). No step-level
+      # timeout-minutes: test.ps1 imposes its own $OdinSweepTimeoutSeconds
+      # (900s) ceiling on every invocation regardless of package count, and a
+      # step timeout below that reaches the platform before the sweep does,
+      # so a hang would be reported by the job, which names nothing, instead
+      # of by the sweep naming the package. The job's own 30-minute
+      # timeout-minutes above is the backstop for this step too.
+      - name: Test (child, single-threaded)
+        shell: pwsh
+        run: .\scripts\test.ps1 -Threads1
+
       # The two commands above, checked against repositories built to make them
       # fail: the sweep because its failure mode is silence, and the build
       # because its smoke test and PE-header read are the acceptance criteria

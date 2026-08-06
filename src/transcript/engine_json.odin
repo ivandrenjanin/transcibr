@@ -260,6 +260,46 @@ parse_language :: proc(json_text: string, allocator: mem.Allocator) -> (language
 	return strings.clone(detected, allocator)
 }
 
+// `systeminfo` is the Engine's own report of what it was BUILT with -- CPU
+// features, and which optional backends the binary carries -- read the
+// identical way `parse_language` reads `result.language`: best-effort, and
+// UNKNOWN rather than a fault when the field is missing or malformed, because
+// neither procedure is on the path that decides whether a Recording
+// succeeded. `transcibr:doctor` is the one caller that reads this for a
+// decision, and only ever alongside a measured realtime factor -- see
+// ADR-0011 and CONTEXT.md's Engine entry for why the string alone proves
+// nothing.
+@(require_results)
+parse_systeminfo :: proc(json_text: string, allocator: mem.Allocator) -> (systeminfo: string) {
+	assert(
+		allocator.procedure != nil,
+		"the systeminfo outlives this procedure and needs a chosen allocator",
+	)
+	defer assert(len(systeminfo) > 0, "handed back a front matter field with nothing in it")
+
+	if len(strings.trim_space(json_text)) == 0 {
+		return strings.clone(UNKNOWN, allocator)
+	}
+
+	scratch: mem.Dynamic_Arena
+	mem.dynamic_arena_init(&scratch, block_allocator = allocator, array_allocator = allocator)
+	defer mem.dynamic_arena_destroy(&scratch)
+
+	root, fault := decode_engine_json(json_text, mem.dynamic_arena_allocator(&scratch))
+	if fault != .None {
+		return strings.clone(UNKNOWN, allocator)
+	}
+	body, is_object := root.(json.Object)
+	if !is_object {
+		return strings.clone(UNKNOWN, allocator)
+	}
+	reported, is_text := field(json.String, body, "systeminfo")
+	if !is_text || len(reported) == 0 {
+		return strings.clone(UNKNOWN, allocator)
+	}
+	return strings.clone(reported, allocator)
+}
+
 // The tree lives on `scratch` and dies with it, because the decoder leaks on the
 // error paths a truncated file takes. See CLAUDE.md, Odin notes:
 // core:encoding/json.

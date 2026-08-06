@@ -29,6 +29,12 @@ Transcribed :: struct {
 	// Owned by the caller and freed with `delete` and the allocator handed in.
 	output:      string,
 	duration_ms: i64,
+	// Wall-clock time the Engine actually ran, measured by transcibr:child's
+	// own clock (`child.Run_Callbacks.on_end`'s `elapsed_ns`) -- never the
+	// Engine's own reported audio duration, which is what `duration_ms` above
+	// holds. A realtime factor divides the Recording's audio length by THIS
+	// field, not by `duration_ms`.
+	elapsed_ms:  i64,
 }
 
 Limits :: struct {
