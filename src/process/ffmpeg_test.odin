@@ -197,11 +197,16 @@ every_probe_fault_renders_words_and_never_its_identifier :: proc(t: ^testing.T) 
 		if fault == .None {
 			continue
 		}
-		says := probe_fault_says(fault)
-		if !testing.expectf(t, len(says) > 0, "%v has no sentence at all", fault) {
+		if !testing.expectf(
+			t,
+			len(PROBE_FAULT[fault]) > 0,
+			"%v has an empty row in PROBE_FAULT",
+			fault,
+		) {
 			continue
 		}
 
+		says := probe_fault_says(fault)
 		testing.expectf(
 			t,
 			!strings.contains(says, "_"),
