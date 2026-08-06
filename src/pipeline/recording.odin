@@ -145,7 +145,6 @@ transcribe_and_place :: proc(extracted: Recording_Extracted) -> bool {
 	job := extracted.job
 	assert(len(job.source) > 0, "a transcription reached with no Recording path to read")
 	assert(len(job.cache) > 0, "a transcription reached with no cache directory to write into")
-	assert(len(extracted.extracted.audio) > 0, "a transcription reached with nothing extracted")
 	defer destroy_recording_arena(job)
 	defer delete(extracted.extracted.audio, job.allocator)
 
