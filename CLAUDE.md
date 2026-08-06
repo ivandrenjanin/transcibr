@@ -329,21 +329,23 @@ completes. Note also that `Process.pid` is stale once the process exits and Wind
 so a late terminate can signal an unrelated application.
 
 **`core:sys/info.iterate_gpus` skips a real adapter over a case-sensitive `MatchingDeviceId` check,
-and stops the whole iteration when it does.** `_iterate_gpus`
-(`platform_windows.odin:273-336` at the pin) reads each subkey's `MatchingDeviceId` and requires
-`strings.has_prefix(matching, "PCI\\VEN")` — but the value Windows actually stores there is
-lowercase (`pci\ven_10de&dev_2705`), so the prefix check fails and the proc takes its bare `return`,
-which yields `ok = false`. That is not "no adapter at this index and keep going" — `ok = false`
-terminates a `for gpu in iterate_gpus(&it)` loop outright, so a real adapter at a later index (e.g.
-`0001`) is never reached once an earlier one (`0000`) fails the prefix check. Measured on this
-repository's own dev machine (round 3 of the #96 review, confirmed again at the #122 review):
-subkey `0000` under `SYSTEM\ControlSet001\Control\Class\{4d36e968-...}` is the real, working NVIDIA
-GeForce RTX 4070 Ti SUPER, and `ControlSet001` is in fact the active control set here (`HKLM\SYSTEM\
-Select\Current = 1`) — the registry key opens and enumerates fine, and starting the iterator's
-internal index at 1 instead of 0 does report the GPU correctly. The defect is the case-sensitive
-prefix match and its early-return-terminates-iteration behavior, not the hardcoded control-set
-path. This is why `src\doctor\gpu.odin` (ADR-0033) talks to `vendor:directx/dxgi` directly —
-`CreateDXGIFactory1` and `IFactory1.EnumAdapters1` — rather than through this stdlib wrapper.
+and stops the whole iteration when it does.** `_iterate_gpus` reads each subkey's
+`MatchingDeviceId` and requires `strings.has_prefix(matching, "PCI\\VEN")` — but the value Windows
+actually stores there is lowercase (`pci\ven_10de&dev_2705`), so the prefix check fails and the proc
+takes its bare `return`, which yields `ok = false`. That is not "no adapter at this index and keep
+going" — `ok = false` terminates a `for gpu in iterate_gpus(&it)` loop outright, so a real adapter
+at a later index (e.g. `0001`) is never reached once an earlier one (`0000`) fails the prefix check.
+Measured on this repository's own dev machine (round 3 of the #96 review, confirmed again at the
+#122 review): subkey `0000` under `SYSTEM\ControlSet001\Control\Class\{4d36e968-...}` is the real,
+working NVIDIA GeForce RTX 4070 Ti SUPER, and `ControlSet001` is in fact the active control set here
+(`HKLM\SYSTEM\Select\Current = 1`) — the registry key opens and enumerates fine. The NVIDIA card is
+the one that fails the lowercase prefix check, so it is unreachable through `iterate_gpus` at any
+starting index; on this machine the only other adapter subkey (`0001`, AMD integrated) is not
+affected by the defect and reports fine on its own. There is no index-skipping workaround that
+recovers the NVIDIA card — the defect is the case-sensitive prefix match and its
+early-return-terminates-iteration behavior, not the hardcoded control-set path. This is why
+`src\doctor\gpu.odin` (ADR-0033) talks to `vendor:directx/dxgi` directly — `CreateDXGIFactory1` and
+`IFactory1.EnumAdapters1` — rather than through this stdlib wrapper.
 
 **No `os.remove_all(...)` call anywhere in the tree (issue #97/#105).** `core:testing` runs tests on
 their own thread, and issue #97 measured `os.remove_all` faulting on that thread over a non-empty
