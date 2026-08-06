@@ -79,7 +79,7 @@ Health_Fault :: enum u8 {
 // one.
 //
 // Issue #132: `container_ms > 0` below is internal, not a check on external
-// input, for the same reason #129 recorded at `read_probe`'s guard in
+// input, for the same reason Issue #112 recorded at `read_probe`'s guard in
 // src/process/ffmpeg.odin. `first_recording_health`'s only production
 // caller, `pipeline.checked_first_recording_health`, forwards the same
 // value its own identical assert already checked, itself traced to
