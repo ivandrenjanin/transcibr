@@ -297,6 +297,13 @@ a_sample_count_past_the_longest_container_is_refused :: proc(t: ^testing.T) {
 }
 
 @(test)
+a_sample_count_at_the_longest_container_is_accepted :: proc(t: ^testing.T) {
+	ms, ok := samples_ms("57600000000")
+	testing.expect(t, ok, "a sample count exactly at the longest Recording ceiling was refused")
+	testing.expect_value(t, ms, LONGEST_CONTAINER_MS)
+}
+
+@(test)
 a_banner_that_reports_no_audio_at_all_is_refused :: proc(t: ^testing.T) {
 	for line in ([?]string {
 			"main: processing 'a.wav' (0 samples, 0.0 sec), 4 threads",
