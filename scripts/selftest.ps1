@@ -566,11 +566,14 @@ function Get-DocumentedTestName {
 # test.ps1 directly, and nothing before this read what ci.yml itself runs
 # (issue #116, filed from the #104 review). Not every step is here --
 # `actions/checkout` and the two pinned-tool installs have no local command
-# to be a claim about, and Build (release) is the debug build's own path
-# through the compiler and not a distinct check.
+# to be a claim about. Build (release) is included: -o:speed is a different
+# code path through the compiler (build.ps1's own -Configuration branch),
+# and a release that only builds at tagging time is a release that breaks
+# at tagging time.
 $LoadBearingCiSteps = @(
 	[pscustomobject]@{ Name = 'Check formatting'; Run = '.\scripts\format.ps1' }
 	[pscustomobject]@{ Name = 'Build (debug)'; Run = '.\scripts\build.ps1' }
+	[pscustomobject]@{ Name = 'Build (release)'; Run = '.\scripts\build.ps1 -Configuration release' }
 	[pscustomobject]@{ Name = 'Test'; Run = '.\scripts\test.ps1' }
 	[pscustomobject]@{ Name = 'Test (child, single-threaded)'; Run = '.\scripts\test.ps1 -Threads1' }
 )
@@ -897,6 +900,9 @@ Test-Case 'the sweep budget fits inside every CI timeout that wraps it' {
 # single-thread sweep left every case in this file green, because none of
 # them read what CI itself runs.
 Test-Case 'ci.yml still runs every load-bearing step build.ps1 and test.ps1 own' {
+	if ($LoadBearingCiSteps.Count -eq 0) {
+		throw 'no load-bearing steps declared, so this case checks nothing.'
+	}
 	$workflow = Join-Path $RepoRoot '.github\workflows\ci.yml'
 	if (-not (Test-Path -LiteralPath $workflow)) {
 		throw "no $workflow to read the load-bearing steps out of."
@@ -911,6 +917,9 @@ Test-Case 'ci.yml still runs every load-bearing step build.ps1 and test.ps1 own'
 # claimed: a pin that never fires on a deletion is worth exactly what the
 # case above would be without it -- a check nobody has watched go red.
 Test-Case 'a load-bearing ci.yml step deleted turns the pin red naming it' {
+	if ($LoadBearingCiSteps.Count -eq 0) {
+		throw 'no load-bearing steps declared, so this case checks nothing.'
+	}
 	$workflow = Join-Path $RepoRoot '.github\workflows\ci.yml'
 	if (-not (Test-Path -LiteralPath $workflow)) {
 		throw "no $workflow to read the load-bearing steps out of."
