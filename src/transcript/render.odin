@@ -290,15 +290,17 @@ write_yaml_field :: proc(out: ^strings.Builder, key, value: string) {
 
 	strings.write_string(out, key)
 	strings.write_string(out, ": ")
-	write_yaml_quoted(out, value)
+	write_quoted_scalar(out, value)
 	strings.write_byte(out, '\n')
 }
 
-// Double-quoted and not single: it is the one YAML form with an escape sequence
-// for every byte, so a value carrying a newline cannot close the header early.
-@(private)
-write_yaml_quoted :: proc(out: ^strings.Builder, value: string) {
-	assert(out != nil, "there is no header here to write a value into")
+// Double-quoted and not single: it is the one form with an escape sequence for
+// every byte, so a value carrying a newline cannot close a record early. The
+// escape vocabulary this owns is shared by transcript's own YAML front matter
+// and, across the package boundary, by artifact's Sidecar field writer -- one
+// definition rather than a hand-synchronised copy per format.
+write_quoted_scalar :: proc(out: ^strings.Builder, value: string) {
+	assert(out != nil, "there is no record here to write a value into")
 
 	strings.write_byte(out, '"')
 	for i in 0 ..< len(value) {
