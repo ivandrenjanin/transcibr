@@ -128,9 +128,10 @@ ANONYMOUS :: "<literal>"
 // It is not the worst shape the parser has, and this counter does not claim to
 // bound one. A chain of `^` in a type carries no bracket at all and overflows at
 // about eighty of them, counted depth ONE; `+` chains and `if`/`else if` chains
-// go at about 1600. What covers those is render_file, which names a file before
-// reading it: the residual is a crash that says which file, never a silent wrong
-// answer and never an anonymous death over a tree of seventy-odd.
+// go at about 1600. What covers those is main.odin's check_one_file, which
+// names a file before reading it (`checking: %s`, to standard error): the
+// residual is a crash that says which file, never a silent wrong answer and
+// never an anonymous death over a tree of seventy-odd.
 DEEPEST_IN_TREE :: 7
 SHALLOWEST_OVERFLOW :: 62
 

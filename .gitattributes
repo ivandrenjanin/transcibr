@@ -13,9 +13,10 @@
 #
 # `text` stores LF and checks out CRLF, which is what the blobs already hold and
 # what the working tree already looks like here -- so this states the state
-# rather than changing it. Checked per FILE against what git itself reports for
-# each path: a rule written for the wrong glob reads perfectly well and matches
-# nothing.
+# rather than changing it. Nothing in the tree checks this per file today --
+# #152 deleted the script that used to ask git per path, and no successor
+# replaced it: a rule written for the wrong glob reads perfectly well and
+# matches nothing.
 *.odin text eol=crlf
 
 # A fixture is EVIDENCE, not source.
