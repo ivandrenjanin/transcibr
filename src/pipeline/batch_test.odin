@@ -127,6 +127,47 @@ a_cancelled_batch_reports_unadmitted_recordings_as_cancelled_not_failed :: proc(
 	testing.expect_value(t, summary.transcribed, 0)
 }
 
+// The one policy decision issue #74 asks to be named where a user can
+// dispute it: a Ctrl+C or an already-up-to-date Recording is not a Batch
+// coming up short, so neither counts against `batch_succeeded`. Only
+// `failed` and `refused` do.
+@(test)
+cancelled_and_skipped_recordings_do_not_fail_a_batch_only_failed_and_refused_do :: proc(
+	t: ^testing.T,
+) {
+	testing.expect(t, batch_succeeded(Summary{}), "an empty Batch is not a failed one")
+	testing.expect(
+		t,
+		batch_succeeded(Summary{transcribed = 3, rerendered = 1}),
+		"a Batch that only transcribed and re-rendered failed nothing",
+	)
+	testing.expect(
+		t,
+		batch_succeeded(Summary{cancelled = 5}),
+		"a cancelled Batch is an operator's decision, not a failure",
+	)
+	testing.expect(
+		t,
+		batch_succeeded(Summary{skipped = 5}),
+		"a Batch that skipped up-to-date Recordings is not a failed one",
+	)
+	testing.expect(
+		t,
+		!batch_succeeded(Summary{failed = 1}),
+		"a Batch with a genuinely failed Recording reads as succeeded",
+	)
+	testing.expect(
+		t,
+		!batch_succeeded(Summary{refused = 1}),
+		"a Batch with a refused Recording reads as succeeded",
+	)
+	testing.expect(
+		t,
+		!batch_succeeded(Summary{failed = 1, cancelled = 5, skipped = 5}),
+		"cancelled and skipped counts masked a genuine failure",
+	)
+}
+
 @(private)
 @(require_results)
 resume_recording :: proc(t: ^testing.T, tree: string, name: string) -> string {
