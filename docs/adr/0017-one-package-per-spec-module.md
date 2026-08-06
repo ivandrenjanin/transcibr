@@ -65,3 +65,14 @@ applied.
 **The test-package accounting is what enforces it.** `test.ps1` fails any package under `src/` that
 collects zero tests unless it is named in `$OdinPackagesWithoutTests`, so a new directory is a new
 declaration a reviewer has to see. Splitting a spec module in two cannot be done quietly.
+
+## Addendum (2026-08-06, #152)
+
+The accounting is now the justfile's `test:` recipe list — one explicit line per package — plus
+`tools\policy`'s package-accounting check (`packages.odin`, `TEST_LESS_SRC_PACKAGES`), over both
+`src\` and `tools\`. The "discovered rather than listed" premise this decision's own "Why the
+rename happened before the second half" section rests on is now historical: packages are LISTED in
+the `test:` recipe, not discovered by a directory walk, so a rename or split costs a recipe edit the
+accounting check demands as well as the directory move — enforcement is stronger than this record
+describes, in both directions the check covers. The conclusion — one package per spec module, named
+for the module — is unaffected.

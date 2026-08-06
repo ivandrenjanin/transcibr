@@ -123,7 +123,7 @@ an_unsettled_probe_wav_is_left_on_disk :: proc(t: ^testing.T) {
 // reads the ordering off the call site directly. The count lives behind
 // `context.user_ptr` rather than a package variable, which would race every
 // other test in this package calling `model_load_check` concurrently
-// (`test.ps1` runs 12 threads by default) (issue #125's round-1 review,
+// (`odin test` runs 12 threads by default) (issue #125's round-1 review,
 // finding 1).
 @(private)
 spy_wav_remove :: proc(path: string) {
@@ -145,7 +145,7 @@ spy_wav_remove :: proc(path: string) {
 //
 // `probe_wav_scan_guard` -- round-3 review, finding 2 -- keeps this scan and
 // `an_unstoppable_engine_probe_never_calls_the_wav_remover`'s scan below from
-// reading each other's scratch wav mid-flight: `test.ps1` runs a package's
+// reading each other's scratch wav mid-flight: `odin test` runs a package's
 // tests across 12 threads by default, and both tests watch the same `TEMP`
 // directory for the same file-name shape.
 @(private)

@@ -84,7 +84,7 @@ test:
 	{{ odin }} test src/version {{ collection }} -out:build/odin-test/version.exe {{ memory }} {{ vet }}
 	{{ odin }} test tools/policy {{ collection }} -out:build/odin-test/policy.exe {{ memory }} {{ vet }}
 
-# One test, focused: `just test-one child a_defect_only_visible_single_threaded`.
+# One test, focused: `just test-one version banner_names_the_program_and_its_version`.
 # `policy` resolves to tools/policy; every other name resolves to src/<pkg>.
 test-one pkg name:
 	if not exist build\odin-test mkdir build\odin-test

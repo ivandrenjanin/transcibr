@@ -5,10 +5,11 @@ import "core:mem"
 import "core:strings"
 import "core:testing"
 
-// This file checks the report scripts\common.ps1 reads back: one record per line,
-// tab-separated, a `file` record opening the block every record after it belongs
-// to. What is pinned here is the SHAPE, because the reader on the other side of
-// it is in another language and cannot be type-checked against this one.
+// This file checks report.odin's tab-separated shape: one record per line, a
+// `file` record opening the block every record after it belongs to. ADR-0028's
+// two-language report seam is retired -- nothing reads this shape back any
+// more -- so what is pinned here is the shape for its own sake, not a contract
+// with a reader in another language.
 
 @(require_results)
 rendered :: proc(name: string, facts: Source_Facts, allocator: mem.Allocator) -> string {

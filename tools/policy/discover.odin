@@ -1,9 +1,9 @@
 #+vet explicit-allocators
 // This file finds .odin files on disk, the way scripts\common.ps1's
-// Get-OdinSource and Get-OdinPackage used to. It is the one part of this
-// program's job that genuinely needs the filesystem rather than a string in
-// memory, which is why it is apart from check.odin and untouched by
-// policy_test.odin's fixture-as-string-literal style.
+// Get-OdinSource and Get-OdinPackage did before issue #152 retired them. It
+// is the one part of this program's job that genuinely needs the filesystem
+// rather than a string in memory, which is why it is apart from check.odin
+// and untouched by policy_test.odin's fixture-as-string-literal style.
 package policy
 
 import "core:mem"

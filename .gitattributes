@@ -1,29 +1,30 @@
 # Line endings belong to the repository, not to the machine.
 #
-# odinfmt.json pins newline_style to CRLF and scripts\format.ps1 compares BYTES,
-# so what puts CRLF in a working tree decides whether this repository builds at
-# all. Until this line, nothing here did: the blobs are stored LF, and the only
-# thing converting them on the way out was Git for Windows' SYSTEM gitconfig
+# odinfmt.json pins newline_style to CRLF and `just fmt-check` compares BYTES,
+# so what puts CRLF in a working tree decides whether this repository passes
+# `just fmt-check` -- not whether it builds. Until this line, nothing here
+# did: the blobs are stored LF, and the only thing converting them on the way
+# out was Git for Windows' SYSTEM gitconfig
 # setting core.autocrlf=true -- an uncommitted, machine-global setting that
 # happened to be on. `git -c core.autocrlf=false clone` produced a checkout
-# where all thirteen .odin files failed the formatting check and build.ps1
-# refused to build anything; running the remedy that failure prints would then
-# have rewritten every one of them and flipped the object store for everybody
-# else.
+# where all thirteen .odin files were misformatted, but `just fmt-check`
+# never says so: its three `for /r` loops are cmd.exe, and the failure arm's
+# `exit /b 1` ends that whole recipe LINE at the first mismatch, so exactly
+# one `NOT FORMATTED: <path>` prints -- the first file the first loop walks
+# to -- before just's own recipe-failed error, and no later file in that loop
+# or either of the other two loops is ever named. No remedy is printed
+# anywhere -- `just build` runs no formatting check at all and built that
+# same checkout without complaint. Running `just fmt` afterward, on nobody's
+# prompt but a human's, would have rewritten every one of them and flipped
+# the object store for everybody else.
 #
 # `text` stores LF and checks out CRLF, which is what the blobs already hold and
 # what the working tree already looks like here -- so this states the state
-# rather than changing it. Checked per FILE by scripts\selftest.ps1, which asks
-# git rather than reading this file: a rule written for the wrong glob reads
-# perfectly well and matches nothing.
+# rather than changing it. Nothing in the tree checks this per file today --
+# #152 deleted the script that used to ask git per path, and no successor
+# replaced it: a rule written for the wrong glob reads perfectly well and
+# matches nothing.
 *.odin text eol=crlf
-
-# The commands themselves, for the same reason and by the same argument. Nothing
-# compares their bytes today, so this is consistency rather than a fix -- but
-# they are Windows PowerShell scripts in a Windows-only repository, and the
-# alternative is that what a contributor checks out here depends on a setting
-# nobody committed.
-*.ps1 text eol=crlf
 
 # A fixture is EVIDENCE, not source.
 #

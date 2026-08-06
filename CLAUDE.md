@@ -295,7 +295,7 @@ every source policy by `just check` but never read by `just fmt-check` at all. `
 not yet have a way to name a scope by exclusion the way `discover_odin_files` does; keeping the two
 in sync is a manual discipline until they do.
 
-```powershell
+```text
 just build       # debug build of src/cli, vet set, subsystem console
 just release     # -o:speed build of src/cli, vet set
 just check       # tools/policy: CLAUDE.md's source policies and the package-accounting check
@@ -389,8 +389,9 @@ total_test_count)` in `runner.odin`, right after thread count is chosen from
 concurrent asserts really do run concurrently — needs at least two `@(test)` procedures in that
 package, or the cap silently pins it to one thread regardless of what the define asked for and the
 check asserts nothing. `just test-single` runs `src\child` under `ODIN_TEST_THREADS=1` (the recipe
-is fixed to that one package rather than parameterised, for the reason the recipe's own comment
-gives) alongside `just test-one`. `child` is real production source — process/pipe/directory
+is fixed to that one package rather than parameterised: `src\child` is the only package where
+`ODIN_TEST_THREADS=1` surfaces anything, so a parameter would advertise a setting with no second
+consumer) alongside `just test-one`. `child` is real production source — process/pipe/directory
 lifecycle, not a fixture — kept there because the default 12-thread sweep cannot see the #97 defect
 class on it (issue #104).
 

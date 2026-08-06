@@ -11,8 +11,9 @@ branch, the worktree, the report file, and the orchestrator's scope notes; this 
 everything else.
 
 **The rules.** CLAUDE.md at the repository root is the binding engineering standard — read it in
-full before touching code. Its mechanical rules fail the build (comments in procedure bodies, the
-70-line cap, `@(require_results)`, the `#+vet` file tags, formatting); its judgment rules
+full before touching code. Its mechanical rules fail `just ci` (comments in procedure bodies, the
+70-line cap, `@(require_results)`, the `#+vet` file tags via `just check` (`tools/policy`);
+formatting via `just fmt-check`); its judgment rules
 (assertion density, the A8 boundary — external input is rejected through error returns, never
 asserted) are enforced at review. CONTEXT.md is the glossary and its `_Avoid_` lists are enforced.
 Verify any stdlib identifier against the installed compiler's sources, never from memory or the

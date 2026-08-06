@@ -42,7 +42,7 @@ MODEL_LOAD_FAILURE_MARKER :: "error: failed to initialize whisper context"
 
 // The current OS thread id is folded into the file name, between the
 // package-wide prefix and `os.create_temp_file`'s own random `*` component:
-// `test.ps1` runs a package's tests across 12 threads, one test to
+// `odin test` runs a package's tests across 12 threads, one test to
 // completion per thread, and `src\doctor\checks_test.odin` drives this same
 // procedure from eight tests of its own -- so a scan of `%TEMP%` for the
 // bare prefix during one test's own call cannot tell its own wav from a
@@ -102,7 +102,7 @@ model_probe_wav_settled :: proc(run: child.Run) -> bool {
 // rather than calling `os.remove` inline, so a test can prove the ordering
 // by passing a counting stand-in through `model_load_check_using` below. A
 // package variable would race every other test in this package calling
-// `model_load_check` concurrently (`test.ps1` runs 12 threads by default),
+// `model_load_check` concurrently (`odin test` runs 12 threads by default),
 // so this is a parameter, not shared state (issue #125's round-1 review,
 // finding 1).
 @(private)

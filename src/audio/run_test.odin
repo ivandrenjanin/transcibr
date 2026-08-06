@@ -782,7 +782,7 @@ a_probe_whose_answer_read_is_abandoned_is_reported_at_the_call_site :: proc(t: ^
 // only route to removing `answer`; passing a counting spy through it is
 // what reads the ordering off the call site the file-existence checks above
 // cannot reach for the abandoned arm. The count lives behind
-// `context.user_ptr`, which `test.ps1`'s 12 concurrent test threads each
+// `context.user_ptr`, which `odin test`'s 12 concurrent test threads each
 // carry their own copy of, rather than a package variable every other test
 // calling `probe` would race (issue #125's round-1 review, finding 1).
 @(private)

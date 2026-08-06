@@ -58,3 +58,14 @@ to let that package collect a single test is the thing that keeps asking the que
 The golden fixture is one real engine JSON plus its expected Markdown. That choice also pins the
 JSON schema this design bets on (ADR-0001), so an engine upgrade that changes the schema fails a test
 rather than silently producing empty transcripts.
+
+## Addendum (2026-08-06, #152)
+
+Issue #152 retired the PowerShell layer this record's mechanisms named. `$OdinPackagesWithoutTests`
+is now `TEST_LESS_SRC_PACKAGES` in `tools\policy\packages.odin`, and `exempt_packages_holding_tests`
+fails `just check` if `cli` ever collects a `*_test.odin` file — the same refusal `test.ps1` gave,
+computed in Odin instead of read back from a report. What ran the built `transcibr-cli` is now the
+justfile's `smoke` recipe: the same no-arguments banner read `build.ps1`'s smoke test did, now also
+asserting the banner reached standard output (the #119 review's stream-swap finding) rather than
+only that the process exited zero. The conclusion this record reaches — that `src/cli` stays thin
+enough to hold no tests, and review is the whole of what holds that line — is unchanged.

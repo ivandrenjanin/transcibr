@@ -67,3 +67,10 @@ a package for one moved struct, which costs a directory, an import in every cons
 A second Model-shaped value that genuinely needs its own package — one with more than one consumer
 outside `src/artifact` and a name CONTEXT.md gives a heading of its own — reopens whether the pure
 half is still small enough to live beside the shell rather than apart from it.
+
+## Addendum (2026-08-06, #152)
+
+The refused-alternative cost above — "a row in `test.ps1`'s per-package accounting" for a package
+holding one moved struct — is now a row in the justfile's `test:` recipe plus `tools\policy`'s
+package-accounting check. The decision to keep the pure half beside the shell in one package is
+unaffected.

@@ -11,13 +11,16 @@
 // answered by a column-zero text scan written in PowerShell -- a second model of
 // Odin, in a second language, that was silently wrong three times.
 //
-// The build runs this; it is not part of transcibr. `scripts\build.ps1` builds
-// it before the checks that read it and says so where it happens.
+// The build runs this; it is not part of transcibr. `just check` is
+// `odin run tools/policy` -- one program that builds, walks the source and
+// prints its own verdicts, with no separate stage reading a report back.
 //
 // This file holds the fault vocabulary, the shape of one file's facts, and the
 // bounded read that produces them. collect.odin holds the walk that finds
-// procedures, comments and tags; report.odin renders what the build reads;
-// main.odin is the entry point.
+// procedures, comments and tags; report.odin renders a report shape retired
+// alongside the two-language seam it used to serve, kept only because
+// report_test.odin pins it; main.odin is the entry point and does its own
+// printing directly.
 package policy
 
 import "base:runtime"
@@ -127,9 +130,10 @@ ANONYMOUS :: "<literal>"
 // It is not the worst shape the parser has, and this counter does not claim to
 // bound one. A chain of `^` in a type carries no bracket at all and overflows at
 // about eighty of them, counted depth ONE; `+` chains and `if`/`else if` chains
-// go at about 1600. What covers those is render_file, which names a file before
-// reading it: the residual is a crash that says which file, never a silent wrong
-// answer and never an anonymous death over a tree of seventy-odd.
+// go at about 1600. What covers those is main.odin's check_one_file, which
+// names a file before reading it (`checking: %s`, to standard error): the
+// residual is a crash that says which file, never a silent wrong answer and
+// never an anonymous death over a tree of seventy-odd.
 DEEPEST_IN_TREE :: 7
 SHALLOWEST_OVERFLOW :: 62
 

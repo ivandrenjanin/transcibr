@@ -162,7 +162,7 @@ answer_read_settled :: proc(fault: child.Read_Fault) -> bool {
 // removal attempted" is unobservable from outside a pipe path by any
 // filesystem effect (issue #125's round-1 review, finding 1). A package
 // variable would race every other test in this package calling `probe`
-// concurrently (`test.ps1` runs 12 threads by default), so this is a
+// concurrently (`odin test` runs 12 threads by default), so this is a
 // parameter, not shared state.
 @(private)
 Answer_Remove :: #type proc(path: string)

@@ -41,6 +41,13 @@ not migrate with it — it disappears, because nothing in that package is allowe
 all. And it would not even resolve the cycle above: `src/transcript` is core and cannot import
 `src/cli` regardless of whether the moved code is tested.
 
+## Addendum (2026-08-06, #152)
+
+`$OdinPackagesWithoutTests` is now `TEST_LESS_SRC_PACKAGES` in `tools\policy\packages.odin`, and
+`test.ps1`'s refusal is now `exempt_packages_holding_tests` failing `just check`. The folding
+argument — the import cycle `src/transcript` would need, and the coverage `version_test.odin` would
+lose — is unaffected by the rename.
+
 ## Consequences
 
 `src/version` is core by ADR-0009's own test — a pure function worth testing, touching nothing outside

@@ -138,3 +138,15 @@ failure mode a table has, a row that is *present and empty*, which compiles and 
 reader's own assertion in front of a user. `Riff_Fault` and `process.Probe_Fault` are the shape
 correctly declined: bare enumerations their consumer renders with `%v`. `Cache_Fault` needs a
 sentence and nothing beyond it.
+
+## Addendum (2026-08-06, #152)
+
+Same family as ADR-0017's own addendum: the "packages are discovered rather than listed" reasoning
+this record's "Why it is not called `extract`" section leans on no longer transfers forward. Packages
+are named explicitly, one line per package, in the justfile's `test:` recipe, and `tools\policy`'s
+package-accounting check (`packages.odin`) fails `just check` if a tested package under `src\` or
+`tools\` loses its line, or a package holding no tests at all goes unnamed by its root's roster. The
+`cli` guarantee ADR-0009 records survives under the new names: `TEST_LESS_SRC_PACKAGES` in
+`tools\policy\packages.odin` is `$OdinPackagesWithoutTests`' successor, and
+`exempt_packages_holding_tests` is what would fail `just check` if `cli` ever collected a test. The
+decision to keep probing and extraction in one package, `src/audio`, is unaffected.
