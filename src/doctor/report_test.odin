@@ -4,6 +4,29 @@ package doctor
 import "core:strings"
 import "core:testing"
 
+// Issue #130 fix round 1: an Engine_Fault with an emptied sentence used to
+// crash here (report.odin:19, `assert(len(says) > 0, ...)`) rather than
+// render -- exactly the failure the walking test in engine_fault_test.odin
+// exists to prevent from ever reaching a Recording that is already failing.
+@(test)
+combined_message_with_no_sentence_still_renders_something_a_reader_can_act_on :: proc(
+	t: ^testing.T,
+) {
+	rendered := combined_message("engine", "", "", context.allocator)
+	defer delete(rendered, context.allocator)
+
+	testing.expect(
+		t,
+		strings.contains(rendered, "engine"),
+		"a missing sentence dropped the subject a reader needs to find the failure",
+	)
+	testing.expect(
+		t,
+		len(rendered) > 0,
+		"a missing sentence rendered as nothing a reader can act on",
+	)
+}
+
 @(test)
 report_ok_ignores_an_advisory_failed_check :: proc(t: ^testing.T) {
 	checks := []Check {
@@ -44,6 +67,25 @@ review_an_advisory_failure_does_not_render_as_a_plain_failure :: proc(t: ^testin
 		t,
 		!strings.contains(rendered, "FAIL"),
 		"an advisory failure rendered with the same word a real failure uses",
+	)
+}
+
+// CONTEXT.md's Advisory entry once claimed an advisory Check "renders as INFO
+// like any other line" -- but `render_check` tests `check.ok` first, so a
+// passing advisory renders PASS same as any other passing Check; only a
+// failing advisory renders INFO.
+@(test)
+a_passing_advisory_renders_as_pass_not_info :: proc(t: ^testing.T) {
+	check := passed("gpu (diagnostic)", advisory = true)
+
+	rendered := render_check(check, context.allocator)
+	defer delete(rendered, context.allocator)
+
+	testing.expect(t, strings.contains(rendered, "PASS"), "a passing advisory did not render PASS")
+	testing.expect(
+		t,
+		!strings.contains(rendered, "INFO"),
+		"a passing advisory rendered INFO instead of PASS",
 	)
 }
 

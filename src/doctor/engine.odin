@@ -40,6 +40,7 @@ Engine_Fault :: enum u8 {
 	Not_Started,
 	Did_Not_Finish,
 	Backend_Not_Loaded,
+	Capture_Overflowed,
 }
 
 Engine_Check :: struct {
@@ -74,6 +75,18 @@ verify_engine :: proc(
 	probe := probe_executable(group, executable, ENGINE_PROBE_ARGUMENTS, allocator)
 	defer delete(probe.captured, allocator)
 
+	return engine_probe_verdict(probe)
+}
+
+// Split out of `verify_engine` so the overflow refusal -- and every other
+// branch here -- takes a caller-constructed `Probe` and can be proved
+// without spawning a real flooding child (`engine_test.odin`).
+@(private)
+@(require_results)
+engine_probe_verdict :: proc(probe: Probe) -> Engine_Check {
+	if probe.overflowed {
+		return Engine_Check{fault = .Capture_Overflowed}
+	}
 	switch probe.run {
 	case .Not_Started:
 		return Engine_Check{fault = .Not_Started, child = probe.child}
@@ -104,6 +117,12 @@ backend_library_present :: proc(executable: string) -> bool {
 	return os.is_file(beside)
 }
 
+// A switch, not a table (CLAUDE.md, Odin notes: enumerated arrays and
+// switches): every case is spelled out by hand, so a fault added without a
+// sentence fails the build rather than compiling as an empty row.
+// `engine_fault_test.odin` walks the enumeration to prove every case still
+// carries one, rather than the renderer asserting it on the first Recording
+// that hits the gap.
 @(private)
 @(require_results)
 engine_fault_says :: proc(fault: Engine_Fault) -> string {
@@ -124,6 +143,10 @@ engine_fault_says :: proc(fault: Engine_Fault) -> string {
 		return(
 			"the engine started but its own diagnostic output never named the cuda backend as loaded; a candidate gpu backend library failed to load and was silently skipped" \
 		)
+	case .Capture_Overflowed:
+		return(
+			"reported more diagnostic output than a probe will capture (MAX_PROBE_CAPTURE_BYTES exceeded) and was refused rather than judged on a partial capture" \
+		)
 	case .None:
 	}
 	return ""
@@ -143,7 +166,6 @@ engine_error_message :: proc(
 	)
 
 	says := engine_fault_says(check.fault)
-	assert(len(says) > 0, "a fault was added to Engine_Fault without a sentence")
 
 	if check.fault == .Not_Started {
 		reason := child.error_message(check.child, allocator)

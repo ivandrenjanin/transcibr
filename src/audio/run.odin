@@ -174,6 +174,11 @@ probe :: proc(
 	return answered, Error{}
 }
 
+// Issue #112: `container_ms > 0` below is internal, not a check on external
+// input. `check_audio`'s only caller is `produce`, which takes the same
+// value straight from `extract`'s `probed.duration_ms` -- and
+// `process.read_probe` (see its own doc comment) guarantees that value is
+// positive on every path that returns `fault == .None`.
 @(private)
 @(require_results)
 check_audio :: proc(
@@ -417,6 +422,14 @@ extract :: proc(
 	return produce(group, tools, job, probed.duration_ms, tolerance, allocator)
 }
 
+// Issue #112: `container_ms > 0` below is internal, not a check on external
+// input. `extract` is the only caller, and it passes `probed.duration_ms`
+// straight through -- `probed` only reaches here when `probe`'s call to
+// `process.read_probe` returned `fault == .None`, which that procedure's own
+// doc comment establishes never happens with a non-positive duration. The
+// `probed.audio_streams == 0` guard above this call in `extract` answers a
+// different question (whether there is audio to extract at all) and is not
+// what keeps this value positive.
 @(private)
 @(require_results)
 produce :: proc(
@@ -485,6 +498,48 @@ discard_part :: proc(part: string, fault: Fault) {
 	os.remove(part)
 }
 
+// A drive path's root is `X:\` and a UNC path's root is `\\server\share\` --
+// trimming past either turns a root into a different, relative-on-that-drive
+// path (`C:\` into `C:`), so this is the floor `trim_trailing_separators`
+// will not cross.
+@(require_results)
+volume_root_len :: proc(path: string) -> int {
+	assert(len(path) > 0, "there is no path here to find a volume root in")
+
+	if len(path) >= 3 && path[1] == ':' && os.is_path_separator(path[2]) {
+		return 3
+	}
+	if len(path) >= 2 && os.is_path_separator(path[0]) && os.is_path_separator(path[1]) {
+		seps := 0
+		for i := 2; i < len(path); i += 1 {
+			if os.is_path_separator(path[i]) {
+				seps += 1
+				if seps == 2 {
+					return i + 1
+				}
+			}
+		}
+		return len(path)
+	}
+	return 0
+}
+
+// A trailing separator on an otherwise ordinary leaf (`...\leaf\`) makes
+// `os.dir` answer the leaf itself rather than its parent -- `_split_path`
+// walks back from the last byte, and the last byte is the separator. Strip it
+// before asking for the parent, down to but never past the volume root.
+@(require_results)
+trim_trailing_separators :: proc(path: string) -> string {
+	assert(len(path) > 0, "there is no path here to trim")
+
+	floor := volume_root_len(path)
+	trimmed := path
+	for len(trimmed) > floor && os.is_path_separator(trimmed[len(trimmed) - 1]) {
+		trimmed = trimmed[:len(trimmed) - 1]
+	}
+	return trimmed
+}
+
 // The resolved path is what is checked: a relative cache path is perfectly ASCII
 // and resolves under an account name that may not be. A path that is not valid
 // UTF-8 answers `.Unusable` rather than `.Path_Not_Ascii`, because
@@ -496,6 +551,14 @@ discard_part :: proc(part: string, fault: Fault) {
 // runs a whole-file read, so a scratch cache on a share that stops
 // answering is reported rather than wedging the Batch before its first
 // Recording (PR #64's third review, finding 6).
+//
+// A regular file at the cache path is refused here, by name, rather than
+// left to fail confusingly later in `sweep_cache` (issue #120). A cache
+// whose immediate parent directory does not exist is refused rather than
+// created: `--cache` is hand-typed, and creating an implausible multi-level
+// tree for a typo (`C:\this\does\not\exist\x`) is worse than refusing it --
+// the one level `make_directory_bounded` still creates below an existing
+// parent is what a fresh, not-yet-used cache directory actually needs.
 @(require_results)
 open_cache :: proc(cache: string, allocator: mem.Allocator) -> Cache_Fault {
 	assert(len(cache) > 0, "there is no scratch cache here to open")
@@ -509,6 +572,15 @@ open_cache :: proc(cache: string, allocator: mem.Allocator) -> Cache_Fault {
 
 	if !process.ascii_only(resolved) {
 		return .Path_Not_Ascii
+	}
+	if os.is_file(resolved) {
+		return .Not_A_Directory
+	}
+	if !os.exists(resolved) {
+		parent := os.dir(trim_trailing_separators(resolved))
+		if !os.exists(parent) {
+			return .Parent_Missing
+		}
 	}
 	if !child.make_directory_bounded(cache, child.READ_BOUND_MS) {
 		return .Unusable

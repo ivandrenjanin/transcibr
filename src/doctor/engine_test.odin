@@ -212,6 +212,41 @@ the_reference_engine_install_reports_cuda_loaded_when_it_is_present :: proc(t: ^
 	testing.expect_value(t, check.fault, Engine_Fault.None)
 }
 
+// Proves the caller-side refusal without spawning a flooding child: an
+// overflowed Probe is a caller-constructed value, and `engine_probe_verdict`
+// is the pure procedure `verify_engine` hands it to before anything else.
+// Mutation check per the ticket's own acceptance criterion: deleting the
+// `if probe.overflowed` guard in `engine_probe_verdict` (src/doctor/engine.odin)
+// leaves this red, because the overflowed Probe would then fall through to
+// `switch probe.run`, which this Probe leaves at its zero value
+// `.Not_Started` and reports a different fault entirely.
+@(test)
+an_overflowed_probe_is_refused_by_the_engine_verdict_rather_than_judged_on_its_capture :: proc(
+	t: ^testing.T,
+) {
+	probe := Probe {
+		overflowed = true,
+	}
+	check := engine_probe_verdict(probe)
+
+	testing.expect_value(t, check.fault, Engine_Fault.Capture_Overflowed)
+}
+
+@(test)
+an_engine_fault_message_names_the_capture_ceiling_when_overflowed :: proc(t: ^testing.T) {
+	check := Engine_Check {
+		fault = .Capture_Overflowed,
+	}
+	message := engine_error_message(check, `C:\engines\whisper-cli.exe`, context.allocator)
+	defer delete(message, context.allocator)
+
+	testing.expect(
+		t,
+		strings.contains(message, "MAX_PROBE_CAPTURE_BYTES"),
+		"an overflow fault message did not name its own ceiling",
+	)
+}
+
 @(test)
 an_engine_fault_message_names_the_executable_and_an_actionable_reason :: proc(t: ^testing.T) {
 	check := Engine_Check {

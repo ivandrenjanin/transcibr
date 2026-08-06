@@ -16,17 +16,21 @@ combined_message :: proc(
 	allocator: mem.Allocator,
 ) -> string {
 	assert(len(subject) > 0, "a refusal must name what it is reported against")
-	assert(len(says) > 0, "a refusal said nothing at all")
 	assert(
 		allocator.procedure != nil,
 		"the message outlives this procedure and needs an allocator",
 	)
 
+	sentence := says
+	if len(sentence) == 0 {
+		sentence = "failed, but this build has no sentence for why"
+	}
+
 	message: string
 	if len(reason) > 0 {
-		message = fmt.aprintf("%q: %s (%s)", subject, says, reason, allocator = allocator)
+		message = fmt.aprintf("%q: %s (%s)", subject, sentence, reason, allocator = allocator)
 	} else {
-		message = fmt.aprintf("%q: %s", subject, says, allocator = allocator)
+		message = fmt.aprintf("%q: %s", subject, sentence, allocator = allocator)
 	}
 	assert(len(message) > 0, "a refusal rendered as nothing at all")
 	return message

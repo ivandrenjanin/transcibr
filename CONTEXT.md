@@ -124,6 +124,106 @@ path that is not (ADR-0002), and swept at Batch start so a run that fails every 
 accumulate audio forever.
 _Avoid_: temp, working directory, staging, intermediate
 
+## Doctor
+
+**Report**:
+What a preflight run hands back: `[]Check`, nothing more — there is no `Report` type in `src/doctor`,
+only a slice of `Check` produced by `run_preflight`, read by `report_ok` to decide the `--doctor`
+subcommand's own process exit code, rendered one line at a time by `render_check`, and freed together
+by `destroy_report`.
+_Avoid_: results, summary, output
+
+**Check**:
+One line of a doctor Report: what was checked, and how it came out — PASS, FAIL with an actionable
+reason, SKIP with the reason it was never judged, or an advisory INFO that never turns the Report's
+own verdict false on its own (ADR-0033). `passed`, `failed` and `skipped` are the three constructors
+that produce a Check meant to reach a Report. The Model check also builds a bare, unnamed `Check{}` as
+an internal screened-clean sentinel (`model_screened_further`, `checks.odin:200`) — never one of the
+three, and never handed to a Report itself; `model_check` discriminates it by `len(refusal.name) > 0`
+and, once past it, always returns a Check one of the three constructors made.
+_Avoid_: result, verdict, test, probe
+
+**Preflight**:
+The doctor run a user invokes directly, through the `--doctor` subcommand, so they find out about a
+problem before a Batch rather than mid-run (spec story 8): ffmpeg, ffprobe, the Engine, the Model, then
+the GPU diagnostic — five Checks in total, run through to the end even after an earlier one fails, so a
+user sees every actionable reason at once rather than fixing one problem per run (`run_preflight`,
+ADR-0033). Informational, not gating — a `--batch` run never calls it and is not
+blocked by it. Distinct from the health watch, the same GPU guard's other half, which runs during a
+Batch rather than before one.
+_Avoid_: startup check, sanity check, readiness check
+
+**Load probe**:
+The Model check's authoritative half: actually spawning the Engine against the Model and a committed,
+silent probe clip, because only a real load proves a Model loads — ADR-0011's spawn-and-verify, never
+stat-and-trust. Replaces a SHA-256 over the Model's bytes that ADR-0033 tried and removed: compared
+against nothing, it cost 6.9 of an 8.5-second doctor run and still passed a 200 MiB head-truncation of
+a real Model that the load probe refuses in under a second. Built from `doctor`'s own exported `Probe`
+struct (`tool.odin`) — what one bounded spawn of an executable came to, its whole diagnostic stream
+captured — a third sense of the word distinct from this glossary's container Probe, which is a
+container's own claim about itself and spawns nothing. Skipped, not failed, when the Engine check
+ahead of it did not pass; see Skip.
+_Avoid_: hash check, checksum, verification pass
+
+**Health watch**:
+The runtime half of the same GPU guard the preflight's Engine check is the other half of
+(`first_recording_health`, ADR-0011, ADR-0033): two independent checks on the first completed
+Recording, not one comparison. The name half fails only when the Engine's own systeminfo is present
+and actively names something other than CUDA, whatever the Recording's speed was — a Recording
+running three times the Baseline still fails if a present systeminfo says the build was never
+CUDA-capable. An absent or unparsed systeminfo is not evidence of anything and never fails this half
+on its own; it leaves the speed half to carry the verdict instead. Once the name half is silent, the
+speed half compares the Recording's own realtime factor against the Baseline, catching a driver update
+or a GPU in a reset state that a passing preflight could not have seen. A third answer, `conclusive =
+false`, is not a fault: a Recording too short for the speed half to mean anything is left unjudged
+rather than reported healthy, so a Batch's one health check is not spent on a Recording nothing could
+actually be concluded from. Never itself a spawn — the Engine invocation it reads from already
+happened for the Recording's own sake.
+_Avoid_: runtime check, GPU monitor, watchdog
+
+**Skip**:
+What a Check reports when it never ran because an earlier one made its own answer meaningless — the
+Model check, when the Engine check ahead of it did not pass, because a Model cannot be judged through
+an Engine that does not work. Distinct from Fail: a Skipped Check carries `ok = false` so it never
+reads as a pass, but it never turns a Report's own verdict false on its own, because whatever stopped
+it from running is already a failure of its own further up the Report. "The model was not judged" and
+"the model failed" are two different Checks reporting two different things — the confusion a #96
+review round already produced, and the reason this entry exists.
+_Avoid_: failed silently, inconclusive, untested, errored
+
+**Advisory**:
+A Check that renders as PASS when it passes, exactly like any other Check; only a failing advisory
+renders as INFO rather than FAIL, and even then it never turns the Report's own verdict false on its
+own — informational, not gating, like every other Check in a preflight Report (ADR-0033). The
+GPU diagnostic is the only advisory Check `src/doctor` runs today; the shape exists so a future Check
+that is worth printing but never worth failing on does not have to invent one.
+_Avoid_: warning, note, informational check
+
+**GPU diagnostic**:
+The one advisory Check in a preflight Report: what DXGI can enumerate about attached GPUs, purely to
+help a user read a failing Engine check — "no GPU could be enumerated at all" reads differently from
+"a GPU is here but the Engine could not reach it." Never the verdict on GPU usability; only the Engine
+check, which spawns it directly, and the health watch, which reads what that Engine invocation already
+measured, decide that (ADR-0011).
+_Avoid_: GPU check, hardware check, GPU probe
+
+**Baseline**:
+The one realtime factor this repository has actually measured against a working CUDA path — roughly
+17x at beam size 5 over the reference corpus (docs/spec/0001-transcibr-v1.md) — and the frame of
+reference the health watch's speed half reads against. Not read by the preflight's Engine check at
+all: that check decides on two independent evidence sources, neither of them the Baseline. Before
+anything is spawned, `backend_library_present` (`engine.odin:70-71, 90-102`) is a bare filesystem
+check for the CUDA DLL beside the executable — ADR-0011's own account of the most common broken
+install, missing the DLL entirely — and only once that passes does the check go on to its own
+diagnostic output, a `--help` capture checked for `"loaded CUDA backend from"`
+(`strings.contains(probe.captured, ...)`, `engine.odin:84`) — not the systeminfo JSON field the
+Health watch entry above reads, which is a different Engine output entirely. So the Baseline is the
+health watch's own number, not one either of the Engine check's two halves reads. Not a promise about any one machine's own
+GPU: the health watch's threshold sits a full order of magnitude below it, because a factor that far
+under the Baseline is the CPU-fallback signature the guard exists to catch, not ordinary
+machine-to-machine variance.
+_Avoid_: benchmark, target speed, expected throughput
+
 ## Pipeline
 
 **Stage**:
