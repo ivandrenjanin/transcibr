@@ -328,6 +328,17 @@ the process and thread handles, and do not touch any file the child had open unt
 completes. Note also that `Process.pid` is stale once the process exits and Windows recycles pids,
 so a late terminate can signal an unrelated application.
 
+**No `os.remove_all(...)` call anywhere in the tree (issue #97/#105).** `core:testing` runs tests on
+their own thread, and issue #97 measured `os.remove_all` faulting on that thread over a non-empty
+directory — a crash with no summary and no JSON report, the same failure mode issue #22 already
+names for concurrent assertions. Nothing needs a whole-subtree delete: `src\testkit\testkit.odin`'s
+`remove_cache` is the sanctioned teardown, a per-entry hand loop that never recurses through
+`core:os`. `scripts\common.ps1`'s `Assert-OdinRemoveAllPolicy` fails the build on any
+`os.remove_all(...)` call expression, wherever it appears and however the `core:os` import is
+aliased, riding the same `tools\policy` AST read as the four CLAUDE.md source policies above — the
+one difference being that this is the #97 review's own finding rather than a rule this document
+states as one of those four.
+
 **Testing is built in; there is no framework to choose.** Mark procedures `@(test)`, import
 `core:testing`, and assert with `testing.expect` and `testing.expect_value`. `.\scripts\test.ps1`
 sweeps every package; `.\scripts\test.ps1 -TestName version.banner_names_the_program_and_its_version`

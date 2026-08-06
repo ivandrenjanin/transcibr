@@ -74,7 +74,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 69
+$ExpectedCaseCount = 70
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -1968,6 +1968,22 @@ Test-Case 'a comment naming os.remove_all does not fail the build' {
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'build.ps1'
 	Assert-Result -Result $result -Matching 'no \.odin file calls os\.remove_all'
 	Assert-Result -Result $result -Matching 'Built 1 target'
+}
+
+Test-Case 'the remove_all ban is written down' {
+	# Sixth caller of Assert-PolicyClaim, and the one Assert-OdinRemoveAllPolicy
+	# was missing: the other five build-failing enforcers (procedure length,
+	# comment ban, result policy, vet tags, network confinement) all pin a
+	# claim in the document that states the rule they enforce. This one had no
+	# document at all -- a scan replicating Assert-PolicyClaim's own Contains
+	# check, run over CLAUDE.md, README.md, CONTEXT.md and every file under
+	# docs\, found zero hits for 'remove_all', 'Assert-OdinRemoveAllPolicy' or
+	# '#105' anywhere in the tree. A contributor who trips the gate had a good
+	# error message and nothing to read.
+	Assert-PolicyClaim -Enforcer 'Assert-OdinRemoveAllPolicy' -Claims @(
+		'No `os.remove_all(...)` call anywhere in the tree (issue #97/#105)'
+		'Assert-OdinRemoveAllPolicy'
+	)
 }
 
 # ------------------------------------------------- cases for the network gate --
