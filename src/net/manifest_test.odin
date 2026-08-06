@@ -79,3 +79,69 @@ a_malformed_manifest_is_ignored_rather_than_trusted :: proc(t: ^testing.T) {
 	testing.expect(t, !applied, "a malformed manifest must not report itself applied")
 	testing.expect_value(t, spec.url, DEFAULT_SPEC.url)
 }
+
+@(test)
+a_negative_expected_bytes_is_rejected_rather_than_stored :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "net", "manifest-negative-bytes", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	manifest_path := fmt.aprintf("%s\\engine.json", cache, allocator = context.allocator)
+	defer delete(manifest_path, context.allocator)
+	manifest_json := `{"expected_bytes":-1}`
+	testing.expect(
+		t,
+		os.write_entire_file(manifest_path, transmute([]u8)manifest_json) == nil,
+		"could not write the fixture manifest",
+	)
+
+	spec, applied := manifest_override(DEFAULT_SPEC, manifest_path, context.allocator)
+	defer destroy_spec(spec, context.allocator)
+
+	testing.expect(t, applied, "a manifest that parsed clean must report itself applied")
+	testing.expect_value(t, spec.expected_bytes, DEFAULT_SPEC.expected_bytes)
+}
+
+@(test)
+an_empty_url_field_is_rejected_rather_than_stored :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "net", "manifest-empty-url", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	manifest_path := fmt.aprintf("%s\\engine.json", cache, allocator = context.allocator)
+	defer delete(manifest_path, context.allocator)
+	manifest_json := `{"url":""}`
+	testing.expect(
+		t,
+		os.write_entire_file(manifest_path, transmute([]u8)manifest_json) == nil,
+		"could not write the fixture manifest",
+	)
+
+	spec, applied := manifest_override(DEFAULT_SPEC, manifest_path, context.allocator)
+	defer destroy_spec(spec, context.allocator)
+
+	testing.expect(t, applied, "a manifest that parsed clean must report itself applied")
+	testing.expect_value(t, spec.url, DEFAULT_SPEC.url)
+}
+
+@(test)
+a_manifest_nested_past_the_depth_bound_is_rejected_rather_than_trusted :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "net", "manifest-too-deep", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	manifest_path := fmt.aprintf("%s\\engine.json", cache, allocator = context.allocator)
+	defer delete(manifest_path, context.allocator)
+	manifest_json := `{"url":"https://example.invalid/moved.zip","extra":[[[[[[[[[[1]]]]]]]]]]}`
+	testing.expect(
+		t,
+		os.write_entire_file(manifest_path, transmute([]u8)manifest_json) == nil,
+		"could not write the fixture manifest",
+	)
+
+	spec, applied := manifest_override(DEFAULT_SPEC, manifest_path, context.allocator)
+	defer destroy_spec(spec, context.allocator)
+
+	testing.expect(t, !applied, "a manifest nested past the bound must not report itself applied")
+	testing.expect_value(t, spec.url, DEFAULT_SPEC.url)
+}

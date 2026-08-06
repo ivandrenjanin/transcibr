@@ -5,9 +5,9 @@
 // verifies (ADR-0015). This file is the only one that ever spells the
 // network API by name; `manifest.odin`, `verify.odin`, `resume.odin` and
 // `transfer.odin` hold everything provable without a socket, and carry this
-// package's tests. `docs/reference/winhttp-download.odin` was the working
-// prototype this absorbs; see its own header for the facts it established
-// about this compiler's WinHTTP bindings.
+// package's tests. This file absorbed the working prototype that used to
+// live at `docs/reference/winhttp-download.odin` (deleted; closes #55); the
+// facts it established about this compiler's WinHTTP bindings live here now.
 package net
 
 import "core:mem"

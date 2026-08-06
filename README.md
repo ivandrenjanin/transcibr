@@ -118,7 +118,7 @@ just build         # -> build\transcibr-cli.exe, debug
 just release        # -> build\transcibr-cli.exe, -o:speed
 just check          # tools\policy: CLAUDE.md's source policies and the package-accounting check
 just test           # every package under src\ and tools\policy
-just fmt            # every .odin file under src, tools and docs/reference against odinfmt.json, rewritten in place
+just fmt            # every .odin file under src and tools against odinfmt.json, rewritten in place
 just ci             # fmt-check, check, build, release, test, test-single, smoke
 ```
 
