@@ -21,6 +21,31 @@ open_log_opens_and_appends_under_a_fresh_directory :: proc(t: ^testing.T) {
 	testing.expect(t, handle_is_open(h), "open_log reported success with no open handle")
 }
 
+// Issue #76 review round 2: a `FILE_SHARE_READ`-only `open_log` refused a
+// second concurrent opener of the same file outright (a sharing violation),
+// which is exactly what two transcibr-cli invocations -- or a future #16 GUI
+// alongside the CLI -- would do. Both opens are `open_log` itself, so this
+// exercises the real sharing flags `CreateFileW` was given rather than a
+// hand-rolled second open that could drift from them.
+@(test)
+open_log_allows_a_second_concurrent_open_log_call :: proc(t: ^testing.T) {
+	dir := testkit.scratch_cache(t, "crashlog", "open_log_concurrent", context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	h1, ok1 := open_log(dir, context.allocator)
+	defer close_log(&h1)
+	testing.expect(t, ok1, "the first open_log call should have succeeded")
+
+	h2, ok2 := open_log(dir, context.allocator)
+	defer close_log(&h2)
+	testing.expect(
+		t,
+		ok2,
+		"a second concurrent open_log call against the same directory should not be blocked by sharing",
+	)
+}
+
 @(test)
 record_assert_line_writes_prefix_message_and_location :: proc(t: ^testing.T) {
 	dir := testkit.scratch_cache(t, "crashlog", "assert_line", context.allocator)

@@ -23,6 +23,31 @@ g_trace: trace.Context
 @(private)
 g_trace_ok: bool
 
+// Set by `enter_assertion_hook`, read by nothing else -- `assertion_hook`'s
+// own re-entrancy guard. `resolve_frame`'s two asserts route back through
+// `context.assertion_failure_proc`, which is `assertion_hook` itself; issue
+// #76 review round 2 measured a fired one recurse into 408 log lines and
+// exit 127 with no guard here. Plain assignment rather than an atomic is
+// enough: the hazard this closes is one thread calling back into its own
+// still-running hook, not two threads racing each other into it.
+@(private)
+g_in_assertion_hook: bool
+
+// Returns true the first time it is called and false on every call after
+// that until the flag is reset -- extracted from `assertion_hook` so the
+// guard itself can be exercised directly. Tripping the real hook crashes the
+// process by design (`runtime.trap()`), so a test can reach this but not
+// `assertion_hook` as a whole.
+@(private)
+@(require_results)
+enter_assertion_hook :: proc() -> bool {
+	if g_in_assertion_hook {
+		return false
+	}
+	g_in_assertion_hook = true
+	return true
+}
+
 // `context.assertion_failure_proc`'s replacement. Odin's implicit `context`
 // does not propagate back out of a call that returns -- only forward, into
 // what a scope calls next -- so `context.assertion_failure_proc =
@@ -41,6 +66,10 @@ g_trace_ok: bool
 // exactly -- it degrades to nothing on a non-`-debug` build rather than
 // failing, per that package's own doc comment.
 assertion_hook :: proc(prefix, message: string, loc: runtime.Source_Code_Location) -> ! {
+	if !enter_assertion_hook() {
+		runtime.trap()
+	}
+
 	record_assert_line(g_log.file, prefix, message, loc)
 
 	runtime.print_caller_location(loc)

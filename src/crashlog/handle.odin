@@ -12,9 +12,12 @@ LOG_FILE_NAME :: "transcibr.log"
 
 // Opens `<dir>\transcibr.log` for append, creating `dir` if it is not there
 // yet. `FILE_APPEND_DATA` rather than plain `GENERIC_WRITE` -- a write
-// through it always lands at the file's current end, which is what makes it
-// safe for two processes (a crashed one and whatever inspects the log next)
-// to hold the same file open without one truncating what the other wrote.
+// through it always lands at the file's current end, so no writer can
+// truncate what another already wrote. Sharing both `FILE_SHARE_READ` and
+// `FILE_SHARE_WRITE` is what actually lets a second concurrent transcibr-cli
+// (or a future #16 GUI) open the same file at all -- issue #76 review round 2
+// measured a `FILE_SHARE_READ`-only open here refuse a second opener outright
+// with a sharing violation, leaving that second process's crash unlogged.
 @(require_results)
 open_log :: proc(dir: string, allocator: mem.Allocator) -> (h: Log_Handle, ok: bool) {
 	assert(len(dir) > 0, "a crash log needs somewhere to be opened")
@@ -36,7 +39,7 @@ open_log :: proc(dir: string, allocator: mem.Allocator) -> (h: Log_Handle, ok: b
 	handle := win32.CreateFileW(
 		win32.wstring(raw_data(wide)),
 		win32.FILE_APPEND_DATA,
-		win32.FILE_SHARE_READ,
+		win32.FILE_SHARE_READ | win32.FILE_SHARE_WRITE,
 		nil,
 		win32.OPEN_ALWAYS,
 		win32.FILE_ATTRIBUTE_NORMAL,

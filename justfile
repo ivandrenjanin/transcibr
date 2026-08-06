@@ -121,12 +121,16 @@ install-tools:
 	for /f "delims=" %f in ('dir /s /b .tools\odinfmt-*.exe') do @echo ODINFMT=%f & if defined GITHUB_ENV echo ODINFMT=%f>>"%GITHUB_ENV%"
 
 # Everything CI runs, in the order a developer would want to know about a
-# failure: formatting first, source policy second, both builds, the full
-# test sweep, the single-threaded detector, then the smoke test. `release`
-# runs before `build`, not after: both write to the same
-# `build/transcibr-cli.exe` path, and `test`'s crashlog crash-drill tests
-# (`src/crashlog/crashlog_crash_test.odin`) spawn whichever one is on disk
-# when they run -- putting `build` last means `test` always spawns the
-# `-debug` binary its own doc comment promises, with a PDB present for
-# `assertion_hook`'s stack symbolization (issue #76 review round 1).
-ci: fmt-check check release build test test-single smoke
+# failure: formatting first, source policy second, then the debug build, the
+# full test sweep, the single-threaded detector, the release build, and the
+# smoke test last. `build` and `release` both write to the same
+# `build/transcibr-cli.exe` path, and each of the two consumers below needs a
+# specific one on disk when it runs: `test`'s crashlog crash-drill tests
+# (`src/crashlog/crashlog_crash_test.odin`) need the `-debug` binary with a
+# PDB present for `assertion_hook`'s stack symbolization (issue #76 review
+# round 1), and `smoke` is the only recipe that runs the CLI as the shipping
+# artifact, so it needs the `-o:speed` release binary actually built and
+# executed rather than left untested (issue #76 review round 2). `build`
+# before `test`, `release` before `smoke`, is the one ordering that gives
+# both consumers the binary they need.
+ci: fmt-check check build test test-single release smoke

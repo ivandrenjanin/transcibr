@@ -12,21 +12,24 @@
 // on `context.logger`.
 //
 // `install` is the one entry point a binary's own `main` calls, once, before
-// anything else can assert or fault. `reinstall_assertion_hook` is the one a
-// freshly spawned worker thread calls: `core:thread` hands a new thread a
+// anything else can assert or fault. There is no reinstall procedure to call
+// from a freshly spawned worker thread: `core:thread` hands a new thread a
 // context built from scratch, and `context.assertion_failure_proc` is a
-// field of that context, not a process-wide setting the way the exception
-// filter is.
+// field of that context rather than a process-wide setting the way the
+// exception filter is, so a worker thread instead writes
+// `context.assertion_failure_proc = crashlog.assertion_hook` itself, inline,
+// the same one line `install`'s own caller writes (see `hooks.odin`'s
+// `assertion_hook` doc comment for why this cannot be folded into a helper).
 //
 // `open_log`/`close_log` and the format helpers are split out from
-// `install`/`install_hooks` on purpose: they touch no global state and can be
+// `install`/`register` on purpose: they touch no global state and can be
 // exercised directly from a test running inside `odin test`'s own process,
-// where calling `install_hooks` would leave that process's
+// where calling `register` would leave that process's
 // `SetUnhandledExceptionFilter` pointed at a handle the test then closes.
-// Measuring the two hooks themselves needs a process crashlog_test.odin does
-// not run inside -- crashlog_test.odin spawns one (`transcibr:child`), a
-// debug build of `transcibr-cli` carrying a hidden probe mode, and reads
-// back what it left in the log.
+// Measuring the two hooks themselves needs a process this package's own
+// tests do not run inside -- `crashlog_crash_test.odin` spawns one
+// (`transcibr:child`), a debug build of `transcibr-cli` carrying a hidden
+// `--crash-drill` mode, and reads back what it left in the log.
 package crashlog
 
 import win32 "core:sys/windows"
@@ -35,7 +38,7 @@ Log_Handle :: struct {
 	file: win32.HANDLE,
 }
 
-// Set once, by `install_hooks`, and read by the two hooks below -- neither of
+// Set once, by `register`, and read by the two hooks below -- neither of
 // which can be handed a handle as an argument, because their signatures are
 // fixed by `context.assertion_failure_proc` and `SetUnhandledExceptionFilter`
 // respectively.

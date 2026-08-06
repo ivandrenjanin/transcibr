@@ -8,8 +8,8 @@ import win32 "core:sys/windows"
 // every caller of it is either the exception filter (no context at all, and
 // possibly running with a corrupt heap) or the assertion hook, which the
 // maintainer ruling holds to the same no-allocation bar even though it does
-// have a context. `win32.WriteFile` on the handle `install_hooks` opened
-// ahead of time is the entire mechanism -- CLAUDE.md's Windows notes name a
+// have a context. `win32.WriteFile` on the handle `install` opened ahead of
+// time is the entire mechanism -- CLAUDE.md's Windows notes name a
 // pre-opened handle as one of MiniDumpWriteDump's documented constraints, and
 // the same constraint is why this package never opens a handle inside a
 // hook.
