@@ -530,3 +530,78 @@ a_batch_naming_unknown_as_its_engine_retranscribes_rather_than_skips :: proc(t: 
 	testing.expect_value(t, second.transcribed, 1)
 	testing.expect_value(t, second.skipped, 0)
 }
+
+// #88: `re_rendered_and_placed` (batch.odin) was executed by no test at all
+// -- mutating its return value in a disposable worktree left the full suite
+// green. Planting a Sidecar that differs from current Settings only in
+// `merge_profile` is the one recipe `resumed` (src/planning/plan.odin) reads
+// as `.Re_Render` rather than `.Transcribe`, so this drives the real
+// procedure end to end: `re_render_recording` calls it, it calls the shared
+// `placed_and_reported` with a nil duration -- the implication arm of
+// `artifact.complete`'s `assert_agree` #73's AC2 proved only by construction,
+// reached here by execution -- and the Transcript is re-rendered, placed, and
+// the Sidecar rewritten. `second.rerendered == 1` is the oracle a `return
+// false` mutation cannot survive: it would report `second.failed == 1`
+// instead.
+@(test)
+a_merge_profile_change_alone_drives_the_real_re_render_and_placement :: proc(t: ^testing.T) {
+	tree := testkit.made_scratch_cache(t, "pipeline", "re-render", context.allocator)
+	defer testkit.remove_cache(tree, context.allocator)
+	defer delete(tree, context.allocator)
+
+	one := resume_recording(t, tree, "one")
+	defer delete(one, context.allocator)
+
+	settings := resume_settings()
+	defer delete(string(settings.model.digest), context.allocator)
+	o := resume_options(tree, settings)
+
+	first_inventory, first_plan := planned_resume(t, tree, settings)
+	defer planning.destroy_inventory(first_inventory, context.allocator)
+	defer planning.destroy_plan(first_plan, context.allocator)
+	first := run_recordings(first_plan, o, context.allocator, nil, FAKE_RESUME_STAGES)
+	testing.expect_value(t, first.transcribed, 1)
+	testing.expect_value(t, first.failed, 0)
+
+	reprofiled := settings
+	reprofiled.merge_profile = transcript.profile_name(transcript.Merge_Profile.Conversation)
+
+	second_inventory, second_plan := planned_resume(t, tree, reprofiled)
+	defer planning.destroy_inventory(second_inventory, context.allocator)
+	defer planning.destroy_plan(second_plan, context.allocator)
+	for entry in second_plan.entries {
+		testing.expectf(
+			t,
+			entry.outcome.decision == .Re_Render,
+			"%s was not planned for a re-render after only its Merge Profile changed: %v",
+			entry.found.source,
+			entry.outcome.decision,
+		)
+	}
+
+	reprofiled_options := o
+	reprofiled_options.profile = .Conversation
+	second := run_recordings(
+		second_plan,
+		reprofiled_options,
+		context.allocator,
+		nil,
+		FAKE_RESUME_STAGES,
+	)
+	testing.expect_value(t, second.rerendered, 1)
+	testing.expect_value(t, second.failed, 0)
+	testing.expect_value(t, second.transcribed, 0)
+
+	third_inventory, third_plan := planned_resume(t, tree, reprofiled)
+	defer planning.destroy_inventory(third_inventory, context.allocator)
+	defer planning.destroy_plan(third_plan, context.allocator)
+	for entry in third_plan.entries {
+		testing.expectf(
+			t,
+			entry.outcome.decision == .Skip,
+			"%s was not resumed as settled after the re-render placed its new Merge Profile: %v",
+			entry.found.source,
+			entry.outcome.decision,
+		)
+	}
+}
