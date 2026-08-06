@@ -70,6 +70,13 @@ USAGE ::
       once. Ctrl+C stops admitting new recordings; whatever the queue already
       holds still finishes. Spends GPU time.
 
+  transcibr-cli --doctor --model-file <path> --engine-exe <path>
+                [--ffmpeg <path>] [--ffprobe <path>]
+      check that ffmpeg, ffprobe, the engine and the model are actually
+      usable before a batch spends any of them, and print a gpu diagnostic.
+      Actually spawns the engine rather than checking that its files exist.
+      Spends no GPU time; exits nonzero if any check failed.
+
   transcibr-cli --help
       print this and exit.
 
@@ -108,6 +115,9 @@ main :: proc() {
 	}
 	if os.args[1] == BATCH {
 		os.exit(run_batch_command(os.args[1:]))
+	}
+	if os.args[1] == DOCTOR {
+		os.exit(run_doctor(os.args[2:]))
 	}
 	os.exit(re_render(os.args[1:]))
 }

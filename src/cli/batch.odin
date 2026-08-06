@@ -42,6 +42,12 @@ Batch_Options :: struct {
 @(private)
 cancel_requested: bool
 
+// ADR-0011's runtime half: written only by the transcription Worker,
+// sequentially -- see `pipeline.Health_Watch`'s own doc comment for why that
+// needs no atomics of its own.
+@(private)
+gpu_health_checked: bool
+
 // `"system"`, because Windows calls this from a thread transcibr never
 // started, on no context of this program's own -- and needs none: an atomic
 // store is `proc "contextless"`-safe, and nothing else happens here.
@@ -152,6 +158,7 @@ run_the_batch :: proc(
 	plan: planning.Plan,
 ) -> int {
 	sync.atomic_store(&cancel_requested, false)
+	gpu_health_checked = false
 	win32.SetConsoleCtrlHandler(console_ctrl_handler, true)
 	defer win32.SetConsoleCtrlHandler(console_ctrl_handler, false)
 
@@ -169,6 +176,10 @@ run_the_batch :: proc(
 				extract_workers = o.extract_workers,
 				queue_depth = o.queue_depth,
 				join_bound_ms = pipeline.DEFAULT_JOIN_BOUND_MS,
+			},
+			health = pipeline.Health_Watch {
+				checked = &gpu_health_checked,
+				abort = &cancel_requested,
 			},
 		},
 		context.allocator,

@@ -1,11 +1,15 @@
 #+vet explicit-allocators
 package pipeline
 
+import "core:fmt"
+import "core:os"
 import "core:strings"
 import "core:testing"
 import "transcibr:artifact"
 import "transcibr:audio"
+import "transcibr:engine"
 import "transcibr:planning"
+import "transcibr:testkit"
 import "transcibr:transcript"
 
 // Freed by the caller with `delete` and the same allocator, exactly like a
@@ -168,4 +172,71 @@ sort_entry_builds_exactly_one_job_for_a_transcribe_decision :: proc(t: ^testing.
 	testing.expect_value(t, jobs[0].source, "C:\\clips\\talk.mp4")
 	testing.expect_value(t, jobs[0].name, "talk")
 	testing.expect(t, jobs[0].arena != nil, "a Job built for the pipeline carries no arena")
+}
+
+@(private)
+@(require_results)
+health_check_job :: proc(
+	t: ^testing.T,
+	tag: string,
+	output_json: string,
+) -> (
+	job: Recording_Job,
+	checked, abort: bool,
+) {
+	dir := testkit.made_scratch_cache(t, "Pipeline", tag, context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	output := fmt.aprintf("%s\\engine-output.json", dir, allocator = context.allocator)
+	handle, unopenable := os.open(output, {.Write, .Create, .Trunc})
+	testing.expect(t, unopenable == nil, "the case could not write its own fixture")
+	_, unwritable := os.write(handle, transmute([]u8)output_json)
+	testing.expect(t, unwritable == nil, "the case could not write its own fixture")
+	os.close(handle)
+
+	job = new_recording_job(
+		"C:\\clips\\talk.mp4",
+		"talk",
+		nil,
+		Tools{},
+		dir,
+		artifact.Model{},
+		"",
+		"whisper.cpp 1.9.9",
+		transcript.DEFAULT_PROFILE,
+		engine.Report{},
+		Health_Watch{checked = &checked, abort = &abort},
+	)
+	defer abandon_recording_job(job)
+	defer delete(output, context.allocator)
+
+	checked_first_recording_health(
+		job,
+		60_000,
+		engine.Transcribed{output = output, duration_ms = 3_000},
+	)
+	return
+}
+
+@(test)
+a_healthy_first_recording_is_checked_once_and_never_aborts_the_batch :: proc(t: ^testing.T) {
+	_, checked, abort := health_check_job(
+		t,
+		"healthy",
+		`{"systeminfo": "WHISPER : CUDA : ARCHS = 500,610,700"}`,
+	)
+	testing.expect_value(t, checked, true)
+	testing.expect_value(t, abort, false)
+}
+
+@(test)
+an_unhealthy_first_recording_sets_the_same_flag_a_ctrl_c_press_sets :: proc(t: ^testing.T) {
+	_, checked, abort := health_check_job(
+		t,
+		"unhealthy",
+		`{"systeminfo": "WHISPER : no gpu backend at all"}`,
+	)
+	testing.expect_value(t, checked, true)
+	testing.expect_value(t, abort, true)
 }

@@ -10,10 +10,12 @@ package pipeline
 import "base:runtime"
 import "core:fmt"
 import "core:mem"
+import "core:sync"
 import "core:time"
 import "transcibr:artifact"
 import "transcibr:audio"
 import "transcibr:child"
+import "transcibr:doctor"
 import "transcibr:engine"
 import "transcibr:planning"
 import "transcibr:transcript"
@@ -26,6 +28,21 @@ import "transcibr:transcript"
 Tools :: struct {
 	audio:  audio.Tools,
 	engine: engine.Tools,
+}
+
+// The runtime half of ADR-0011's guard, threaded through every Recording_Job
+// in a Batch so the ONE transcription Worker (ADR-0006) can check the first
+// Recording it finishes and abort the rest. `checked` is read and written
+// only from that single Worker, in strict sequence, so it needs no atomics of
+// its own; `abort` is `sync.atomic_store`d because `run_batch`'s admission
+// loop reads it from a different thread -- the identical `cancelled` flag a
+// Ctrl+C press already sets (`src/cli/batch.odin`), reused rather than
+// inventing a second way to stop a Batch early. Both nil is a real value:
+// `--transcribe`'s Batch of one has no "first of several" to gate and no
+// admission loop left to stop.
+Health_Watch :: struct {
+	checked: ^bool,
+	abort:   ^bool,
 }
 
 // One Recording's share of a Batch: everything its two Stages need, borrowed
@@ -49,6 +66,7 @@ Recording_Job :: struct {
 	engine_version: string,
 	profile:        transcript.Merge_Profile,
 	report:         engine.Report,
+	health:         Health_Watch,
 	arena:          ^mem.Dynamic_Arena,
 	allocator:      mem.Allocator,
 }
@@ -131,7 +149,58 @@ transcribe_and_place :: proc(extracted: Recording_Extracted) -> bool {
 		report_fault(engine.error_message(unfinished, job.source, job.allocator), job.allocator)
 		return false
 	}
+	checked_first_recording_health(job, extracted.extracted.container_ms, produced)
 	return placed_from_engine_output(job, extracted, produced.output)
+}
+
+// Runs at most once per Batch, against whichever Recording is the first to
+// finish transcribing successfully -- `job.health.checked` is this gate, and
+// a Recording that fails before reaching here never sets it, so the check
+// still runs against the first one that actually completes. A verdict this
+// unhealthy does not fail THIS Recording, which already finished -- it stops
+// the ones behind it, the same way ADR-0011 asks: abort the Batch rather
+// than run overnight on the wrong device.
+@(private)
+checked_first_recording_health :: proc(
+	job: Recording_Job,
+	container_ms: i64,
+	produced: engine.Transcribed,
+) {
+	assert(container_ms > 0, "a Recording nobody could time reached the health check")
+
+	if job.health.checked == nil || job.health.checked^ {
+		return
+	}
+	job.health.checked^ = true
+	if produced.duration_ms <= 0 {
+		return
+	}
+
+	json_bytes, unreadable := child.read_bounded(
+		produced.output,
+		child.READ_BOUND_MS,
+		job.allocator,
+	)
+	if unreadable.fault != .None {
+		return
+	}
+	defer delete(json_bytes, job.allocator)
+
+	systeminfo := transcript.parse_systeminfo(string(json_bytes), job.allocator)
+	defer delete(systeminfo, job.allocator)
+
+	factor := f64(container_ms) / f64(produced.duration_ms)
+	fault := doctor.first_recording_health(systeminfo, factor)
+	if fault == .None {
+		return
+	}
+
+	message := doctor.health_error_message(fault, factor, job.allocator)
+	defer delete(message, job.allocator)
+	fmt.eprintfln("%s: %s", job.source, message)
+	if job.health.abort != nil {
+		sync.atomic_store(job.health.abort, true)
+	}
 }
 
 @(private)
@@ -237,6 +306,7 @@ Batch_Options :: struct {
 	engine_version: string,
 	profile:        transcript.Merge_Profile,
 	config:         Config,
+	health:         Health_Watch,
 }
 
 // The one place a Recording_Job is actually built, for a Batch of many
@@ -256,6 +326,7 @@ new_recording_job :: proc(
 	engine_version: string,
 	profile: transcript.Merge_Profile,
 	report: engine.Report,
+	health: Health_Watch,
 ) -> Recording_Job {
 	assert(len(source) > 0, "there is no Recording here to build a Job for")
 	assert(len(name) > 0, "a Recording with no artifact stem has nowhere to put its output")
@@ -278,6 +349,7 @@ new_recording_job :: proc(
 		engine_version = engine_version,
 		profile = profile,
 		report = report,
+		health = health,
 		arena = arena,
 		allocator = mem.dynamic_arena_allocator(arena),
 	}
@@ -299,5 +371,6 @@ recording_job_of :: proc(entry: planning.Entry, o: Batch_Options) -> Recording_J
 		o.engine_version,
 		o.profile,
 		engine.Report{},
+		o.health,
 	)
 }
