@@ -12,13 +12,29 @@ import "core:testing"
 // actually creates the directory within its bound, and not merely that it
 // compiles against `await_or_abandon` -- the bound-enforcement mechanism
 // itself is `read_test.odin`'s to prove, against a pipe nobody writes to.
+// Three missing levels, matching `directory.odin:31`'s call to
+// `os.make_directory_all` rather than `os.make_directory`: this is the only
+// test in the repository whose target proves the recursive create is really
+// what runs. Issue #97 measured (fix round 1, against
+// `dev-2026-07-nightly:819fdc7`) that the `-define:ODIN_TEST_THREADS=1`
+// crash was a second `os.remove_all` on a NON-EMPTY directory on a
+// `core:testing` runner thread, not depth -- so teardown here is four
+// stacked `os.remove` calls, innermost first, and never `os.remove_all`.
 @(test)
 a_scratch_cache_directory_is_created_within_its_bound :: proc(t: ^testing.T) {
 	root := scratch_path(t, "cachedir", context.allocator)
 	defer delete(root, context.allocator)
 	nested := fmt.aprintf("%s\\a\\b\\c", root, allocator = context.allocator)
 	defer delete(nested, context.allocator)
-	defer os.remove_all(root)
+	level_b := fmt.aprintf("%s\\a\\b", root, allocator = context.allocator)
+	defer delete(level_b, context.allocator)
+	level_a := fmt.aprintf("%s\\a", root, allocator = context.allocator)
+	defer delete(level_a, context.allocator)
+
+	defer os.remove(root)
+	defer os.remove(level_a)
+	defer os.remove(level_b)
+	defer os.remove(nested)
 
 	testing.expect(
 		t,
@@ -36,7 +52,7 @@ a_scratch_cache_directory_is_created_within_its_bound :: proc(t: ^testing.T) {
 a_scratch_cache_directory_that_already_exists_is_still_reported_made :: proc(t: ^testing.T) {
 	root := scratch_path(t, "cachedirexists", context.allocator)
 	defer delete(root, context.allocator)
-	defer os.remove_all(root)
+	defer os.remove(root)
 	testing.expect(
 		t,
 		os.make_directory_all(root) == nil,
@@ -59,10 +75,11 @@ a_directory_listing_within_its_bound_returns_every_entry_through_child :: proc(t
 		os.make_directory_all(root) == nil,
 		"could not make the directory this case needs",
 	)
-	defer os.remove_all(root)
+	defer os.remove(root)
 
 	a := fmt.aprintf("%s\\a.wav", root, allocator = context.allocator)
 	defer delete(a, context.allocator)
+	defer os.remove(a)
 	testing.expect(
 		t,
 		os.write_entire_file(a, transmute([]u8)string("a")) == nil,
@@ -70,6 +87,7 @@ a_directory_listing_within_its_bound_returns_every_entry_through_child :: proc(t
 	)
 	b := fmt.aprintf("%s\\b.wav", root, allocator = context.allocator)
 	defer delete(b, context.allocator)
+	defer os.remove(b)
 	testing.expect(
 		t,
 		os.write_entire_file(b, transmute([]u8)string("b")) == nil,
