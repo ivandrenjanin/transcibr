@@ -18,12 +18,18 @@ TEST_LESS_SRC_PACKAGES :: []string{"cli"}
 
 // Every directory under `src_root` holding at least one `*_test.odin` file,
 // named relative to `src_root` and forward-slashed: `child`, `net/winhttp`.
+// `strays` carries the full path of any `*_test.odin` file found sitting
+// directly in `src_root` itself -- it belongs to no package, so it is
+// reported through `strays` rather than folded into `names` under an empty
+// name (A8: a filesystem input that does not fit the package shape is an
+// operating error to report, not a precondition to assert past).
 @(require_results)
 tested_src_packages :: proc(
 	src_root: string,
 	allocator: mem.Allocator,
 ) -> (
 	names: []string,
+	strays: []string,
 	ok: bool,
 ) {
 	assert(len(src_root) > 0, "asked which packages under no root at all hold tests")
@@ -33,6 +39,7 @@ tested_src_packages :: proc(
 	)
 
 	seen := make([dynamic]string, 0, allocator)
+	stray := make([dynamic]string, 0, allocator)
 	walker := os.walker_create(src_root)
 	defer os.walker_destroy(&walker)
 
@@ -46,27 +53,37 @@ tested_src_packages :: proc(
 		if entry.type != .Regular || !strings.has_suffix(entry.name, "_test.odin") {
 			continue
 		}
-		note_tested_package(entry.fullpath, src_root, &seen, allocator)
+		note_tested_package(entry.fullpath, src_root, &seen, &stray, allocator)
 	}
 
 	if _, walk_error := os.walker_error(&walker); walk_error != nil {
-		return seen[:], false
+		return seen[:], stray[:], false
 	}
-	return seen[:], true
+	return seen[:], stray[:], true
 }
 
 // Records the package one test file belongs to, unless it is already there.
+// A test file sitting directly in `src_root` -- so `relative_slashed` trims
+// the whole path and returns the empty string -- belongs to no package; it
+// is recorded into `strays` instead, never as a nameless entry in `into`.
 note_tested_package :: proc(
 	test_file: string,
 	src_root: string,
 	into: ^[dynamic]string,
+	strays: ^[dynamic]string,
 	allocator: mem.Allocator,
 ) {
 	assert(len(test_file) > 0, "asked to attribute no test file at all to a package")
 	assert(into != nil, "asked to record a package into nothing at all")
+	assert(strays != nil, "asked to record a stray test file into nothing at all")
 
 	directory, _ := os.split_path(test_file)
 	name := relative_slashed(directory, src_root, allocator)
+	if len(name) == 0 {
+		delete(name, allocator)
+		append(strays, strings.clone(test_file, allocator))
+		return
+	}
 	for existing in into {
 		if existing == name {
 			delete(name, allocator)

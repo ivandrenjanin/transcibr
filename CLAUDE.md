@@ -286,9 +286,14 @@ The formatter half is `odinfmt.json` at the repository root — the one copy, an
 looks for on its own, so an editor formatting on save and the build agree by construction. Do not
 reformat a file by hand or with a different config; `just fmt` is the way. A misformatted file fails
 `just ci` (`just fmt-check`), which walks `src`, `tools` and `docs\reference` — each spelled once in
-`fmt` and once in `fmt-check`, the same three-directory scope `discover_odin_files` uses for `check` —
-comparing odinfmt's own reformatted output for each file against the file on disk, byte for byte,
-never `git diff`.
+`fmt` and once in `fmt-check` — comparing odinfmt's own reformatted output for each file against the
+file on disk, byte for byte, never `git diff`. That three-directory scope is NARROWER than `check`'s:
+`check_repository` calls `discover_odin_files` with the repository root itself, excluding only
+`.git`, `build`, `.scratch` and `.tools` (ADR-0035's "same repository-wide scope"), so a `.odin` file
+added anywhere outside `src`, `tools` and `docs\reference` — under `examples\`, say — is read against
+every source policy by `just check` but never read by `just fmt-check` at all. `fmt`/`fmt-check` do
+not yet have a way to name a scope by exclusion the way `discover_odin_files` does; keeping the two
+in sync is a manual discipline until they do.
 
 ```powershell
 just build       # debug build of src/cli, vet set, subsystem console

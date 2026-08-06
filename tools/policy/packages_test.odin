@@ -167,13 +167,60 @@ tested_src_packages_finds_only_directories_holding_a_test_file :: proc(t: ^testi
 	testing.expect_value(t, os.write_entire_file(plain_file, []byte{}), os.Error(nil))
 	defer os.remove(plain_file)
 
-	names, ok := tested_src_packages(base, context.allocator)
+	names, strays, ok := tested_src_packages(base, context.allocator)
 	defer delete(names, context.allocator)
 	defer for name in names {
 		delete(name, context.allocator)
+	}
+	defer delete(strays, context.allocator)
+	defer for stray in strays {
+		delete(stray, context.allocator)
 	}
 
 	testing.expect_value(t, ok, true)
 	testing.expect_value(t, len(names), 1)
 	testing.expect_value(t, names[0], "tested")
+	testing.expect_value(t, len(strays), 0)
+}
+
+// A `*_test.odin` file sitting directly in `src_root` -- not inside any
+// package directory -- belongs to no package. It must be reported through
+// `strays`, never folded into `names` under an empty name: that empty name
+// used to reach `is_test_less_package`'s `assert(len(name) > 0, ...)` and
+// crash the whole `just check` run instead of reporting a violation (A8).
+@(test)
+a_stray_test_file_directly_under_src_root_is_reported_not_asserted :: proc(t: ^testing.T) {
+	root, root_err := os.temp_dir(context.allocator)
+	testing.expect_value(t, root_err, nil)
+	defer delete(root, context.allocator)
+
+	base := fmt.aprintf(
+		"%stranscibr-policy-stray-fixture-%d",
+		root,
+		os.get_pid(),
+		allocator = context.allocator,
+	)
+	defer delete(base, context.allocator)
+
+	testing.expect_value(t, os.make_directory(base), os.Error(nil))
+	defer os.remove(base)
+
+	stray_file := fmt.aprintf("%s/stray_test.odin", base, allocator = context.allocator)
+	defer delete(stray_file, context.allocator)
+	testing.expect_value(t, os.write_entire_file(stray_file, []byte{}), os.Error(nil))
+	defer os.remove(stray_file)
+
+	names, strays, ok := tested_src_packages(base, context.allocator)
+	defer delete(names, context.allocator)
+	defer for name in names {
+		delete(name, context.allocator)
+	}
+	defer delete(strays, context.allocator)
+	defer for stray in strays {
+		delete(stray, context.allocator)
+	}
+
+	testing.expect_value(t, ok, true)
+	testing.expect_value(t, len(names), 0)
+	testing.expect_value(t, len(strays), 1)
 }

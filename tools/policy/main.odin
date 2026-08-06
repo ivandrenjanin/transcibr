@@ -161,15 +161,26 @@ check_package_accounting :: proc(
 
 	src_root := strings.concatenate({root, "/src"}, allocator)
 	defer delete(src_root, allocator)
-	tested, discovered := tested_src_packages(src_root, allocator)
+	tested, strays, discovered := tested_src_packages(src_root, allocator)
 	defer delete(tested, allocator)
 	defer for name in tested {
 		delete(name, allocator)
+	}
+	defer delete(strays, allocator)
+	defer for stray in strays {
+		delete(stray, allocator)
 	}
 	if !discovered {
 		message := strings.clone("could not walk src\\ looking for tested packages", allocator)
 		append(into, make_violation(src_root, 0, message, allocator))
 		return
+	}
+	for stray in strays {
+		message := strings.clone(
+			"a *_test.odin file that belongs to no package under src/",
+			allocator,
+		)
+		append(into, make_violation(stray, 0, message, allocator))
 	}
 
 	exempt_with_tests := exempt_packages_holding_tests(tested, allocator)
