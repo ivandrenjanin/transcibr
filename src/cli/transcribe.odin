@@ -51,9 +51,10 @@ transcribe_one :: proc(arguments: []string) -> int {
 	}
 
 	if refused := audio.open_cache(o.cache, context.allocator); refused != .None {
-		message := audio.cache_error_message(refused, o.cache, context.allocator)
-		defer delete(message, context.allocator)
-		fmt.eprintln(message)
+		pipeline.report_fault(
+			audio.cache_error_message(refused, o.cache, context.allocator),
+			context.allocator,
+		)
 		return OPERATING_ERROR
 	}
 

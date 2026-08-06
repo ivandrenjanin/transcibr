@@ -118,16 +118,18 @@ swept_cache :: proc(cache: string) -> bool {
 	assert(len(cache) > 0, "there is no scratch cache here to open")
 
 	if refused := audio.open_cache(cache, context.allocator); refused != .None {
-		message := audio.cache_error_message(refused, cache, context.allocator)
-		defer delete(message, context.allocator)
-		fmt.eprintln(message)
+		pipeline.report_fault(
+			audio.cache_error_message(refused, cache, context.allocator),
+			context.allocator,
+		)
 		return false
 	}
 	taken, fault := audio.sweep_cache(cache, audio.DEFAULT_SWEEP_LIMITS, context.allocator)
 	if fault != .None {
-		message := audio.cache_error_message(fault, cache, context.allocator)
-		defer delete(message, context.allocator)
-		fmt.eprintln(message)
+		pipeline.report_fault(
+			audio.cache_error_message(fault, cache, context.allocator),
+			context.allocator,
+		)
 		return false
 	}
 	fmt.eprintfln("  swept %d stale file(s) from %s", taken, cache)
