@@ -40,7 +40,7 @@ a_child_that_exits_inside_its_bound_ran_to_completion :: proc(t: ^testing.T) {
 		return
 	}
 
-	ending, err := run_bounded(
+	ending, reason, err := run_bounded(
 		&group,
 		CMD,
 		{"/c", "exit 3"},
@@ -49,6 +49,7 @@ a_child_that_exits_inside_its_bound_ran_to_completion :: proc(t: ^testing.T) {
 	)
 	testing.expect_value(t, err.fault, Fault.None)
 	testing.expect_value(t, ending, Run.Finished)
+	testing.expect_value(t, reason, Stop_Reason.None)
 }
 
 @(test)
@@ -69,7 +70,7 @@ a_child_that_outlives_its_bound_is_stopped_rather_than_waited_for :: proc(t: ^te
 		return
 	}
 
-	ending, err := run_bounded(
+	ending, reason, err := run_bounded(
 		&group,
 		CMD,
 		{"/c", command},
@@ -78,6 +79,7 @@ a_child_that_outlives_its_bound_is_stopped_rather_than_waited_for :: proc(t: ^te
 	)
 	testing.expect_value(t, err.fault, Fault.None)
 	testing.expect_value(t, ending, Run.Stopped)
+	testing.expect_value(t, reason, Stop_Reason.Bound_Expired)
 }
 
 @(test)
@@ -88,7 +90,7 @@ a_child_that_will_not_start_is_reported_rather_than_asserted :: proc(t: ^testing
 		return
 	}
 
-	ending, err := run_bounded(
+	ending, reason, err := run_bounded(
 		&group,
 		"transcibr-no-such-executable.exe",
 		{},
@@ -96,6 +98,7 @@ a_child_that_will_not_start_is_reported_rather_than_asserted :: proc(t: ^testing
 		context.allocator,
 	)
 	testing.expect_value(t, ending, Run.Not_Started)
+	testing.expect_value(t, reason, Stop_Reason.None)
 	testing.expect_value(t, err.fault, Fault.Not_Started)
 }
 
@@ -157,7 +160,7 @@ a_run_hands_every_chunk_and_the_end_of_stream_to_its_callbacks :: proc(t: ^testi
 	}
 	defer free_collected(&collected, context.allocator)
 
-	ending, err := run_bounded(
+	ending, reason, err := run_bounded(
 		&group,
 		CMD,
 		{"/c", "echo said something 1>&2"},
@@ -172,6 +175,7 @@ a_run_hands_every_chunk_and_the_end_of_stream_to_its_callbacks :: proc(t: ^testi
 	)
 	testing.expect_value(t, err.fault, Fault.None)
 	testing.expect_value(t, ending, Run.Finished)
+	testing.expect_value(t, reason, Stop_Reason.None)
 
 	testing.expect(
 		t,
@@ -220,7 +224,7 @@ a_run_stops_early_when_its_own_callback_asks_it_to :: proc(t: ^testing.T) {
 	}
 
 	started := time.tick_now()
-	ending, err := run_bounded(
+	ending, reason, err := run_bounded(
 		&group,
 		CMD,
 		{"/c", command},
@@ -232,6 +236,7 @@ a_run_stops_early_when_its_own_callback_asks_it_to :: proc(t: ^testing.T) {
 
 	testing.expect_value(t, err.fault, Fault.None)
 	testing.expect_value(t, ending, Run.Stopped)
+	testing.expect_value(t, reason, Stop_Reason.Poll_Asked)
 	testing.expect(
 		t,
 		elapsed < time.Duration(CHILD_RUN_BOUND_MS) * time.Millisecond,
@@ -305,7 +310,7 @@ a_flood_on_the_diagnostic_stream_does_not_stop_the_bound_from_being_reached :: p
 	defer free_collected(&collected, context.allocator)
 
 	started := time.tick_now()
-	ending, err := run_bounded(
+	ending, reason, err := run_bounded(
 		&group,
 		CMD,
 		{"/c", command},
@@ -317,6 +322,7 @@ a_flood_on_the_diagnostic_stream_does_not_stop_the_bound_from_being_reached :: p
 
 	testing.expect_value(t, err.fault, Fault.None)
 	testing.expect_value(t, ending, Run.Stopped)
+	testing.expect_value(t, reason, Stop_Reason.Bound_Expired)
 	testing.expect(
 		t,
 		elapsed <
