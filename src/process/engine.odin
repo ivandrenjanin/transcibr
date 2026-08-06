@@ -144,7 +144,11 @@ read_engine_line :: proc(line: string) -> Engine_Line {
 // non-positive value. `said.duration_ms` is filled from `from_samples`
 // specifically, whose positivity is `samples_ms`'s own `rounded <= 0`
 // refusal, not `seconds_ms`'s -- the two are only cross-checked for
-// agreement by `banner_agrees`, not substituted for each other.
+// agreement by `banner_agrees`, not substituted for each other. The second
+// `.Duration` assert below, `said.duration_ms <= LONGEST_CONTAINER_MS`, is
+// internal for the same reason: `samples_ms`'s own `rounded > LONGEST_CONTAINER_MS`
+// refusal is the only place `from_samples` can exceed that ceiling before it
+// reaches here.
 @(private)
 @(require_results)
 checked :: proc(said: Engine_Line) -> Engine_Line {
