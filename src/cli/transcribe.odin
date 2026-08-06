@@ -92,6 +92,7 @@ run_one :: proc(
 		pipeline.settled_engine_version(o.engine_version),
 		o.profile,
 		engine.Report{on_progress = show},
+		pipeline.Health_Watch{},
 	)
 
 	extracted, extracted_ok := pipeline.extract_recording(job)

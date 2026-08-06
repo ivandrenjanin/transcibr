@@ -55,6 +55,14 @@ Run_Callbacks :: struct {
 	// state through `user`; returning true only asks this run to stop before
 	// its wall-clock bound.
 	on_poll:  proc(elapsed_ns: i64, user: rawptr) -> bool,
+	// Called once, and only on the path that reaches `.Finished`: a run that
+	// was halted has no exit status of the child's own choosing to report, and
+	// a run that never started has no child at all. A caller that never sets
+	// this pays nothing, which is why the status arrives here rather than in
+	// `run_bounded`'s own results -- `.Finished` is what almost every caller
+	// asks, and the code behind it is a question only the doctor's probes have
+	// (issue #13); generalizing it to every caller is its own ticket.
+	on_exit:  proc(code: u32, user: rawptr),
 }
 
 // The drain after `wait` succeeds is not optional for a caller with
@@ -106,6 +114,11 @@ run_bounded :: proc(
 			_ = drain_bounded(&c, started, callbacks)
 			if callbacks.on_poll != nil {
 				_ = callbacks.on_poll(elapsed_ns(started), callbacks.user)
+			}
+			if callbacks.on_exit != nil {
+				code, exited := exit_code(&c)
+				assert(exited, "a child wait reported as exited answered that it is still running")
+				callbacks.on_exit(code, callbacks.user)
 			}
 			return .Finished, .None, Error{}
 		}

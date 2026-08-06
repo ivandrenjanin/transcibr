@@ -1,11 +1,15 @@
 #+vet explicit-allocators
 package pipeline
 
+import "core:fmt"
+import "core:os"
 import "core:strings"
 import "core:testing"
 import "transcibr:artifact"
 import "transcibr:audio"
+import "transcibr:engine"
 import "transcibr:planning"
+import "transcibr:testkit"
 import "transcibr:transcript"
 
 // Freed by the caller with `delete` and the same allocator, exactly like a
@@ -168,4 +172,195 @@ sort_entry_builds_exactly_one_job_for_a_transcribe_decision :: proc(t: ^testing.
 	testing.expect_value(t, jobs[0].source, "C:\\clips\\talk.mp4")
 	testing.expect_value(t, jobs[0].name, "talk")
 	testing.expect(t, jobs[0].arena != nil, "a Job built for the pipeline carries no arena")
+}
+
+// Shared by `health_check_job` (one job, its own fresh watch) and the round-4
+// regression below (two jobs, one shared watch) -- factored apart so a test
+// that needs the SAME `Health_Watch` to outlive more than one Recording does
+// not have to reach into a helper built only for the single-job case.
+@(private)
+@(require_results)
+health_checked_job :: proc(
+	t: ^testing.T,
+	tag: string,
+	output_json: string,
+	watch: Health_Watch,
+	container_ms := i64(60_000),
+	duration_ms := i64(3_000),
+	elapsed_ms := i64(3_000),
+) -> (
+	job: Recording_Job,
+) {
+	dir := testkit.made_scratch_cache(t, "Pipeline", tag, context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	output := fmt.aprintf("%s\\engine-output.json", dir, allocator = context.allocator)
+	handle, unopenable := os.open(output, {.Write, .Create, .Trunc})
+	testing.expect(t, unopenable == nil, "the case could not write its own fixture")
+	_, unwritable := os.write(handle, transmute([]u8)output_json)
+	testing.expect(t, unwritable == nil, "the case could not write its own fixture")
+	os.close(handle)
+
+	job = new_recording_job(
+		"C:\\clips\\talk.mp4",
+		"talk",
+		nil,
+		Tools{},
+		dir,
+		artifact.Model{},
+		"",
+		"whisper.cpp 1.9.9",
+		transcript.DEFAULT_PROFILE,
+		engine.Report{},
+		watch,
+	)
+	defer abandon_recording_job(job)
+	defer delete(output, context.allocator)
+
+	checked_first_recording_health(
+		job,
+		container_ms,
+		engine.Transcribed{output = output, duration_ms = duration_ms, elapsed_ms = elapsed_ms},
+	)
+	return
+}
+
+@(private)
+@(require_results)
+health_check_job :: proc(
+	t: ^testing.T,
+	tag: string,
+	output_json: string,
+	container_ms := i64(60_000),
+	duration_ms := i64(3_000),
+	elapsed_ms := i64(3_000),
+) -> (
+	job: Recording_Job,
+	checked, abort, unhealthy: bool,
+) {
+	job = health_checked_job(
+		t,
+		tag,
+		output_json,
+		Health_Watch{checked = &checked, abort = &abort, unhealthy = &unhealthy},
+		container_ms,
+		duration_ms,
+		elapsed_ms,
+	)
+	return
+}
+
+@(test)
+a_healthy_first_recording_is_checked_once_and_never_aborts_the_batch :: proc(t: ^testing.T) {
+	_, checked, abort, unhealthy := health_check_job(
+		t,
+		"healthy",
+		`{"systeminfo": "WHISPER : CUDA : ARCHS = 500,610,700"}`,
+	)
+	testing.expect_value(t, checked, true)
+	testing.expect_value(t, abort, false)
+	testing.expect_value(t, unhealthy, false)
+}
+
+// The finding this pins: `abort` alone is the identical pointer a Ctrl+C
+// press sets, and `pipeline.batch_succeeded` reads a cancelled Batch as a
+// success -- correct for an operator's own Ctrl+C, wrong for a Batch stopped
+// because the GPU is not being used. `unhealthy` is the SEPARATE signal the
+// CLI reads to answer a nonzero exit code specifically for this case, without
+// changing what Ctrl+C itself still means.
+@(test)
+an_unhealthy_first_recording_sets_both_the_shared_abort_flag_and_its_own_unhealthy_flag :: proc(
+	t: ^testing.T,
+) {
+	_, checked, abort, unhealthy := health_check_job(
+		t,
+		"unhealthy",
+		`{"systeminfo": "WHISPER : no gpu backend at all"}`,
+	)
+	testing.expect_value(t, checked, true)
+	testing.expect_value(t, abort, true)
+	testing.expect_value(t, unhealthy, true)
+}
+
+@(test)
+review_engine_output_with_no_systeminfo_field_must_not_abort_the_batch :: proc(t: ^testing.T) {
+	_, checked, abort, unhealthy := health_check_job(
+		t,
+		"nosysteminfo",
+		`{"result": {"language": "en"}}`,
+	)
+	testing.expect_value(t, checked, true)
+	testing.expect_value(t, abort, false)
+	testing.expect_value(t, unhealthy, false)
+}
+
+@(test)
+review_unparseable_engine_output_must_not_abort_the_batch :: proc(t: ^testing.T) {
+	_, checked, abort, unhealthy := health_check_job(t, "unparseable", `not json at all`)
+	testing.expect_value(t, checked, true)
+	testing.expect_value(t, abort, false)
+	testing.expect_value(t, unhealthy, false)
+}
+
+// The round-4 finding: a first Recording under `MIN_HEALTH_CHECK_CONTAINER_-`
+// `MS` used to burn the Batch's one health check on a Recording the speed
+// half declined to judge, leaving the CUDA-name half's own `.None` (which is
+// duration-independent and DOES apply here) indistinguishable from "checked
+// and healthy". A short first Recording must leave the gate open so the
+// next, longer one still gets judged.
+@(test)
+review_a_short_first_recording_leaves_the_check_open_for_the_next_one :: proc(t: ^testing.T) {
+	checked, abort, unhealthy: bool
+	watch := Health_Watch {
+		checked   = &checked,
+		abort     = &abort,
+		unhealthy = &unhealthy,
+	}
+
+	_ = health_checked_job(
+		t,
+		"shortfirst",
+		`{"systeminfo": "WHISPER : CUDA : ARCHS = 500,610,700"}`,
+		watch,
+		container_ms = 2_000,
+		duration_ms = 2_000,
+		elapsed_ms = 1_400,
+	)
+	testing.expect_value(t, checked, false)
+	testing.expect_value(t, abort, false)
+
+	_ = health_checked_job(
+		t,
+		"shortfirstsecond",
+		`{"systeminfo": "WHISPER : no gpu backend at all"}`,
+		watch,
+		container_ms = 60_000,
+		duration_ms = 60_000,
+		elapsed_ms = 60_000,
+	)
+	testing.expect_value(t, checked, true)
+	testing.expect_value(t, abort, true)
+	testing.expect_value(t, unhealthy, true)
+}
+
+// The exact shape a healthy `--batch` reaches on real hardware: the Engine's
+// own reported audio duration equals the Recording's container length on
+// every healthy run (both name the same audio), so a factor computed against
+// `duration_ms` is always ~1.0x and always aborts. `elapsed_ms` here is the
+// wall clock a fast GPU run actually takes for a 10-second clip -- the
+// quantity the factor must be computed against instead.
+@(test)
+review_a_real_engine_duration_reading_must_not_abort_a_healthy_batch :: proc(t: ^testing.T) {
+	_, checked, abort, unhealthy := health_check_job(
+		t,
+		"realengine",
+		`{"systeminfo": "WHISPER : CUDA : ARCHS = 500,610,700"}`,
+		container_ms = 10_000,
+		duration_ms = 10_000,
+		elapsed_ms = 600,
+	)
+	testing.expect_value(t, checked, true)
+	testing.expect_value(t, abort, false)
+	testing.expect_value(t, unhealthy, false)
 }

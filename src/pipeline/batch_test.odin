@@ -168,6 +168,46 @@ cancelled_and_skipped_recordings_do_not_fail_a_batch_only_failed_and_refused_do 
 	)
 }
 
+// The round-4 finding: a Batch aborted for an unhealthy GPU used to be told
+// apart from a genuine success by a second, untested check living in
+// `src/cli` -- mutation-tested by deleting it and finding the full suite
+// still green. `unhealthy` now lives in the Summary itself, exactly where
+// `failed` and `refused` already do, so `batch_succeeded` alone holds it.
+@(test)
+an_unhealthy_gpu_fails_a_batch_even_with_nothing_else_wrong :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		!batch_succeeded(Summary{unhealthy = true}),
+		"an unhealthy GPU read as a succeeded Batch",
+	)
+	testing.expect(
+		t,
+		!batch_succeeded(Summary{transcribed = 3, unhealthy = true}),
+		"transcribed work masked an unhealthy GPU",
+	)
+}
+
+// `run_recordings` is where `Batch_Options.health.unhealthy` actually reaches
+// the `Summary` a Batch's exit code is decided from -- pinning this against
+// the real procedure, not only against `batch_succeeded`'s own pure logic,
+// is what would have caught the round-4 finding at the seam it lived in.
+@(test)
+review_run_recordings_carries_an_unhealthy_gpu_into_its_own_summary :: proc(t: ^testing.T) {
+	settings := resume_settings()
+	defer delete(string(settings.model.digest), context.allocator)
+	o := resume_options("C:\\nowhere", settings)
+	unhealthy := true
+	o.health = Health_Watch {
+		unhealthy = &unhealthy,
+	}
+
+	cancelled := false
+	summary := run_recordings(planning.Plan{}, o, context.allocator, &cancelled, RECORDING_STAGES)
+
+	testing.expect_value(t, summary.unhealthy, true)
+	testing.expect(t, !batch_succeeded(summary), "an unhealthy Batch read as succeeded")
+}
+
 @(private)
 @(require_results)
 resume_recording :: proc(t: ^testing.T, tree: string, name: string) -> string {

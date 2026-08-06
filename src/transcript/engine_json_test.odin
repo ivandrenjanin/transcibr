@@ -65,6 +65,54 @@ reads_the_language_the_engine_detected :: proc(t: ^testing.T) {
 	testing.expect_value(t, language, "en")
 }
 
+@(test)
+reads_the_systeminfo_the_engine_reported :: proc(t: ^testing.T) {
+	systeminfo := parse_systeminfo(ENGINE_JSON, context.allocator)
+	defer delete(systeminfo, context.allocator)
+
+	testing.expect(
+		t,
+		strings.contains(systeminfo, "CUDA"),
+		"the fixture's own CUDA mention is missing",
+	)
+}
+
+@(private)
+Systeminfo_Case :: struct {
+	name:  string,
+	json:  string,
+	reads: string,
+}
+
+@(private, rodata)
+SYSTEMINFO_CASES := []Systeminfo_Case {
+	{name = "no-systeminfo.json", json = `{"result": {"language": "en"}}`, reads = UNKNOWN},
+	{name = "systeminfo-not-a-string.json", json = `{"systeminfo": 7}`, reads = UNKNOWN},
+	{name = "not-an-object.json", json = `["systeminfo"]`, reads = UNKNOWN},
+	{name = "systeminfo-said-empty.json", json = `{"systeminfo": ""}`, reads = UNKNOWN},
+	{name = "empty.json", json = "", reads = UNKNOWN},
+	{name = "whitespace.json", json = "  \r\n\t ", reads = UNKNOWN},
+	{name = "not-json.json", json = "this is not json at all", reads = UNKNOWN},
+	{name = "truncated.json", json = `{"systeminfo": "CUD`, reads = UNKNOWN},
+}
+
+@(test)
+a_document_that_names_no_systeminfo_is_read_as_naming_none :: proc(t: ^testing.T) {
+	for c in SYSTEMINFO_CASES {
+		systeminfo := parse_systeminfo(c.json, context.allocator)
+		defer delete(systeminfo, context.allocator)
+
+		testing.expectf(
+			t,
+			systeminfo == c.reads,
+			"%s: read %q, want %q",
+			c.name,
+			systeminfo,
+			c.reads,
+		)
+	}
+}
+
 @(private)
 Language_Case :: struct {
 	name:  string,
