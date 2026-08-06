@@ -62,6 +62,65 @@ a_probe_of_an_executable_that_will_not_start_is_reported_rather_than_asserted ::
 	testing.expect(t, probe.child.fault != .None, "a child that never started named no reason")
 }
 
+// Proves the probe itself refuses a flood rather than growing its builder
+// without bound: the flood file is sized past MAX_PROBE_CAPTURE_BYTES, typed
+// to a signal nobody sends so the child would otherwise outlive the probe's
+// own bound, exactly as testkit's own doc comment describes. Mutation check
+// per the ticket's own acceptance criterion: removing the ceiling comparison
+// in captured_chunk (src/doctor/tool.odin) leaves `probe.overflowed` always
+// false and turns this red, because the flood would then finish draining
+// inside the probe's bound with no refusal to report.
+@(test)
+a_probe_refuses_a_flood_past_its_capture_ceiling_rather_than_growing_without_bound :: proc(
+	t: ^testing.T,
+) {
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	cache := testkit.made_scratch_cache(t, "doctor", "probeflood", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	flood := fmt.aprintf("%s\\flood.txt", cache, allocator = context.allocator)
+	defer delete(flood, context.allocator)
+	if !testkit.write_flood(
+		t,
+		flood,
+		MAX_PROBE_CAPTURE_BYTES + child.MAX_DRAIN_BYTES,
+		"a line this probe has no reading for\r\n",
+		context.allocator,
+	) {
+		return
+	}
+
+	signal := testkit.lonely_signal("Doctor", "probeflood", context.allocator)
+	defer delete(signal, context.allocator)
+	command := testkit.flood_type_command(flood, 25, signal, context.allocator)
+	defer delete(command, context.allocator)
+
+	probe := probe_executable(&group, CMD, {"/c", command}, context.allocator, 30_000)
+	defer delete(probe.captured, context.allocator)
+
+	testing.expect(
+		t,
+		probe.overflowed,
+		"a flood well past the probe's capture ceiling was not reported as an overflow",
+	)
+	testing.expect(
+		t,
+		len(probe.captured) <= MAX_PROBE_CAPTURE_BYTES,
+		"a probe's capture grew past its own ceiling",
+	)
+	testing.expect(
+		t,
+		probe.run == .Stopped || probe.run == .Unstoppable,
+		"an overflowing probe was not stopped once its verdict could no longer change",
+	)
+}
+
 @(test)
 a_probe_that_outlives_its_bound_is_stopped_rather_than_waited_for :: proc(t: ^testing.T) {
 	group, ok := open_group(t)
