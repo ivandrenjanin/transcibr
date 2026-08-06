@@ -237,8 +237,8 @@ read_head :: proc(path: string, into: []u8) -> (head: []u8, bytes: i64, err: Err
 	}
 
 	wanted := into[:min(int(length), len(into))]
-	read, unreadable := os.read_at(handle, wanted, 0)
-	if unreadable != nil && read == 0 {
+	read, _ := os.read_at(handle, wanted, 0)
+	if read == 0 {
 		return nil, 0, Error{fault = .Audio_Unreadable}
 	}
 	assert(read <= len(wanted), "more of the head came back than there was room for it")
