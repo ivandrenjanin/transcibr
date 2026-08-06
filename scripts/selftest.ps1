@@ -164,7 +164,13 @@ function Add-FixturePackage {
 		# The directory to plant the package in, where that has to differ from
 		# the package name: an Odin identifier cannot contain a space and a
 		# directory can, which is the whole point of the case that uses this.
-		[string] $Directory = ''
+		[string] $Directory = '',
+		# core:testing clamps thread_count = min(thread_count, total_test_count)
+		# (runner.odin), so a single-test 'passing' package reports "1 thread"
+		# whether or not -define:ODIN_TEST_THREADS=1 was passed. Only a 'passing'
+		# package with two or more tests can tell the define apart from its
+		# absence.
+		[int] $PassingCount = 1
 	)
 
 	if ($Directory -eq '') {
@@ -186,7 +192,12 @@ function Add-FixturePackage {
 		}) -join "`n"
 
 	$body = switch ($Test) {
-		'passing' { "import `"core:testing`"`n`n@(test)`n${Name}_passes :: proc(t: ^testing.T) {`n`ttesting.expect(t, true)`n}`n" }
+		'passing' {
+			$procs = (1..$PassingCount | ForEach-Object {
+					"@(test)`n${Name}_passes_$_ :: proc(t: ^testing.T) {`n`ttesting.expect(t, true)`n}`n"
+				}) -join "`n"
+			"import `"core:testing`"`n`n$procs"
+		}
 		'failing' { "import `"core:testing`"`n`n@(test)`n${Name}_fails :: proc(t: ^testing.T) {`n`ttesting.expect(t, false, `"deliberate failure`")`n}`n" }
 		'asserting' { "import `"core:testing`"`n`n$asserting" }
 		'hanging' { "import `"core:testing`"`nimport `"core:time`"`n`n@(test)`n${Name}_never_returns :: proc(t: ^testing.T) {`n`ttesting.expect(t, true)`n`tfor {`n`t`ttime.sleep(time.Second)`n`t}`n}`n" }
@@ -670,12 +681,18 @@ Test-Case 'a hidden package is discovered, not skipped' {
 # reverting PR #100's teardown and watching this switch go red; what a
 # fixture repository can prove is the restriction, not the concurrency
 # defect it exists to surface.
+#
+# The child fixture needs two or more tests: core:testing clamps
+# thread_count = min(thread_count, total_test_count), so a single-test
+# package reports "1 thread" whether or not -define:ODIN_TEST_THREADS=1 was
+# passed, and could not tell the define apart from its absence.
 Test-Case 'the single-thread sweep restricts itself to the child package' {
 	$repo = New-FixtureRepo 'single-thread-restriction'
-	Add-FixturePackage -RepoRoot $repo -Name 'child' -Test 'passing' | Out-Null
+	Add-FixturePackage -RepoRoot $repo -Name 'child' -Test 'passing' -PassingCount 4 | Out-Null
 	Add-FixturePackage -RepoRoot $repo -Name 'sibling' -Test 'passing' | Out-Null
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1' -ScriptArguments @('-Threads1')
-	Assert-Result -Result $result -Matching 'All 1 tests? passed'
+	Assert-Result -Result $result -Matching 'All 4 tests? passed'
+	Assert-Result -Result $result -Matching 'Starting test runner with 1 thread\.'
 	if ($result.Output -match 'sibling') {
 		throw "the sibling package ran under -Threads1, which is scoped to child alone.`n$($result.Output)"
 	}
@@ -799,22 +816,30 @@ Test-Case 'a test that never returns is killed and reported against its package'
 # $OdinSweepTimeoutSeconds now bounds the FORMAT sweep as well as the test sweep,
 # so this arithmetic answers for both. The behaviour each of them gets out of it
 # is pinned separately, by a case apiece.
-Test-Case 'the sweep budget fits inside the CI job that has to report it' {
+Test-Case 'the sweep budget fits inside every CI timeout that wraps it' {
 	$workflow = Join-Path $RepoRoot '.github\workflows\ci.yml'
 	if (-not (Test-Path -LiteralPath $workflow)) {
 		throw "no $workflow to read the job timeout out of."
 	}
-	$declared = [regex]::Match((Get-Content -LiteralPath $workflow -Raw), '(?m)^\s*timeout-minutes:\s*(\d+)')
-	if (-not $declared.Success) {
+	# Matches, not Match: a step-level timeout-minutes wraps a test.ps1
+	# invocation exactly as the job-level one does, and test.ps1 imposes the
+	# same $OdinSweepTimeoutSeconds ceiling on every invocation regardless of
+	# which or how many packages it runs. Reading only the first occurrence
+	# left every step-level timeout unchecked.
+	$declared = @([regex]::Matches((Get-Content -LiteralPath $workflow -Raw), '(?m)^\s*timeout-minutes:\s*(\d+)'))
+	if ($declared.Count -eq 0) {
 		throw "no timeout-minutes in $workflow, so the job falls back to the platform's six-hour default."
 	}
 
-	$job = [int] $declared.Groups[1].Value * 60
 	if ($OdinSweepTimeoutSeconds -lt $OdinCommandTimeoutSeconds) {
 		throw "the sweep's $OdinSweepTimeoutSeconds-second budget is below one package's $OdinCommandTimeoutSeconds, so a single slow package is killed by the sweep rather than by its own ceiling."
 	}
-	if ($OdinSweepTimeoutSeconds -ge $job) {
-		throw "the sweep's $OdinSweepTimeoutSeconds-second budget reaches the CI job's own $job, so a hang is reported by the job timeout, which names nothing, rather than by the sweep naming the package."
+	foreach ($match in $declared) {
+		$minutes = [int] $match.Groups[1].Value
+		$seconds = $minutes * 60
+		if ($OdinSweepTimeoutSeconds -ge $seconds) {
+			throw "a timeout-minutes of $minutes ($seconds seconds) in $workflow does not clear the sweep's $OdinSweepTimeoutSeconds-second budget, so a hang there is reported by that timeout, which names nothing, rather than by the sweep naming the package."
+		}
 	}
 }
 
