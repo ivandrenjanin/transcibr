@@ -203,37 +203,27 @@ bump :: proc(c: ^Counters, which: Metric, delta: int) {
 	}
 }
 
-// Claimed once per `run_the_batch` call (`src/cli/batch.odin`) and released
-// when it returns -- a reentrancy guard on one concurrent Batch lending
-// `Health_Watch.checked`'s address out, not the one-transcription-Worker
-// invariant itself: it is claimed before either Worker exists, so a second
-// transcription Worker inside one Batch passes through it untouched. That
-// hazard -- the one issue #111 names -- is caught where the live count
-// actually changes, `bump`'s own ADR-0006 assert above; a hazard mutation
-// wiring a second `spawn_transcribe_worker` into `run.odin` trips `bump`,
-// never this. The message below is deliberately its own, naming what this
-// procedure actually checks, so it cannot be mistaken for `bump`'s cover.
-// `claim_health_watch_can_be_claimed_again_once_released` (`defaults_test.odin`)
-// is this procedure's own cover; `bump`'s is `exactly_one_transcription_-`
-// `runs_at_a_time_however_many_are_queued` (`topology_test.odin`), named in
-// the comment above `bump`. `claim_health_watch` asserts absence before
-// claiming; `release_health_watch` asserts presence (a CAS from `true` to
-// `false`) before releasing, per CLAUDE.md A3's add/remove pairing.
-@(private)
-health_watch_claimed: bool
-
-claim_health_watch :: proc() {
-	_, claimed := sync.atomic_compare_exchange_strong(&health_watch_claimed, false, true)
-	assert(
-		claimed,
-		"run_the_batch was re-entered while a prior Batch's Health_Watch was still claimed",
-	)
-}
-
-release_health_watch :: proc() {
-	_, was_claimed := sync.atomic_compare_exchange_strong(&health_watch_claimed, true, false)
-	assert(was_claimed, "release_health_watch called without a matching claim_health_watch")
-}
+// Issue #111's own invariant -- ADR-0006's one transcription Worker, the fact
+// `src/cli/batch.odin`'s `gpu_health_checked` leans on for its own safety --
+// is exactly what `bump` asserts above, at the one place the live
+// transcription count changes; a hazard mutation wiring a second
+// `spawn_transcribe_worker` into `run.odin` trips `bump` before either Worker
+// reaches `gpu_health_checked` at all (PR #128's own review history). That
+// assert predates this file's involvement in issue #111 (1c67c11) and is
+// what "made structural" in the ticket's own AC1 wording refers to.
+//
+// PR #128 also carried `claim_health_watch`/`release_health_watch`, a
+// same-file, same-CAS-shaped reentrancy guard on `run_the_batch` itself
+// (`src/cli/batch.odin`'s one caller). Removed here: `run_the_batch` has
+// exactly one call chain in production (`main.odin` -> `run_batch_command`
+// -> `run_the_batch`, `os.exit` immediately after), so the guard's CAS could
+// never observe contention and its assert could never fire outside a test
+// calling it twice by hand -- CLAUDE.md's assertion policy opens "assertions
+// detect programmer errors," and one whose condition is structurally
+// constant detects none. It guarded a different invariant (Batch
+// reentrancy) from the one issue #111 names, and did so with zero mechanical
+// hold, so it added nothing toward closing #111 and was dead weight against
+// it.
 
 // The channel's own occupancy right after a successful send, read through
 // `core:sync/chan`'s own mutex (`chan.len`) rather than kept by a second,

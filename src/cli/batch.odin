@@ -47,14 +47,17 @@ cancel_requested: bool
 // sequence (`pipeline.checked_first_recording_health`'s own doc comment).
 // Its safety rests entirely on ADR-0006's one-transcription-Worker invariant.
 // That invariant is asserted where the live count itself changes,
-// `pipeline.bump` (1c67c11) -- the reviewer's own hazard mutation for issue
-// #111 (a second `spawn_transcribe_worker` wired into `run.odin`) trips
-// `bump` before either Worker reaches this flag at all, so `bump` is what
-// actually holds this flag safe. `run_the_batch` below additionally claims
-// and releases `pipeline.claim_health_watch` around every Batch -- a
-// narrower, separate invariant (one concurrent Batch lending this flag's
-// address out at a time), asserted here because `src/cli` holds no tests of
-// its own (ADR-0009) and this is the one caller.
+// `pipeline.bump` (1c67c11, predating issue #111) -- a hazard mutation
+// wiring a second `spawn_transcribe_worker` into `run.odin` trips `bump`
+// before either Worker reaches this flag at all, so `bump` is what actually
+// holds this flag safe, and is what issue #111's AC1 ("asserted, or made
+// structural, at the flag's own site") resolves to: `src/cli` holds no
+// tests of its own (ADR-0009), and `src/pipeline/recording.odin` -- where
+// this flag's actual read/write site lives -- is out of bounds for this
+// ticket (issue #89's live sweep, and a prior attempt at asserting there
+// hung the 12-thread test sweep, PR #128 fix round 3). No assert lives here
+// or in `run_the_batch` below for this flag; `bump` is the whole of the
+// answer.
 @(private)
 gpu_health_checked: bool
 
@@ -179,9 +182,6 @@ run_the_batch :: proc(
 	identified: artifact.Model,
 	plan: planning.Plan,
 ) -> int {
-	pipeline.claim_health_watch()
-	defer pipeline.release_health_watch()
-
 	sync.atomic_store(&cancel_requested, false)
 	sync.atomic_store(&gpu_health_checked, false)
 	sync.atomic_store(&gpu_health_unhealthy, false)
