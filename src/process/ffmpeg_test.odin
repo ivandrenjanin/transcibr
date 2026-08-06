@@ -48,6 +48,16 @@ a_probe_that_said_something_but_never_said_how_long_is_refused :: proc(t: ^testi
 	testing.expect_value(t, fault, Probe_Fault.No_Duration)
 }
 
+// Issue #112: the exact shape the ticket names -- ffprobe reporting an audio
+// stream WITH no usable duration -- pinned against `codec_type=audio` and not
+// `codec_type=video`, so a regression that only guarded the video case would
+// go red here.
+@(test)
+a_probe_with_an_audio_stream_but_no_usable_duration_is_refused :: proc(t: ^testing.T) {
+	_, fault := read_probe("codec_type=audio\nduration=N/A\n")
+	testing.expect_value(t, fault, Probe_Fault.Duration_Unknown)
+}
+
 @(test)
 a_duration_that_is_not_a_number_is_refused :: proc(t: ^testing.T) {
 	_, fault := read_probe("codec_type=audio\nduration=about a minute\n")
