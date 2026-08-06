@@ -74,7 +74,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 67
+$ExpectedCaseCount = 69
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -661,6 +661,31 @@ Test-Case 'a hidden package is discovered, not skipped' {
 
 	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1'
 	Assert-Result -Result $result -Fails -Matching 'concealed'
+}
+
+# -Threads1 exists so CI can run the child package -- the one that owns
+# process/pipe/directory lifecycle -- under ODIN_TEST_THREADS=1, closing the
+# #97 defect class the default 12-thread sweep cannot see (issue #104). The
+# THREADS=1 behaviour itself is proved against the real src\child, by
+# reverting PR #100's teardown and watching this switch go red; what a
+# fixture repository can prove is the restriction, not the concurrency
+# defect it exists to surface.
+Test-Case 'the single-thread sweep restricts itself to the child package' {
+	$repo = New-FixtureRepo 'single-thread-restriction'
+	Add-FixturePackage -RepoRoot $repo -Name 'child' -Test 'passing' | Out-Null
+	Add-FixturePackage -RepoRoot $repo -Name 'sibling' -Test 'passing' | Out-Null
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1' -ScriptArguments @('-Threads1')
+	Assert-Result -Result $result -Matching 'All 1 tests? passed'
+	if ($result.Output -match 'sibling') {
+		throw "the sibling package ran under -Threads1, which is scoped to child alone.`n$($result.Output)"
+	}
+}
+
+Test-Case 'the single-thread sweep fails loudly when the child package is missing' {
+	$repo = New-FixtureRepo 'single-thread-no-child'
+	Add-FixturePackage -RepoRoot $repo -Name 'sibling' -Test 'passing' | Out-Null
+	$result = Invoke-FixtureScript -RepoRoot $repo -Script 'test.ps1' -ScriptArguments @('-Threads1')
+	Assert-Result -Result $result -Fails -Matching "no package 'child'"
 }
 
 # The one case that may skip: a token holding SeBackupPrivilege walks straight
