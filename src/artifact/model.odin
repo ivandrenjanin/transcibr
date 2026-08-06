@@ -19,14 +19,8 @@ import "transcibr:process"
 // gigabyte-and-a-half file and is a megabyte of stack on a worker thread.
 MODEL_READ_BYTES :: 64 * 1024
 
-// `path` and `digest` are OWNED and freed with destroy_model and the allocator
-// that was handed in.
-Model :: struct {
-	// Resolved, so two Batches that spelled one Model two ways record one Model.
-	path:   string,
-	digest: Digest,
-	bytes:  i64,
-}
+// The Model struct itself lives in sidecar.odin, the pure half sidecar_of
+// consumes it from -- ADR-0032.
 
 Model_Fault :: enum u8 {
 	None = 0,
