@@ -1,6 +1,7 @@
 #+vet explicit-allocators
 package process
 
+import "core:fmt"
 import "core:strconv"
 import "core:strings"
 import "core:testing"
@@ -82,6 +83,22 @@ a_container_too_short_to_round_to_a_millisecond_is_refused :: proc(t: ^testing.T
 	shortest, none := read_probe("codec_type=audio\nduration=0.000500\n")
 	testing.expect_value(t, none, Probe_Fault.None)
 	testing.expect_value(t, shortest.duration_ms, i64(1))
+}
+
+// Issue #131: a duration past LONGEST_CONTAINER_MS is a real, if implausible,
+// reading -- a 2000-hour mpegts wraparound artifact -- and must be refused
+// with a reason that names the actual problem, not "not positive".
+@(test)
+a_container_longer_than_the_longest_believable_one_is_refused_as_too_long :: proc(t: ^testing.T) {
+	_, fault := read_probe("codec_type=audio\nduration=3600001.000000\n")
+	testing.expect_value(t, fault, Probe_Fault.Duration_Too_Long)
+}
+
+@(test)
+a_container_right_at_the_ceiling_is_accepted :: proc(t: ^testing.T) {
+	probe, fault := read_probe("codec_type=audio\nduration=3600000.000000\n")
+	testing.expect_value(t, fault, Probe_Fault.None)
+	testing.expect_value(t, probe.duration_ms, LONGEST_CONTAINER_MS)
 }
 
 @(test)
@@ -170,6 +187,43 @@ each_number_ffmpeg_is_asked_for_is_the_number_the_check_demands :: proc(t: ^test
 	testing.expect_value(t, channels, AUDIO_CHANNELS)
 
 	testing.expect_value(t, AUDIO_SAMPLE_FORMAT_ARGUMENT, "pcm_s16le")
+}
+
+// The #71 pattern: every Probe_Fault renders words a user reads, never the
+// raw enum spelling `%v` would have produced.
+@(test)
+every_probe_fault_renders_words_and_never_its_identifier :: proc(t: ^testing.T) {
+	for fault in Probe_Fault {
+		if fault == .None {
+			continue
+		}
+		if !testing.expectf(
+			t,
+			len(PROBE_FAULT[fault]) > 0,
+			"%v has an empty row in PROBE_FAULT",
+			fault,
+		) {
+			continue
+		}
+
+		says := probe_fault_says(fault)
+		testing.expectf(
+			t,
+			!strings.contains(says, "_"),
+			"%v rendered <%s>, which still carries an underscore",
+			fault,
+			says,
+		)
+
+		raw := fmt.tprintf("%v", fault)
+		testing.expectf(
+			t,
+			says != raw,
+			"%v rendered its own identifier verbatim: <%s>",
+			fault,
+			says,
+		)
+	}
 }
 
 @(test)

@@ -58,6 +58,33 @@ Probe_Fault :: enum u8 {
 	Duration_Unknown,
 	Duration_Unreadable,
 	Duration_Not_Positive,
+	// Distinct from `.Duration_Not_Positive`: a real, if implausible, reading
+	// past LONGEST_CONTAINER_MS -- issue #131's 2000-hour mpegts wraparound
+	// artifact -- needs a reason that names the actual problem.
+	Duration_Too_Long,
+}
+
+// See CLAUDE.md, Odin notes: enumerated arrays and switches.
+@(private, rodata)
+PROBE_FAULT := [Probe_Fault]string {
+	.None                  = "",
+	.Said_Nothing          = "ffprobe answered nothing at all",
+	.No_Duration           = "ffprobe never said how long the container is",
+	.Duration_Unknown      = "ffprobe could not time the container",
+	.Duration_Unreadable   = "the container's reported duration is not a number",
+	.Duration_Not_Positive = "the container's reported duration is not a usable length of time",
+	.Duration_Too_Long     = "the container's reported duration is longer than any real Recording",
+}
+
+// The #71 pattern: a Probe_Fault reaches a user as words, never as the raw
+// enum member `%v` would print.
+@(require_results)
+probe_fault_says :: proc(fault: Probe_Fault) -> string {
+	assert(fault != .None, "the success value is not a fault and says nothing")
+
+	says := PROBE_FAULT[fault]
+	assert(len(says) > 0, "a fault was added to Probe_Fault without a row in PROBE_FAULT")
+	return says
 }
 
 // A thousand hours: not a policy on Recording length but the guard that stops a
@@ -131,6 +158,9 @@ read_duration :: proc(value: string) -> (duration_ms: i64, fault: Probe_Fault) {
 	}
 	rounded, usable := milliseconds_of(seconds)
 	if !usable {
+		if seconds > f64(LONGEST_CONTAINER_MS) / 1000 {
+			return 0, .Duration_Too_Long
+		}
 		return 0, .Duration_Not_Positive
 	}
 	return rounded, .None

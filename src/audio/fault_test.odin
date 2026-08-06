@@ -4,6 +4,7 @@ package audio
 import "core:strings"
 import "core:testing"
 import "transcibr:child"
+import "transcibr:process"
 
 // See CLAUDE.md, Odin notes: enumerated arrays and switches. `.None` is skipped
 // by name because it is the deliberately empty row.
@@ -19,6 +20,7 @@ every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testin
 
 		err := Error {
 			fault = fault,
+			probe = .Duration_Unknown,
 			child = child.Error{fault = .Not_Started},
 			said = 48_000,
 			got = 12_000,
@@ -40,6 +42,16 @@ every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testin
 			fault,
 			message,
 		)
+
+		if fault == .Probe_Unreadable {
+			testing.expectf(
+				t,
+				strings.contains(message, process.probe_fault_says(err.probe)),
+				"%v rendered <%s>, which does not carry its borrowed Probe_Fault sentence",
+				fault,
+				message,
+			)
+		}
 	}
 }
 
