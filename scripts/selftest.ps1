@@ -74,7 +74,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 72
+$ExpectedCaseCount = 74
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -559,6 +559,57 @@ function Get-DocumentedTestName {
 	return @($matched | ForEach-Object { $_.Groups[1].Value })
 }
 
+# The ci.yml steps whose command is one CLAUDE.md documents a developer
+# running locally -- the file's own header comment claim, "every check CI
+# performs a developer performs too". Deleting one of these leaves every
+# OTHER case in this file green: they call format.ps1, build.ps1 and
+# test.ps1 directly, and nothing before this read what ci.yml itself runs
+# (issue #116, filed from the #104 review). Not every step is here --
+# `actions/checkout` and the two pinned-tool installs have no local command
+# to be a claim about. Build (release) is included: -o:speed is a different
+# code path through the compiler (build.ps1's own -Configuration branch),
+# and a release that only builds at tagging time is a release that breaks
+# at tagging time.
+$LoadBearingCiSteps = @(
+	[pscustomobject]@{ Name = 'Check formatting'; Run = '.\scripts\format.ps1' }
+	[pscustomobject]@{ Name = 'Build (debug)'; Run = '.\scripts\build.ps1' }
+	[pscustomobject]@{ Name = 'Build (release)'; Run = '.\scripts\build.ps1 -Configuration release' }
+	[pscustomobject]@{ Name = 'Test'; Run = '.\scripts\test.ps1' }
+	[pscustomobject]@{ Name = 'Test (child, single-threaded)'; Run = '.\scripts\test.ps1 -Threads1' }
+)
+
+# The names of $LoadBearingCiSteps whose "- name:" line is not immediately
+# followed, before the next step, by its own "run:" line -- read off the raw
+# YAML text rather than a parser, because the property under test is exactly
+# what a line-oriented review of the diff would see: the step heading and the
+# command underneath it, still paired.
+function Get-MissingCiStep {
+	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
+
+	$missing = @()
+	foreach ($step in $LoadBearingCiSteps) {
+		$pattern = '(?m)^\s*-\s*name:\s*' + [regex]::Escape($step.Name) + '\s*$[\s\S]*?^\s*run:\s*' + [regex]::Escape($step.Run) + '\s*$'
+		if ($Text -notmatch $pattern) {
+			$missing += $step.Name
+		}
+	}
+	return $missing
+}
+
+# A copy of $Text with one $LoadBearingCiSteps entry's whole step -- its
+# "- name:" line through the last line before the next step -- removed. Used
+# only to prove Get-MissingCiStep actually goes red on a deletion, never to
+# rewrite the real ci.yml.
+function Remove-CiStep {
+	param(
+		[Parameter(Mandatory)] [string] $Text,
+		[Parameter(Mandatory)] [string] $Name
+	)
+
+	$pattern = '(?m)^[ \t]*-[ \t]*name:[ \t]*' + [regex]::Escape($Name) + '[ \t]*\r?\n(?:(?![ \t]*-[ \t]*name:)[^\r\n]*\r?\n?)*'
+	return [regex]::Replace($Text, $pattern, '', 1)
+}
+
 # ------------------------------------------------------------------- cases --
 
 New-Item -ItemType Directory -Path $FixtureRoot -Force | Out-Null
@@ -839,6 +890,60 @@ Test-Case 'the sweep budget fits inside every CI timeout that wraps it' {
 		$seconds = $minutes * 60
 		if ($OdinSweepTimeoutSeconds -ge $seconds) {
 			throw "a timeout-minutes of $minutes ($seconds seconds) in $workflow does not clear the sweep's $OdinSweepTimeoutSeconds-second budget, so a hang there is reported by that timeout, which names nothing, rather than by the sweep naming the package."
+		}
+	}
+}
+
+# Filed from the #104 review (issue #116): this file read ci.yml at exactly
+# one point -- the timeout guard above -- and pinned the existence of no step
+# at all. Deleting Test, Build (debug), Check formatting or the #104
+# single-thread sweep left every case in this file green, because none of
+# them read what CI itself runs.
+Test-Case 'ci.yml still runs every load-bearing step build.ps1 and test.ps1 own' {
+	if ($LoadBearingCiSteps.Count -eq 0) {
+		throw 'no load-bearing steps declared, so this case checks nothing.'
+	}
+	$workflow = Join-Path $RepoRoot '.github\workflows\ci.yml'
+	if (-not (Test-Path -LiteralPath $workflow)) {
+		throw "no $workflow to read the load-bearing steps out of."
+	}
+	$missing = @(Get-MissingCiStep -Text (Get-Content -LiteralPath $workflow -Raw))
+	if ($missing.Count -gt 0) {
+		throw "ci.yml no longer runs: $($missing -join ', ')."
+	}
+}
+
+# The negative space (rule A3), proved against each step in turn rather than
+# claimed: a pin that never fires on a deletion is worth exactly what the
+# case above would be without it -- a check nobody has watched go red.
+Test-Case 'a load-bearing ci.yml step deleted turns the pin red naming it' {
+	if ($LoadBearingCiSteps.Count -eq 0) {
+		throw 'no load-bearing steps declared, so this case checks nothing.'
+	}
+	$workflow = Join-Path $RepoRoot '.github\workflows\ci.yml'
+	if (-not (Test-Path -LiteralPath $workflow)) {
+		throw "no $workflow to read the load-bearing steps out of."
+	}
+	$text = Get-Content -LiteralPath $workflow -Raw
+
+	foreach ($step in $LoadBearingCiSteps) {
+		$mutated = Remove-CiStep -Text $text -Name $step.Name
+		if ($mutated -eq $text) {
+			throw "deleting the '$($step.Name)' step changed nothing, so this case removed no step at all."
+		}
+		$missing = @(Get-MissingCiStep -Text $mutated)
+		if ($missing -notcontains $step.Name) {
+			throw "deleting the '$($step.Name)' step did not turn the pin red naming it. Reported missing: $($missing -join ', ')"
+		}
+		# Named alone, not swept up with a sibling: deleting one step must not
+		# report a step still standing in the mutated file.
+		foreach ($sibling in $LoadBearingCiSteps) {
+			if ($sibling.Name -eq $step.Name) {
+				continue
+			}
+			if ($missing -contains $sibling.Name) {
+				throw "deleting only '$($step.Name)' also reported '$($sibling.Name)' missing, so the deletion pattern removed more than one step."
+			}
 		}
 	}
 }
