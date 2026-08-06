@@ -255,3 +255,13 @@ disagreement between the suite and a shipped child's own splitting — `whisper-
 a second place that builds a command line without going through `build_command_line`; a move off
 `CreateProcessW`; or a case added to either quoter's corpus that the other cannot pass, which is the
 day the two corpora need a mechanism rather than a paragraph.
+
+## Addendum (2026-08-06, #152)
+
+Issue #152 deleted `ConvertTo-NativeArgument` and its `scripts/selftest.ps1` corpus along with the
+rest of the PowerShell layer. `build_command_line` is now the repository's only Windows
+command-line writer — the "two Windows argument quoters" premise "The accepted costs" section
+records is retired by deletion, not by reconciliation: there is no second quoter left to drift from
+this one. The other three reopen triggers this record names — a measured disagreement with a real
+child's own splitting, a second command-line writer bypassing `build_command_line`, and a move off
+`CreateProcessW` — still stand unchanged.

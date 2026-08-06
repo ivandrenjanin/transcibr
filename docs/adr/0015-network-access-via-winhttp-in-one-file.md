@@ -57,3 +57,13 @@ review): with `src/net/winhttp.odin` wrapping `WinHttpOpen` in an exported `open
 never spelling `winhttp` itself — passes `build.ps1` clean. Once `src/net` is a package, a sibling
 calls in unqualified and an importer writes `import "transcibr:net"`; neither spells the name either.
 The gate confines where the literal name may appear, not where a call into the wrapper may originate.
+
+## Addendum (2026-08-06, #152)
+
+`Assert-OdinNetworkConfinement` moved mechanism-intact into `tools\policy\check.odin`'s
+`collect_network_violations` (`NETWORK_CODE_FILE = src/net/winhttp.odin`), failing `just check` on
+the same literal-substring match issue #58 landed — reading Odin source with the compiler's parser
+elsewhere in `tools\policy` (ADR-0028) changes nothing about this one check, which still answers a
+substring and needs no grammar. The wrapper-calling residual recorded above — a second file that
+calls into `open` without spelling `winhttp` itself passes the gate — applies unchanged to the new
+gate; nothing about the #152 migration narrows or widens what this check can see.

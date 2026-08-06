@@ -134,3 +134,18 @@ logic the same way; nothing plants a throwaway repository and re-runs `just` aga
 
 **Zero PowerShell remains in the repository.** `Get-ChildItem -Path . -Recurse -Filter *.ps1` from
 the repository root returns nothing.
+
+## Addendum (2026-08-06, post-#152 documentation audit)
+
+`EXCLUDED_DIRECTORY_NAMES` gained a fourth, load-bearing exclusion before this ticket's ADR merged:
+`.tools`, alongside `.git`, `build` and `.scratch` — because `just install-tools` extracts 1,330
+core-library `.odin` files there, and without excluding it `just check` measured 19,965 violations
+against files that are not this repository's own source. "What moved, and where" above records only
+the original three exclusions `discover.odin` carries forward from `Get-OdinSource`; `.tools` is a
+fourth this decision added rather than moved.
+
+The test count in "The selftest suite itself is not replaced" — "`tools\policy`'s own `@(test)`
+procedures (77, after this ticket)" — was of this ADR's own merge. `tools\policy` carries 91
+`@(test)` procedures as of this addendum (2026-08-06); phrased without pinning a new number, for the
+same reason the original count was already wrong the moment a test was added after it: a count
+recorded in prose rots and nothing here re-checks it against the tree.

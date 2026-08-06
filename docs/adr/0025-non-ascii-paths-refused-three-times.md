@@ -139,6 +139,15 @@ It matters more than it looks, because nothing automated can ever hold it. ADR-0
 tests, and that the only thing which runs the built binary is `build.ps1`'s smoke test, with no
 arguments, reading the banner line. This ADR and review are the whole of the enforcement.
 
+## Addendum (2026-08-06, #152)
+
+The three pointers above re-anchor without changing the conclusion. `$OdinPackagesWithoutTests` is
+now `TEST_LESS_SRC_PACKAGES` in `tools\policy\packages.odin`; `test.ps1`'s refusal is now `just
+check`'s `exempt_packages_holding_tests`; and what runs the built binary is the justfile's `smoke`
+recipe — the same no-arguments banner read, now also asserting the banner reached standard output
+(the #119 review's finding). This ADR and review remain the whole of the enforcement for the
+non-ASCII refusal this record is about.
+
 ## What would fix the class, considered and deferred
 
 Decouple the scratch name from the artifact stem. The Engine only ever sees paths inside the cache,

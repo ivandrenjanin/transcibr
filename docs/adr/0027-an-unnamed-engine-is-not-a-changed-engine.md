@@ -89,3 +89,10 @@ Engine, and the duration the probe measured. Said again at `current_of` in
 ever asks the Engine binary for its own version — or hashes it, the way the Model is hashed — then a
 Batch always names its Engine, the absent case stops existing, and this decision goes with it. That
 is issue #50, and both halves of it are already in the repository.
+
+## Addendum (2026-08-06, #152)
+
+The `$OdinPackagesWithoutTests` pointer this record's "Consequences" section carries — `src/cli`
+is named there, so a rule that lived there could not be turned red — is now `TEST_LESS_SRC_PACKAGES`
+in `tools\policy\packages.odin`. The untestability rationale for keeping this decision in
+`transcibr:planning` rather than `src/cli` is unchanged.

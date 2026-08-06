@@ -125,3 +125,49 @@ for the target the parser is reading for — the parser does not evaluate `when`
 from every build is still held to every rule. That is the direction to prefer. A file that does not
 parse is refused rather than read, which means the checks say nothing about a file the compiler would
 also refuse. And the depth bound above is a bound and not a proof.
+
+## Addendum (2026-08-06, #152): full supersession — see ADR-0035's "What moved, and where"
+
+Issue #152 deleted the PowerShell layer this record's mechanisms sections name. ADR-0035 is the
+record of that migration; this addendum re-points what this record itself said, rather than
+restating ADR-0035.
+
+**The network-confinement verdict moved beside the parser-backed checks.** `:6`'s "not part of this
+decision" boundary — drawn because `Assert-OdinNetworkConfinement` lived in `scripts\common.ps1`
+while the other four moved into `tools\policy` — is dissolved: `collect_network_violations` now
+lives in `tools\policy\check.odin` next to the other four, computed in the same program even though
+it still answers a literal substring and needs no grammar (ADR-0015's own addendum records the
+mechanism unchanged).
+
+**The two-roots fact survives, hardwired.** `:59`'s `$OdinPackageRoots` becoming "a declared list of
+two roots rather than `src\` alone" is now `packages.odin`'s package-accounting check running over
+both `src\` and `tools\` explicitly, in both directions — the same two roots, expressed in Odin
+rather than in a PowerShell list.
+
+**The bootstrap is one line.** `:66`'s `Resolve-OdinPolicyTool` and `:73`'s `$env:TRANSCIBR_POLICY`
+paragraph — the throwaway-repository harness `scripts\selftest.ps1` used to plant around thirty
+fixture repositories against — are superseded with no replacement. `just check`'s bootstrap is a
+single `odin run tools/policy` line; nothing plants a throwaway repository and re-runs a build
+command inside it any more, because `just` itself has no PowerShell-shaped control flow left to
+prove against a fixture.
+
+**The test count was of its writing.** `:102`'s "52 `@(test)` procedures" is stated as of this
+record's own writing, not as a fact to re-pin here; `tools\policy` carries 91 as of this addendum
+(2026-08-06). Phrased without pinning a new number for the same reason ADR-0035's own addendum gives
+for its test-count correction: a count recorded in prose rots the moment a test is added, and no
+mechanism here re-checks it.
+
+**`:109`'s "what remains in PowerShell" division is exactly what #152 dissolved.** Zero PowerShell
+remains in the repository (ADR-0035's own "Consequences" section, `Get-ChildItem -Recurse -Filter
+*.ps1` returns nothing). The recorded paragraph is **not reworded** — it stays as a true statement
+of the repository's state on the day it was written, and this addendum is what says it no longer
+describes today's tree.
+
+**Decision close-out, `:116`, ruled from the 2026-08-06 post-#152 audit.** The unknown-record
+refusal property this record states — "`Read-OdinPolicyReport` throws on a record it does not know
+rather than ignoring it" — guarded a two-language report seam that #152 deleted outright:
+`Read-OdinPolicyReport` no longer exists, and `tools\policy` computes and prints its own verdicts in
+one program (`main.odin`'s `report_violations`), with no report crossing a language boundary for
+anything to fail to recognize. The property is retired **VACUOUS**, with no successor owed: a
+verdict can no longer be lost across a protocol gap inside a single program whose own compile
+failure already fails `just check` before any verdict is computed at all.

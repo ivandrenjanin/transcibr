@@ -452,3 +452,24 @@ pipeline is the one named — adds a third by calling `child.run_bounded` direct
 third copy. What the lift did not resolve is `on_poll`'s `-> bool` signature collapsing three
 distinct stops into one `.Stopped` — recorded where it is fully stated, at `watched_poll` in
 `src/engine/run.odin`.
+
+## Addendum (2026-08-06, #152)
+
+Anchored to ADR-0035's first accepted risk. Locally, nothing kills a wedged `just test` any more —
+`scripts\common.ps1`'s ten-minute process-tree ceiling this record's "Every child the suite starts
+is bounded" section names is gone, and a `Ctrl+C` is the only local recourse; CI's job-level
+`timeout-minutes: 30` is the sole remaining backstop. Every bound `src/child/child_test.odin`
+carries is correspondingly MORE load-bearing than this record states, not less: a hang that used to
+be caught locally inside ten minutes now runs until CI's half-hour ceiling, or until someone notices.
+
+The console-window criterion section's scope correction: `#assert(CREATION_FLAGS &
+win32.CREATE_NO_WINDOW != 0)` no longer fires "today the sweep and not `scripts\build.ps1`" —
+`src/cli` imports `transcibr:child` today (`main.odin:12`, `batch.odin:15`, `doctor.odin:9`,
+`transcribe.odin:8`), so the assert now fires wherever this package is compiled, including `just
+build` and `just release`, not only `just test`.
+
+The read-bound section's re-run instruction is retired along with the wrapper it named: past
+`await_bounded`'s bound, there is no `scripts\common.ps1` sweep timeout to kill a hang and report it
+under its own message any more. Proving the negative — that a mutated bound check does hang — now
+needs `just test-one` run under an external timeout of the caller's own choosing, not the sweep's
+former ten-minute default.

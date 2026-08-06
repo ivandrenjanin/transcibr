@@ -272,3 +272,12 @@ shell one for a field nothing in this ticket reads.
 
 The window landing (#16) is what proves the cancellation seam. If it needs more than a flag and a
 callback, this is the decision that was too small.
+
+## Addendum (2026-08-06, #152)
+
+The refused-alternative cost this record's "A package for one procedure costs more than it
+separates" section names — "a row in `test.ps1`'s per-package accounting and a
+`$OdinPackagesWithoutTests` question" — is now a justfile `test:` recipe line plus a
+`TEST_LESS_SRC_PACKAGES` question in `tools\policy\packages.odin`. The cost is the same shape,
+paid in the current mechanism; the decision to keep discovery and planning in one package is
+unaffected.
