@@ -247,6 +247,35 @@ an_engine_that_produced_an_empty_file_is_a_failure :: proc(t: ^testing.T) {
 }
 
 @(test)
+a_bounded_landed_check_of_a_real_output_on_disk_finds_it :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "engine", "landed", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	output := fmt.aprintf("%s\\lecture.json", cache, allocator = context.allocator)
+	defer delete(output, context.allocator)
+	testing.expect(
+		t,
+		os.write_entire_file(output, []u8{'{', '}'}) == nil,
+		"could not write a stand-in output file",
+	)
+
+	testing.expect_value(t, landed_bounded(output, child.READ_BOUND_MS), Fault.None)
+}
+
+@(test)
+a_bounded_landed_check_of_an_output_that_is_not_there_is_refused :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "engine", "landed-missing", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	output := fmt.aprintf("%s\\never-written.json", cache, allocator = context.allocator)
+	defer delete(output, context.allocator)
+
+	testing.expect_value(t, landed_bounded(output, child.READ_BOUND_MS), Fault.No_Output)
+}
+
+@(test)
 an_engine_that_says_nothing_at_all_is_stopped_before_its_bound_runs_out :: proc(t: ^testing.T) {
 	group, ok := open_group(t)
 	defer child.job_object_close(&group)

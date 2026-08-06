@@ -1,9 +1,12 @@
 #+vet explicit-allocators
 package engine
 
+import "base:runtime"
 import "core:fmt"
 import "core:mem"
 import "core:os"
+import "core:strings"
+import "core:thread"
 import "transcibr:child"
 import "transcibr:process"
 
@@ -64,7 +67,7 @@ transcribe :: proc(
 	if refusal := refused(ending); refusal.fault != .None {
 		return {}, refusal
 	}
-	if missing := landed(output); missing != .None {
+	if missing := landed_bounded(output, child.READ_BOUND_MS); missing != .None {
 		return {}, Error{fault = missing}
 	}
 	return Transcribed{output = output, duration_ms = ending.duration_ms}, Error{}
@@ -111,9 +114,9 @@ refused :: proc(ending: Ending) -> Error {
 
 // One open and no stat, so the length belongs to the same file the handle does.
 //
-// Known-open, not silent: `os.open` below is unbounded and can wedge on the
-// same stalled scratch cache `child.read_bounded` guards the read that
-// follows this one against, in `artifact.complete`. Issue #65 tracks it.
+// Runs only on `landed_bounded`'s worker thread below: `os.open` can wedge on
+// the same stalled scratch cache `child.read_bounded` guards the read that
+// follows this one against, in `artifact.complete` (issue #65).
 @(private)
 @(require_results)
 landed :: proc(output: string) -> Fault {
@@ -133,6 +136,71 @@ landed :: proc(output: string) -> Fault {
 		return .Output_Empty
 	}
 	return .None
+}
+
+// `landed`'s own worker, bounded the same shape as `audio.read_head_bounded`
+// and `artifact.digest_of_bounded`: a small worker thread plus
+// `child.await_or_abandon`, its job on `runtime.heap_allocator`'s heap so an
+// abandoned thread has somewhere safe to keep writing after this procedure
+// has already returned to its caller.
+@(private)
+Landed_Job :: struct {
+	output: string,
+	fault:  Fault,
+}
+
+@(private)
+landed_worker :: proc(data: rawptr) {
+	job := (^Landed_Job)(data)
+	assert(job != nil, "a landed-check thread was started with no job to check")
+	assert(len(job.output) > 0, "a landed-check thread was started with no path to check")
+
+	job.fault = landed(job.output)
+}
+
+// Every wait outcome that is not `.Finished` collapses onto `.No_Output`, the
+// same fault `landed` itself already answers for an output it could not
+// open: a caller cannot tell a wedge from an ordinary open failure apart, and
+// A8 asks it to reject the read rather than assert on it either way.
+@(private)
+@(require_results)
+landed_bounded :: proc(output: string, bound_ms: i64) -> Fault {
+	assert(len(output) > 0, "there is nowhere here to look for the Engine's output")
+	assert(bound_ms > 0, "a check given no time at all cannot do anything")
+
+	job := new(Landed_Job, runtime.heap_allocator())
+	job.output = strings.clone(output, runtime.heap_allocator())
+
+	context.allocator = runtime.heap_allocator()
+	t := thread.create_and_start_with_data(job, landed_worker)
+	if t == nil {
+		delete(job.output, runtime.heap_allocator())
+		free(job, runtime.heap_allocator())
+		return .No_Output
+	}
+
+	switch child.await_or_abandon(t, bound_ms) {
+	case .Finished:
+		fault := job.fault
+		release_landed_job(t, job)
+		return fault
+	case .Stopped:
+		release_landed_job(t, job)
+		return .No_Output
+	case .Unstoppable:
+		return .No_Output
+	}
+	unreachable()
+}
+
+@(private)
+release_landed_job :: proc(t: ^thread.Thread, job: ^Landed_Job) {
+	assert(t != nil, "there is no thread here to release")
+	assert(job != nil, "there is no job here to release")
+
+	delete(job.output, runtime.heap_allocator())
+	free(job, runtime.heap_allocator())
+	thread.destroy(t)
 }
 
 // The caller's own reading of a chunk: a Tracker fed through a Line_Reader,
