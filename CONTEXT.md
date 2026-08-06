@@ -146,18 +146,22 @@ The Model check's authoritative half: actually spawning the Engine against the M
 silent probe clip, because only a real load proves a Model loads — ADR-0011's spawn-and-verify, never
 stat-and-trust. Replaces a SHA-256 over the Model's bytes that ADR-0033 tried and removed: compared
 against nothing, it cost 6.9 of an 8.5-second doctor run and still passed a 200 MiB head-truncation of
-a real Model that the load probe refuses in under a second. Distinct from Probe, which is a container's
-own claim about itself — this spawns and reads a whole process's diagnostic output, not a stated
-duration. Skipped, not failed, when the Engine check ahead of it did not pass; see Skip.
+a real Model that the load probe refuses in under a second. Built from `doctor`'s own exported `Probe`
+struct (`tool.odin`) — what one bounded spawn of an executable came to, its whole diagnostic stream
+captured — a third sense of the word distinct from this glossary's container Probe, which is a
+container's own claim about itself and spawns nothing. Skipped, not failed, when the Engine check
+ahead of it did not pass; see Skip.
 _Avoid_: hash check, checksum, verification pass
 
 **Health watch**:
 The runtime half of the same GPU guard the preflight's Engine check is the other half of
 (`first_recording_health`, ADR-0011, ADR-0033): two independent checks on the first completed
-Recording, not one comparison. The name half fails outright the moment the Engine's own systeminfo
-names no CUDA support at all, whatever the Recording's speed was — a Recording running three times
-the Baseline still fails if the build was never CUDA-capable. Only once that half is silent does the
-speed half compare the Recording's own realtime factor against the Baseline, catching a driver update
+Recording, not one comparison. The name half fails only when the Engine's own systeminfo is present
+and actively names something other than CUDA, whatever the Recording's speed was — a Recording
+running three times the Baseline still fails if a present systeminfo says the build was never
+CUDA-capable. An absent or unparsed systeminfo is not evidence of anything and never fails this half
+on its own; it leaves the speed half to carry the verdict instead. Once the name half is silent, the
+speed half compares the Recording's own realtime factor against the Baseline, catching a driver update
 or a GPU in a reset state that a passing preflight could not have seen. A third answer, `conclusive =
 false`, is not a fault: a Recording too short for the speed half to mean anything is left unjudged
 rather than reported healthy, so a Batch's one health check is not spent on a Recording nothing could
