@@ -1,7 +1,6 @@
 #+vet explicit-allocators
 package planning
 
-import "base:runtime"
 import "core:fmt"
 import "core:io"
 import "core:mem"
@@ -381,7 +380,7 @@ directory_worker :: proc(data: rawptr) {
 	assert(job != nil, "a directory-listing thread was started with no job to read")
 	assert(len(job.path) > 0, "a directory-listing thread was started with no path to read")
 
-	job.listing, job.err = os.read_all_directory_by_path(job.path, runtime.heap_allocator())
+	job.listing, job.err = os.read_all_directory_by_path(job.path, child.job_allocator())
 }
 
 @(private)
@@ -398,13 +397,13 @@ directory_listing_bounded :: proc(
 	assert(len(path) > 0, "there is no directory here to list")
 	assert(bound_ms > 0, "a listing given no time at all cannot do anything")
 
-	job := new(Directory_Job, runtime.heap_allocator())
-	job.path = strings.clone(path, runtime.heap_allocator())
+	job := new(Directory_Job, child.job_allocator())
+	job.path = strings.clone(path, child.job_allocator())
 
 	wait, started := run_bounded(state, directory_worker, job, bound_ms)
 	if !started {
-		delete(job.path, runtime.heap_allocator())
-		free(job, runtime.heap_allocator())
+		delete(job.path, child.job_allocator())
+		free(job, child.job_allocator())
 		return nil, false
 	}
 
@@ -425,17 +424,23 @@ release_directory_job :: proc(job: ^Directory_Job) {
 	assert(job != nil, "there is no job here to release")
 
 	if job.err == nil {
-		os.file_info_slice_delete(job.listing, runtime.heap_allocator())
+		os.file_info_slice_delete(job.listing, child.job_allocator())
 	}
-	delete(job.path, runtime.heap_allocator())
-	free(job, runtime.heap_allocator())
+	delete(job.path, child.job_allocator())
+	free(job, child.job_allocator())
 }
 
-// Where a completed listing's answer crosses from `runtime.heap_allocator`'s
+// Where a completed listing's answer crosses from `child.job_allocator`'s
 // heap onto the allocator the caller actually asked for -- the same
 // copy-then-release shape `child.read.odin`'s `finished` uses, one struct
 // deeper: `os.file_info_clone` copies `fullpath` (and re-derives `name` from
 // it) per entry, since a `File_Info` owns a string the source heap will free.
+// The clone itself is `child.clone_directory_listing` (issue #66): this
+// package used to carry its own byte-identical copy, along with a second
+// probe allocator and a second copy of the double-free regression test that
+// pins its error path -- `a_directory_listing_that_cannot_be_cloned_under_-`
+// `memory_pressure_frees_what_it_cloned_exactly_once` in
+// `src/child/directory_test.odin` is the one copy of that test now.
 @(private)
 @(require_results)
 directory_finished :: proc(
@@ -449,45 +454,10 @@ directory_finished :: proc(
 
 	err := job.err
 	if err == nil {
-		listing, ok = clone_listing(job.listing, allocator)
+		listing, ok = child.clone_directory_listing(job.listing, allocator)
 	}
 	release_directory_job(job)
 	return
-}
-
-// The error path frees `cloned[:i]` through `os.file_info_slice_delete`
-// alone, and never `cloned` again after it: `file_info_slice_delete` ends
-// with `delete(infos, allocator)`, which frees the pointer `raw_data`
-// carries -- the same pointer `cloned` itself has, since slicing from the
-// front leaves the base address untouched. A second `delete(cloned,
-// allocator)` after that freed the same block twice, corruption a normal
-// heap does not report until some unrelated allocation reuses the address
-// (PR #64's second review, finding 1).
-// `a_listing_that_cannot_be_cloned_under_memory_pressure_frees_what_it_-`
-// `cloned_exactly_once` in walk_test.odin proves it with an allocator that
-// answers `.Out_Of_Memory` partway through cloning, rather than waiting for
-// a real out-of-memory condition to reach it.
-@(private)
-@(require_results)
-clone_listing :: proc(
-	listing: []os.File_Info,
-	allocator: mem.Allocator,
-) -> (
-	cloned: []os.File_Info,
-	ok: bool,
-) {
-	assert(allocator.procedure != nil, "a listing outliving this procedure needs an allocator")
-
-	cloned = make([]os.File_Info, len(listing), allocator)
-	for info, i in listing {
-		one, err := os.file_info_clone(info, allocator)
-		if err != nil {
-			os.file_info_slice_delete(cloned[:i], allocator)
-			return nil, false
-		}
-		cloned[i] = one
-	}
-	return cloned, true
 }
 
 // Whether this listing is worth a writability probe at all. The probe creates and
@@ -657,7 +627,7 @@ sidecar_read_worker :: proc(data: rawptr) {
 	assert(job != nil, "a Sidecar-read thread was started with no job to read")
 	assert(len(job.path) > 0, "a Sidecar-read thread was started with no path to read")
 
-	job.bytes, job.os_error = os.read_entire_file_from_path(job.path, runtime.heap_allocator())
+	job.bytes, job.os_error = os.read_entire_file_from_path(job.path, child.job_allocator())
 }
 
 @(private)
@@ -666,13 +636,13 @@ sidecar_at :: proc(state: ^Walking, path: string) -> Maybe(artifact.Sidecar) {
 	assert(state != nil, "there is no walk here to read a Sidecar for")
 	assert(len(path) > 0, "there is nowhere here to read a Sidecar from")
 
-	job := new(Sidecar_Read_Job, runtime.heap_allocator())
-	job.path = strings.clone(path, runtime.heap_allocator())
+	job := new(Sidecar_Read_Job, child.job_allocator())
+	job.path = strings.clone(path, child.job_allocator())
 
 	wait, started := run_bounded(state, sidecar_read_worker, job, child.READ_BOUND_MS)
 	if !started {
-		delete(job.path, runtime.heap_allocator())
-		free(job, runtime.heap_allocator())
+		delete(job.path, child.job_allocator())
+		free(job, child.job_allocator())
 		return nil
 	}
 
@@ -692,9 +662,9 @@ sidecar_at :: proc(state: ^Walking, path: string) -> Maybe(artifact.Sidecar) {
 release_sidecar_job :: proc(job: ^Sidecar_Read_Job) {
 	assert(job != nil, "there is no job here to release")
 
-	delete(job.bytes, runtime.heap_allocator())
-	delete(job.path, runtime.heap_allocator())
-	free(job, runtime.heap_allocator())
+	delete(job.bytes, child.job_allocator())
+	delete(job.path, child.job_allocator())
+	free(job, child.job_allocator())
 }
 
 @(private)
@@ -809,13 +779,13 @@ transcript_state_bounded :: proc(
 	assert(len(path) > 0, "there is nowhere here to look for a Transcript")
 	assert(bound_ms > 0, "a read given no time at all cannot do anything")
 
-	job := new(Transcript_Head_Job, runtime.heap_allocator())
-	job.path = strings.clone(path, runtime.heap_allocator())
+	job := new(Transcript_Head_Job, child.job_allocator())
+	job.path = strings.clone(path, child.job_allocator())
 
 	wait, started := run_bounded(state, transcript_head_worker, job, bound_ms)
 	if !started {
-		delete(job.path, runtime.heap_allocator())
-		free(job, runtime.heap_allocator())
+		delete(job.path, child.job_allocator())
+		free(job, child.job_allocator())
 		return .Unreadable
 	}
 
@@ -861,8 +831,8 @@ transcript_state_of :: proc(
 release_transcript_head_job :: proc(job: ^Transcript_Head_Job) {
 	assert(job != nil, "there is no job here to release")
 
-	delete(job.path, runtime.heap_allocator())
-	free(job, runtime.heap_allocator())
+	delete(job.path, child.job_allocator())
+	free(job, child.job_allocator())
 }
 
 @(private)
