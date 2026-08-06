@@ -216,7 +216,9 @@ bump :: proc(c: ^Counters, which: Metric, delta: int) {
 // `claim_health_watch_can_be_claimed_again_once_released` (`defaults_test.odin`)
 // is this procedure's own cover; `bump`'s is `exactly_one_transcription_-`
 // `runs_at_a_time_however_many_are_queued` (`topology_test.odin`), named in
-// the comment above `bump`.
+// the comment above `bump`. `claim_health_watch` asserts absence before
+// claiming; `release_health_watch` asserts presence (a CAS from `true` to
+// `false`) before releasing, per CLAUDE.md A3's add/remove pairing.
 @(private)
 health_watch_claimed: bool
 
@@ -229,7 +231,8 @@ claim_health_watch :: proc() {
 }
 
 release_health_watch :: proc() {
-	sync.atomic_store(&health_watch_claimed, false)
+	_, was_claimed := sync.atomic_compare_exchange_strong(&health_watch_claimed, true, false)
+	assert(was_claimed, "release_health_watch called without a matching claim_health_watch")
 }
 
 // The channel's own occupancy right after a successful send, read through

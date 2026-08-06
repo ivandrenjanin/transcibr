@@ -131,16 +131,34 @@ worker_option_ceilings_pair_each_option_with_its_own_max :: proc(t: ^testing.T) 
 	testing.expect(t, !unknown_found, "an unregistered option name found a ceiling anyway")
 }
 
-// Issue #111, fix round 2: `claim_health_watch` is the A4 partner to `bump`'s
-// ADR-0006 assert, and `src/cli` -- its one caller -- is kept test-less by
-// ADR-0009, so this is where the happy path is driven for real. A release
-// freeing the claim for a second, later Batch is exactly what `run_the_batch`
-// relies on between two `--batch` invocations in the same process; this does
-// not drive the refusal branch, which issue #22 keeps out of any test.
+// Issue #111, fix round 4: `claim_health_watch` guards Batch reentrancy, a
+// different invariant from `bump`'s ADR-0006 one-transcription-Worker assert
+// (see the doc comment above `health_watch_claimed` in pipeline.odin, which
+// names this test as this procedure's own cover, not `bump`'s). `src/cli` --
+// `claim_health_watch`'s one caller -- is kept test-less by ADR-0009, so this
+// is where the happy path is driven for real: each claim/release round checks
+// the package-private `health_watch_claimed` flag directly, so a gutted
+// `claim_health_watch` that never sets it, or a `release_health_watch` that
+// never clears it, fails this test rather than passing for the wrong reason.
+// This does not drive the refusal branch, which issue #22 keeps out of any
+// test.
 @(test)
 claim_health_watch_can_be_claimed_again_once_released :: proc(t: ^testing.T) {
 	claim_health_watch()
+	testing.expect(t, health_watch_claimed, "claim_health_watch did not set the claim")
 	release_health_watch()
+	testing.expect(t, !health_watch_claimed, "release_health_watch did not clear the claim")
+
 	claim_health_watch()
+	testing.expect(
+		t,
+		health_watch_claimed,
+		"claim_health_watch did not set the claim a second time",
+	)
 	release_health_watch()
+	testing.expect(
+		t,
+		!health_watch_claimed,
+		"release_health_watch did not clear the claim a second time",
+	)
 }
