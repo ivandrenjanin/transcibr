@@ -208,6 +208,27 @@ a_head_read_from_a_file_that_is_not_there_is_refused :: proc(t: ^testing.T) {
 	testing.expect_value(t, err.fault, Fault.Audio_Unreadable)
 }
 
+// The #101 review evidence used a named pipe with no writer; a zero-byte
+// file on disk reaches the same zero-length answer through `os.read_at`
+// without a second process to arrange.
+@(test)
+a_head_read_from_a_zero_byte_file_is_refused_as_unreadable :: proc(t: ^testing.T) {
+	cache := testkit.scratch_cache(t, "audio", "empty-head", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
+
+	path := fmt.aprintf("%s\\empty.wav", cache, allocator = context.allocator)
+	defer delete(path, context.allocator)
+	testing.expect(t, os.write_entire_file(path, []u8{}) == nil, "could not write the fixture")
+
+	buffer: [64]u8 = ---
+	head, bytes, err := read_head(path, buffer[:])
+	testing.expect_value(t, err.fault, Fault.Audio_Unreadable)
+	testing.expect_value(t, bytes, i64(0))
+	testing.expect_value(t, len(head), 0)
+}
+
 @(test)
 the_bounded_head_of_a_real_wav_on_disk_walks_to_its_data_chunk :: proc(t: ^testing.T) {
 	cache := testkit.scratch_cache(t, "audio", "head-bounded", context.allocator)
