@@ -20,6 +20,7 @@ DRAIN_BYTES :: 4096
 MAX_DRAIN_BYTES :: 1 << 20
 
 #assert(MAX_DRAIN_BYTES > DRAIN_BYTES)
+#assert(MAX_DRAIN_BYTES == 16 * DIAGNOSTIC_PIPE_BYTES)
 
 Run :: enum u8 {
 	Not_Started = 0,
