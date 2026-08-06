@@ -203,6 +203,12 @@ unrecorded :: proc(found: Found) -> Outcome {
 // `read_natural`, which accepts digits only and no sign, so a negative value
 // cannot come out of a file; it does not hold because `recorded` has been
 // re-probed or re-checked.
+//
+// `>= 0` and not every sibling `container_ms` assert's `> 0`: the return
+// below writes `known ? recorded.container_ms : 0`, and sidecar.odin's
+// `container_ms` field note records that `current_of` itself is the caller
+// allowed to write that zero, for a Recording with no Sidecar of its own --
+// zero is a real answer here, not a defect this assert exists to catch.
 @(private)
 @(require_results)
 current_of :: proc(
