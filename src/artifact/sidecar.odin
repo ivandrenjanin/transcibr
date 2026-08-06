@@ -23,6 +23,17 @@ Digest :: distinct string
 
 DIGEST_CHARS :: 64
 
+// `path` and `digest` are OWNED and freed with destroy_model and the allocator
+// that was handed in. identify_model and destroy_model stay in model.odin,
+// the impure half that reads and hashes a Model file; the struct lives here
+// because sidecar_of, the pure half, is what consumes it -- ADR-0032.
+Model :: struct {
+	// Resolved, so two Batches that spelled one Model two ways record one Model.
+	path:   string,
+	digest: Digest,
+	bytes:  i64,
+}
+
 // A beam of nothing is the Engine's own default: `transcibr:process`
 // deliberately passes no `-bs`, and recording the number an Engine release
 // happens to default to would be provenance transcibr invented (ADR-0003).
