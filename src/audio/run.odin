@@ -139,7 +139,7 @@ probe :: proc(
 	arguments := process.probe_arguments(source, answer, allocator)
 	defer delete(arguments, allocator)
 
-	ending, refusal := child.run_bounded(
+	ending, _, refusal := child.run_bounded(
 		group,
 		tools.ffprobe,
 		arguments,
@@ -313,7 +313,7 @@ produce :: proc(
 
 	arguments := process.extract_arguments(job.source, part, allocator)
 	defer delete(arguments, allocator)
-	ending, refusal := child.run_bounded(
+	ending, _, refusal := child.run_bounded(
 		group,
 		tools.ffmpeg,
 		arguments,

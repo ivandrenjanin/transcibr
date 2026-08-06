@@ -498,10 +498,20 @@ every_way_a_run_can_end_is_the_fault_that_names_it :: proc(t: ^testing.T) {
 	testing.expect_value(t, refused(Ending{run = .Unstoppable}).fault, Fault.Not_Stopped)
 	testing.expect_value(
 		t,
-		refused(Ending{run = .Stopped, silent = true}).fault,
+		refused(Ending{run = .Stopped, reason = .Poll_Asked}).fault,
 		Fault.Went_Silent,
 	)
 	testing.expect_value(t, refused(Ending{run = .Stopped}).fault, Fault.Did_Not_Finish)
+	testing.expect_value(
+		t,
+		refused(Ending{run = .Stopped, reason = .Drain_Failed}).fault,
+		Fault.Did_Not_Finish,
+	)
+	testing.expect_value(
+		t,
+		refused(Ending{run = .Stopped, reason = .Bound_Expired}).fault,
+		Fault.Did_Not_Finish,
+	)
 	testing.expect_value(t, refused(Ending{run = .Finished}).fault, Fault.None)
 }
 
@@ -512,13 +522,12 @@ every_way_a_run_can_end_is_the_fault_that_names_it :: proc(t: ^testing.T) {
 an_unstoppable_run_still_carries_what_it_measured :: proc(t: ^testing.T) {
 	watch_state := Watch_State {
 		tracker = process.Tracker{duration_ms = 4_200},
-		silent = true,
 	}
-	ending := ending_for(.Unstoppable, watch_state, child.Error{})
+	ending := ending_for(.Unstoppable, .Poll_Asked, watch_state, child.Error{})
 
 	testing.expect_value(t, ending.run, child.Run.Unstoppable)
 	testing.expect_value(t, ending.duration_ms, i64(4_200))
-	testing.expect_value(t, ending.silent, true)
+	testing.expect_value(t, ending.reason, child.Stop_Reason.Poll_Asked)
 }
 
 @(test)

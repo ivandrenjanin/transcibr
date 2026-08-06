@@ -16,7 +16,7 @@ import "transcibr:process"
 @(private)
 Ending :: struct {
 	run:         child.Run,
-	silent:      bool,
+	reason:      child.Stop_Reason,
 	duration_ms: i64,
 	child:       child.Error,
 }
@@ -97,7 +97,13 @@ refused :: proc(ending: Ending) -> Error {
 	case .Unstoppable:
 		return Error{fault = .Not_Stopped}
 	case .Stopped:
-		return Error{fault = .Went_Silent if ending.silent else .Did_Not_Finish}
+		switch ending.reason {
+		case .Poll_Asked:
+			return Error{fault = .Went_Silent}
+		case .None, .Bound_Expired, .Drain_Failed:
+			return Error{fault = .Did_Not_Finish}
+		}
+		return Error{fault = .Did_Not_Finish}
 	case .Finished:
 	}
 	return Error{}
@@ -138,7 +144,6 @@ Watch_State :: struct {
 	report:  Report,
 	watch:   process.Watch,
 	painted: process.Progress,
-	silent:  bool,
 }
 
 // Called for every read that produced bytes, whether or not any of them read
@@ -180,19 +185,6 @@ watched_end :: proc(elapsed_ns: i64, user: rawptr) {
 // bar with a hundred positions and three annotations can have. Called once
 // more after the child finishes, so the display's last paint reflects the
 // Engine's true final reading.
-//
-// It also carries a second duty `on_poll`'s `-> bool` signature has no room
-// for: `child.Run` collapses a bound expiry, this callback asking to stop,
-// and a drain failure into one `.Stopped`, so this writes the distinction
-// into `watch_state.silent` for `ending_for` to read back once `run_bounded`
-// has already returned. Correct only because a `true` return here exits the
-// loop immediately, so nothing between the write and `ending_for`'s read can
-// see a stale value. A future `on_poll` that sets the flag and returns
-// `false` -- a "warn, don't stop" reading -- would leave a wall-clock-expiry
-// ending reporting `.Went_Silent` for a run that was never silent. Carrying
-// the stop reason in `child.Run`'s own return would close this, but that is
-// a shape change to a type two other callers already share; recorded here
-// rather than done in this pass.
 @(private)
 @(require_results)
 watched_poll :: proc(elapsed_ns: i64, user: rawptr) -> bool {
@@ -202,7 +194,6 @@ watched_poll :: proc(elapsed_ns: i64, user: rawptr) -> bool {
 	watch_state := (^Watch_State)(user)
 	now := process.shown(watch_state.tracker, elapsed_ns, watch_state.watch)
 	tell(watch_state.report, now, &watch_state.painted)
-	watch_state.silent = now.silent
 	return now.silent
 }
 
@@ -236,7 +227,7 @@ run_engine :: proc(
 		painted = process.Progress{percent = UNPAINTED},
 	}
 
-	run, refusal := child.run_bounded(
+	run, reason, refusal := child.run_bounded(
 		group,
 		executable,
 		arguments,
@@ -249,7 +240,7 @@ run_engine :: proc(
 			on_poll = watched_poll,
 		},
 	)
-	return ending_for(run, watch_state, refusal)
+	return ending_for(run, reason, watch_state, refusal)
 }
 
 // What run_engine's loop measured survives every ending, stopped or not: an
@@ -258,20 +249,25 @@ run_engine :: proc(
 // exactly the caller that most needs to know how long it had been running.
 @(private)
 @(require_results)
-ending_for :: proc(run: child.Run, watch_state: Watch_State, refusal: child.Error) -> Ending {
+ending_for :: proc(
+	run: child.Run,
+	reason: child.Stop_Reason,
+	watch_state: Watch_State,
+	refusal: child.Error,
+) -> Ending {
 	switch run {
 	case .Not_Started:
 		return Ending{run = .Not_Started, child = refusal}
 	case .Unstoppable:
 		return Ending {
 			run = .Unstoppable,
-			silent = watch_state.silent,
+			reason = reason,
 			duration_ms = watch_state.tracker.duration_ms,
 		}
 	case .Stopped:
 		return Ending {
 			run = .Stopped,
-			silent = watch_state.silent,
+			reason = reason,
 			duration_ms = watch_state.tracker.duration_ms,
 		}
 	case .Finished:

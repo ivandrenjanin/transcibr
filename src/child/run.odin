@@ -30,6 +30,16 @@ Run :: enum u8 {
 	Unstoppable,
 }
 
+// What this run observed that made it halt -- mechanical facts about the
+// child and its pipe, never a caller's reading of them. `.None` for
+// `.Not_Started` and `.Finished`, where nothing halted the run early.
+Stop_Reason :: enum u8 {
+	None = 0,
+	Bound_Expired,
+	Poll_Asked,
+	Drain_Failed,
+}
+
 // What a chunk means is the caller's alone. `elapsed_ns` is time since the
 // child started and is always positive.
 Run_Callbacks :: struct {
@@ -69,6 +79,7 @@ run_bounded :: proc(
 	callbacks: Run_Callbacks = {},
 ) -> (
 	run: Run,
+	reason: Stop_Reason,
 	err: Error,
 ) {
 	assert(group != nil, "a child started outside a job object outlives transcibr")
@@ -78,27 +89,27 @@ run_bounded :: proc(
 
 	c, refusal := start(group, executable, arguments, allocator)
 	if refusal.fault != .None {
-		return .Not_Started, refusal
+		return .Not_Started, .None, refusal
 	}
 	defer close(&c)
 
 	started := time.tick_now()
 	for {
 		if !drain_bounded(&c, started, callbacks) {
-			return halt(&c), Error{}
+			return halt(&c), .Drain_Failed, Error{}
 		}
 		if callbacks.on_poll != nil && callbacks.on_poll(elapsed_ns(started), callbacks.user) {
-			return halt(&c), Error{}
+			return halt(&c), .Poll_Asked, Error{}
 		}
 		if wait(&c, POLL_MS) {
 			_ = drain_bounded(&c, started, callbacks)
 			if callbacks.on_poll != nil {
 				_ = callbacks.on_poll(elapsed_ns(started), callbacks.user)
 			}
-			return .Finished, Error{}
+			return .Finished, .None, Error{}
 		}
 		if i64(time.duration_milliseconds(time.tick_since(started))) > bound_ms {
-			return halt(&c), Error{}
+			return halt(&c), .Bound_Expired, Error{}
 		}
 	}
 }

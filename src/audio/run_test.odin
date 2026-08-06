@@ -323,7 +323,7 @@ a_flood_on_the_diagnostic_stream_does_not_stop_the_bound_from_being_reached :: p
 	}
 
 	started := time.tick_now()
-	ending, err := child.run_bounded(
+	ending, _, err := child.run_bounded(
 		&group,
 		CMD,
 		{"/c", command},
