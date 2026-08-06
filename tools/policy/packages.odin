@@ -154,10 +154,10 @@ test_recipe_body :: proc(
 	return strings.join(lines[start:end], "\n", allocator), true
 }
 
-// Every tested package the `test:` recipe's own body does not name as
-// `src/<package>`, as a bounded substring match -- the same textual style
-// ADR-0028 already accepts for the #97/#105 remove_all ban, over a file this
-// program does not parse as Odin at all.
+// Every tested package the `test:` recipe's own body does not name as a
+// `src/<package>` token, over a file this program does not parse as Odin at
+// all -- `contains_package_token` bounds the match so `src/plan` cannot
+// match inside `src/planning`.
 @(require_results)
 missing_from_test_recipe :: proc(
 	tested: []string,
@@ -189,9 +189,50 @@ missing_from_test_recipe :: proc(
 		}
 		needle := strings.concatenate({"src/", name}, allocator)
 		defer delete(needle, allocator)
-		if !strings.contains(body, needle) {
+		if !contains_package_token(body, needle) {
 			append(&missing, strings.clone(name, allocator))
 		}
 	}
 	return missing[:]
+}
+
+// Package-token boundary character: a letter, digit, `/`, `_` or `-` extends
+// the token rather than ending it, so `src/plan` must not match inside
+// `src/planning`. Everything else -- space, quote, end of string -- is a
+// legal token boundary in the justfile's own recipe syntax.
+@(require_results)
+is_package_token_char :: proc(r: rune) -> bool {
+	return(
+		(r >= 'a' && r <= 'z') ||
+		(r >= 'A' && r <= 'Z') ||
+		(r >= '0' && r <= '9') ||
+		r == '/' ||
+		r == '_' ||
+		r == '-' \
+	)
+}
+
+// Whether `needle` (a `src/<name>` path) occurs in `body` as a whole token,
+// not merely as a substring of a longer package path.
+@(require_results)
+contains_package_token :: proc(body: string, needle: string) -> bool {
+	assert(len(needle) > 0, "asked whether an empty needle is a token in the body")
+
+	search := body
+	offset := 0
+	for {
+		index := strings.index(search, needle)
+		if index < 0 {
+			return false
+		}
+		start := offset + index
+		end := start + len(needle)
+		before_ok := start == 0 || !is_package_token_char(rune(body[start - 1]))
+		after_ok := end == len(body) || !is_package_token_char(rune(body[end]))
+		if before_ok && after_ok {
+			return true
+		}
+		search = body[end:]
+		offset = end
+	}
 }

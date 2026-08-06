@@ -285,16 +285,18 @@ it out at a call site: the `justfile` at the repository root holds the only exec
 The formatter half is `odinfmt.json` at the repository root — the one copy, and the name odinfmt
 looks for on its own, so an editor formatting on save and the build agree by construction. Do not
 reformat a file by hand or with a different config; `just fmt` is the way. A misformatted file fails
-`just ci` (`just fmt-check`), and the sweep covers every `.odin` file under `src` and `tools` by
-walking odinfmt's own `-path:` argument rather than by a list.
+`just ci` (`just fmt-check`), which walks `src`, `tools` and `docs\reference` — each spelled once in
+`fmt` and once in `fmt-check`, the same three-directory scope `discover_odin_files` uses for `check` —
+comparing odinfmt's own reformatted output for each file against the file on disk, byte for byte,
+never `git diff`.
 
 ```powershell
 just build       # debug build of src/cli, vet set, subsystem console
 just release     # -o:speed build of src/cli, vet set
 just check       # tools/policy: CLAUDE.md's source policies and the package-accounting check
 just test        # every package under src\ and tools\policy, vet set, memory failures fatal
-just fmt         # every .odin file under src and tools against odinfmt.json, rewritten in place
-just fmt-check   # the same rewrite, refused if it changed anything (git diff --exit-code)
+just fmt         # every .odin file under src, tools and docs/reference against odinfmt.json, rewritten in place
+just fmt-check   # per file, odinfmt's own output byte-compared against the file on disk (no git diff)
 just ci          # fmt-check, check, build, release, test, test-single, smoke, in that order
 ```
 

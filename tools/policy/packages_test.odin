@@ -62,6 +62,25 @@ a_package_named_only_in_another_recipe_is_still_missing :: proc(t: ^testing.T) {
 	testing.expect_value(t, missing[0], "child")
 }
 
+// A tested package whose name is a prefix of another package already named
+// in the test recipe (`plan` inside `planning`) must still be reported
+// missing -- an unbounded substring match would let `src/planning`'s line
+// silently satisfy `src/plan` too.
+@(test)
+a_package_that_is_a_prefix_of_another_named_package_is_still_missing :: proc(t: ^testing.T) {
+	justfile := "test:\n\todin test src/planning {{vet}}\n"
+	missing := missing_from_test_recipe([]string{"plan"}, justfile, context.allocator)
+	defer {
+		for name in missing {
+			delete(name, context.allocator)
+		}
+		delete(missing, context.allocator)
+	}
+
+	testing.expect_value(t, len(missing), 1)
+	testing.expect_value(t, missing[0], "plan")
+}
+
 // An exempt package (`cli`) that itself holds a `*_test.odin` file must be
 // reported -- the exemption is for a package with no tests at all, not a
 // package whose tests are silently never run by any recipe.

@@ -118,7 +118,7 @@ just build         # -> build\transcibr-cli.exe, debug
 just release        # -> build\transcibr-cli.exe, -o:speed
 just check          # tools\policy: CLAUDE.md's source policies and the package-accounting check
 just test           # every package under src\ and tools\policy
-just fmt            # every .odin file under src and tools against odinfmt.json, rewritten in place
+just fmt            # every .odin file under src, tools and docs/reference against odinfmt.json, rewritten in place
 just ci             # fmt-check, check, build, release, test, test-single, smoke
 ```
 
@@ -163,11 +163,12 @@ point the two environment variables at binaries you have pinned by hand, before 
 
 The style itself is `odinfmt.json` at the repository root, which is the name odinfmt looks for on
 its own — an editor formatting on save and the build cannot disagree about it. A misformatted file
-fails `just fmt-check`, not merely a check somebody remembers to run, and the sweep covers every
-`.odin` file under `src` and `tools` by walking odinfmt's own `-path:` argument rather than by a
-list anyone maintains. It is line-ending-sensitive on purpose: `core.autocrlf` is on, a Windows
-checkout holds CRLF, and `newline_style` is pinned to match rather than left to odinfmt's own
-default, which is CRLF on Windows and LF everywhere else.
+fails `just fmt-check`, not merely a check somebody remembers to run. `fmt` and `fmt-check` each
+spell the same three directories — `src`, `tools`, `docs\reference` — as a `for /r` loop per
+directory; `fmt-check` runs odinfmt per file without `-w`, compares its output against the file on
+disk byte for byte, and never consults `git`. It is line-ending-sensitive on purpose:
+`core.autocrlf` is on, a Windows checkout holds CRLF, and `newline_style` is pinned to match rather
+than left to odinfmt's own default, which is CRLF on Windows and LF everywhere else.
 
 Every build and test recipe passes the full vet set with warnings as errors, and the test recipes
 additionally set `ODIN_TEST_FAIL_ON_BAD_MEMORY=true` — it defaults to false, which would let a
