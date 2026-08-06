@@ -141,10 +141,11 @@ review_a_real_healthy_ffprobe_passes_the_extraction_check :: proc(t: ^testing.T)
 	testing.expect_value(t, check.ok, true)
 }
 
-// A sparse file, not a real 8 MiB write: seeking to the last byte of the
-// floor and writing one byte there gives the filesystem a file exactly at
-// `MODEL_MIN_PLAUSIBLE_BYTES` without this test actually paying for the I/O
-// a real Model's size would cost.
+// A sparse file, not a real 70 MiB write: writing the real magic bytes at
+// the front, then seeking to the last byte of the floor and writing one
+// byte there, gives the filesystem a file exactly at
+// `MODEL_MIN_PLAUSIBLE_BYTES` with a genuine header without this test
+// actually paying for the I/O a real Model's size would cost.
 @(test)
 a_model_that_hashes_cleanly_and_clears_the_size_floor_passes :: proc(t: ^testing.T) {
 	dir := testkit.made_scratch_cache(t, "Doctor", "modelcheck", context.allocator)
@@ -155,6 +156,9 @@ a_model_that_hashes_cleanly_and_clears_the_size_floor_passes :: proc(t: ^testing
 	defer delete(path, context.allocator)
 	handle, unopenable := os.open(path, {.Write, .Create, .Trunc})
 	testing.expect(t, unopenable == nil, "the case could not write its own fixture")
+	magic := MODEL_MAGIC_BYTES
+	_, unwritten_magic := os.write(handle, magic[:])
+	testing.expect(t, unwritten_magic == nil, "the case could not write its own fixture")
 	_, unseekable := os.seek(handle, MODEL_MIN_PLAUSIBLE_BYTES - 1, io.Seek_From.Start)
 	testing.expect(t, unseekable == nil, "the case could not write its own fixture")
 	_, unwritable := os.write(handle, {1})
@@ -169,6 +173,65 @@ a_model_that_hashes_cleanly_and_clears_the_size_floor_passes :: proc(t: ^testing
 		return
 	}
 	testing.expect_value(t, check.ok, true)
+}
+
+// The exact case a round-4 adversarial review measured live: a
+// 67,108,864-byte (64 MiB) head-truncation of the real 1,624,555,275-byte
+// ggml-large-v3-turbo.bin, which the round-3 8 MiB floor let through as
+// PASS right before a real Engine run against the same file failed with
+// "not all tensors loaded from model file". The magic bytes are genuine
+// (only the tail is missing), so only a floor that sits above this size --
+// and still below the smallest real Model -- refuses it.
+@(test)
+review_a_64_mib_head_truncation_must_not_pass_the_model_check :: proc(t: ^testing.T) {
+	dir := testkit.made_scratch_cache(t, "Doctor", "headtruncated", context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	path := fmt.aprintf("%s\\model.bin", dir, allocator = context.allocator)
+	defer delete(path, context.allocator)
+	handle, unopenable := os.open(path, {.Write, .Create, .Trunc})
+	testing.expect(t, unopenable == nil, "the case could not write its own fixture")
+	magic := MODEL_MAGIC_BYTES
+	_, unwritten_magic := os.write(handle, magic[:])
+	testing.expect(t, unwritten_magic == nil, "the case could not write its own fixture")
+	_, unseekable := os.seek(handle, i64(64 * 1024 * 1024) - 1, io.Seek_From.Start)
+	testing.expect(t, unseekable == nil, "the case could not write its own fixture")
+	_, unwritable := os.write(handle, {1})
+	testing.expect(t, unwritable == nil, "the case could not write its own fixture")
+	os.close(handle)
+
+	check := model_check(path, context.allocator)
+	defer destroy_check(check, context.allocator)
+
+	testing.expect_value(t, check.ok, false)
+}
+
+// The other round-4 fixture: a file well past the size floor that is not a
+// Model at all -- a 9,000,000-byte /dev/urandom-style file in the review,
+// reproduced here as a sparse file whose first four bytes are zero rather
+// than the real magic. The size floor alone cannot refuse this; only the
+// magic check can.
+@(test)
+review_a_plausibly_sized_non_model_file_must_not_pass_the_model_check :: proc(t: ^testing.T) {
+	dir := testkit.made_scratch_cache(t, "Doctor", "notamodel", context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	path := fmt.aprintf("%s\\model.bin", dir, allocator = context.allocator)
+	defer delete(path, context.allocator)
+	handle, unopenable := os.open(path, {.Write, .Create, .Trunc})
+	testing.expect(t, unopenable == nil, "the case could not write its own fixture")
+	_, unseekable := os.seek(handle, MODEL_MIN_PLAUSIBLE_BYTES + 1_000, io.Seek_From.Start)
+	testing.expect(t, unseekable == nil, "the case could not write its own fixture")
+	_, unwritable := os.write(handle, {1})
+	testing.expect(t, unwritable == nil, "the case could not write its own fixture")
+	os.close(handle)
+
+	check := model_check(path, context.allocator)
+	defer destroy_check(check, context.allocator)
+
+	testing.expect_value(t, check.ok, false)
 }
 
 // The single most common broken-install shape a preflight doctor exists to

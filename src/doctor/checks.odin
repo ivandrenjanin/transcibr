@@ -7,6 +7,7 @@ package doctor
 // job (ADR-0009).
 
 import "core:mem"
+import "core:os"
 import "core:strings"
 import "transcibr:artifact"
 import "transcibr:child"
@@ -20,15 +21,28 @@ import "transcibr:child"
 @(rodata)
 FFMPEG_PROBE_ARGUMENTS := []string{"-hide_banner"}
 
-// The smallest real ggml/gguf whisper Model ships tens of megabytes; this
-// floor sits an order of magnitude below that and comfortably above both
-// broken-install shapes a round-3 adversarial review measured live: a
-// 27-byte stub file and a 1,048,576-byte head-truncation of a real
-// 1,624,555,275-byte install, both of which the prior `<= 0` guard let
-// through as PASS.
-MODEL_MIN_PLAUSIBLE_BYTES :: i64(8 * 1024 * 1024)
+// A round-3 adversarial review's 8 MiB floor was fitted to that round's own
+// fixtures; a round-4 review then measured a 67,108,864-byte (64 MiB) head-
+// truncation of the real 1,624,555,275-byte ggml-large-v3-turbo.bin still
+// passing. `ggml-tiny.bin`, the smallest Model whisper.cpp actually ships
+// (quantized Models are out of scope, docs/spec/0001-transcibr-v1.md's Out
+// of Scope), is roughly 77.7 MB -- so 70 MiB sits clear of the truncation
+// fixture on one side and clear of the smallest real Model on the other.
+MODEL_MIN_PLAUSIBLE_BYTES :: i64(70 * 1024 * 1024)
 
 #assert(MODEL_MIN_PLAUSIBLE_BYTES > 0)
+
+// The real Model's first four bytes, measured directly against the
+// reference install at `C:\Users\drenj\models\ggml-large-v3-turbo.bin`
+// (`6c 6d 67 67`): ggml's own magic number, 0x67676d6c, stored little-endian
+// -- the least significant byte first, which is why the byte order on disk
+// reads backwards from how the constant is normally spoken. A head-
+// truncation keeps this intact (only the tail is missing, which the size
+// floor above is what catches), but an unrelated file -- an HTML error
+// page, a stub, a run of random bytes -- almost never starts with it, the
+// same "magic bytes" step docs/spec/0001-transcibr-v1.md's own download-
+// verification order names.
+MODEL_MAGIC_BYTES :: [4]u8{0x6c, 0x6d, 0x67, 0x67}
 
 @(require_results)
 extraction_tool_check :: proc(
@@ -98,6 +112,28 @@ engine_check :: proc(
 	return passed("engine")
 }
 
+@(private)
+@(require_results)
+model_magic_present :: proc(path: string) -> bool {
+	assert(len(path) > 0, "there is no model here to check for a magic header")
+
+	handle, unopenable := os.open(path)
+	if unopenable != nil {
+		return false
+	}
+	defer os.close(handle)
+
+	buffer: [4]u8
+	read, unreadable := os.read(handle, buffer[:])
+	if unreadable != nil {
+		return false
+	}
+	if read != len(buffer) {
+		return false
+	}
+	return buffer == MODEL_MAGIC_BYTES
+}
+
 @(require_results)
 model_check :: proc(path: string, allocator: mem.Allocator) -> Check {
 	assert(len(path) > 0, "there is no model here to check")
@@ -122,6 +158,15 @@ model_check :: proc(path: string, allocator: mem.Allocator) -> Check {
 		message := combined_message(
 			path,
 			"is far smaller than any real Model; the download is truncated or incomplete",
+			"",
+			allocator,
+		)
+		return failed("model", message)
+	}
+	if !model_magic_present(path) {
+		message := combined_message(
+			path,
+			"does not begin with the ggml magic bytes; this is not a whisper Model file",
 			"",
 			allocator,
 		)

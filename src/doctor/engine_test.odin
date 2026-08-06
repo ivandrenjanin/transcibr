@@ -54,6 +54,52 @@ the_backend_library_is_reported_present_only_when_it_sits_beside_the_executable 
 	)
 }
 
+// The round-4 finding: a wrong or nonexistent `--engine-exe` used to report
+// the backend-library sentence, sending a user to redownload an Engine that
+// was never the problem. `os.is_file` ahead of `backend_library_present`
+// names the real one.
+@(test)
+review_a_nonexistent_engine_exe_is_reported_before_the_backend_library_check :: proc(
+	t: ^testing.T,
+) {
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	check := verify_engine(&group, `C:\nope\whisper-cli.exe`, context.allocator)
+	defer artifact.destroy_model(check.model, context.allocator)
+
+	testing.expect_value(t, check.fault, Engine_Fault.Executable_Not_Found)
+}
+
+// The other round-4 fixture: a directory passed as `--engine-exe` (a
+// plausible reading of ADR-0011's "resolved as a directory"). `filepath.dir`
+// of a directory is its own parent, so `backend_library_present` used to
+// check the WRONG directory and report the same misleading sentence as a
+// nonexistent path. `os.is_file` refuses a directory outright, the same way
+// `model_check` already refuses one for `--model-file`.
+@(test)
+review_a_directory_passed_as_the_engine_exe_is_reported_as_missing_not_as_a_backend_fault :: proc(
+	t: ^testing.T,
+) {
+	dir := testkit.made_scratch_cache(t, "Doctor", "engineisdir", context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	check := verify_engine(&group, dir, context.allocator)
+	defer artifact.destroy_model(check.model, context.allocator)
+
+	testing.expect_value(t, check.fault, Engine_Fault.Executable_Not_Found)
+}
+
 @(test)
 an_install_with_no_backend_library_fails_before_anything_is_spawned :: proc(t: ^testing.T) {
 	dir := testkit.made_scratch_cache(t, "Doctor", "nobackend", context.allocator)
@@ -186,5 +232,21 @@ an_engine_fault_message_names_the_executable_and_an_actionable_reason :: proc(t:
 		t,
 		strings.contains(message, "ggml-cuda.dll"),
 		"the actionable reason is missing",
+	)
+}
+
+@(test)
+an_executable_not_found_message_never_blames_the_backend_library :: proc(t: ^testing.T) {
+	check := Engine_Check {
+		fault = .Executable_Not_Found,
+	}
+	message := engine_error_message(check, `C:\nope\whisper-cli.exe`, context.allocator)
+	defer delete(message, context.allocator)
+
+	testing.expect(t, strings.contains(message, "whisper-cli.exe"), "the executable is missing")
+	testing.expect(
+		t,
+		!strings.contains(message, "ggml-cuda.dll"),
+		"a missing executable was blamed on the backend library",
 	)
 }

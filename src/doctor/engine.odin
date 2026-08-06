@@ -32,6 +32,7 @@ ENGINE_PROBE_ARGUMENTS := []string{"--help"}
 
 Engine_Fault :: enum u8 {
 	None = 0,
+	Executable_Not_Found,
 	Backend_Library_Missing,
 	Unreadable,
 	Not_Started,
@@ -64,6 +65,9 @@ verify_engine :: proc(
 	assert(len(executable) > 0, "there is no Engine here to verify")
 	assert(allocator.procedure != nil, "the check outlives this procedure and needs an allocator")
 
+	if !os.is_file(executable) {
+		return Engine_Check{fault = .Executable_Not_Found}
+	}
 	if !backend_library_present(executable) {
 		return Engine_Check{fault = .Backend_Library_Missing}
 	}
@@ -110,6 +114,8 @@ backend_library_present :: proc(executable: string) -> bool {
 @(require_results)
 engine_fault_says :: proc(fault: Engine_Fault) -> string {
 	switch fault {
+	case .Executable_Not_Found:
+		return "does not exist, or is not a file -- check the path passed to --engine-exe"
 	case .Backend_Library_Missing:
 		return(
 			"ggml-cuda.dll is not beside the engine's executable; the install is incomplete and the engine will transcribe on the cpu without saying so" \

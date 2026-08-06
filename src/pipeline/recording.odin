@@ -160,13 +160,18 @@ transcribe_and_place :: proc(extracted: Recording_Extracted) -> bool {
 	return placed_from_engine_output(job, extracted, produced.output)
 }
 
-// Runs at most once per Batch, against whichever Recording is the first to
-// finish transcribing successfully -- `job.health.checked` is this gate, and
-// a Recording that fails before reaching here never sets it, so the check
-// still runs against the first one that actually completes. A verdict this
-// unhealthy does not fail THIS Recording, which already finished -- it stops
-// the ones behind it, the same way ADR-0011 asks: abort the Batch rather
-// than run overnight on the wrong device.
+// Runs against every Recording that finishes transcribing successfully,
+// until one of them actually settles a verdict -- `job.health.checked` is
+// that gate, and a round-4 adversarial review found it being set on a
+// Recording the check had explicitly declined to judge (too short for the
+// speed half to carry a verdict, an unreadable read, or an unmeasurable
+// elapsed time), which spent a Batch's one health check on nothing and left
+// every Recording behind it unchecked. `checked^` is now written only once
+// `doctor.first_recording_health` hands back a `conclusive` answer, so an
+// inconclusive first Recording leaves the gate open for the next one. A
+// verdict this unhealthy does not fail THIS Recording, which already
+// finished -- it stops the ones behind it, the same way ADR-0011 asks: abort
+// the Batch rather than run overnight on the wrong device.
 @(private)
 checked_first_recording_health :: proc(
 	job: Recording_Job,
@@ -178,7 +183,6 @@ checked_first_recording_health :: proc(
 	if job.health.checked == nil || job.health.checked^ {
 		return
 	}
-	job.health.checked^ = true
 	if produced.elapsed_ms <= 0 {
 		return
 	}
@@ -201,7 +205,11 @@ checked_first_recording_health :: proc(
 	}
 
 	factor := f64(container_ms) / f64(produced.elapsed_ms)
-	fault := doctor.first_recording_health(evidence, factor, container_ms)
+	fault, conclusive := doctor.first_recording_health(evidence, factor, container_ms)
+	if !conclusive {
+		return
+	}
+	job.health.checked^ = true
 	if fault == .None {
 		return
 	}

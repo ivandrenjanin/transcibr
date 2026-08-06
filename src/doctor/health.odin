@@ -68,12 +68,24 @@ Health_Fault :: enum u8 {
 // passes it that way when the Engine's own output named no systeminfo field
 // or could not be parsed at all -- and this never turns absence of evidence
 // into `.No_Cuda_Reported`; the speed half of the check still applies.
+//
+// `conclusive` is `false` only when the container is too short for the speed
+// half to carry a verdict and the name half found nothing to say either --
+// a round-4 adversarial review measured this exact `.None` standing in for
+// "healthy" when it actually meant "this Recording could not be judged",
+// which spent a Batch's one health check on a Recording it never actually
+// judged and left every Recording behind it unchecked. A caller that only
+// spends its one check on a `conclusive` answer keeps asking until it gets
+// one.
 @(require_results)
 first_recording_health :: proc(
 	systeminfo: string,
 	realtime_factor: f64,
 	container_ms: i64,
-) -> Health_Fault {
+) -> (
+	fault: Health_Fault,
+	conclusive: bool,
+) {
 	assert(
 		realtime_factor > 0,
 		"a Recording that took no measurable time reached the health check",
@@ -81,15 +93,15 @@ first_recording_health :: proc(
 	assert(container_ms > 0, "a Recording nobody could time reached the health check")
 
 	if len(systeminfo) > 0 && !strings.contains(systeminfo, "CUDA") {
-		return .No_Cuda_Reported
+		return .No_Cuda_Reported, true
 	}
 	if container_ms < MIN_HEALTH_CHECK_CONTAINER_MS {
-		return .None
+		return .None, false
 	}
 	if realtime_factor < health_threshold() {
-		return .Realtime_Factor_Too_Low
+		return .Realtime_Factor_Too_Low, true
 	}
-	return .None
+	return .None, true
 }
 
 @(private)

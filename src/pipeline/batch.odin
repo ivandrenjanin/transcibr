@@ -10,6 +10,7 @@ package pipeline
 import "core:fmt"
 import "core:mem"
 import "core:strings"
+import "core:sync"
 import "core:time"
 import "transcibr:artifact"
 import "transcibr:planning"
@@ -27,6 +28,14 @@ Summary :: struct {
 	// `failed`, the same way `planning.Inventory.cancelled` keeps a stopped
 	// walk apart from one that actually failed (finding 4 of PR #67's review).
 	cancelled:   int,
+	// Set from `Batch_Options.health.unhealthy` once `run_recordings` returns
+	// -- a round-3 review found a GPU-health abort reusing `cancelled`'s own
+	// flag (the same one Ctrl+C sets) and reading as success through this very
+	// procedure; a round-4 review then found the fix living in `src/cli`,
+	// untested and undoing #74's own decision to keep that package to a
+	// bool-to-exit-code map. Carrying the verdict here, beside `cancelled` and
+	// `failed`, is what lets `batch_succeeded` hold it instead.
+	unhealthy:   bool,
 }
 
 // The exit-worthiness of a whole Batch: `failed` and `refused` are the two
@@ -34,13 +43,16 @@ Summary :: struct {
 // run. `cancelled` and `skipped` are not folded in -- a Ctrl+C is an operator
 // decision, not a defect, the same distinction `Terminal.Not_Admitted`'s own
 // comment draws against `failed`, and a Recording already up to date is
-// success by definition, not a Batch that came up short. The policy a caller
-// can dispute is named in the test that holds it, not only in this comment
-// (`cancelled_and_skipped_recordings_do_not_fail_a_batch_only_failed_and_-`
-// `refused_do`, batch_test.odin).
+// success by definition, not a Batch that came up short. `unhealthy` fails
+// the run regardless of what the rest of the summary says: it is set only
+// when the GPU health check itself detected the CPU-fallback signature, an
+// operating fact no failed/refused count can stand in for. The policy a
+// caller can dispute is named in the test that holds it, not only in this
+// comment (`cancelled_and_skipped_recordings_do_not_fail_a_batch_only_-`
+// `failed_and_refused_do`, batch_test.odin).
 @(require_results)
 batch_succeeded :: proc(summary: Summary) -> bool {
-	return summary.failed == 0 && summary.refused == 0
+	return summary.failed == 0 && summary.refused == 0 && !summary.unhealthy
 }
 
 @(private)
@@ -188,26 +200,27 @@ run_recordings :: proc(
 	for entry in plan.entries {
 		sort_entry(&summary, entry, o, allocator, &jobs)
 	}
-	if len(jobs) == 0 {
-		return
-	}
-
-	results, _ := run_batch(jobs[:], stages, o.config, allocator, cancelled)
-	defer delete(results, allocator)
-	for status in results {
-		switch status {
-		case .Transcribed:
-			summary.transcribed += 1
-		case .Not_Admitted:
-			summary.cancelled += 1
-		case .Unset,
-		     .Extraction_Failed,
-		     .Transcription_Failed,
-		     .Extract_Queue_Send_Failed,
-		     .Transcribe_Queue_Send_Failed,
-		     .Stage_Abandoned:
-			summary.failed += 1
+	if len(jobs) > 0 {
+		results, _ := run_batch(jobs[:], stages, o.config, allocator, cancelled)
+		defer delete(results, allocator)
+		for status in results {
+			switch status {
+			case .Transcribed:
+				summary.transcribed += 1
+			case .Not_Admitted:
+				summary.cancelled += 1
+			case .Unset,
+			     .Extraction_Failed,
+			     .Transcription_Failed,
+			     .Extract_Queue_Send_Failed,
+			     .Transcribe_Queue_Send_Failed,
+			     .Stage_Abandoned:
+				summary.failed += 1
+			}
 		}
+	}
+	if o.health.unhealthy != nil {
+		summary.unhealthy = sync.atomic_load(o.health.unhealthy)
 	}
 	return
 }

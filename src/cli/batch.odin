@@ -50,11 +50,13 @@ gpu_health_checked: bool
 
 // Set by the same Worker at the moment it aborts the Batch for an unhealthy
 // GPU, distinct from `cancel_requested` -- which an operator's Ctrl+C also
-// sets, and which `pipeline.batch_succeeded` reads as a successful stop. This
-// is what lets `run_the_batch` tell the two endings apart after the Batch
-// finishes and answer a nonzero exit code for the one that means the run
-// happened on the wrong device rather than the one an operator asked for
-// (round-3 adversarial review).
+// sets, and which `pipeline.batch_succeeded` reads as a successful stop on
+// its own. Threaded into `Health_Watch.unhealthy` and read back through
+// `pipeline.Summary.unhealthy`, which `batch_succeeded` now folds into its
+// own verdict -- a round-4 review found the two endings told apart by a
+// second check living here in `src/cli` instead, untested (ADR-0009 keeps
+// this package to a bool-to-exit-code map) and unheld by anything: removing
+// it left the full suite green.
 @(private)
 gpu_health_unhealthy: bool
 
@@ -208,9 +210,6 @@ run_the_batch :: proc(
 		summary.skipped,
 		summary.cancelled,
 	)
-	if sync.atomic_load(&gpu_health_unhealthy) {
-		return OPERATING_ERROR
-	}
 	if !pipeline.batch_succeeded(summary) {
 		return OPERATING_ERROR
 	}

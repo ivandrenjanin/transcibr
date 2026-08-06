@@ -174,18 +174,22 @@ sort_entry_builds_exactly_one_job_for_a_transcribe_decision :: proc(t: ^testing.
 	testing.expect(t, jobs[0].arena != nil, "a Job built for the pipeline carries no arena")
 }
 
+// Shared by `health_check_job` (one job, its own fresh watch) and the round-4
+// regression below (two jobs, one shared watch) -- factored apart so a test
+// that needs the SAME `Health_Watch` to outlive more than one Recording does
+// not have to reach into a helper built only for the single-job case.
 @(private)
 @(require_results)
-health_check_job :: proc(
+health_checked_job :: proc(
 	t: ^testing.T,
 	tag: string,
 	output_json: string,
+	watch: Health_Watch,
 	container_ms := i64(60_000),
 	duration_ms := i64(3_000),
 	elapsed_ms := i64(3_000),
 ) -> (
 	job: Recording_Job,
-	checked, abort, unhealthy: bool,
 ) {
 	dir := testkit.made_scratch_cache(t, "Pipeline", tag, context.allocator)
 	defer delete(dir, context.allocator)
@@ -209,7 +213,7 @@ health_check_job :: proc(
 		"whisper.cpp 1.9.9",
 		transcript.DEFAULT_PROFILE,
 		engine.Report{},
-		Health_Watch{checked = &checked, abort = &abort, unhealthy = &unhealthy},
+		watch,
 	)
 	defer abandon_recording_job(job)
 	defer delete(output, context.allocator)
@@ -218,6 +222,31 @@ health_check_job :: proc(
 		job,
 		container_ms,
 		engine.Transcribed{output = output, duration_ms = duration_ms, elapsed_ms = elapsed_ms},
+	)
+	return
+}
+
+@(private)
+@(require_results)
+health_check_job :: proc(
+	t: ^testing.T,
+	tag: string,
+	output_json: string,
+	container_ms := i64(60_000),
+	duration_ms := i64(3_000),
+	elapsed_ms := i64(3_000),
+) -> (
+	job: Recording_Job,
+	checked, abort, unhealthy: bool,
+) {
+	job = health_checked_job(
+		t,
+		tag,
+		output_json,
+		Health_Watch{checked = &checked, abort = &abort, unhealthy = &unhealthy},
+		container_ms,
+		duration_ms,
+		elapsed_ms,
 	)
 	return
 }
@@ -272,6 +301,47 @@ review_unparseable_engine_output_must_not_abort_the_batch :: proc(t: ^testing.T)
 	testing.expect_value(t, checked, true)
 	testing.expect_value(t, abort, false)
 	testing.expect_value(t, unhealthy, false)
+}
+
+// The round-4 finding: a first Recording under `MIN_HEALTH_CHECK_CONTAINER_-`
+// `MS` used to burn the Batch's one health check on a Recording the speed
+// half declined to judge, leaving the CUDA-name half's own `.None` (which is
+// duration-independent and DOES apply here) indistinguishable from "checked
+// and healthy". A short first Recording must leave the gate open so the
+// next, longer one still gets judged.
+@(test)
+review_a_short_first_recording_leaves_the_check_open_for_the_next_one :: proc(t: ^testing.T) {
+	checked, abort, unhealthy: bool
+	watch := Health_Watch {
+		checked   = &checked,
+		abort     = &abort,
+		unhealthy = &unhealthy,
+	}
+
+	_ = health_checked_job(
+		t,
+		"shortfirst",
+		`{"systeminfo": "WHISPER : CUDA : ARCHS = 500,610,700"}`,
+		watch,
+		container_ms = 2_000,
+		duration_ms = 2_000,
+		elapsed_ms = 1_400,
+	)
+	testing.expect_value(t, checked, false)
+	testing.expect_value(t, abort, false)
+
+	_ = health_checked_job(
+		t,
+		"shortfirstsecond",
+		`{"systeminfo": "WHISPER : no gpu backend at all"}`,
+		watch,
+		container_ms = 60_000,
+		duration_ms = 60_000,
+		elapsed_ms = 60_000,
+	)
+	testing.expect_value(t, checked, true)
+	testing.expect_value(t, abort, true)
+	testing.expect_value(t, unhealthy, true)
 }
 
 // The exact shape a healthy `--batch` reaches on real hardware: the Engine's
