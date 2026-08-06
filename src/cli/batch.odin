@@ -42,19 +42,23 @@ Batch_Options :: struct {
 @(private)
 cancel_requested: bool
 
-// ADR-0011's runtime half: written only by the transcription Worker,
-// sequentially -- see `pipeline.Health_Watch`'s own doc comment for why that
-// needs no atomics of its own.
+// ADR-0011's runtime half: read and written through `sync.atomic_load` and
+// `sync.atomic_store` at its one use site, `pipeline.checked_first_recording_
+// health` -- see `pipeline.Health_Watch`'s own doc comment (issue #111). The
+// one-transcription-Worker invariant this flag's safety used to rest on is
+// asserted elsewhere (`pipeline.bump`) and not at this site, so a second
+// Worker reaching for the same address is made to race a correct primitive
+// rather than trusted not to reach for it at all.
 @(private)
 gpu_health_checked: bool
 
-// The A4 partner to `bump`'s assert in `src/pipeline/pipeline.odin` (commit
-// 1c67c11): that one catches a second transcription Worker at the one place
-// its own count changes, from inside the pipeline that spawns it. This one
-// catches the shape of race `gpu_health_checked` itself cannot survive --
-// two Batches reaching for the same non-atomic flag at once -- at the flag's
-// own site, checked and held for exactly as long as `run_the_batch` is
-// lending its address out through `Health_Watch.checked`.
+// A second, narrower guard: not the one-transcription-Worker invariant
+// (`gpu_health_checked`'s own atomicity now holds regardless), but reentrant
+// use of `run_the_batch` itself, the one caller that lends this package's
+// globals out through `Health_Watch`. Checked and set in a single
+// `sync.atomic_compare_exchange_strong` so the guard cannot itself be read by
+// two entrants before either has written it -- a plain check-then-set here
+// would race exactly the way `gpu_health_checked` used to.
 @(private)
 gpu_health_watch_in_use: bool
 
@@ -179,15 +183,12 @@ run_the_batch :: proc(
 	identified: artifact.Model,
 	plan: planning.Plan,
 ) -> int {
-	assert(
-		!gpu_health_watch_in_use,
-		"ADR-0006's one transcription Worker is asserted, not merely intended",
-	)
-	gpu_health_watch_in_use = true
-	defer gpu_health_watch_in_use = false
+	_, claimed := sync.atomic_compare_exchange_strong(&gpu_health_watch_in_use, false, true)
+	assert(claimed, "run_the_batch does not tolerate a second concurrent entrant")
+	defer sync.atomic_store(&gpu_health_watch_in_use, false)
 
 	sync.atomic_store(&cancel_requested, false)
-	gpu_health_checked = false
+	sync.atomic_store(&gpu_health_checked, false)
 	sync.atomic_store(&gpu_health_unhealthy, false)
 	win32.SetConsoleCtrlHandler(console_ctrl_handler, true)
 	defer win32.SetConsoleCtrlHandler(console_ctrl_handler, false)

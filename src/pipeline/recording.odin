@@ -32,10 +32,14 @@ Tools :: struct {
 
 // The runtime half of ADR-0011's guard, threaded through every Recording_Job
 // in a Batch so the ONE transcription Worker (ADR-0006) can check the first
-// Recording it finishes and abort the rest. `checked` is read and written
-// only from that single Worker, in strict sequence, so it needs no atomics of
-// its own; `abort` is `sync.atomic_store`d because `run_batch`'s admission
-// loop reads it from a different thread -- the identical `cancelled` flag a
+// Recording it finishes and abort the rest. `checked` is `sync.atomic_load`ed
+// and `sync.atomic_store`d at `checked_first_recording_health` (issue #111):
+// the invariant that only one transcription Worker ever exists is asserted
+// elsewhere (`pipeline.bump`), not here, so this flag does not get to assume
+// it -- a second Worker reaching for the same address races a plain bool
+// silently and an atomic one correctly. `abort` is `sync.atomic_store`d
+// because `run_batch`'s admission loop reads it from a different thread --
+// the identical `cancelled` flag a
 // Ctrl+C press already sets (`src/cli/batch.odin`), reused rather than
 // inventing a second way to stop a Batch early. `unhealthy` is a SEPARATE
 // flag, also `sync.atomic_store`d, set at the same moment as `abort` --
@@ -183,7 +187,7 @@ checked_first_recording_health :: proc(
 ) {
 	assert(container_ms > 0, "a Recording nobody could time reached the health check")
 
-	if job.health.checked == nil || job.health.checked^ {
+	if job.health.checked == nil || sync.atomic_load(job.health.checked) {
 		return
 	}
 	if produced.elapsed_ms <= 0 {
@@ -212,7 +216,7 @@ checked_first_recording_health :: proc(
 	if !conclusive {
 		return
 	}
-	job.health.checked^ = true
+	sync.atomic_store(job.health.checked, true)
 	if fault == .None {
 		return
 	}
