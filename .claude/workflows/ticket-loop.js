@@ -2,9 +2,9 @@ export const meta = {
   name: 'ticket-loop',
   description: 'Implementer→adversarial-reviewer→fixer loop for one transcibr ticket, run to merge-ready',
   phases: [
-    { title: 'Implement', detail: 'Sonnet implementer, strict TDD, opens the PR', model: 'sonnet' },
-    { title: 'Review', detail: 'Opus adversarial reviewer, findings proved by instrumentation', model: 'opus' },
-    { title: 'Fix', detail: 'Sonnet fixer, findings only, never re-implements', model: 'sonnet' },
+    { title: 'Implement', detail: 'ticket-implementer agent (Sonnet, medium effort): strict TDD, opens the PR', model: 'sonnet' },
+    { title: 'Review', detail: 'ticket-reviewer agent (Opus, medium effort): findings proved by instrumentation', model: 'opus' },
+    { title: 'Fix', detail: 'ticket-fixer agent (Sonnet, medium effort): findings only, never re-implements', model: 'sonnet' },
   ],
 }
 
