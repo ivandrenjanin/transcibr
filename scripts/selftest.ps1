@@ -74,7 +74,7 @@ $script:Passes = 0
 # DECLARED, never counted from the cases that happened to run: a count taken
 # from what ran cannot notice that nothing did. Keep it in step with the cases
 # below -- a mismatch either way fails the run.
-$ExpectedCaseCount = 74
+$ExpectedCaseCount = 78
 
 # What the two cases that plant a package built to HANG give the sweep before
 # they expect it to give up, and how long this suite then waits for any case.
@@ -596,18 +596,117 @@ function Get-MissingCiStep {
 	return $missing
 }
 
-# A copy of $Text with one $LoadBearingCiSteps entry's whole step -- its
-# "- name:" line through the last line before the next step -- removed. Used
-# only to prove Get-MissingCiStep actually goes red on a deletion, never to
-# rewrite the real ci.yml.
-function Remove-CiStep {
+# One step's whole block -- its "- name:" line through the last line before
+# the next step, or end of file for the last one -- read out without
+# mutating $Text. Shared by Remove-CiStep (issue #116) and by the budget
+# guard below (issue #135), which has to read a single step's own
+# timeout-minutes rather than every timeout-minutes in the file.
+function Get-CiStepBlock {
 	param(
 		[Parameter(Mandatory)] [string] $Text,
 		[Parameter(Mandatory)] [string] $Name
 	)
 
 	$pattern = '(?m)^[ \t]*-[ \t]*name:[ \t]*' + [regex]::Escape($Name) + '[ \t]*\r?\n(?:(?![ \t]*-[ \t]*name:)[^\r\n]*\r?\n?)*'
-	return [regex]::Replace($Text, $pattern, '', 1)
+	return [regex]::Match($Text, $pattern).Value
+}
+
+# A copy of $Text with one $LoadBearingCiSteps entry's whole step removed.
+# Used only to prove Get-MissingCiStep actually goes red on a deletion, never
+# to rewrite the real ci.yml.
+function Remove-CiStep {
+	param(
+		[Parameter(Mandatory)] [string] $Text,
+		[Parameter(Mandatory)] [string] $Name
+	)
+
+	$block = Get-CiStepBlock -Text $Text -Name $Name
+	if ($block -eq '') {
+		return $Text
+	}
+	return $Text.Remove($Text.IndexOf($block), $block.Length)
+}
+
+# A copy of $Text with a "timeout-minutes: $Minutes" line inserted right
+# after the named step's "- name:" line. Used only to prove the budget guard
+# below reacts (or correctly does not) to a step-level timeout, never to
+# rewrite the real ci.yml.
+function Add-CiStepTimeout {
+	param(
+		[Parameter(Mandatory)] [string] $Text,
+		[Parameter(Mandatory)] [string] $Name,
+		[Parameter(Mandatory)] [int] $Minutes
+	)
+
+	$pattern = '(?m)^([ \t]*-[ \t]*name:[ \t]*' + [regex]::Escape($Name) + '[ \t]*\r?\n)'
+	$mutated = [regex]::Replace($Text, $pattern, "`$1        timeout-minutes: $Minutes`r`n", 1)
+	if ($mutated -eq $Text) {
+		throw "adding a timeout to '$Name' changed nothing, so no step named '$Name' exists to mutate."
+	}
+	return $mutated
+}
+
+# The job-level timeout-minutes values -- the ones declared before the first
+# step, which wrap every step in the job including whichever ones invoke
+# test.ps1. There is exactly one in the real ci.yml; a list rather than a
+# scalar so a malformed document with none, or with more than one, still
+# reads as data rather than as a parse error.
+function Get-JobTimeoutMinute {
+	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
+
+	$firstStep = [regex]::Match($Text, '(?m)^[ \t]*-[ \t]*name:')
+	$jobText = $Text
+	if ($firstStep.Success) {
+		$jobText = $Text.Substring(0, $firstStep.Index)
+	}
+	return @([regex]::Matches($jobText, '(?m)^\s*timeout-minutes:\s*(\d+)') | ForEach-Object { [int] $_.Groups[1].Value })
+}
+
+# The timeout-minutes values declared on steps whose own run: line invokes
+# test.ps1 -- the only steps a hang in the sweep can actually reach. Reusing
+# $LoadBearingCiSteps rather than a second list: it already names every step
+# whose run: command is a claim CLAUDE.md makes, and filtering it on
+# 'test.ps1' is cheaper than maintaining a parallel roster that can drift
+# from it. A step outside this filter -- the odinfmt install, the formatting
+# check, either build -- runs no sweep, so a short timeout there is a
+# developer's own choice and none of this guard's business (issue #135,
+# parked from #83: the previous version read every timeout-minutes in the
+# file and refused a 5-minute timeout on the odinfmt install for exactly
+# this reason).
+function Get-SweepTimeoutMinute {
+	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
+
+	$minutes = @()
+	foreach ($step in ($LoadBearingCiSteps | Where-Object { $_.Run -match 'test\.ps1' })) {
+		$block = Get-CiStepBlock -Text $Text -Name $step.Name
+		$minutes += @([regex]::Matches($block, '(?m)^\s*timeout-minutes:\s*(\d+)') | ForEach-Object { [int] $_.Groups[1].Value })
+	}
+	return $minutes
+}
+
+# The run: commands in $Text whose script is not one $ScriptRoot actually
+# holds. ci.yml's own header claims "every check CI performs a developer
+# performs too" -- #116 pinned the forward half (every load-bearing local
+# check has a CI step), but nothing pinned the converse: a step invoking a
+# command no local script owns would pass every case above it. `uses:` steps
+# (actions/checkout) carry no run: line and are outside this by construction.
+function Get-UnownedCiCommand {
+	param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Text)
+
+	$owned = @(Get-ChildItem -Path (Join-Path $RepoRoot 'scripts') -Filter '*.ps1' | ForEach-Object { $_.Name })
+	if ($owned.Count -eq 0) {
+		throw "no .ps1 files under $(Join-Path $RepoRoot 'scripts'), so every ci.yml command would read as unowned."
+	}
+
+	$unowned = @()
+	foreach ($match in [regex]::Matches($Text, '(?m)^[ \t]*run:[ \t]*(.+?)[ \t]*\r?$')) {
+		$command = $match.Groups[1].Value
+		$script = [regex]::Match($command, '\.\\scripts\\([A-Za-z0-9_.-]+\.ps1)\b')
+		if ((-not $script.Success) -or ($owned -notcontains $script.Groups[1].Value)) {
+			$unowned += $command
+		}
+	}
+	return $unowned
 }
 
 # ------------------------------------------------------------------- cases --
@@ -867,30 +966,65 @@ Test-Case 'a test that never returns is killed and reported against its package'
 # $OdinSweepTimeoutSeconds now bounds the FORMAT sweep as well as the test sweep,
 # so this arithmetic answers for both. The behaviour each of them gets out of it
 # is pinned separately, by a case apiece.
-Test-Case 'the sweep budget fits inside every CI timeout that wraps it' {
+Test-Case 'the sweep budget fits inside every CI timeout that wraps a sweep step' {
 	$workflow = Join-Path $RepoRoot '.github\workflows\ci.yml'
 	if (-not (Test-Path -LiteralPath $workflow)) {
 		throw "no $workflow to read the job timeout out of."
 	}
-	# Matches, not Match: a step-level timeout-minutes wraps a test.ps1
-	# invocation exactly as the job-level one does, and test.ps1 imposes the
-	# same $OdinSweepTimeoutSeconds ceiling on every invocation regardless of
-	# which or how many packages it runs. Reading only the first occurrence
-	# left every step-level timeout unchecked.
-	$declared = @([regex]::Matches((Get-Content -LiteralPath $workflow -Raw), '(?m)^\s*timeout-minutes:\s*(\d+)'))
+	$text = Get-Content -LiteralPath $workflow -Raw
+
+	# The job-level timeout wraps every step, sweep or not, and a sweep step's
+	# own timeout-minutes (none exist today, but the guard has to survive one
+	# being added) wraps just that step. Neither list alone is the claim: a
+	# hang in the Test step is caught by whichever of the two actually fires
+	# first.
+	$declared = @(Get-JobTimeoutMinute -Text $text) + @(Get-SweepTimeoutMinute -Text $text)
 	if ($declared.Count -eq 0) {
-		throw "no timeout-minutes in $workflow, so the job falls back to the platform's six-hour default."
+		throw "no timeout-minutes wraps a sweep step in $workflow, so the job falls back to the platform's six-hour default."
 	}
 
 	if ($OdinSweepTimeoutSeconds -lt $OdinCommandTimeoutSeconds) {
 		throw "the sweep's $OdinSweepTimeoutSeconds-second budget is below one package's $OdinCommandTimeoutSeconds, so a single slow package is killed by the sweep rather than by its own ceiling."
 	}
-	foreach ($match in $declared) {
-		$minutes = [int] $match.Groups[1].Value
+	foreach ($minutes in $declared) {
 		$seconds = $minutes * 60
 		if ($OdinSweepTimeoutSeconds -ge $seconds) {
 			throw "a timeout-minutes of $minutes ($seconds seconds) in $workflow does not clear the sweep's $OdinSweepTimeoutSeconds-second budget, so a hang there is reported by that timeout, which names nothing, rather than by the sweep naming the package."
 		}
+	}
+}
+
+# The negative space of the guard above (rule A3), parked on #83: a step that
+# runs no sweep -- the odinfmt install here -- is none of this guard's
+# business, so a short timeout on it must not be read as a budget at all.
+Test-Case 'a short timeout on a non-sweep ci.yml step does not bind the budget guard' {
+	$workflow = Join-Path $RepoRoot '.github\workflows\ci.yml'
+	if (-not (Test-Path -LiteralPath $workflow)) {
+		throw "no $workflow to read the load-bearing steps out of."
+	}
+	$text = Get-Content -LiteralPath $workflow -Raw
+	$mutated = Add-CiStepTimeout -Text $text -Name 'Install the pinned odinfmt' -Minutes 5
+
+	$declared = @(Get-JobTimeoutMinute -Text $mutated) + @(Get-SweepTimeoutMinute -Text $mutated)
+	if ($declared -contains 5) {
+		throw "a 5-minute timeout on a step that runs no sweep fed the budget guard, so the guard is still over-broad."
+	}
+}
+
+# The matching positive case: a short timeout on a step that DOES invoke
+# test.ps1 has to reach the guard, or the reconciliation above traded a false
+# positive for a false negative instead of fixing the scope.
+Test-Case 'a short timeout on a sweep-bound ci.yml step binds the budget guard' {
+	$workflow = Join-Path $RepoRoot '.github\workflows\ci.yml'
+	if (-not (Test-Path -LiteralPath $workflow)) {
+		throw "no $workflow to read the load-bearing steps out of."
+	}
+	$text = Get-Content -LiteralPath $workflow -Raw
+	$mutated = Add-CiStepTimeout -Text $text -Name 'Test' -Minutes 5
+
+	$declared = @(Get-JobTimeoutMinute -Text $mutated) + @(Get-SweepTimeoutMinute -Text $mutated)
+	if ($declared -notcontains 5) {
+		throw "a 5-minute timeout on the Test step did not reach the budget guard, so a hang there would go unbounded."
 	}
 }
 
@@ -945,6 +1079,43 @@ Test-Case 'a load-bearing ci.yml step deleted turns the pin red naming it' {
 				throw "deleting only '$($step.Name)' also reported '$($sibling.Name)' missing, so the deletion pattern removed more than one step."
 			}
 		}
+	}
+}
+
+# Filed from the #116 review (issue #135): ci.yml's own header claims the
+# converse of what #134 pinned -- "every check CI performs a developer
+# performs too" -- but nothing before this read whether every run: line in
+# the file is one of the developer's own commands. A step invoking anything
+# else would pass every other case in this file.
+Test-Case 'ci.yml runs no command outside scripts\' {
+	$workflow = Join-Path $RepoRoot '.github\workflows\ci.yml'
+	if (-not (Test-Path -LiteralPath $workflow)) {
+		throw "no $workflow to read the run commands out of."
+	}
+	$unowned = @(Get-UnownedCiCommand -Text (Get-Content -LiteralPath $workflow -Raw))
+	if ($unowned.Count -gt 0) {
+		throw "ci.yml runs a command no scripts\ entry owns: $($unowned -join ', ')."
+	}
+}
+
+# The negative space (rule A3): a pin that never fires on the thing it
+# exists to catch is worth exactly what the case above would be without it.
+Test-Case 'a ci.yml step running an unowned command turns the pin red naming it' {
+	$workflow = Join-Path $RepoRoot '.github\workflows\ci.yml'
+	if (-not (Test-Path -LiteralPath $workflow)) {
+		throw "no $workflow to read the run commands out of."
+	}
+	$text = Get-Content -LiteralPath $workflow -Raw
+	$scratch = "      - name: Run something unowned`r`n        shell: pwsh`r`n        run: echo hello`r`n"
+	$pattern = '(?m)^([ \t]*-[ \t]*name:[ \t]*Check out[ \t]*\r?\n[\s\S]*?\r?\n)(?=[ \t]*-[ \t]*name:)'
+	$mutated = [regex]::Replace($text, $pattern, "`$1$scratch", 1)
+	if ($mutated -eq $text) {
+		throw "inserting a scratch step changed nothing, so this case added no step at all."
+	}
+
+	$unowned = @(Get-UnownedCiCommand -Text $mutated)
+	if ($unowned -notcontains 'echo hello') {
+		throw "inserting a step running 'echo hello' did not turn the pin red naming it. Reported: $($unowned -join ', ')"
 	}
 }
 
