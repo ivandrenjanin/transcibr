@@ -4,6 +4,29 @@ package doctor
 import "core:strings"
 import "core:testing"
 
+// Issue #130 fix round 1: an Engine_Fault with an emptied sentence used to
+// crash here (report.odin:19, `assert(len(says) > 0, ...)`) rather than
+// render -- exactly the failure the walking test in engine_fault_test.odin
+// exists to prevent from ever reaching a Recording that is already failing.
+@(test)
+combined_message_with_no_sentence_still_renders_something_a_reader_can_act_on :: proc(
+	t: ^testing.T,
+) {
+	rendered := combined_message("engine", "", "", context.allocator)
+	defer delete(rendered, context.allocator)
+
+	testing.expect(
+		t,
+		strings.contains(rendered, "engine"),
+		"a missing sentence dropped the subject a reader needs to find the failure",
+	)
+	testing.expect(
+		t,
+		len(rendered) > 0,
+		"a missing sentence rendered as nothing a reader can act on",
+	)
+}
+
 @(test)
 report_ok_ignores_an_advisory_failed_check :: proc(t: ^testing.T) {
 	checks := []Check {
