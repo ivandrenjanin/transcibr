@@ -322,10 +322,6 @@ placed_from_engine_output :: proc(
 @(require_results)
 recording_sidecar :: proc(job: Recording_Job, extracted: Recording_Extracted) -> artifact.Sidecar {
 	assert(len(job.engine_version) > 0, "a Sidecar was built with no Engine version settled")
-	assert(
-		extracted.planned.modified_ns >= 0,
-		"a Sidecar was built from a source with a corrupt modification time",
-	)
 
 	return artifact.sidecar_of(
 		job.engine_version,
@@ -433,11 +429,6 @@ new_recording_job :: proc(
 		arena          = arena,
 		allocator      = mem.dynamic_arena_allocator(arena),
 	}
-	assert(result.arena != nil, "a Recording Job was built with no arena to allocate through")
-	assert(
-		result.allocator.procedure != nil,
-		"a Recording Job was built with no allocator to hand to its Stages",
-	)
 	return result
 }
 

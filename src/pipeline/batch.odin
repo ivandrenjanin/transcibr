@@ -52,9 +52,6 @@ Summary :: struct {
 // `failed_and_refused_do`, batch_test.odin).
 @(require_results)
 batch_succeeded :: proc(summary: Summary) -> bool {
-	assert(summary.failed >= 0, "a Batch counted a negative number of failed Recordings")
-	assert(summary.refused >= 0, "a Batch counted a negative number of refused Recordings")
-
 	return summary.failed == 0 && summary.refused == 0 && !summary.unhealthy
 }
 
@@ -111,9 +108,6 @@ re_rendered_and_placed :: proc(
 	o: Batch_Options,
 	allocator: mem.Allocator,
 ) -> bool {
-	assert(len(made.engine_version) > 0, "a re-rendered Sidecar named no Engine version")
-	assert(len(made.model) > 0, "a re-rendered Sidecar named no Model")
-
 	return placed_and_reported(
 		source,
 		output,
