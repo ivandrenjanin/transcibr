@@ -412,13 +412,14 @@ directory_listing_bounded :: proc(
 		return directory_finished(job, state.allocator)
 	}
 	if reclaim {
-		release_directory_job(job)
+		release_directory_job(wait, job)
 	}
 	return nil, false
 }
 
 @(private)
-release_directory_job :: proc(job: ^Directory_Job) {
+release_directory_job :: proc(wait: child.Wait, job: ^Directory_Job) {
+	assert(wait != .Unstoppable, "release_directory_job called on a thread that never finished")
 	assert(job != nil, "there is no job here to release")
 
 	if job.err == nil {
@@ -454,7 +455,7 @@ directory_finished :: proc(
 	if err == nil {
 		listing, ok = child.clone_directory_listing(job.listing, allocator)
 	}
-	release_directory_job(job)
+	release_directory_job(.Finished, job)
 	return
 }
 
@@ -649,13 +650,14 @@ sidecar_at :: proc(state: ^Walking, path: string) -> Maybe(artifact.Sidecar) {
 		return sidecar_finished(job, state.allocator)
 	}
 	if reclaim {
-		release_sidecar_job(job)
+		release_sidecar_job(wait, job)
 	}
 	return nil
 }
 
 @(private)
-release_sidecar_job :: proc(job: ^Sidecar_Read_Job) {
+release_sidecar_job :: proc(wait: child.Wait, job: ^Sidecar_Read_Job) {
+	assert(wait != .Unstoppable, "release_sidecar_job called on a thread that never finished")
 	assert(job != nil, "there is no job here to release")
 
 	delete(job.bytes, child.job_allocator())
@@ -678,7 +680,7 @@ sidecar_finished :: proc(
 			result = recorded
 		}
 	}
-	release_sidecar_job(job)
+	release_sidecar_job(.Finished, job)
 	return result
 }
 
@@ -788,11 +790,11 @@ transcript_state_bounded :: proc(
 	finished, reclaim := child.reclaim_for(wait)
 	if finished {
 		found := job.state
-		release_transcript_head_job(job)
+		release_transcript_head_job(.Finished, job)
 		return transcript_state_of(.Finished, found)
 	}
 	if reclaim {
-		release_transcript_head_job(job)
+		release_transcript_head_job(wait, job)
 	}
 	return transcript_state_of(.Stopped, {})
 }
@@ -822,7 +824,11 @@ transcript_state_of :: proc(
 }
 
 @(private)
-release_transcript_head_job :: proc(job: ^Transcript_Head_Job) {
+release_transcript_head_job :: proc(wait: child.Wait, job: ^Transcript_Head_Job) {
+	assert(
+		wait != .Unstoppable,
+		"release_transcript_head_job called on a thread that never finished",
+	)
 	assert(job != nil, "there is no job here to release")
 
 	delete(job.path, child.job_allocator())
