@@ -117,6 +117,12 @@ backend_library_present :: proc(executable: string) -> bool {
 	return os.is_file(beside)
 }
 
+// A switch, not a table (CLAUDE.md, Odin notes: enumerated arrays and
+// switches): every case is spelled out by hand, so a fault added without a
+// sentence fails the build rather than compiling as an empty row.
+// `engine_fault_test.odin` walks the enumeration to prove every case still
+// carries one, rather than the renderer asserting it on the first Recording
+// that hits the gap.
 @(private)
 @(require_results)
 engine_fault_says :: proc(fault: Engine_Fault) -> string {
@@ -160,7 +166,6 @@ engine_error_message :: proc(
 	)
 
 	says := engine_fault_says(check.fault)
-	assert(len(says) > 0, "a fault was added to Engine_Fault without a sentence")
 
 	if check.fault == .Not_Started {
 		reason := child.error_message(check.child, allocator)
