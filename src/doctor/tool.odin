@@ -19,17 +19,23 @@ PROBE_BOUND_MS :: i64(5_000)
 #assert(PROBE_BOUND_MS > 0)
 
 // What one bounded probe of an executable came to: whether it could be
-// spawned and stopped cleanly at all, and everything it wrote to its
-// diagnostic stream while it ran.
+// spawned and stopped cleanly at all, everything it wrote to its diagnostic
+// stream while it ran, and -- only where `run` is `.Finished` -- the status it
+// chose to exit with. `exited` is what tells a status of zero from no status
+// at all, since a halted child's code is this program's own kill.
 Probe :: struct {
-	run:      child.Run,
-	captured: string,
-	child:    child.Error,
+	run:       child.Run,
+	captured:  string,
+	exit_code: u32,
+	exited:    bool,
+	child:     child.Error,
 }
 
 @(private)
 Capture_State :: struct {
-	builder: strings.Builder,
+	builder:   strings.Builder,
+	exit_code: u32,
+	exited:    bool,
 }
 
 @(private)
@@ -39,6 +45,15 @@ captured_chunk :: proc(chunk: string, elapsed_ns: i64, user: rawptr) {
 
 	state := (^Capture_State)(user)
 	strings.write_string(&state.builder, chunk)
+}
+
+@(private)
+captured_exit :: proc(code: u32, user: rawptr) {
+	assert(user != nil, "there is no capture here to record an exit status against")
+
+	state := (^Capture_State)(user)
+	state.exit_code = code
+	state.exited = true
 }
 
 // The caller owns `probe.captured` and frees it with `delete` and the
@@ -72,7 +87,16 @@ probe_executable :: proc(
 		arguments,
 		bound_ms,
 		allocator,
-		child.Run_Callbacks{user = &state, on_chunk = captured_chunk},
+		child.Run_Callbacks{user = &state, on_chunk = captured_chunk, on_exit = captured_exit},
 	)
-	return Probe{run = run, captured = strings.to_string(state.builder), child = err}
+	if run == .Finished {
+		assert(state.exited, "a finished run reported no exit status at all")
+	}
+	return Probe {
+		run = run,
+		captured = strings.to_string(state.builder),
+		exit_code = state.exit_code,
+		exited = state.exited,
+		child = err,
+	}
 }

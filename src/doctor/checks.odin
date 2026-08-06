@@ -9,7 +9,6 @@ package doctor
 import "core:mem"
 import "core:os"
 import "core:strings"
-import "transcibr:artifact"
 import "transcibr:child"
 
 // `-hide_banner` costs nothing and both ffmpeg and ffprobe answer it
@@ -133,25 +132,36 @@ model_magic_present :: proc(path: string) -> bool {
 	return buffer == MODEL_MAGIC_BYTES
 }
 
+// The cheap half: everything that can refuse a Model without spawning
+// anything, and everything that is the Model's own fault rather than the
+// Engine's. `refusal.name` is empty where nothing here refuses it.
+@(private)
 @(require_results)
-model_check :: proc(
-	group: ^child.Job_Object,
-	engine_executable: string,
-	path: string,
-	allocator: mem.Allocator,
-) -> Check {
-	assert(group != nil, "a child started outside a job object outlives transcibr")
-	assert(len(engine_executable) > 0, "there is no engine here to load the model with")
-	assert(len(path) > 0, "there is no model here to check")
+model_screened :: proc(path: string, allocator: mem.Allocator) -> (refusal: Check) {
+	assert(len(path) > 0, "there is no model here to screen")
 
-	identified, unreadable := artifact.identify_model(path, allocator)
-	defer artifact.destroy_model(identified, allocator)
+	info, unstattable := os.stat(path, allocator)
+	defer os.file_info_delete(info, allocator)
 
-	if unreadable != .None {
-		message := artifact.model_error_message(unreadable, path, allocator)
+	if unstattable != nil {
+		message := combined_message(
+			path,
+			"could not be read at all; check the path passed to --model-file",
+			"",
+			allocator,
+		)
 		return failed("model", message)
 	}
-	if identified.bytes <= 0 {
+	if info.type == .Directory {
+		message := combined_message(
+			path,
+			"is a directory, not a file; check the path passed to --model-file",
+			"",
+			allocator,
+		)
+		return failed("model", message)
+	}
+	if info.size <= 0 {
 		message := combined_message(
 			path,
 			"is zero bytes; the download is missing or was never completed",
@@ -160,7 +170,16 @@ model_check :: proc(
 		)
 		return failed("model", message)
 	}
-	if identified.bytes < MODEL_MIN_PLAUSIBLE_BYTES {
+	return model_screened_further(path, info.size, allocator)
+}
+
+@(private)
+@(require_results)
+model_screened_further :: proc(path: string, bytes: i64, allocator: mem.Allocator) -> Check {
+	assert(len(path) > 0, "there is no model here to screen")
+	assert(bytes > 0, "an empty model reached the screen that comes after the empty check")
+
+	if bytes < MODEL_MIN_PLAUSIBLE_BYTES {
 		message := combined_message(
 			path,
 			"is far smaller than any real Model; the download is truncated or incomplete",
@@ -177,6 +196,40 @@ model_check :: proc(
 			allocator,
 		)
 		return failed("model", message)
+	}
+	return Check{}
+}
+
+// `engine_ok` is the verdict of the Engine check that ran just before this
+// one. A Model cannot be judged through an Engine that does not work: with
+// `ggml-cuda.dll` removed from a real install, the Engine loads a real Model
+// perfectly well on the CPU, and the doctor that failed the Model on that
+// evidence sent a user to re-download 1.6 GB for nothing. The Engine's own
+// FAIL already carries the nonzero exit; this line has to be a SKIP.
+@(require_results)
+model_check :: proc(
+	group: ^child.Job_Object,
+	engine_executable: string,
+	path: string,
+	engine_ok: bool,
+	allocator: mem.Allocator,
+) -> Check {
+	assert(group != nil, "a child started outside a job object outlives transcibr")
+	assert(len(engine_executable) > 0, "there is no engine here to load the model with")
+	assert(len(path) > 0, "there is no model here to check")
+
+	refusal := model_screened(path, allocator)
+	if len(refusal.name) > 0 {
+		return refusal
+	}
+	if !engine_ok {
+		message := combined_message(
+			path,
+			"was not judged: a model cannot be loaded through an engine that does not work -- fix the engine check above first, then run the doctor again",
+			"",
+			allocator,
+		)
+		return skipped("model", message)
 	}
 	return model_load_check(group, engine_executable, path, allocator)
 }

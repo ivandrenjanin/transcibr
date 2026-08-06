@@ -11,6 +11,7 @@ package doctor
 // already uses against `--help`, and the review measured it cheaper than
 // the SHA-256 pass `model_check` already pays.
 
+import "core:fmt"
 import "core:mem"
 import "core:os"
 import "core:strings"
@@ -30,10 +31,12 @@ MODEL_LOAD_PROBE_BOUND_MS :: i64(15_000)
 
 #assert(MODEL_LOAD_PROBE_BOUND_MS > 0)
 
-// whisper.cpp's own line for any failure to build a context from a Model
-// file, measured directly against the real reference Engine and three
-// distinct broken Models (200 MiB and 800 MiB head-truncations of a real
-// 1.6 GB Model, and a small stub) -- identical across every one.
+// Wording only, and never the verdict: whisper.cpp's own line for a failure
+// to build a context from a Model file, measured against the real reference
+// Engine and three distinct broken Models (200 MiB and 800 MiB head-
+// truncations of a real 1.6 GB Model, and a small stub). What decides the
+// verdict is the exit status, because a Model that aborts the Engine outright
+// never reaches the code that prints this.
 MODEL_LOAD_FAILURE_MARKER :: "error: failed to initialize whisper context"
 
 @(private)
@@ -122,14 +125,17 @@ model_load_verdict :: proc(probe: Probe, model_path: string, allocator: mem.Allo
 		return failed("model", message)
 	case .Finished:
 	}
-	if strings.contains(probe.captured, MODEL_LOAD_FAILURE_MARKER) {
+	if !probe.exited {
 		message := combined_message(
 			model_path,
-			"failed to load in the engine; the download is truncated or corrupt",
+			"could not be verified: the engine's own exit status could not be read",
 			"",
 			allocator,
 		)
 		return failed("model", message)
+	}
+	if probe.exit_code != 0 {
+		return model_refused(probe, model_path, allocator)
 	}
 	if len(probe.captured) == 0 {
 		message := combined_message(
@@ -141,4 +147,27 @@ model_load_verdict :: proc(probe: Probe, model_path: string, allocator: mem.Allo
 		return failed("model", message)
 	}
 	return passed("model")
+}
+
+// The status is the verdict and the marker is only wording. An adversarial
+// review measured a 104,857,604-byte file of genuine ggml magic and random
+// bytes hard-aborting the real Engine in 0.92 s -- GGML_ASSERT, exit
+// 0xC0000409, and the marker line never printed at all, because the process
+// died before whisper.cpp could report anything about it. A probe that reads
+// the marker alone calls that a PASS.
+@(private)
+@(require_results)
+model_refused :: proc(probe: Probe, model_path: string, allocator: mem.Allocator) -> Check {
+	assert(len(model_path) > 0, "there is no model here to report a refusal against")
+	assert(probe.exit_code != 0, "a clean exit was reported as the engine refusing the model")
+
+	says := "was refused by the engine; the download is truncated or corrupt"
+	if strings.contains(probe.captured, MODEL_LOAD_FAILURE_MARKER) {
+		says = "failed to load in the engine; the download is truncated or corrupt"
+	}
+	status := fmt.aprintf("engine exit status 0x%X", probe.exit_code, allocator = allocator)
+	defer delete(status, allocator)
+
+	message := combined_message(model_path, says, status, allocator)
+	return failed("model", message)
 }

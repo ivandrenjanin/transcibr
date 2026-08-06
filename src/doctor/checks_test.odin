@@ -175,7 +175,7 @@ a_fixture_that_only_clears_the_cheap_screen_still_fails_the_load_probe :: proc(t
 	testing.expect(t, unwritable == nil, "the case could not write its own fixture")
 	os.close(handle)
 
-	check := model_check(&group, CMD, path, context.allocator)
+	check := model_check(&group, CMD, path, true, context.allocator)
 	defer destroy_check(check, context.allocator)
 
 	testing.expect_value(t, check.ok, false)
@@ -203,7 +203,7 @@ review_a_real_healthy_model_passes_the_full_check_including_the_load_probe :: pr
 		return
 	}
 
-	check := model_check(&group, REFERENCE_ENGINE, REFERENCE_MODEL, context.allocator)
+	check := model_check(&group, REFERENCE_ENGINE, REFERENCE_MODEL, true, context.allocator)
 	defer destroy_check(check, context.allocator)
 
 	if !check.ok {
@@ -247,7 +247,7 @@ review_a_200_mib_head_truncation_above_the_floor_must_not_pass_the_model_check :
 		"the case could not write its own fixture",
 	)
 
-	check := model_check(&group, REFERENCE_ENGINE, path, context.allocator)
+	check := model_check(&group, REFERENCE_ENGINE, path, true, context.allocator)
 	defer destroy_check(check, context.allocator)
 
 	testing.expect_value(t, check.ok, false)
@@ -328,7 +328,7 @@ review_a_64_mib_head_truncation_must_not_pass_the_model_check :: proc(t: ^testin
 	testing.expect(t, unwritable == nil, "the case could not write its own fixture")
 	os.close(handle)
 
-	check := model_check(&group, CMD, path, context.allocator)
+	check := model_check(&group, CMD, path, true, context.allocator)
 	defer destroy_check(check, context.allocator)
 
 	testing.expect_value(t, check.ok, false)
@@ -361,7 +361,7 @@ review_a_plausibly_sized_non_model_file_must_not_pass_the_model_check :: proc(t:
 	testing.expect(t, unwritable == nil, "the case could not write its own fixture")
 	os.close(handle)
 
-	check := model_check(&group, CMD, path, context.allocator)
+	check := model_check(&group, CMD, path, true, context.allocator)
 	defer destroy_check(check, context.allocator)
 
 	testing.expect_value(t, check.ok, false)
@@ -395,7 +395,7 @@ review_a_truncated_model_head_must_not_pass_the_model_check :: proc(t: ^testing.
 	testing.expect(t, unwritable == nil, "the case could not write its own fixture")
 	os.close(handle)
 
-	check := model_check(&group, CMD, path, context.allocator)
+	check := model_check(&group, CMD, path, true, context.allocator)
 	defer destroy_check(check, context.allocator)
 
 	testing.expect_value(t, check.ok, false)
@@ -424,7 +424,7 @@ review_a_zero_byte_model_must_not_pass_the_model_check :: proc(t: ^testing.T) {
 	testing.expect(t, unopenable == nil, "the case could not write its own fixture")
 	os.close(handle)
 
-	check := model_check(&group, CMD, path, context.allocator)
+	check := model_check(&group, CMD, path, true, context.allocator)
 	defer destroy_check(check, context.allocator)
 
 	testing.expect_value(t, check.ok, false)
@@ -438,7 +438,7 @@ a_model_that_does_not_exist_fails_with_an_actionable_reason :: proc(t: ^testing.
 		return
 	}
 
-	check := model_check(&group, CMD, `Z:\nothing\here.bin`, context.allocator)
+	check := model_check(&group, CMD, `Z:\nothing\here.bin`, true, context.allocator)
 	defer destroy_check(check, context.allocator)
 
 	testing.expect_value(t, check.ok, false)
@@ -453,4 +453,186 @@ the_gpu_diagnostic_reports_what_windows_can_see_without_ever_blocking_a_run :: p
 	defer destroy_check(check, context.allocator)
 
 	testing.expect(t, len(check.name) > 0, "a check with no name reports nothing")
+}
+
+// The exact fixture an escalation review measured live: 104,857,604 bytes of
+// genuine ggml magic followed by random noise, clearing the 70 MiB floor and
+// the magic screen, which hard-aborts the real Engine in 0.92 s -- GGML_ASSERT,
+// exit 0xC0000409, and the marker line never printed. A probe that reads the
+// marker alone calls that PASS; only the exit status refuses it. Skipped, not
+// failed, wherever the reference install is absent.
+@(test)
+review_a_garbage_model_that_aborts_the_engine_must_not_pass_the_model_check :: proc(
+	t: ^testing.T,
+) {
+	if !os.exists(REFERENCE_ENGINE) {
+		return
+	}
+	dir := testkit.made_scratch_cache(t, "Doctor", "garbagemodel", context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	path := fmt.aprintf("%s\\model.bin", dir, allocator = context.allocator)
+	defer delete(path, context.allocator)
+	testing.expect(
+		t,
+		wrote_magic_headed_noise(path, 104_857_604),
+		"the case could not write its own fixture",
+	)
+
+	check := model_check(&group, REFERENCE_ENGINE, path, true, context.allocator)
+	defer destroy_check(check, context.allocator)
+
+	testing.expect_value(t, check.ok, false)
+	testing.expect_value(t, check.skip, false)
+	testing.expectf(
+		t,
+		strings.contains(check.reason, "engine"),
+		"a load refusal was not named as one: %s",
+		check.reason,
+	)
+}
+
+@(private)
+@(require_results)
+wrote_magic_headed_noise :: proc(destination: string, bytes: i64) -> bool {
+	assert(len(destination) > 0, "there is nowhere here to write a fixture")
+	assert(bytes > i64(len(MODEL_MAGIC_BYTES)), "a fixture smaller than its own header")
+
+	handle, unopenable := os.open(destination, {.Write, .Create, .Trunc})
+	if unopenable != nil {
+		return false
+	}
+	defer os.close(handle)
+
+	magic := MODEL_MAGIC_BYTES
+	if _, unwritable := os.write(handle, magic[:]); unwritable != nil {
+		return false
+	}
+
+	buffer := make([]u8, 4 * 1024 * 1024, context.allocator)
+	defer delete(buffer, context.allocator)
+	for at in 0 ..< len(buffer) {
+		buffer[at] = u8(at * 31 + 7)
+	}
+
+	remaining := bytes - i64(len(magic))
+	for remaining > 0 {
+		want := min(i64(len(buffer)), remaining)
+		written, unwritable := os.write(handle, buffer[:want])
+		if unwritable != nil || written <= 0 {
+			return false
+		}
+		remaining -= i64(written)
+	}
+	return true
+}
+
+// The engine's own failure is not the Model's fault. Measured live against a
+// real install with ggml-cuda.dll removed: the Engine loads the real Model
+// perfectly well on the CPU, and the doctor that failed the Model on that
+// evidence sent a user to re-download 1.6 GB for nothing.
+@(test)
+review_a_model_is_skipped_rather_than_failed_when_the_engine_check_did_not_pass :: proc(
+	t: ^testing.T,
+) {
+	dir := testkit.made_scratch_cache(t, "Doctor", "modelskipped", context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	path := fmt.aprintf("%s\\model.bin", dir, allocator = context.allocator)
+	defer delete(path, context.allocator)
+	testing.expect(t, wrote_plausible_model(path), "the case could not write its own fixture")
+
+	check := model_check(&group, CMD, path, false, context.allocator)
+	defer destroy_check(check, context.allocator)
+
+	testing.expect_value(t, check.skip, true)
+	testing.expect_value(t, check.ok, false)
+	testing.expectf(
+		t,
+		strings.contains(check.reason, "engine"),
+		"a skipped model check never said the engine is why: %s",
+		check.reason,
+	)
+}
+
+// A Model broken in its own right is still the Model's fault, whatever the
+// Engine is doing, so the skip above must not swallow it.
+@(test)
+a_model_broken_in_its_own_right_still_fails_even_when_the_engine_check_did_not_pass :: proc(
+	t: ^testing.T,
+) {
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	check := model_check(&group, CMD, `Z:\nothing\here.bin`, false, context.allocator)
+	defer destroy_check(check, context.allocator)
+
+	testing.expect_value(t, check.skip, false)
+	testing.expect_value(t, check.ok, false)
+}
+
+@(private)
+@(require_results)
+wrote_plausible_model :: proc(destination: string) -> bool {
+	assert(len(destination) > 0, "there is nowhere here to write a fixture")
+
+	handle, unopenable := os.open(destination, {.Write, .Create, .Trunc})
+	if unopenable != nil {
+		return false
+	}
+	defer os.close(handle)
+
+	magic := MODEL_MAGIC_BYTES
+	if _, unwritable := os.write(handle, magic[:]); unwritable != nil {
+		return false
+	}
+	if _, unseekable := os.seek(handle, MODEL_MIN_PLAUSIBLE_BYTES - 1, io.Seek_From.Start);
+	   unseekable != nil {
+		return false
+	}
+	_, unwritable := os.write(handle, {1})
+	return unwritable == nil
+}
+
+// A directory named where a Model file belongs used to reach `identify_model`
+// and read as an unreadable file; it has its own actionable sentence now that
+// the doctor stats the path rather than hashing it.
+@(test)
+a_directory_passed_as_the_model_file_is_named_as_one :: proc(t: ^testing.T) {
+	dir := testkit.made_scratch_cache(t, "Doctor", "modeldirectory", context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	check := model_check(&group, CMD, dir, true, context.allocator)
+	defer destroy_check(check, context.allocator)
+
+	testing.expect_value(t, check.ok, false)
+	testing.expect(
+		t,
+		strings.contains(check.reason, "directory"),
+		"a directory was refused without being named as one",
+	)
 }

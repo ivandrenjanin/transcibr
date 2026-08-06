@@ -5,7 +5,10 @@ package doctor
 // the Model, then the GPU diagnostic -- one Report `transcibr:cli` renders and
 // nothing here prints. Every check runs even after an earlier one fails, so a
 // user sees every actionable reason at once rather than fixing one problem
-// per run.
+// per run. The one dependency between them is the Model's load probe, which
+// runs the Engine and so cannot be read as the Model's verdict when the
+// Engine itself is the thing that is broken -- the Model line reports SKIP
+// there, never FAIL.
 
 import "core:mem"
 import "transcibr:child"
@@ -36,8 +39,9 @@ run_preflight :: proc(group: ^child.Job_Object, o: Options, allocator: mem.Alloc
 		&checks,
 		extraction_tool_check(group, "ffprobe", o.ffprobe, FFMPEG_PROBE_ARGUMENTS, allocator),
 	)
-	append(&checks, engine_check(group, o.engine, allocator))
-	append(&checks, model_check(group, o.engine, o.model, allocator))
+	engine := engine_check(group, o.engine, allocator)
+	append(&checks, engine)
+	append(&checks, model_check(group, o.engine, o.model, engine.ok, allocator))
 	append(&checks, gpu_diagnostic_check(allocator))
 
 	assert(len(checks) == 5, "a doctor run reported a different number of checks than it ran")

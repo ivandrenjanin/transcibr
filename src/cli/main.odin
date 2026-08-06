@@ -74,8 +74,10 @@ USAGE ::
                 [--ffmpeg <path>] [--ffprobe <path>]
       check that ffmpeg, ffprobe, the engine and the model are actually
       usable before a batch spends any of them, and print a gpu diagnostic.
-      Actually spawns the engine rather than checking that its files exist.
-      Spends no GPU time; exits nonzero if any check failed.
+      Actually spawns the engine and loads the model through it rather than
+      checking that their files exist, so it spends a few seconds of GPU
+      time. The model is skipped, never failed, where the engine check did
+      not pass. Exits nonzero if any check failed.
 
   transcibr-cli --help
       print this and exit.

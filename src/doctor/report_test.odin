@@ -46,3 +46,48 @@ review_an_advisory_failure_does_not_render_as_a_plain_failure :: proc(t: ^testin
 		"an advisory failure rendered with the same word a real failure uses",
 	)
 }
+
+// A check that never ran is neither a pass nor a failure. Whatever stopped it
+// from running is a FAIL of its own further up the report and already carries
+// the nonzero exit, so counting the skip a second time would only tell a user
+// to fix something that is not broken.
+@(test)
+report_ok_ignores_a_skipped_check :: proc(t: ^testing.T) {
+	checks := []Check {
+		failed("engine", "no cuda backend"),
+		skipped("model", "the engine is broken"),
+	}
+
+	testing.expect(
+		t,
+		!report_ok(checks),
+		"a failed engine check stopped deciding the report once a skip stood beside it",
+	)
+
+	healthy := []Check{passed("engine"), skipped("model", "the engine is broken")}
+
+	testing.expect(
+		t,
+		report_ok(healthy),
+		"a skipped check turned the whole report's verdict false on its own",
+	)
+}
+
+@(test)
+a_skipped_check_does_not_render_as_a_failure :: proc(t: ^testing.T) {
+	check := skipped("model", "a model cannot be loaded through an engine that does not work")
+
+	rendered := render_check(check, context.allocator)
+	defer delete(rendered, context.allocator)
+
+	testing.expect(
+		t,
+		!strings.contains(rendered, "FAIL"),
+		"a skipped check rendered with the same word a real failure uses",
+	)
+	testing.expect(
+		t,
+		strings.contains(rendered, "SKIP"),
+		"a skipped check did not say it was skipped",
+	)
+}

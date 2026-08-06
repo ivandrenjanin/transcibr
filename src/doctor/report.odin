@@ -38,11 +38,16 @@ combined_message :: proc(
 // allocated no reason frees an empty string safely. `advisory` marks a check
 // that is printed like any other but never turns `report_ok` false on its
 // own (ADR-0011: GPU enumeration is diagnostic only, never the verdict).
+// `skip` marks a check that never ran because an earlier one made its answer
+// meaningless; it did not pass, so `ok` is false, and it did not fail either,
+// so it never turns `report_ok` false -- whatever stopped it from running is
+// already a failure of its own further up the report.
 Check :: struct {
 	name:     string,
 	ok:       bool,
 	reason:   string,
 	advisory: bool,
+	skip:     bool,
 }
 
 @(require_results)
@@ -58,18 +63,25 @@ failed :: proc(name: string, reason: string, advisory := false) -> Check {
 	return Check{name = name, ok = false, reason = reason, advisory = advisory}
 }
 
+@(require_results)
+skipped :: proc(name: string, reason: string) -> Check {
+	assert(len(name) > 0, "a check with no name reports nothing a user can act on")
+	assert(len(reason) > 0, "a skipped check with no reason gives a user nothing to act on")
+	return Check{name = name, ok = false, reason = reason, skip = true}
+}
+
 destroy_check :: proc(check: Check, allocator: mem.Allocator) {
 	delete(check.reason, allocator)
 }
 
 // Every check this Batch's doctor ran, front to back -- `passed` and `failed`
 // are the only two Check constructors, so a Report can never hold a Check
-// answering neither. An advisory check is printed like any other but never
-// turns this false on its own.
+// answering neither. An advisory or skipped check is printed like any other
+// but never turns this false on its own.
 @(require_results)
 report_ok :: proc(checks: []Check) -> bool {
 	for check in checks {
-		if check.advisory {
+		if check.advisory || check.skip {
 			continue
 		}
 		if !check.ok {
@@ -99,6 +111,9 @@ render_check :: proc(check: Check, allocator: mem.Allocator) -> string {
 
 	if check.ok {
 		return fmt.aprintf("PASS  %s", check.name, allocator = allocator)
+	}
+	if check.skip {
+		return fmt.aprintf("SKIP  %s: %s", check.name, check.reason, allocator = allocator)
 	}
 	if check.advisory {
 		return fmt.aprintf("INFO  %s: %s", check.name, check.reason, allocator = allocator)
