@@ -106,10 +106,11 @@ LONGEST_CONTAINER_MS :: i64(1000 * 60 * 60 * 1000)
 // all either produced a positive duration or a `fault` before reaching here
 // -- never a non-positive `probe.duration_ms` with `fault == .None`.
 //
-// Issue #132: `milliseconds_of`'s own doc below names its second caller,
-// `process.seconds_ms` in src/process/engine.odin -- the derivation above
-// this comment relies on that shared guarantee holding for both callers, not
-// only this one.
+// Issue #132: `milliseconds_of` below is shared -- its own doc names the two
+// sources it serves, and the Engine's startup banner reaches it through
+// `process.seconds_ms` in src/process/engine.odin. A change to
+// `milliseconds_of` made only to suit that second caller would weaken the
+// derivation above.
 @(require_results)
 read_probe :: proc(output: string) -> (probe: Probe, fault: Probe_Fault) {
 	if len(strings.trim_space(output)) == 0 {
