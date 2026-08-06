@@ -2,6 +2,7 @@
 #
 #   .\scripts\test.ps1
 #   .\scripts\test.ps1 -TestName version.banner_names_the_program_and_its_version
+#   .\scripts\test.ps1 -Threads1
 #
 # `odin test` collects test procedures from a SINGLE package. Naming one
 # package is therefore not a test command: the moment the code spans several,
@@ -33,7 +34,17 @@ param(
 	# The sweep as a whole is bounded separately, by $OdinSweepTimeoutSeconds:
 	# this number times however many packages exist is not a ceiling anyone chose.
 	[ValidateRange(0, 86400)]
-	[int] $TimeoutSeconds = 0
+	[int] $TimeoutSeconds = 0,
+
+	# Restrict the sweep to the child package -- the one that owns
+	# process/pipe/directory lifecycle -- and run it under
+	# -define:ODIN_TEST_THREADS=1. Exists because the default 12-thread sweep
+	# cannot see the #97 defect class: that review found it only by running
+	# this define by hand (issue #104). A separate switch from -TestName
+	# rather than a third spelling of the same restriction, because this one
+	# names a package, not a test, and always forces the define -- a
+	# focused run of one test in child would not.
+	[switch] $Threads1
 )
 
 . (Join-Path $PSScriptRoot 'common.ps1')
@@ -64,6 +75,17 @@ if ($focused) {
 	$packages = @($packages | Where-Object { ($_.Name -split '/')[-1] -eq $wanted })
 	if ($packages.Count -eq 0) {
 		throw "no package '$wanted' under $SrcRoot. -TestName takes <package>.<test>."
+	}
+}
+
+# The package name is fixed rather than parameterised: -Threads1 exists for
+# one defect class in one package (issue #104), and a knob nobody would ever
+# turn to a different value is a knob that goes stale.
+$ThreadsPackageName = 'child'
+if ($Threads1) {
+	$packages = @($packages | Where-Object { ($_.Name -split '/')[-1] -eq $ThreadsPackageName })
+	if ($packages.Count -eq 0) {
+		throw "no package '$ThreadsPackageName' under $SrcRoot. -Threads1 runs it under ODIN_TEST_THREADS=1."
 	}
 }
 
@@ -130,6 +152,9 @@ foreach ($package in $packages) {
 	) + $OdinVetFlags
 	if ($focused) {
 		$arguments += "-define:ODIN_TEST_NAMES=$TestName"
+	}
+	if ($Threads1) {
+		$arguments += '-define:ODIN_TEST_THREADS=1'
 	}
 
 	# Under a ceiling, because `odin test` RUNS what it builds and the runner
