@@ -328,15 +328,22 @@ the process and thread handles, and do not touch any file the child had open unt
 completes. Note also that `Process.pid` is stale once the process exits and Windows recycles pids,
 so a late terminate can signal an unrelated application.
 
-**`core:sys/info.iterate_gpus` hardcodes `ControlSet001` and misses the active control set.**
-`_iterate_gpus` (`platform_windows.odin:274` at the pin) opens
-`SYSTEM\ControlSet001\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}` unconditionally rather
-than `SYSTEM\CurrentControlSet\...`, so on a machine whose active control set is not `ControlSet001`
-it enumerates zero adapters — measured on this repository's own dev machine (round 3 of the #96
-review), where a real, working NVIDIA GPU produced a false "no GPU could be enumerated at all"
-directly beneath a passing `engine` check that had already reached that same GPU. This is why
-`src\doctor\gpu.odin` (ADR-0033) talks to `vendor:directx/dxgi` directly — `CreateDXGIFactory1` and
-`IFactory1.EnumAdapters1` — rather than through this stdlib wrapper.
+**`core:sys/info.iterate_gpus` skips a real adapter over a case-sensitive `MatchingDeviceId` check,
+and stops the whole iteration when it does.** `_iterate_gpus`
+(`platform_windows.odin:273-336` at the pin) reads each subkey's `MatchingDeviceId` and requires
+`strings.has_prefix(matching, "PCI\\VEN")` — but the value Windows actually stores there is
+lowercase (`pci\ven_10de&dev_2705`), so the prefix check fails and the proc takes its bare `return`,
+which yields `ok = false`. That is not "no adapter at this index and keep going" — `ok = false`
+terminates a `for gpu in iterate_gpus(&it)` loop outright, so a real adapter at a later index (e.g.
+`0001`) is never reached once an earlier one (`0000`) fails the prefix check. Measured on this
+repository's own dev machine (round 3 of the #96 review, confirmed again at the #122 review):
+subkey `0000` under `SYSTEM\ControlSet001\Control\Class\{4d36e968-...}` is the real, working NVIDIA
+GeForce RTX 4070 Ti SUPER, and `ControlSet001` is in fact the active control set here (`HKLM\SYSTEM\
+Select\Current = 1`) — the registry key opens and enumerates fine, and starting the iterator's
+internal index at 1 instead of 0 does report the GPU correctly. The defect is the case-sensitive
+prefix match and its early-return-terminates-iteration behavior, not the hardcoded control-set
+path. This is why `src\doctor\gpu.odin` (ADR-0033) talks to `vendor:directx/dxgi` directly —
+`CreateDXGIFactory1` and `IFactory1.EnumAdapters1` — rather than through this stdlib wrapper.
 
 **No `os.remove_all(...)` call anywhere in the tree (issue #97/#105).** `core:testing` runs tests on
 their own thread, and issue #97 measured `os.remove_all` faulting on that thread over a non-empty
@@ -359,12 +366,17 @@ collects tests or is declared test-less in `$OdinPackagesWithoutTests`.
 
 `core:testing`'s runner caps the thread pool at the test count: `thread_count = min(thread_count,
 total_test_count)` in `runner.odin`, right after thread count is chosen from
-`ODIN_TEST_THREADS`/core count. A fixture package built to check a thread-count define — for
-example, that concurrent asserts really do run concurrently — needs at least two `@(test)`
-procedures in that package, or the cap silently pins it to one thread regardless of what the define
-asked for and the check asserts nothing. `.\scripts\test.ps1 -Threads1` runs the fixture package this
-repository keeps for exactly that (`$ThreadsPackageName` in `scripts\test.ps1`, currently `child`)
-under `ODIN_TEST_THREADS=1`, alongside the existing `-TestName`.
+`ODIN_TEST_THREADS`/core count. A package used to check a thread-count define — for example, that
+concurrent asserts really do run concurrently — needs at least two `@(test)` procedures in that
+package, or the cap silently pins it to one thread regardless of what the define asked for and the
+check asserts nothing. `.\scripts\test.ps1 -Threads1` restricts the sweep to `src\child`
+(`$ThreadsPackageName` in `scripts\test.ps1`, currently `child`, and fixed rather than
+parameterised per the script's own comment) and runs it under `ODIN_TEST_THREADS=1`, alongside the
+existing `-TestName`. `child` is real production source — process/pipe/directory lifecycle, not a
+fixture — kept there because the default 12-thread sweep cannot see the #97 defect class on it
+(issue #104). The package that exists purely to check the thread-count define above is a fixture
+`selftest.ps1` plants at run time (`Add-FixturePackage -Name 'child' -Test 'passing'
+-PassingCount 4`), whose `-PassingCount` must stay at 2 or more for that reason.
 
 The notes below name identifiers in the compiler's `core` sources and never line numbers in them. A
 name is greppable, survives an upstream edit, and says which thing is meant; a line number in another
