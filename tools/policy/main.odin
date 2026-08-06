@@ -114,9 +114,9 @@ check_repository :: proc(root: string, allocator: mem.Allocator) -> [dynamic]Vio
 }
 
 // One file's verdicts, or the fault that stopped it being read. The relative
-// name is written out FIRST in the caller's discovery, before this reads the
-// bytes -- see check_repository and render_file's own reasoning: reading a
-// file is what can still take this program down.
+// name is written out FIRST here (`checking: %s`, to standard error), before
+// this reads the bytes: reading a file is what can still take this program
+// down.
 check_one_file :: proc(
 	root: string,
 	relative: string,
