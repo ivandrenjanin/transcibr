@@ -141,10 +141,10 @@ borrowed_message :: proc(err: Error, source: string, allocator: mem.Allocator) -
 	message: string
 	if err.fault == .Probe_Unreadable {
 		message = fmt.aprintf(
-			"%q: %s (%v)",
+			"%q: %s (%s)",
 			source,
 			fault_says(err.fault),
-			err.probe,
+			process.probe_fault_says(err.probe),
 			allocator = allocator,
 		)
 	} else {

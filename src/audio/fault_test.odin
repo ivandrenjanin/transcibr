@@ -19,6 +19,7 @@ every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testin
 
 		err := Error {
 			fault = fault,
+			probe = .Duration_Unknown,
 			child = child.Error{fault = .Not_Started},
 			said = 48_000,
 			got = 12_000,
