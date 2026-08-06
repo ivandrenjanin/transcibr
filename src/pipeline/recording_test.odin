@@ -98,6 +98,35 @@ recording_sidecar_reflects_whichever_engine_its_own_job_named :: proc(t: ^testin
 	testing.expect_value(t, second.engine_version, "engine-two")
 }
 
+// A pre-1970 modification time is an operating error the filesystem can
+// genuinely hand back (`os.stat` really does date real files before 1970,
+// src/artifact/sidecar.odin:164), not a programmer bug -- A8 asks that it be
+// refused through `artifact.recordable`/`complete`'s error return, downstream
+// of this call, and never asserted here. This pins that `recording_sidecar`
+// itself stays a pass-through for the field and does not crash on it.
+@(test)
+recording_sidecar_passes_a_pre_1970_modification_time_through_without_crashing :: proc(
+	t: ^testing.T,
+) {
+	digest := a_digest('d')
+	defer delete(string(digest), context.allocator)
+	extracted := Recording_Extracted {
+		planned = audio.Reading{bytes = 1, modified_ns = -1},
+		extracted = audio.Extracted{container_ms = 1_000},
+	}
+
+	made := recording_sidecar(
+		Recording_Job {
+			engine_version = "whisper.cpp 1.9.9",
+			model = artifact.Model{path = "m.bin", digest = digest, bytes = 1},
+			profile = transcript.DEFAULT_PROFILE,
+		},
+		extracted,
+	)
+
+	testing.expect_value(t, made.source_modified_ns, i64(-1))
+}
+
 // The derivation issue #70 hoists out of `src/cli`: absent (no
 // `--engine-version` on the command line) settles to `transcript.UNKNOWN`
 // only here, at the record site -- never earlier, where it would leak into

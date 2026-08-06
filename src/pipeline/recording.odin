@@ -102,6 +102,8 @@ destroy_recording_arena :: proc(job: Recording_Job) {
 // hand-copying the `message := ...; defer delete(message); fmt.eprintln(message)`
 // shape at every fault it reports -- six copies of it, at the ticket's count.
 report_fault :: proc(message: string, allocator: mem.Allocator) {
+	assert(len(message) > 0, "reported a fault with no message to show")
+
 	defer delete(message, allocator)
 	fmt.eprintln(message)
 }
@@ -109,6 +111,8 @@ report_fault :: proc(message: string, allocator: mem.Allocator) {
 @(require_results)
 extract_recording :: proc(job: Recording_Job) -> (extracted: Recording_Extracted, ok: bool) {
 	assert(job.arena != nil, "a Recording Job with no arena reached extraction")
+	assert(len(job.source) > 0, "an extraction reached with no Recording path to read")
+	assert(len(job.cache) > 0, "an extraction reached with no cache directory to write into")
 
 	planned, unread := audio.read_source(job.source, job.allocator)
 	if unread.fault != .None {
@@ -128,12 +132,19 @@ extract_recording :: proc(job: Recording_Job) -> (extracted: Recording_Extracted
 		destroy_recording_arena(job)
 		return {}, false
 	}
-	return Recording_Extracted{job = job, extracted = produced, planned = planned}, true
+	result := Recording_Extracted {
+		job       = job,
+		extracted = produced,
+		planned   = planned,
+	}
+	return result, true
 }
 
 @(require_results)
 transcribe_and_place :: proc(extracted: Recording_Extracted) -> bool {
 	job := extracted.job
+	assert(len(job.source) > 0, "a transcription reached with no Recording path to read")
+	assert(len(job.cache) > 0, "a transcription reached with no cache directory to write into")
 	defer destroy_recording_arena(job)
 	defer delete(extracted.extracted.audio, job.allocator)
 
@@ -246,12 +257,16 @@ placed_and_reported :: proc(
 	made: artifact.Sidecar,
 	allocator: mem.Allocator,
 ) -> bool {
+	assert(len(source) > 0, "there is no Recording here to place artifacts beside")
+	assert(len(output) > 0, "there is no Engine output here to make a Transcript from")
+
 	placed, unplaced := artifact.complete(source, output, duration, rc, made, allocator)
 	defer artifact.destroy_names(placed, allocator)
 	if unplaced.fault != .None {
 		report_fault(artifact.error_message(unplaced, source, allocator), allocator)
 		return false
 	}
+	assert(len(placed[.Transcript]) > 0, "placement succeeded with no Transcript name to report")
 	fmt.println(placed[.Transcript])
 	return true
 }
@@ -263,6 +278,12 @@ placed_from_engine_output :: proc(
 	extracted: Recording_Extracted,
 	output: string,
 ) -> bool {
+	assert(len(output) > 0, "there is no Engine output here to place from")
+	assert(
+		extracted.extracted.container_ms > 0,
+		"placement reached with no measured container duration",
+	)
+
 	made := recording_sidecar(job, extracted)
 	return placed_and_reported(
 		job.source,
@@ -293,6 +314,8 @@ placed_from_engine_output :: proc(
 @(private)
 @(require_results)
 recording_sidecar :: proc(job: Recording_Job, extracted: Recording_Extracted) -> artifact.Sidecar {
+	assert(len(job.engine_version) > 0, "a Sidecar was built with no Engine version settled")
+
 	return artifact.sidecar_of(
 		job.engine_version,
 		job.model,
@@ -384,21 +407,22 @@ new_recording_job :: proc(
 		array_allocator = runtime.heap_allocator(),
 	)
 
-	return Recording_Job {
-		source = source,
-		name = name,
-		group = group,
-		tools = tools,
-		cache = cache,
-		model = model,
-		prompt = prompt,
+	result := Recording_Job {
+		source         = source,
+		name           = name,
+		group          = group,
+		tools          = tools,
+		cache          = cache,
+		model          = model,
+		prompt         = prompt,
 		engine_version = engine_version,
-		profile = profile,
-		report = report,
-		health = health,
-		arena = arena,
-		allocator = mem.dynamic_arena_allocator(arena),
+		profile        = profile,
+		report         = report,
+		health         = health,
+		arena          = arena,
+		allocator      = mem.dynamic_arena_allocator(arena),
 	}
+	return result
 }
 
 @(private)
