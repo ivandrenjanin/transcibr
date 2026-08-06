@@ -407,16 +407,14 @@ directory_listing_bounded :: proc(
 		return nil, false
 	}
 
-	switch wait {
-	case .Finished:
+	finished, reclaim := child.reclaim_for(wait)
+	if finished {
 		return directory_finished(job, state.allocator)
-	case .Stopped:
-		release_directory_job(job)
-		return nil, false
-	case .Unstoppable:
-		return nil, false
 	}
-	unreachable()
+	if reclaim {
+		release_directory_job(job)
+	}
+	return nil, false
 }
 
 @(private)
@@ -646,16 +644,14 @@ sidecar_at :: proc(state: ^Walking, path: string) -> Maybe(artifact.Sidecar) {
 		return nil
 	}
 
-	switch wait {
-	case .Finished:
+	finished, reclaim := child.reclaim_for(wait)
+	if finished {
 		return sidecar_finished(job, state.allocator)
-	case .Stopped:
-		release_sidecar_job(job)
-		return nil
-	case .Unstoppable:
-		return nil
 	}
-	unreachable()
+	if reclaim {
+		release_sidecar_job(job)
+	}
+	return nil
 }
 
 @(private)
@@ -789,18 +785,16 @@ transcript_state_bounded :: proc(
 		return .Unreadable
 	}
 
-	switch wait {
-	case .Finished:
+	finished, reclaim := child.reclaim_for(wait)
+	if finished {
 		found := job.state
 		release_transcript_head_job(job)
 		return transcript_state_of(.Finished, found)
-	case .Stopped:
-		release_transcript_head_job(job)
-		return transcript_state_of(.Stopped, {})
-	case .Unstoppable:
-		return transcript_state_of(.Unstoppable, {})
 	}
-	unreachable()
+	if reclaim {
+		release_transcript_head_job(job)
+	}
+	return transcript_state_of(.Stopped, {})
 }
 
 // The mapping `transcript_state_bounded` reads its answer through, pulled
