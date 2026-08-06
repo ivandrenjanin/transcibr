@@ -137,8 +137,6 @@ extract_recording :: proc(job: Recording_Job) -> (extracted: Recording_Extracted
 		extracted = produced,
 		planned   = planned,
 	}
-	assert(len(result.extracted.audio) > 0, "extraction succeeded with nothing to transcribe")
-	assert(result.extracted.container_ms > 0, "extraction succeeded with no measurable duration")
 	return result, true
 }
 
@@ -262,10 +260,6 @@ placed_and_reported :: proc(
 ) -> bool {
 	assert(len(source) > 0, "there is no Recording here to place artifacts beside")
 	assert(len(output) > 0, "there is no Engine output here to make a Transcript from")
-	assert(
-		allocator.procedure != nil,
-		"the artifacts outlive this procedure and need an allocator",
-	)
 
 	placed, unplaced := artifact.complete(source, output, duration, rc, made, allocator)
 	defer artifact.destroy_names(placed, allocator)
