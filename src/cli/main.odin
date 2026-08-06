@@ -10,6 +10,7 @@ import "core:strings"
 import "core:time"
 import "transcibr:artifact"
 import "transcibr:child"
+import "transcibr:crashlog"
 import "transcibr:pipeline"
 import "transcibr:transcript"
 import "transcibr:version"
@@ -99,8 +100,24 @@ USAGE_ERROR :: 2
 OPERATING_ERROR :: 1
 
 // Why this binary's own argv arrives mangled: ADR-0025, issue #35.
+//
+// Crash capture (issue #76) installs here, before anything else can assert
+// or fault, and inline rather than through a helper: Odin's implicit
+// `context` propagates forward into what a scope calls next, never back out
+// of a call that already returned, so `context.assertion_failure_proc =
+// crashlog.assertion_hook` set inside a helper `main` merely called would
+// vanish the moment that helper returned. Best-effort and silent either way
+// (spec story 57: nothing here phones home, and a machine with no usable
+// %LOCALAPPDATA% still has to transcribe recordings). `--crash-drill`
+// installs a second time, over the directory it was given -- the second
+// call just overwrites where the exception filter points.
 main :: proc() {
 	assert(len(os.args) > 0, "a process started with no argv at all, not even its own name")
+
+	crash_dir, crash_dir_ok := crashlog.default_directory(context.allocator)
+	if crash_dir_ok && crashlog.install(crash_dir, context.allocator) {
+		context.assertion_failure_proc = crashlog.assertion_hook
+	}
 
 	if len(os.args) == 1 {
 		print_version()
@@ -122,8 +139,12 @@ main :: proc() {
 	if os.args[1] == DOCTOR {
 		os.exit(run_doctor(os.args[2:]))
 	}
+	if os.args[1] == CRASH_DRILL {
+		os.exit(run_crash_drill(os.args[2:]))
+	}
 	os.exit(re_render(os.args[1:]))
 }
+
 
 print_version :: proc() {
 	line := version.banner(PROGRAM, version.CURRENT, context.allocator)
