@@ -202,9 +202,10 @@ _Avoid_: GPU check, hardware check, GPU probe
 The one realtime factor this repository has actually measured against a working CUDA path — roughly
 17x at beam size 5 over the reference corpus (docs/spec/0001-transcibr-v1.md) — and the frame of
 reference the health watch's speed half reads against. Not read by the preflight's Engine check at
-all: that half of the GPU guard decides on a systeminfo string instead
-(`strings.contains(probe.captured, "loaded CUDA backend from")`, `engine.odin:84`), so the Baseline is
-the health watch's own number, not one both halves share. Not a promise about any one machine's own
+all: that half of the GPU guard decides on its own diagnostic output instead, a `--help` capture
+checked for `"loaded CUDA backend from"` (`strings.contains(probe.captured, ...)`, `engine.odin:84`)
+— not the systeminfo JSON field the Health watch entry above reads, which is a different Engine
+output entirely. So the Baseline is the health watch's own number, not one both halves share. Not a promise about any one machine's own
 GPU: the health watch's threshold sits a full order of magnitude below it, because a factor that far
 under the Baseline is the CPU-fallback signature the guard exists to catch, not ordinary
 machine-to-machine variance.
