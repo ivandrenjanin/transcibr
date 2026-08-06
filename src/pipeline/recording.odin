@@ -205,8 +205,9 @@ transcribe_and_place :: proc(extracted: Recording_Extracted) -> bool {
 // verdict this unhealthy does not fail THIS Recording, which already
 // finished -- it stops the ones behind it, the same way ADR-0011 asks: abort
 // the Batch rather than run overnight on the wrong device.
+//
 // Issue #132: `container_ms > 0` below is internal, not a check on external
-// input, for the same reason #129 recorded at `read_probe`'s guard in
+// input, for the same reason Issue #112 recorded at `read_probe`'s guard in
 // src/process/ffmpeg.odin. `checked_first_recording_health`'s only
 // production caller, `transcribe_and_place`, passes
 // `extracted.extracted.container_ms` directly -- `audio.Extracted.container_ms`,
@@ -298,6 +299,15 @@ placed_and_reported :: proc(
 	return true
 }
 
+// Issue #132: `extracted.extracted.container_ms > 0` below is internal, not
+// a check on external input, for the same reason Issue #112 recorded at
+// `read_probe`'s guard in src/process/ffmpeg.odin.
+// `placed_from_engine_output`'s only production caller,
+// `transcribe_and_place`, passes the same `extracted` that
+// `checked_first_recording_health` above already asserted this exact field
+// positive on, itself traced to `audio.Extracted.container_ms`;
+// batch_test.odin's fake_resume_extract feeds this path RESUME_FIXTURE_MS,
+// itself a positive literal.
 @(private)
 @(require_results)
 placed_from_engine_output :: proc(

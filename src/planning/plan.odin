@@ -195,6 +195,14 @@ unrecorded :: proc(found: Found) -> Outcome {
 // ADR-0003 forbids, and the exact danger ADR-0027 names for this field. What
 // records a run is what that run actually used: `transcript.UNKNOWN` where the
 // Batch named no Engine, and the duration the probe measured.
+//
+// `recorded.container_ms >= 0` below runs on a value read back from a
+// Sidecar file (rule A8: external input), not a fresh probe -- see the
+// `container_ms` field note at its definition in src/artifact/sidecar.odin.
+// It holds today only because `read_sidecar` parses the field with
+// `read_natural`, which accepts digits only and no sign, so a negative value
+// cannot come out of a file; it does not hold because `recorded` has been
+// re-probed or re-checked.
 @(private)
 @(require_results)
 current_of :: proc(

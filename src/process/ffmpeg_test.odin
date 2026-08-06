@@ -72,6 +72,12 @@ a_container_of_no_length_at_all_is_refused :: proc(t: ^testing.T) {
 }
 
 @(test)
+a_negative_duration_is_refused :: proc(t: ^testing.T) {
+	_, fault := read_probe("codec_type=audio\nduration=-500.000000\n")
+	testing.expect_value(t, fault, Probe_Fault.Duration_Not_Positive)
+}
+
+@(test)
 a_container_too_short_to_round_to_a_millisecond_is_refused :: proc(t: ^testing.T) {
 	_, tiny := read_probe("codec_type=audio\nduration=0.000375\n")
 	testing.expect_value(t, tiny, Probe_Fault.Duration_Not_Positive)
