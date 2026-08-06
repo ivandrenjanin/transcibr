@@ -13,6 +13,31 @@ Tools :: struct {
 	ffprobe: string,
 }
 
+// Bare names, which is what asks CreateProcessW to search PATH -- and safely,
+// because argv[0] is always quoted by the Process contract. A bundled build
+// names the paths instead.
+FFMPEG :: "ffmpeg.exe"
+FFPROBE :: "ffprobe.exe"
+
+// Called AFTER a caller's own command-line loop has read every option:
+// `--ffmpeg ""` is an ordinary shell invocation with an unset variable in it,
+// and a default set only before the loop would be overwritten by the empty
+// value.
+defaulted_tools :: proc(tools: ^Tools) {
+	assert(tools != nil, "there is nowhere here to put a Tools default into")
+	defer {
+		assert(len(tools.ffmpeg) > 0, "a default that was put back is still empty")
+		assert(len(tools.ffprobe) > 0, "a default that was put back is still empty")
+	}
+
+	if len(tools.ffmpeg) == 0 {
+		tools.ffmpeg = FFMPEG
+	}
+	if len(tools.ffprobe) == 0 {
+		tools.ffprobe = FFPROBE
+	}
+}
+
 // The length a piece of audio's own header works out to, in milliseconds, and
 // never a duration for anything downstream to use. Distinct so that handing one
 // where a duration belongs is a compile error rather than a Sidecar wrong by a
