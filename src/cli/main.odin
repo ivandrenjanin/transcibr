@@ -322,6 +322,23 @@ model_identified :: proc(path: string) -> (identified: artifact.Model, ok: bool)
 	return identified, false
 }
 
+// The shared Job Object every command that spawns children opens, with its
+// refusal already reported (issue #119: transcribe_one, run_batch_command and
+// run_doctor each hand-copied this open/report/return shape). The caller
+// still writes its own `defer child.job_object_close(&group)`: the object has
+// to outlive this procedure, the same reason `transcibr:child`'s own test
+// helper's does (child_test.odin's open_group).
+@(private)
+@(require_results)
+job_object_opened :: proc() -> (group: child.Job_Object, ok: bool) {
+	opened, opening := child.job_object_open()
+	if opening.fault == .None {
+		return opened, true
+	}
+	pipeline.report_fault(child.error_message(opening, context.allocator), context.allocator)
+	return opened, false
+}
+
 // Hands back `false` so a caller can refuse in the one line it took to notice.
 @(private)
 @(require_results)
