@@ -153,10 +153,16 @@ _Avoid_: hash check, checksum, verification pass
 
 **Health watch**:
 The runtime half of the same GPU guard the preflight's Engine check is the other half of
-(`first_recording_health`, ADR-0011, ADR-0033): a pure comparison of the first completed Recording's
-own realtime factor against the Baseline, catching a driver update or a GPU in a reset state that a
-passing preflight could not have seen, because a healthy doctor result does not survive one. Never
-itself a spawn — the Engine invocation it reads from already happened for the Recording's own sake.
+(`first_recording_health`, ADR-0011, ADR-0033): two independent checks on the first completed
+Recording, not one comparison. The name half fails outright the moment the Engine's own systeminfo
+names no CUDA support at all, whatever the Recording's speed was — a Recording running three times
+the Baseline still fails if the build was never CUDA-capable. Only once that half is silent does the
+speed half compare the Recording's own realtime factor against the Baseline, catching a driver update
+or a GPU in a reset state that a passing preflight could not have seen. A third answer, `conclusive =
+false`, is not a fault: a Recording too short for the speed half to mean anything is left unjudged
+rather than reported healthy, so a Batch's one health check is not spent on a Recording nothing could
+actually be concluded from. Never itself a spawn — the Engine invocation it reads from already
+happened for the Recording's own sake.
 _Avoid_: runtime check, GPU monitor, watchdog
 
 **Skip**:
@@ -170,17 +176,19 @@ review round already produced, and the reason this entry exists.
 _Avoid_: failed silently, inconclusive, untested, errored
 
 **Advisory**:
-A Check that renders as INFO like any other line in a Report but never turns the Report's own verdict
-false on its own, because what it reports is not itself a claim about whether the Batch can proceed
-(ADR-0033). The GPU diagnostic is the only advisory Check `src/doctor` runs today; the shape exists so
-a future Check that is worth printing but never worth failing on does not have to invent one.
+A Check that renders as PASS when it passes, exactly like any other Check; only a failing advisory
+renders as INFO rather than FAIL, and even then it never turns the Report's own verdict false on its
+own, because what it reports is not itself a claim about whether the Batch can proceed (ADR-0033). The
+GPU diagnostic is the only advisory Check `src/doctor` runs today; the shape exists so a future Check
+that is worth printing but never worth failing on does not have to invent one.
 _Avoid_: warning, note, informational check
 
 **GPU diagnostic**:
 The one advisory Check in a preflight Report: what DXGI can enumerate about attached GPUs, purely to
 help a user read a failing Engine check — "no GPU could be enumerated at all" reads differently from
 "a GPU is here but the Engine could not reach it." Never the verdict on GPU usability; only the Engine
-check and the health watch, both of which actually spawn the Engine, decide that (ADR-0011).
+check, which spawns it directly, and the health watch, which reads what that Engine invocation already
+measured, decide that (ADR-0011).
 _Avoid_: GPU check, hardware check, GPU probe
 
 **Baseline**:

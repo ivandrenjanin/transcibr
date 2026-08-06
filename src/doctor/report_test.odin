@@ -47,6 +47,25 @@ review_an_advisory_failure_does_not_render_as_a_plain_failure :: proc(t: ^testin
 	)
 }
 
+// CONTEXT.md's Advisory entry once claimed an advisory Check "renders as INFO
+// like any other line" -- but `render_check` tests `check.ok` first, so a
+// passing advisory renders PASS same as any other passing Check; only a
+// failing advisory renders INFO.
+@(test)
+a_passing_advisory_renders_as_pass_not_info :: proc(t: ^testing.T) {
+	check := passed("gpu (diagnostic)", advisory = true)
+
+	rendered := render_check(check, context.allocator)
+	defer delete(rendered, context.allocator)
+
+	testing.expect(t, strings.contains(rendered, "PASS"), "a passing advisory did not render PASS")
+	testing.expect(
+		t,
+		!strings.contains(rendered, "INFO"),
+		"a passing advisory rendered INFO instead of PASS",
+	)
+}
+
 // A check that never ran is neither a pass nor a failure. Whatever stopped it
 // from running is a FAIL of its own further up the report and already carries
 // the nonzero exit, so counting the skip a second time would only tell a user
