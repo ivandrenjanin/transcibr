@@ -48,3 +48,52 @@ the_join_bound_default_outlasts_a_real_transcribe_bound_and_stays_inside_what_ch
 		margin,
 	)
 }
+
+// Issue #94: `read_worker_count` (src/cli/batch.odin) used to refuse both
+// `--extract-workers` and `--queue-depth` against `MAX_QUEUE_DEPTH` alone, so
+// a future drop in `MAX_EXTRACT_WORKERS` below `MAX_QUEUE_DEPTH` would have
+// let an over-ceiling `--extract-workers` value sail past the refusal and
+// crash at `run_recordings`'s own assert instead. `worker_count_within_-`
+// `ceiling` is what both the CLI refusal and this test now call, so the two
+// can never drift back apart -- ADR-0009 keeps `src/cli` test-less, so this
+// is where that pairing is held. Walking both ceilings independently, rather
+// than only today's shared value of 2, is what proves the check is keyed to
+// whichever ceiling is passed in and not to the other option's.
+@(test)
+worker_count_within_ceiling_checks_its_own_ceiling_and_not_the_others :: proc(t: ^testing.T) {
+	for ceiling in ([]int{MAX_EXTRACT_WORKERS, MAX_QUEUE_DEPTH, 1, 5}) {
+		testing.expectf(
+			t,
+			!worker_count_within_ceiling(0, ceiling),
+			"zero workers passed against ceiling %d",
+			ceiling,
+		)
+		for count in 1 ..= ceiling {
+			testing.expectf(
+				t,
+				worker_count_within_ceiling(count, ceiling),
+				"%d workers refused against a ceiling of %d",
+				count,
+				ceiling,
+			)
+		}
+		testing.expectf(
+			t,
+			!worker_count_within_ceiling(ceiling + 1, ceiling),
+			"%d workers passed against a ceiling of %d",
+			ceiling + 1,
+			ceiling,
+		)
+	}
+
+	testing.expectf(
+		t,
+		worker_count_within_ceiling(MAX_EXTRACT_WORKERS, MAX_EXTRACT_WORKERS),
+		"MAX_EXTRACT_WORKERS itself was refused against its own ceiling",
+	)
+	testing.expectf(
+		t,
+		worker_count_within_ceiling(MAX_QUEUE_DEPTH, MAX_QUEUE_DEPTH),
+		"MAX_QUEUE_DEPTH itself was refused against its own ceiling",
+	)
+}

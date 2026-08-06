@@ -40,6 +40,20 @@ MAX_QUEUE_DEPTH :: 2
 #assert(MAX_EXTRACT_WORKERS > 0)
 #assert(MAX_QUEUE_DEPTH > 0)
 
+// The one check `--extract-workers` and `--queue-depth` each run against
+// their own ceiling (src/cli/batch.odin's `read_worker_count`), pulled out
+// here so a test can walk both ceilings without reaching into `src/cli`,
+// which ADR-0009 keeps test-less. Taking `ceiling` as a parameter rather than
+// reading `MAX_EXTRACT_WORKERS` or `MAX_QUEUE_DEPTH` directly is what issue
+// #94 is about: a shared check that reached for one constant by name is
+// exactly how `--extract-workers` used to get refused against
+// `MAX_QUEUE_DEPTH` instead of its own ceiling.
+@(require_results)
+worker_count_within_ceiling :: proc(count: int, ceiling: int) -> bool {
+	assert(ceiling > 0, "a ceiling of zero admits no worker count at all")
+	return count > 0 && count <= ceiling
+}
+
 // One or two extraction workers feeding exactly one transcription worker
 // through a bounded channel of depth one or two (ADR-0006) -- the shipped
 // defaults `--batch` puts back when its own command line left either unset,
