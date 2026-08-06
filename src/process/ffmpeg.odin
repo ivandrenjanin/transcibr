@@ -66,6 +66,18 @@ Probe_Fault :: enum u8 {
 @(private)
 LONGEST_CONTAINER_MS :: i64(1000 * 60 * 60 * 1000)
 
+// Issue #112: `probe.duration_ms > 0` below is an internal invariant, not a
+// check on external input, because every path that could hand back a
+// non-positive duration already returns a `fault` above this line first.
+// `read_duration` reaches `fault == .None` only through `milliseconds_of`,
+// which itself refuses zero, negative and sub-millisecond-rounding values --
+// so the one place `probe.duration_ms` is written (the `"duration="` case)
+// can only leave `said_duration` true with a value already proven positive.
+// Verified against real ffprobe N-125907: a stdin-piped WAV with a
+// placeholder RIFF/data size, MPEG-TS and Matroska captures killed
+// mid-stream, matroska truncated to 1% of its bytes, and a 0.000091 s clip
+// all either produced a positive duration or a `fault` before reaching here
+// -- never a non-positive `probe.duration_ms` with `fault == .None`.
 @(require_results)
 read_probe :: proc(output: string) -> (probe: Probe, fault: Probe_Fault) {
 	if len(strings.trim_space(output)) == 0 {

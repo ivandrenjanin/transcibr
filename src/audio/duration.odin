@@ -19,6 +19,11 @@ DEFAULT_TOLERANCE :: Tolerance {
 @(private)
 MAX_PER_MILLE :: i64(1000)
 
+// Issue #112: `container_ms > 0` below is internal, not a check on external
+// input -- its callers are `durations_agree` in production, whose value
+// traces back to `process.read_probe`'s success path, which that procedure's
+// own doc comment establishes is always positive, and the tests, which pass
+// only positive literals.
 @(require_results)
 allowed_difference_ms :: proc(container_ms: i64, tolerance: Tolerance) -> i64 {
 	assert(container_ms > 0, "a container with no duration was never accepted by the probe")
@@ -31,6 +36,11 @@ allowed_difference_ms :: proc(container_ms: i64, tolerance: Tolerance) -> i64 {
 
 // Two-sided deliberately: audio longer than the container means the probe and
 // the extraction read different files.
+//
+// Issue #112: `container_ms > 0` below is internal for the same reason
+// `allowed_difference_ms` above states it -- `check_audio` is the only
+// production caller and passes through a value `process.read_probe` already
+// proved positive.
 @(require_results)
 durations_agree :: proc(container_ms: i64, audio_ms: i64, tolerance: Tolerance) -> bool {
 	assert(container_ms > 0, "a container with no duration was never accepted by the probe")
