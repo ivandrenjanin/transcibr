@@ -130,8 +130,7 @@ _Avoid_: temp, working directory, staging, intermediate
 What a preflight run hands back: `[]Check`, nothing more — there is no `Report` type in `src/doctor`,
 only a slice of `Check` produced by `run_preflight`, read by `report_ok` to decide the `--doctor`
 subcommand's own process exit code, rendered one line at a time by `render_check`, and freed together
-by `destroy_report`. Every other entry in this section describes what one line of it means or how it
-got there.
+by `destroy_report`.
 _Avoid_: results, summary, output
 
 **Check**:
@@ -146,10 +145,10 @@ _Avoid_: result, verdict, test, probe
 
 **Preflight**:
 The doctor run a user invokes directly, through the `--doctor` subcommand, so they find out about a
-problem before a Batch rather than mid-run (spec story 8): extraction tooling, the Engine, the Model,
-then the GPU diagnostic, each turned into one Check and run through to the end even after an earlier
-one fails, so a user sees every actionable reason at once rather than fixing one problem per run
-(`run_preflight`, ADR-0033). Informational, not gating — a `--batch` run never calls it and is not
+problem before a Batch rather than mid-run (spec story 8): ffmpeg, ffprobe, the Engine, the Model, then
+the GPU diagnostic — five Checks in total, run through to the end even after an earlier one fails, so a
+user sees every actionable reason at once rather than fixing one problem per run (`run_preflight`,
+ADR-0033). Informational, not gating — a `--batch` run never calls it and is not
 blocked by it. Distinct from the health watch, the same GPU guard's other half, which runs during a
 Batch rather than before one.
 _Avoid_: startup check, sanity check, readiness check
@@ -195,7 +194,7 @@ _Avoid_: failed silently, inconclusive, untested, errored
 **Advisory**:
 A Check that renders as PASS when it passes, exactly like any other Check; only a failing advisory
 renders as INFO rather than FAIL, and even then it never turns the Report's own verdict false on its
-own, because what it reports is not itself a claim about whether the Batch can proceed (ADR-0033). The
+own — informational, not gating, like every other Check in a preflight Report (ADR-0033). The
 GPU diagnostic is the only advisory Check `src/doctor` runs today; the shape exists so a future Check
 that is worth printing but never worth failing on does not have to invent one.
 _Avoid_: warning, note, informational check
