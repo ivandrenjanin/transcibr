@@ -7,6 +7,7 @@ import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:thread"
+import "core:time"
 import "transcibr:child"
 import "transcibr:process"
 
@@ -145,8 +146,9 @@ landed :: proc(output: string) -> Fault {
 // has already returned to its caller.
 @(private)
 Landed_Job :: struct {
-	output: string,
-	fault:  Fault,
+	output:   string,
+	fault:    Fault,
+	stall_ms: i64,
 }
 
 @(private)
@@ -155,6 +157,9 @@ landed_worker :: proc(data: rawptr) {
 	assert(job != nil, "a landed-check thread was started with no job to check")
 	assert(len(job.output) > 0, "a landed-check thread was started with no path to check")
 
+	if job.stall_ms > 0 {
+		time.sleep(time.Duration(job.stall_ms) * time.Millisecond)
+	}
 	job.fault = landed(job.output)
 }
 
@@ -165,11 +170,25 @@ landed_worker :: proc(data: rawptr) {
 @(private)
 @(require_results)
 landed_bounded :: proc(output: string, bound_ms: i64) -> Fault {
+	return landed_bounded_stalled(output, bound_ms, 0)
+}
+
+// `landed_bounded`'s own body, plus a worker-side stall no production caller
+// ever passes: `landed_bounded_stalled(output, bound_ms, 0)` behaves
+// identically to the code above it. A stall greater than `bound_ms` is what
+// `engine_test.odin` uses to reach the `.Stopped` branch with a real,
+// running thread rather than a mocked wait outcome (issue #65's coverage
+// finding).
+@(private)
+@(require_results)
+landed_bounded_stalled :: proc(output: string, bound_ms: i64, stall_ms: i64) -> Fault {
 	assert(len(output) > 0, "there is nowhere here to look for the Engine's output")
 	assert(bound_ms > 0, "a check given no time at all cannot do anything")
+	assert(stall_ms >= 0, "a stall cannot run for negative time")
 
 	job := new(Landed_Job, runtime.heap_allocator())
 	job.output = strings.clone(output, runtime.heap_allocator())
+	job.stall_ms = stall_ms
 
 	context.allocator = runtime.heap_allocator()
 	t := thread.create_and_start_with_data(job, landed_worker)

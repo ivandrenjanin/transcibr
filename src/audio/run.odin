@@ -253,11 +253,12 @@ read_head :: proc(path: string, into: []u8) -> (head: []u8, bytes: i64, err: Err
 // and `artifact.digest_of_bounded`'s `Digest_Job` give for the same shape.
 @(private)
 Head_Job :: struct {
-	path:   string,
-	buffer: []u8,
-	head:   []u8,
-	bytes:  i64,
-	err:    Error,
+	path:     string,
+	buffer:   []u8,
+	head:     []u8,
+	bytes:    i64,
+	err:      Error,
+	stall_ms: i64,
 }
 
 @(private)
@@ -266,6 +267,9 @@ head_worker :: proc(data: rawptr) {
 	assert(job != nil, "a head-read thread was started with no job to read")
 	assert(len(job.path) > 0, "a head-read thread was started with no path to read")
 
+	if job.stall_ms > 0 {
+		time.sleep(time.Duration(job.stall_ms) * time.Millisecond)
+	}
 	job.head, job.bytes, job.err = read_head(job.path, job.buffer)
 }
 
@@ -287,13 +291,36 @@ read_head_bounded :: proc(
 	bytes: i64,
 	err: Error,
 ) {
+	return read_head_bounded_stalled(path, bound_ms, allocator, 0)
+}
+
+// `read_head_bounded`'s own body, plus a worker-side stall no production
+// caller ever passes: `read_head_bounded_stalled(path, bound_ms, allocator,
+// 0)` behaves identically to the code above it. A stall greater than
+// `bound_ms` is what `run_test.odin` uses to reach the `.Stopped` branch with
+// a real, running thread rather than a mocked wait outcome (issue #65's
+// coverage finding).
+@(private)
+@(require_results)
+read_head_bounded_stalled :: proc(
+	path: string,
+	bound_ms: i64,
+	allocator: mem.Allocator,
+	stall_ms: i64,
+) -> (
+	head: []u8,
+	bytes: i64,
+	err: Error,
+) {
 	assert(len(path) > 0, "there is no audio here to read")
 	assert(bound_ms > 0, "a read given no time at all cannot do anything")
 	assert(allocator.procedure != nil, "a head outliving this procedure needs an allocator")
+	assert(stall_ms >= 0, "a stall cannot run for negative time")
 
 	job := new(Head_Job, runtime.heap_allocator())
 	job.path = strings.clone(path, runtime.heap_allocator())
 	job.buffer = make([]u8, AUDIO_HEAD_BYTES, runtime.heap_allocator())
+	job.stall_ms = stall_ms
 
 	context.allocator = runtime.heap_allocator()
 	t := thread.create_and_start_with_data(job, head_worker)
