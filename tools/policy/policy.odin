@@ -17,9 +17,7 @@
 //
 // This file holds the fault vocabulary, the shape of one file's facts, and the
 // bounded read that produces them. collect.odin holds the walk that finds
-// procedures, comments and tags; report.odin renders a report shape retired
-// alongside the two-language seam it used to serve, kept only because
-// report_test.odin pins it; main.odin is the entry point and does its own
+// procedures, comments and tags; main.odin is the entry point and does its own
 // printing directly.
 package policy
 
