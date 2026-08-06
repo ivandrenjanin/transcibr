@@ -1,7 +1,6 @@
 #+vet explicit-allocators
 package child
 
-import "base:runtime"
 import "core:mem"
 import "core:os"
 import "core:strings"
@@ -41,38 +40,37 @@ make_directory_bounded :: proc(path: string, bound_ms: i64) -> (ok: bool) {
 	assert(len(path) > 0, "there is no directory here to create")
 	assert(bound_ms > 0, "a directory creation given no time at all cannot do anything")
 
-	job := new(Make_Directory_Job, runtime.heap_allocator())
-	job.path = strings.clone(path, runtime.heap_allocator())
+	job := new(Make_Directory_Job, job_allocator())
+	job.path = strings.clone(path, job_allocator())
 
-	context.allocator = runtime.heap_allocator()
+	context.allocator = job_allocator()
 	t := thread.create_and_start_with_data(job, make_directory_worker)
 	if t == nil {
-		delete(job.path, runtime.heap_allocator())
-		free(job, runtime.heap_allocator())
+		delete(job.path, job_allocator())
+		free(job, job_allocator())
 		return false
 	}
 
-	switch await_or_abandon(t, bound_ms) {
-	case .Finished:
+	finished, reclaim := await_and_reclaim(t, bound_ms)
+	if finished {
 		err := job.err
 		release_make_directory_job(t, job)
 		return err == nil || os.exists(path)
-	case .Stopped:
-		release_make_directory_job(t, job)
-		return false
-	case .Unstoppable:
-		return false
 	}
-	unreachable()
+	if reclaim {
+		release_make_directory_job(t, job)
+	}
+	return false
 }
 
 @(private)
 release_make_directory_job :: proc(t: ^thread.Thread, job: ^Make_Directory_Job) {
 	assert(t != nil, "there is no thread here to release")
 	assert(job != nil, "there is no job here to release")
+	assert(thread.is_done(t), "release_make_directory_job called on a thread that never finished")
 
-	delete(job.path, runtime.heap_allocator())
-	free(job, runtime.heap_allocator())
+	delete(job.path, job_allocator())
+	free(job, job_allocator())
 	thread.destroy(t)
 }
 
@@ -89,7 +87,7 @@ directory_listing_worker :: proc(data: rawptr) {
 	assert(job != nil, "a directory-listing thread was started with no job to read")
 	assert(len(job.path) > 0, "a directory-listing thread was started with no path to read")
 
-	job.listing, job.err = os.read_all_directory_by_path(job.path, runtime.heap_allocator())
+	job.listing, job.err = os.read_all_directory_by_path(job.path, job_allocator())
 }
 
 // The mirror of `transcibr:planning`'s own `directory_listing_bounded`, one
@@ -109,39 +107,41 @@ list_directory_bounded :: proc(
 	assert(bound_ms > 0, "a listing given no time at all cannot do anything")
 	assert(allocator.procedure != nil, "a listing outliving this procedure needs an allocator")
 
-	job := new(Directory_Listing_Job, runtime.heap_allocator())
-	job.path = strings.clone(path, runtime.heap_allocator())
+	job := new(Directory_Listing_Job, job_allocator())
+	job.path = strings.clone(path, job_allocator())
 
-	context.allocator = runtime.heap_allocator()
+	context.allocator = job_allocator()
 	t := thread.create_and_start_with_data(job, directory_listing_worker)
 	if t == nil {
-		delete(job.path, runtime.heap_allocator())
-		free(job, runtime.heap_allocator())
+		delete(job.path, job_allocator())
+		free(job, job_allocator())
 		return nil, false
 	}
 
-	switch await_or_abandon(t, bound_ms) {
-	case .Finished:
+	finished, reclaim := await_and_reclaim(t, bound_ms)
+	if finished {
 		return directory_listing_finished(t, job, allocator)
-	case .Stopped:
-		release_directory_listing_job(t, job)
-		return nil, false
-	case .Unstoppable:
-		return nil, false
 	}
-	unreachable()
+	if reclaim {
+		release_directory_listing_job(t, job)
+	}
+	return nil, false
 }
 
 @(private)
 release_directory_listing_job :: proc(t: ^thread.Thread, job: ^Directory_Listing_Job) {
 	assert(t != nil, "there is no thread here to release")
 	assert(job != nil, "there is no job here to release")
+	assert(
+		thread.is_done(t),
+		"release_directory_listing_job called on a thread that never finished",
+	)
 
 	if job.err == nil {
-		os.file_info_slice_delete(job.listing, runtime.heap_allocator())
+		os.file_info_slice_delete(job.listing, job_allocator())
 	}
-	delete(job.path, runtime.heap_allocator())
-	free(job, runtime.heap_allocator())
+	delete(job.path, job_allocator())
+	free(job, job_allocator())
 	thread.destroy(t)
 }
 
@@ -174,7 +174,6 @@ directory_listing_finished :: proc(
 // (`a_directory_listing_that_cannot_be_cloned_under_memory_pressure_frees_-`
 // `what_it_cloned_exactly_once` is this file's copy of the regression test
 // that pins it).
-@(private)
 @(require_results)
 clone_directory_listing :: proc(
 	listing: []os.File_Info,

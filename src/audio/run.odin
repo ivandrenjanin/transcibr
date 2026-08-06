@@ -1,7 +1,6 @@
 #+vet explicit-allocators
 package audio
 
-import "base:runtime"
 import "core:fmt"
 import "core:mem"
 import "core:os"
@@ -248,7 +247,7 @@ read_head :: proc(path: string, into: []u8) -> (head: []u8, bytes: i64, err: Err
 // `read_head`'s own worker: the buffer it reads into has to outlive the
 // caller's stack frame the way `child.Read_Job.bytes` does, because a
 // `.Stopped` or `.Unstoppable` wait leaves this thread abandoned rather than
-// joined -- so it lives on `runtime.heap_allocator`'s heap and never on the
+// joined -- so it lives on `child.job_allocator`'s heap and never on the
 // caller's own `allocator`, the identical reasoning `child.job_allocator`
 // and `artifact.digest_of_bounded`'s `Digest_Job` give for the same shape.
 @(private)
@@ -275,38 +274,26 @@ head_worker :: proc(data: rawptr) {
 
 // Bounded the same shape as `artifact.digest_of_bounded` and
 // `planning.transcript_state_bounded`: a small worker thread plus
-// `child.await_or_abandon`. Every wait outcome that is not `.Finished`
+// `child.await_and_reclaim`. Every wait outcome that is not `.Finished`
 // collapses onto `.Audio_Unreadable`, the same fault a `read_head` that
 // genuinely could not open the file already answers -- a caller cannot tell
 // a wedge from an ordinary open failure apart, and does not need to (A8: an
 // external read that times out is reported against the file that caused it).
+//
+// `stall_ms` is a worker-side stall no production caller ever passes --
+// `read_head_bounded(path, bound_ms, allocator)` behaves identically to a
+// call that spells the default out. A stall greater than `bound_ms` is what
+// `run_test.odin` uses to reach the `.Stopped` branch with a real, running
+// thread rather than a mocked wait outcome (issue #65's coverage finding);
+// the one-line forwarding wrapper that used to carry that case's own name is
+// gone (issue #66).
 @(private)
 @(require_results)
 read_head_bounded :: proc(
 	path: string,
 	bound_ms: i64,
 	allocator: mem.Allocator,
-) -> (
-	head: []u8,
-	bytes: i64,
-	err: Error,
-) {
-	return read_head_bounded_stalled(path, bound_ms, allocator, 0)
-}
-
-// `read_head_bounded`'s own body, plus a worker-side stall no production
-// caller ever passes: `read_head_bounded_stalled(path, bound_ms, allocator,
-// 0)` behaves identically to the code above it. A stall greater than
-// `bound_ms` is what `run_test.odin` uses to reach the `.Stopped` branch with
-// a real, running thread rather than a mocked wait outcome (issue #65's
-// coverage finding).
-@(private)
-@(require_results)
-read_head_bounded_stalled :: proc(
-	path: string,
-	bound_ms: i64,
-	allocator: mem.Allocator,
-	stall_ms: i64,
+	stall_ms: i64 = 0,
 ) -> (
 	head: []u8,
 	bytes: i64,
@@ -317,44 +304,43 @@ read_head_bounded_stalled :: proc(
 	assert(allocator.procedure != nil, "a head outliving this procedure needs an allocator")
 	assert(stall_ms >= 0, "a stall cannot run for negative time")
 
-	job := new(Head_Job, runtime.heap_allocator())
-	job.path = strings.clone(path, runtime.heap_allocator())
-	job.buffer = make([]u8, AUDIO_HEAD_BYTES, runtime.heap_allocator())
+	job := new(Head_Job, child.job_allocator())
+	job.path = strings.clone(path, child.job_allocator())
+	job.buffer = make([]u8, AUDIO_HEAD_BYTES, child.job_allocator())
 	job.stall_ms = stall_ms
 
-	context.allocator = runtime.heap_allocator()
+	context.allocator = child.job_allocator()
 	t := thread.create_and_start_with_data(job, head_worker)
 	if t == nil {
-		delete(job.buffer, runtime.heap_allocator())
-		delete(job.path, runtime.heap_allocator())
-		free(job, runtime.heap_allocator())
+		delete(job.buffer, child.job_allocator())
+		delete(job.path, child.job_allocator())
+		free(job, child.job_allocator())
 		return nil, 0, Error{fault = .Audio_Unreadable}
 	}
 
-	switch child.await_or_abandon(t, bound_ms) {
-	case .Finished:
+	finished, reclaim := child.await_and_reclaim(t, bound_ms)
+	if finished {
 		return head_finished(t, job, allocator)
-	case .Stopped:
-		release_head_job(t, job)
-		return nil, 0, Error{fault = .Audio_Unreadable}
-	case .Unstoppable:
-		return nil, 0, Error{fault = .Audio_Unreadable}
 	}
-	unreachable()
+	if reclaim {
+		release_head_job(t, job)
+	}
+	return nil, 0, Error{fault = .Audio_Unreadable}
 }
 
 @(private)
 release_head_job :: proc(t: ^thread.Thread, job: ^Head_Job) {
 	assert(t != nil, "there is no thread here to release")
 	assert(job != nil, "there is no job here to release")
+	assert(thread.is_done(t), "release_head_job called on a thread that never finished")
 
-	delete(job.buffer, runtime.heap_allocator())
-	delete(job.path, runtime.heap_allocator())
-	free(job, runtime.heap_allocator())
+	delete(job.buffer, child.job_allocator())
+	delete(job.path, child.job_allocator())
+	free(job, child.job_allocator())
 	thread.destroy(t)
 }
 
-// Where a completed head's answer crosses from `runtime.heap_allocator`'s
+// Where a completed head's answer crosses from `child.job_allocator`'s
 // heap onto the allocator the caller actually asked for -- the same
 // copy-then-release shape `child.read.odin`'s `finished` uses.
 @(private)

@@ -299,8 +299,8 @@ LANDED_STALL_SLACK :: 30 * time.Second
 // Finding of the PR #99 review: nothing in this suite before this case ran a
 // `landed_bounded` worker for longer than its own bound, so a mutant that
 // multiplied `bound_ms` by 1000 -- an effectively unbounded wait -- passed
-// every test unchanged. `landed_bounded_stalled` puts a real,
-// `time.sleep`-stalled worker on the far side of a short bound, the same way
+// every test unchanged. `landed_bounded`'s own `stall_ms` parameter puts a
+// real, `time.sleep`-stalled worker on the far side of a short bound, the same way
 // `child`'s own `a_read_that_cannot_finish_is_abandoned_at_its_bound` puts a
 // real stalled pipe read on the far side of one.
 @(test)
@@ -320,7 +320,7 @@ a_landed_check_that_cannot_finish_within_its_bound_is_reported_rather_than_await
 	)
 
 	started := time.tick_now()
-	fault := landed_bounded_stalled(output, LANDED_STALL_BOUND_MS, LANDED_STALL_MS)
+	fault := landed_bounded(output, LANDED_STALL_BOUND_MS, LANDED_STALL_MS)
 	elapsed := time.tick_since(started)
 
 	testing.expect_value(t, fault, Fault.No_Output)

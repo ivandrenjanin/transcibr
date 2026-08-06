@@ -229,15 +229,13 @@ start_batch :: proc(box: ^Run_Box) -> ^thread.Thread {
 join_batch :: proc(t: ^testing.T, driver: ^thread.Thread, bound_ms: i64) -> bool {
 	assert(driver != nil, "there is no driver thread here to join")
 
-	switch child.await_or_abandon(driver, bound_ms) {
-	case .Finished, .Stopped:
+	_, reclaim := child.await_and_reclaim(driver, bound_ms)
+	if reclaim {
 		thread.destroy(driver)
 		return true
-	case .Unstoppable:
-		testing.expect(t, false, "a Batch driver thread did not finish within its bound")
-		return false
 	}
-	unreachable()
+	testing.expect(t, false, "a Batch driver thread did not finish within its bound")
+	return false
 }
 
 @(test)

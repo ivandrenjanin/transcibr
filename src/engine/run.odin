@@ -1,7 +1,6 @@
 #+vet explicit-allocators
 package engine
 
-import "base:runtime"
 import "core:fmt"
 import "core:mem"
 import "core:os"
@@ -146,7 +145,7 @@ landed :: proc(output: string) -> Fault {
 
 // `landed`'s own worker, bounded the same shape as `audio.read_head_bounded`
 // and `artifact.digest_of_bounded`: a small worker thread plus
-// `child.await_or_abandon`, its job on `runtime.heap_allocator`'s heap so an
+// `child.await_and_reclaim`, its job on `child.job_allocator`'s heap so an
 // abandoned thread has somewhere safe to keep writing after this procedure
 // has already returned to its caller.
 @(private)
@@ -172,58 +171,53 @@ landed_worker :: proc(data: rawptr) {
 // same fault `landed` itself already answers for an output it could not
 // open: a caller cannot tell a wedge from an ordinary open failure apart, and
 // A8 asks it to reject the read rather than assert on it either way.
-@(private)
-@(require_results)
-landed_bounded :: proc(output: string, bound_ms: i64) -> Fault {
-	return landed_bounded_stalled(output, bound_ms, 0)
-}
-
-// `landed_bounded`'s own body, plus a worker-side stall no production caller
-// ever passes: `landed_bounded_stalled(output, bound_ms, 0)` behaves
-// identically to the code above it. A stall greater than `bound_ms` is what
+//
+// `stall_ms` is a worker-side stall no production caller ever passes --
+// `landed_bounded(output, bound_ms)` behaves identically to a call that
+// spells the default out. A stall greater than `bound_ms` is what
 // `engine_test.odin` uses to reach the `.Stopped` branch with a real,
 // running thread rather than a mocked wait outcome (issue #65's coverage
-// finding).
+// finding); the one-line forwarding wrapper that used to carry that case's
+// own name is gone (issue #66).
 @(private)
 @(require_results)
-landed_bounded_stalled :: proc(output: string, bound_ms: i64, stall_ms: i64) -> Fault {
+landed_bounded :: proc(output: string, bound_ms: i64, stall_ms: i64 = 0) -> Fault {
 	assert(len(output) > 0, "there is nowhere here to look for the Engine's output")
 	assert(bound_ms > 0, "a check given no time at all cannot do anything")
 	assert(stall_ms >= 0, "a stall cannot run for negative time")
 
-	job := new(Landed_Job, runtime.heap_allocator())
-	job.output = strings.clone(output, runtime.heap_allocator())
+	job := new(Landed_Job, child.job_allocator())
+	job.output = strings.clone(output, child.job_allocator())
 	job.stall_ms = stall_ms
 
-	context.allocator = runtime.heap_allocator()
+	context.allocator = child.job_allocator()
 	t := thread.create_and_start_with_data(job, landed_worker)
 	if t == nil {
-		delete(job.output, runtime.heap_allocator())
-		free(job, runtime.heap_allocator())
+		delete(job.output, child.job_allocator())
+		free(job, child.job_allocator())
 		return .No_Output
 	}
 
-	switch child.await_or_abandon(t, bound_ms) {
-	case .Finished:
+	finished, reclaim := child.await_and_reclaim(t, bound_ms)
+	if finished {
 		fault := job.fault
 		release_landed_job(t, job)
 		return fault
-	case .Stopped:
-		release_landed_job(t, job)
-		return .No_Output
-	case .Unstoppable:
-		return .No_Output
 	}
-	unreachable()
+	if reclaim {
+		release_landed_job(t, job)
+	}
+	return .No_Output
 }
 
 @(private)
 release_landed_job :: proc(t: ^thread.Thread, job: ^Landed_Job) {
 	assert(t != nil, "there is no thread here to release")
 	assert(job != nil, "there is no job here to release")
+	assert(thread.is_done(t), "release_landed_job called on a thread that never finished")
 
-	delete(job.output, runtime.heap_allocator())
-	free(job, runtime.heap_allocator())
+	delete(job.output, child.job_allocator())
+	free(job, child.job_allocator())
 	thread.destroy(t)
 }
 

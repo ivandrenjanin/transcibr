@@ -1,7 +1,6 @@
 #+vet explicit-allocators
 package artifact
 
-import "base:runtime"
 import "core:crypto/sha2"
 import "core:encoding/hex"
 import "core:io"
@@ -152,8 +151,8 @@ digest_of :: proc(
 // answering mid-hash -- from blocking a Batch forever, the same way
 // `child.read_bounded` bounds a read of an Engine's output (issue #27).
 //
-// The job's own fields live on `runtime.heap_allocator`'s heap rather than
-// the caller's `allocator`, for the identical reason `child.Read_Job` does
+// The job's own fields live on `child.job_allocator`'s heap rather than the
+// caller's `allocator`, for the identical reason `child.Read_Job` does
 // (src/child/read.odin): a thread this package cannot safely stop needs
 // somewhere to write that outlives whatever allocator the caller happens to
 // have handed in.
@@ -171,7 +170,7 @@ digest_worker :: proc(data: rawptr) {
 	assert(job != nil, "a digest thread was started with no job to hash")
 	assert(len(job.path) > 0, "a digest thread was started with no path to hash")
 
-	job.digest, job.bytes, job.fault = digest_of(job.path, runtime.heap_allocator())
+	job.digest, job.bytes, job.fault = digest_of(job.path, child.job_allocator())
 }
 
 @(private)
@@ -189,37 +188,36 @@ digest_of_bounded :: proc(
 	assert(bound_ms > 0, "a hash given no time at all cannot do anything")
 	assert(allocator.procedure != nil, "the digest outlives this procedure and needs an allocator")
 
-	job := new(Digest_Job, runtime.heap_allocator())
-	job.path = strings.clone(path, runtime.heap_allocator())
+	job := new(Digest_Job, child.job_allocator())
+	job.path = strings.clone(path, child.job_allocator())
 
-	context.allocator = runtime.heap_allocator()
+	context.allocator = child.job_allocator()
 	t := thread.create_and_start_with_data(job, digest_worker)
 	if t == nil {
-		delete(job.path, runtime.heap_allocator())
-		free(job, runtime.heap_allocator())
+		delete(job.path, child.job_allocator())
+		free(job, child.job_allocator())
 		return "", 0, .Not_Started
 	}
 
-	switch child.await_or_abandon(t, bound_ms) {
-	case .Finished:
+	finished, reclaim := child.await_and_reclaim(t, bound_ms)
+	if finished {
 		return digest_finished(t, job, allocator)
-	case .Stopped:
-		release_digest_job(t, job)
-		return "", 0, .Did_Not_Finish
-	case .Unstoppable:
-		return "", 0, .Did_Not_Finish
 	}
-	unreachable()
+	if reclaim {
+		release_digest_job(t, job)
+	}
+	return "", 0, .Did_Not_Finish
 }
 
 @(private)
 release_digest_job :: proc(t: ^thread.Thread, job: ^Digest_Job) {
 	assert(t != nil, "there is no thread here to release")
 	assert(job != nil, "there is no job here to release")
+	assert(thread.is_done(t), "release_digest_job called on a thread that never finished")
 
-	delete(string(job.digest), runtime.heap_allocator())
-	delete(job.path, runtime.heap_allocator())
-	free(job, runtime.heap_allocator())
+	delete(string(job.digest), child.job_allocator())
+	delete(job.path, child.job_allocator())
+	free(job, child.job_allocator())
 	thread.destroy(t)
 }
 
@@ -274,7 +272,7 @@ model_fault_says :: proc(fault: Model_Fault) -> string {
 	case .Unreadable:
 		return "the Model could not be read"
 	case .Did_Not_Finish:
-		return "could not be read within its bound and was abandoned"
+		return child.DID_NOT_FINISH_SAYS
 	case .Not_Started:
 		return "a thread to hash it on could not be started"
 	case .None:

@@ -287,8 +287,8 @@ HEAD_STALL_SLACK :: 30 * time.Second
 // Finding of the PR #99 review: nothing in this suite before this case ran a
 // `read_head_bounded` worker for longer than its own bound, so a mutant that
 // multiplied `bound_ms` by 1000 -- an effectively unbounded wait -- passed
-// every test unchanged. `read_head_bounded_stalled` puts a real,
-// `time.sleep`-stalled worker on the far side of a short bound, the same way
+// every test unchanged. `read_head_bounded`'s own `stall_ms` parameter puts
+// a real, `time.sleep`-stalled worker on the far side of a short bound, the same way
 // `child`'s own `a_read_that_cannot_finish_is_abandoned_at_its_bound` puts a
 // real stalled pipe read on the far side of one.
 @(test)
@@ -305,7 +305,7 @@ a_head_read_that_cannot_finish_within_its_bound_is_reported_rather_than_awaited_
 	testing.expect(t, os.write_entire_file(path, FFMPEG_WAV) == nil, "could not write the fixture")
 
 	started := time.tick_now()
-	head, bytes, err := read_head_bounded_stalled(
+	head, bytes, err := read_head_bounded(
 		path,
 		HEAD_STALL_BOUND_MS,
 		context.allocator,

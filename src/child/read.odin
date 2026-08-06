@@ -1,7 +1,6 @@
 #+vet explicit-allocators
 package child
 
-import "base:runtime"
 import "core:fmt"
 import "core:mem"
 import "core:os"
@@ -190,26 +189,6 @@ Read_Job :: struct {
 	os_error: os.Error,
 }
 
-// A thread this package cannot safely stop still needs somewhere to put what
-// it reads, and the caller's own `allocator` is the wrong place for that: a
-// worker in a future pipeline (issue #12) may hand this a per-Recording
-// arena that gets destroyed once that Recording's stage finishes, and a read
-// thread abandoned past its bound has no way to know that happened -- an
-// arena-backed allocation reached after the arena is gone is a
-// use-after-free, not a leak. Under `odin test` the same hazard shows up as
-// a per-test tracking allocator torn down the moment the test that started
-// this read returns, which is what caught it here. Every allocation a read
-// thread might still touch after its caller has stopped waiting on it goes
-// through this fixed, always-valid heap instead -- `finished` is where a
-// completed read's answer crosses back onto the caller's own allocator, and
-// `release_job` is why nothing here is freed while a read is genuinely
-// abandoned instead.
-@(private)
-@(require_results)
-job_allocator :: proc() -> mem.Allocator {
-	return runtime.heap_allocator()
-}
-
 @(private)
 read_worker :: proc(data: rawptr) {
 	job := (^Read_Job)(data)
@@ -273,16 +252,14 @@ await_bounded :: proc(
 	assert(t != nil, "there is no thread here to wait for")
 	assert(job != nil, "there is no job here to wait for an answer from")
 
-	switch await_or_abandon(t, bound_ms) {
-	case .Finished:
+	finished_ok, reclaim := await_and_reclaim(t, bound_ms)
+	if finished_ok {
 		return finished(t, job, allocator)
-	case .Stopped:
-		release_job(t, job)
-		return nil, Read_Error{fault = .Did_Not_Finish}
-	case .Unstoppable:
-		return nil, Read_Error{fault = .Did_Not_Finish}
 	}
-	unreachable()
+	if reclaim {
+		release_job(t, job)
+	}
+	return nil, Read_Error{fault = .Did_Not_Finish}
 }
 
 // Frees everything a Read_Job and its thread hold, on the allocator they were
@@ -293,6 +270,7 @@ await_bounded :: proc(
 release_job :: proc(t: ^thread.Thread, job: ^Read_Job) {
 	assert(t != nil, "there is no thread here to release")
 	assert(job != nil, "there is no job here to release")
+	assert(thread.is_done(t), "release_job called on a thread that never finished")
 
 	delete(job.bytes, job_allocator())
 	delete(job.path, job_allocator())
@@ -337,7 +315,7 @@ read_fault_says :: proc(fault: Read_Fault) -> string {
 	case .Not_Started:
 		return "a thread to read it on could not be started"
 	case .Did_Not_Finish:
-		return "could not be read within its bound and was abandoned"
+		return DID_NOT_FINISH_SAYS
 	case .Unreadable, .None:
 	}
 	return ""
