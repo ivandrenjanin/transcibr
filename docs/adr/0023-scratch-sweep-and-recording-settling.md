@@ -175,11 +175,16 @@ artifact stem (ADR-0008), and two workers that both produced it produced the sam
 **The stated residual, narrowed by issue #268 below: the process id alone does not separate two
 workers inside one transcibr sharing an artifact stem.** Both intermediates now also carry the
 `wav_cache_path`/`probe_cache_path` source key (see "Addendum: the probe intermediate stops
-colliding on a shared stem too (issue #268)" below), so a stem collision between two Recordings in
-one Batch is closed for both `.wav.part` and `.probe`. What remains open is the Engine's own
-`<cache>\<name>.json` output, which stays keyed on `job.name` alone — that is the **Batch's**
-guarantee that no two workers ever take the same Recording, and nothing in this package enforces it
-there. Said out loud because the two intermediates are named for the process, and it would be easy
+colliding on a shared stem too (issue #268)" below), so a stem collision between two *different*
+Recordings sharing a stem in one Batch is closed for both `.wav.part` and `.probe`. That key does
+not, and cannot, separate two workers handed the *same* Recording: `probe_cache_path` and
+`wav_cache_path` are pure functions of the `Job`, so two workers on one Recording still compute the
+identical path and still race one probe answer file and one `.part` — that rests on no two workers
+in a Batch ever taking the same Recording, which remains the **Batch's** guarantee and nothing in
+this package enforces it. What remains open, separately, is the Engine's own `<cache>\<name>.json`
+output, which stays keyed on `job.name` alone — the broader, stem-level residual: the Batch's own
+guarantee that no two workers take the same stem, unenforced in this package (see the #256 addendum
+below). Said out loud because the two intermediates are named for the process, and it would be easy
 to read that as the whole answer.
 
 ## The accepted costs
