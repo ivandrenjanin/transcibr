@@ -173,10 +173,6 @@ every_setting_a_sidecar_records_names_itself_when_it_changes :: proc(t: ^testing
 	testing.expect_value(t, changed(moved, EXAMPLE), Change.Engine_Version)
 
 	moved = EXAMPLE
-	moved.engine = "C:\\tools\\whisper-cli-v2.exe"
-	testing.expect_value(t, changed(moved, EXAMPLE), Change.Engine_Version)
-
-	moved = EXAMPLE
 	moved.model = "C:\\models\\ggml-large-v3-turbo.bin"
 	testing.expect_value(t, changed(moved, EXAMPLE), Change.Model)
 
@@ -199,6 +195,19 @@ every_setting_a_sidecar_records_names_itself_when_it_changes :: proc(t: ^testing
 	moved = EXAMPLE
 	moved.merge_profile = "conversation"
 	testing.expect_value(t, changed(moved, EXAMPLE), Change.Merge_Profile)
+}
+
+// The Engine is identified by digest, never by path (ADR-0027/ADR-0037): a
+// relocated or differently spelled `--engine-exe` argument with the same
+// bytes is not a changed Engine, even though `engine` itself is a recorded
+// field that legitimately differs between two runs of the very same binary.
+@(test)
+an_engine_recorded_under_a_different_spelling_of_the_same_path_is_not_a_changed_engine :: proc(
+	t: ^testing.T,
+) {
+	moved := EXAMPLE
+	moved.engine = "C:\\tools\\.\\whisper-cli.exe"
+	testing.expect_value(t, changed(moved, EXAMPLE), Change.None)
 }
 
 @(test)

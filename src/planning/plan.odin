@@ -44,9 +44,10 @@ Settings :: struct {
 	engine_version: artifact.Digest,
 	// The Engine binary's own path -- the human half of its identity, recorded
 	// into every Sidecar this Batch writes alongside `engine_version` (issue
-	// #50's fix round). Compared like any other recorded field
-	// (`artifact.changed`), never treated as identity on its own: a Batch is
-	// never refused or resumed off this field alone.
+	// #50's fix round). Recorded and never compared: `artifact.changed`
+	// answers off `engine_version`, the digest, alone -- a relocated or
+	// differently spelled `--engine-exe` argument with the same bytes is not
+	// a changed Engine.
 	engine_path:    string,
 	model:          artifact.Model,
 	beam:           u32,

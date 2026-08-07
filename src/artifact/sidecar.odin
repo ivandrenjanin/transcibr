@@ -148,15 +148,23 @@ Change :: enum u8 {
 	Merge_Profile,
 }
 
-// Why presence-only resume is not enough: ADR-0003. `engine` is compared
-// paired with `engine_version`, the same shape `model` and `model_digest`
-// already carry just below: leaving a recorded field out of this comparison
-// would let `changed(...) == .None` disagree with `recorded == current`, and
-// the deferred assert right below would be right to fire on the disagreement.
+// Why presence-only resume is not enough: ADR-0003. `engine` is NOT part of
+// this comparison -- the Engine's identity is `engine_version`, its digest,
+// alone (ADR-0027/ADR-0037); a relocated or differently spelled
+// `--engine-exe` argument with the same bytes is not a changed Engine. The
+// deferred assert below therefore compares every field but `engine`: a
+// `.None` answer can legitimately disagree with `recorded == current` on
+// that one field alone, which is the exact case this comparison exists to
+// permit rather than to catch.
 @(require_results)
 changed :: proc(recorded, current: Sidecar) -> (answer: Change) {
 	defer if answer == .None {
-		assert(recorded == current, "two Sidecars that differ somewhere were called unchanged")
+		ignoring_engine_path := current
+		ignoring_engine_path.engine = recorded.engine
+		assert(
+			recorded == ignoring_engine_path,
+			"two Sidecars that differ somewhere other than the Engine's path were called unchanged",
+		)
 	} else {
 		assert(recorded != current, "two identical Sidecars were called changed")
 	}
@@ -168,9 +176,6 @@ changed :: proc(recorded, current: Sidecar) -> (answer: Change) {
 		return .Source
 	}
 	if recorded.engine_version != current.engine_version {
-		return .Engine_Version
-	}
-	if recorded.engine != current.engine {
 		return .Engine_Version
 	}
 	if recorded.model != current.model {

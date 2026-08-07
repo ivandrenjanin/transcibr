@@ -333,11 +333,6 @@ a_transcript_whose_recorded_settings_differ_is_done_again :: proc(t: ^testing.T)
 				.Engine_Version,
 			},
 			{
-				"an Engine installed at another path",
-				proc(r: ^artifact.Sidecar) {r.engine = "C:\\tools\\whisper-cli-old.exe"},
-				.Engine_Version,
-			},
-			{
 				"a Model selected by another path",
 				proc(r: ^artifact.Sidecar) {r.model = "C:\\models\\ggml-large-v3.bin"},
 				.Model,
@@ -374,6 +369,25 @@ a_transcript_whose_recorded_settings_differ_is_done_again :: proc(t: ^testing.T)
 			c.change,
 		)
 	}
+}
+
+// The Engine is identified by digest alone (ADR-0027/ADR-0037): a recorded
+// Engine path that differs from the Batch's own -- the same binary, spelled
+// or located differently on the command line -- is not a changed setting,
+// and a Recording otherwise up to date is skipped rather than re-transcribed.
+@(test)
+a_recording_whose_engine_was_only_relocated_is_still_up_to_date :: proc(t: ^testing.T) {
+	found := a_recording()
+	found.transcript = .Transcibrs
+	found.engine_output = true
+	recorded := matching_sidecar(found)
+	recorded.engine = "C:\\tools\\.\\whisper-cli.exe"
+	found.recorded = recorded
+
+	outcome := decide(found, settings())
+
+	expect_decided(t, "a relocated Engine of the same digest", outcome, .Skip, .Up_To_Date)
+	testing.expect_value(t, outcome.change, artifact.Change.None)
 }
 
 // A record that names no Engine is unknown provenance, and ADR-0003's
