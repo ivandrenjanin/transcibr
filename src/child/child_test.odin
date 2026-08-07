@@ -184,11 +184,19 @@ a_command_line_that_cannot_be_spelled_is_refused_before_anything_starts :: proc(
 	c, err := start(&group, CMD, {"/c", "exit\x000"}, context.allocator)
 	defer close(&c)
 	testing.expect_value(t, err.fault, Fault.Bad_Command_Line)
-	testing.expect_value(t, err.build.argument, 2)
-
-	message := error_message(err, context.allocator)
-	defer delete(message, context.allocator)
-	testing.expect(t, len(message) > 0, "a refusal rendered as nothing at all")
+	if err.fault == .Bad_Command_Line {
+		testing.expect_value(t, err.build.argument, 2)
+		testing.expect(
+			t,
+			err.build.fault != .None,
+			"a Bad_Command_Line error carried no build fault, which error_message relies on",
+		)
+		if err.build.fault != .None {
+			message := error_message(err, context.allocator)
+			defer delete(message, context.allocator)
+			testing.expect(t, len(message) > 0, "a refusal rendered as nothing at all")
+		}
+	}
 }
 
 // Issue #223: `start` has exactly one return site for `.Bad_Command_Line`
