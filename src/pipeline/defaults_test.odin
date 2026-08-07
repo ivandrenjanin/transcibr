@@ -105,8 +105,42 @@ worker_count_within_ceiling_checks_its_own_ceiling_and_not_the_others :: proc(t:
 // `read_batch_option` looks an option's ceiling up in it by name instead of
 // naming `MAX_EXTRACT_WORKERS`/`MAX_QUEUE_DEPTH` at the call site, so a
 // mispairing can only live in the table -- where this test walks it.
+//
+// Issue #192: the two `== MAX_EXTRACT_WORKERS` / `== MAX_QUEUE_DEPTH` value
+// comparisons below are unfirable on their own -- both constants are 2 today,
+// so an entry-swap mutation that hands `--extract-workers` the queue depth's
+// ceiling and vice versa produces the exact same two integers and neither
+// comparison can tell the difference. The value checks stay, because they
+// are still correct and will start pulling their weight the day the two
+// constants diverge, but they are not what this test leans on to catch a
+// swap. The two `WORKER_OPTION_CEILINGS[i].name` checks below are: they pin
+// each entry's NAME to its expected array position, and two distinct option
+// strings are never equal to each other regardless of what their ceilings
+// happen to be, so a swap of the table's two entries flips a name comparison
+// even while the ceilings stay numerically indistinguishable. The enum-keyed
+// table that closes this class structurally arrives with ADR-0038's batch
+// migration (#75); this is the door available before that lands.
 @(test)
 worker_option_ceilings_pair_each_option_with_its_own_max :: proc(t: ^testing.T) {
+	testing.expectf(
+		t,
+		len(WORKER_OPTION_CEILINGS) == 2,
+		"WORKER_OPTION_CEILINGS holds %d entries, not the two ADR-0006 names",
+		len(WORKER_OPTION_CEILINGS),
+	)
+	testing.expectf(
+		t,
+		WORKER_OPTION_CEILINGS[0].name == "--extract-workers",
+		"WORKER_OPTION_CEILINGS[0] is named %q, not --extract-workers -- an entry swap",
+		WORKER_OPTION_CEILINGS[0].name,
+	)
+	testing.expectf(
+		t,
+		WORKER_OPTION_CEILINGS[1].name == "--queue-depth",
+		"WORKER_OPTION_CEILINGS[1] is named %q, not --queue-depth -- an entry swap",
+		WORKER_OPTION_CEILINGS[1].name,
+	)
+
 	extract_ceiling, extract_found := worker_option_ceiling("--extract-workers")
 	testing.expect(t, extract_found, "--extract-workers has no ceiling registered")
 	testing.expectf(
