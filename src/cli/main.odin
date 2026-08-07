@@ -51,7 +51,7 @@ USAGE ::
 	transcript.PROFILE_CHOICE +
 	`] [--prompt <text>]
                 [--follow-reparse-points ` +
-	FOLLOW_CHOICE +
+	cliargs.FOLLOW_CHOICE +
 	`]
       walk the folder and print what each recording found under it would get,
       and why. Spends no GPU time and writes nothing beside any recording.
@@ -65,7 +65,7 @@ USAGE ::
 	transcript.PROFILE_CHOICE +
 	`] [--prompt <text>]
                 [--follow-reparse-points ` +
-	FOLLOW_CHOICE +
+	cliargs.FOLLOW_CHOICE +
 	`] [--ffmpeg <path>] [--ffprobe <path>]
                 [--extract-workers <n>] [--queue-depth <n>]
       transcribe every recording under the folder that needs it, resuming
@@ -150,7 +150,7 @@ main :: proc() {
 	if args[1] == cliargs.TRANSCRIBE {
 		os.exit(transcribe_one(args[1:]))
 	}
-	if args[1] == PLAN {
+	if args[1] == cliargs.PLAN {
 		os.exit(plan_batch(args[1:]))
 	}
 	if args[1] == BATCH {

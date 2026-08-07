@@ -3,6 +3,7 @@ package main
 
 import "core:fmt"
 import "transcibr:artifact"
+import "transcibr:cliargs"
 import "transcibr:pipeline"
 import "transcibr:planning"
 import "transcibr:transcript"
@@ -11,56 +12,23 @@ import "transcibr:transcript"
 // spending no GPU time at all. Every decision, every sentence and every refusal
 // is `transcibr:planning`'s; what is here is argument reading and a write.
 
-PLAN :: "--plan"
-
-// The whole vocabulary `--follow-reparse-points` accepts, and the same constant
-// the usage block prints, so what is offered and what is read cannot drift. A
-// value outside it is REFUSED and never read as `no`: `--follow-reparse-points
-// true` quietly doing the opposite of what it says is external input
-// reinterpreted rather than rejected, which rule A8 forbids.
-FOLLOW_YES :: "yes"
-FOLLOW_NO :: "no"
-FOLLOW_CHOICE :: FOLLOW_YES + "|" + FOLLOW_NO
-
-// `--plan` and `--batch` read `--follow-reparse-points` the identical way
-// (PR #67's review, finding 3); `--transcribe` names one Recording rather
-// than a folder to walk and has no such option at all.
-@(private)
-@(require_results)
-read_follow :: proc(into: ^bool, value: string) -> (ok: bool) {
-	assert(into != nil, "there is nowhere here to read --follow-reparse-points into")
-
-	switch value {
-	case FOLLOW_YES:
-		into^ = true
-	case FOLLOW_NO:
-		into^ = false
-	case:
-		return refuse("--follow-reparse-points takes %s, not %q.", FOLLOW_CHOICE, value)
-	}
-	return true
-}
-
 // `--engine-exe` is mandatory, the same as `--model-file`: the Engine is
 // identified by its own SHA-256, exactly the way the Model is (ADR-0027's
 // reopening clause, closed by issue #50), so there is no absent case for
 // this package to decide about any more.
-Plan_Options :: struct {
-	root:    string,
-	model:   string,
-	engine:  string,
-	prompt:  string,
-	profile: transcript.Merge_Profile,
-	follow:  bool,
-}
+Plan_Options :: cliargs.Plan_Options
 
 @(require_results)
 plan_batch :: proc(arguments: []string) -> int {
 	assert(len(arguments) > 0, "no arguments at all is the version banner, settled before this")
-	assert(arguments[0] == PLAN, "main dispatched a command line that does not open with --plan")
+	assert(
+		arguments[0] == cliargs.PLAN,
+		"main dispatched a command line that does not open with --plan",
+	)
 
-	o, ok := read_plan_options(arguments)
+	o, ok, refusal := cliargs.read_plan_options(arguments)
 	if !ok {
+		_ = refuse_cliargs(refusal)
 		return USAGE_ERROR
 	}
 
@@ -214,71 +182,4 @@ walked :: proc(progress: planning.Progress, user: rawptr) {
 		progress.directories,
 		progress.recordings,
 	)
-}
-
-@(private)
-@(require_results)
-read_plan_options :: proc(arguments: []string) -> (o: Plan_Options, ok: bool) {
-	defer if ok {
-		assert(len(o.root) > 0, "accepted a command line with no folder to walk")
-		assert(len(o.model) > 0, "accepted a command line naming no Model")
-		assert(len(o.engine) > 0, "accepted a command line naming no Engine")
-	} else {
-		assert(len(o.root) == 0, "refused a command line and kept what it asked for")
-	}
-
-	o.profile = transcript.DEFAULT_PROFILE
-
-	for at := 0; at < len(arguments); at += 2 {
-		name := arguments[at]
-		if at + 1 >= len(arguments) {
-			return {}, refuse("%q stands at the end of the command line with no value after it.", name)
-		}
-		if !read_plan_option(&o, name, arguments[at + 1]) {
-			return {}, false
-		}
-	}
-
-	for missing in ([?][2]string {
-			{o.root, PLAN},
-			{o.model, "--model-file"},
-			{o.engine, "--engine-exe"},
-		}) {
-		if len(missing[0]) == 0 {
-			return {}, refuse("%s names nothing.", missing[1])
-		}
-	}
-	return o, true
-}
-
-// `--follow-reparse-points` takes a value like every other option here, because
-// the loop above pairs a name with the argument after it and a flag that took
-// none would swallow the option behind it.
-@(private)
-@(require_results)
-read_plan_option :: proc(o: ^Plan_Options, name, value: string) -> (ok: bool) {
-	assert(o != nil, "there is nothing here to read an option into")
-	assert(len(name) > 0, "an option with no name at all reached the reader")
-
-	switch name {
-	case PLAN:
-		o.root = value
-	case "--model-file":
-		o.model = value
-	case "--engine-exe":
-		o.engine = value
-	case "--prompt":
-		o.prompt = value
-	case "--follow-reparse-points":
-		return read_follow(&o.follow, value)
-	case "--profile":
-		profile, known := transcript.profile_named(value)
-		if !known {
-			return refuse("no merge profile called %q.", value)
-		}
-		o.profile = profile
-	case:
-		return refuse("unknown option %q.", name)
-	}
-	return true
 }

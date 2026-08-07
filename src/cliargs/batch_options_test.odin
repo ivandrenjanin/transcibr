@@ -99,6 +99,28 @@ read_batch_options_leaves_the_worker_counts_and_follow_flag_unset_when_none_are_
 }
 
 @(test)
+read_batch_options_reads_an_explicit_follow_value_of_no_as_false :: proc(t: ^testing.T) {
+	o, ok, _ := read_batch_options(
+		[]string {
+			BATCH,
+			"recordings",
+			"--model-file",
+			"model.bin",
+			"--engine-exe",
+			"engine.exe",
+			"--cache",
+			"cache-dir",
+			"--follow-reparse-points",
+			"no",
+		},
+		TEST_WORKER_CEILINGS,
+	)
+
+	testing.expect(t, ok, "a command line with --follow-reparse-points no was refused")
+	testing.expect_value(t, o.follow, false)
+}
+
+@(test)
 read_batch_options_refuses_a_trailing_name_with_no_value_after_it :: proc(t: ^testing.T) {
 	ok, refusal := batch_options_refusal([]string{BATCH, "recordings", "--model-file"})
 
