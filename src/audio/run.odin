@@ -319,6 +319,7 @@ probe_using :: proc(
 	}
 	assert(observed.exited, "a finished ffprobe run reported no exit status at all")
 	if observed.code != 0 {
+		remove_answer_if_settled(answer, true, remove)
 		return {}, Error{fault = .Probe_Refused, exit_code = observed.code}
 	}
 

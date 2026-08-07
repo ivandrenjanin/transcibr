@@ -963,6 +963,58 @@ a_probe_whose_ffprobe_exits_nonzero_is_refused_with_its_exit_code :: proc(t: ^te
 	testing.expect(t, err.exit_code != 0, "a refused probe carried a zero exit code")
 }
 
+// Issue #109 fix round 1: a refused probe has provably exited (the assert
+// just above this branch in `probe_using` already establishes that), so the
+// answer file it left is provably safe to remove -- unlike the `.Stopped`
+// branch, which removes unconditionally even though ffprobe may still hold
+// the file. Driven through `probe_using` with a real pre-written answer file
+// and a spy remover, the same way
+// `a_probe_whose_ffprobe_run_stops_calls_the_remover_exactly_once` proves the
+// `.Stopped` branch's removal.
+@(test)
+a_probe_whose_ffprobe_exits_nonzero_calls_the_remover_exactly_once :: proc(t: ^testing.T) {
+	cache := testkit.scratch_cache(t, "audio", "probe-refused-spy", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
+
+	answer := fmt.aprintf("%s\\answer.json", cache, allocator = context.allocator)
+	defer delete(answer, context.allocator)
+	testing.expect(
+		t,
+		os.write_entire_file(answer, []u8{'{', '}'}) == nil,
+		"could not write the fixture",
+	)
+
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	calls := 0
+	context.user_ptr = &calls
+	tools := Tools {
+		ffprobe = FFPROBE_REFUSING_STAND_IN,
+	}
+	_, err := probe_using(
+		&group,
+		tools,
+		"source.mp4",
+		answer,
+		context.allocator,
+		spy_answer_remove,
+		run_probe_child,
+	)
+	testing.expect_value(t, err.fault, Fault.Probe_Refused)
+	testing.expectf(
+		t,
+		calls == 1,
+		"a refused probe called its remover %d time(s); the answer file it left is never removed",
+		calls,
+	)
+}
+
 // The same stand-in `probe`'s own tests use, aimed at `produce`: `where.exe`
 // given `extract_arguments`'s ffmpeg-shaped flags treats them as search
 // patterns nothing on PATH matches and exits 1.

@@ -66,6 +66,34 @@ every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testin
 	}
 }
 
+// Issue #109 fix round 1: AC2 asks for the exit code IN the reported reason,
+// and nothing before this test called `error_message` with a nonzero
+// `exit_code` set -- `every_fault_renders_a_line_a_recordings_failure_row_can_carry`
+// above leaves it at its zero value, so it cannot tell the `%q: %s (exit code
+// %d)` arm apart from the catch-all `%q: %s` arm the two faults used to fall
+// into. Both faults are checked here so a future edit folding either of them
+// back into the catch-all is caught, not just an edit dropping the digits.
+@(test)
+a_refused_fault_names_its_exit_code_in_the_message :: proc(t: ^testing.T) {
+	refused_faults := []Fault{Fault.Probe_Refused, Fault.Extraction_Refused}
+	for fault in refused_faults {
+		err := Error {
+			fault     = fault,
+			exit_code = 13,
+		}
+		message := error_message(err, "C:\\clips\\one talk.mp4", context.allocator)
+		defer delete(message, context.allocator)
+
+		testing.expectf(
+			t,
+			strings.contains(message, "13"),
+			"%v rendered <%s>, which does not carry its exit code",
+			fault,
+			message,
+		)
+	}
+}
+
 @(test)
 a_cache_refusal_names_the_cache_directory :: proc(t: ^testing.T) {
 	message := cache_error_message(
