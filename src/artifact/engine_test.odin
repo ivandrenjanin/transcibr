@@ -61,6 +61,32 @@ an_engine_binary_replaced_under_the_same_name_identifies_as_a_different_engine :
 	)
 }
 
+// The 17-E blocker property (ADR-0037, issue #189): `--doctor` and `--batch`
+// each call this same `identify_engine`, never a second hasher of their own
+// (`transcibr:cli`'s `engine_identified` is the one wrapper both route
+// through), so a doctor pass and a Batch pass over the identical binary
+// necessarily agree about what they looked at.
+@(test)
+a_doctor_pass_and_a_batch_pass_identify_the_same_engine_binary_the_same_way :: proc(
+	t: ^testing.T,
+) {
+	directory := testkit.made_scratch_cache(t, "artifact", "engine-agreement", context.allocator)
+	defer delete(directory, context.allocator)
+	defer testkit.remove_cache(directory, context.allocator)
+
+	path := testkit.fixture_file(t, directory, "whisper-cli.exe", "abc", context.allocator)
+	defer delete(path, context.allocator)
+
+	doctor_digest, doctor_fault := identify_engine(path, context.allocator)
+	defer delete(string(doctor_digest), context.allocator)
+	batch_digest, batch_fault := identify_engine(path, context.allocator)
+	defer delete(string(batch_digest), context.allocator)
+
+	testing.expect_value(t, doctor_fault, Engine_Fault.None)
+	testing.expect_value(t, batch_fault, Engine_Fault.None)
+	testing.expect_value(t, doctor_digest, batch_digest)
+}
+
 @(test)
 an_engine_binary_that_is_not_there_is_refused_rather_than_asserted :: proc(t: ^testing.T) {
 	directory := testkit.made_scratch_cache(t, "artifact", "engine-absent", context.allocator)
