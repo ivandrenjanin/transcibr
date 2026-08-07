@@ -156,6 +156,7 @@ planned_and_run :: proc(
 		o.root,
 		identified,
 		engine_digest,
+		o.engine,
 		o.prompt,
 		o.profile,
 		o.follow,
@@ -193,6 +194,7 @@ run_the_batch :: proc(
 			cache = o.cache,
 			model = identified,
 			prompt = o.prompt,
+			engine_exe = o.engine,
 			engine_version = string(engine_digest),
 			profile = o.profile,
 			config = pipeline.Config {

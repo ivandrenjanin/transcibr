@@ -38,6 +38,7 @@ recording_sidecar_never_carries_a_stale_recorded_engine_version :: proc(t: ^test
 	defer delete(string(digest), context.allocator)
 	job := Recording_Job {
 		source = "C:\\clips\\talk.mp4",
+		engine_exe = "C:\\tools\\whisper-cli.exe",
 		engine_version = "whisper.cpp 1.9.9",
 		model = artifact.Model{path = "C:\\models\\large.bin", digest = digest, bytes = 500},
 		prompt = "names and jargon",
@@ -51,6 +52,7 @@ recording_sidecar_never_carries_a_stale_recorded_engine_version :: proc(t: ^test
 	made := recording_sidecar(job, extracted)
 
 	testing.expect_value(t, made.engine_version, "whisper.cpp 1.9.9")
+	testing.expect_value(t, made.engine, "C:\\tools\\whisper-cli.exe")
 	testing.expect_value(t, made.model, "C:\\models\\large.bin")
 	testing.expect_value(t, made.merge_profile, "conversation")
 	testing.expect_value(t, made.prompt, "names and jargon")
@@ -79,6 +81,7 @@ recording_sidecar_reflects_whichever_engine_its_own_job_named :: proc(t: ^testin
 
 	first := recording_sidecar(
 		Recording_Job {
+			engine_exe = "engine-one.exe",
 			engine_version = "engine-one",
 			model = model,
 			profile = transcript.DEFAULT_PROFILE,
@@ -87,6 +90,7 @@ recording_sidecar_reflects_whichever_engine_its_own_job_named :: proc(t: ^testin
 	)
 	second := recording_sidecar(
 		Recording_Job {
+			engine_exe = "engine-two.exe",
 			engine_version = "engine-two",
 			model = model,
 			profile = transcript.DEFAULT_PROFILE,
@@ -117,6 +121,7 @@ recording_sidecar_passes_a_pre_1970_modification_time_through_without_crashing :
 
 	made := recording_sidecar(
 		Recording_Job {
+			engine_exe = "whisper-cli.exe",
 			engine_version = "whisper.cpp 1.9.9",
 			model = artifact.Model{path = "m.bin", digest = digest, bytes = 1},
 			profile = transcript.DEFAULT_PROFILE,
@@ -225,6 +230,7 @@ health_checked_job :: proc(
 		dir,
 		artifact.Model{},
 		"",
+		"whisper-cli.exe",
 		"whisper.cpp 1.9.9",
 		transcript.DEFAULT_PROFILE,
 		engine.Report{},

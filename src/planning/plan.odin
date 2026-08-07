@@ -42,6 +42,12 @@ Settings :: struct {
 	// identify its Engine is refused before `decide` ever runs (A8), so
 	// there is no absent case left for this field to carry.
 	engine_version: artifact.Digest,
+	// The Engine binary's own path -- the human half of its identity, recorded
+	// into every Sidecar this Batch writes alongside `engine_version` (issue
+	// #50's fix round). Compared like any other recorded field
+	// (`artifact.changed`), never treated as identity on its own: a Batch is
+	// never refused or resumed off this field alone.
+	engine_path:    string,
 	model:          artifact.Model,
 	beam:           u32,
 	merge_profile:  string,
@@ -230,6 +236,7 @@ current_of :: proc(
 		len(settings.engine_version) == artifact.DIGEST_CHARS,
 		"a Batch's own Engine was not identified by a full digest",
 	)
+	assert(len(settings.engine_path) > 0, "a Batch's own Engine was not identified by a path")
 	if known {
 		assert(
 			recorded.container_ms >= 0,
@@ -238,6 +245,7 @@ current_of :: proc(
 	}
 
 	return artifact.sidecar_of(
+		settings.engine_path,
 		string(settings.engine_version),
 		settings.model,
 		settings.beam,

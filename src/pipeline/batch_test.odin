@@ -80,6 +80,13 @@ RESUME_ENGINE_DIGEST_REPLACED :: artifact.Digest(
 	"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
 )
 
+// The Engine binary's own path -- a plain literal, not a fixture on disk:
+// `resume_settings`/`resume_options` only need a nonempty value to satisfy
+// `planning.current_of`'s and `recording_sidecar`'s own asserts, the same
+// role `RESUME_ENGINE_DIGEST` plays for the digest.
+@(private)
+RESUME_ENGINE_PATH :: "C:\\tools\\whisper-cli.exe"
+
 // `recording_sidecar` always stamps `artifact.ENGINE_DEFAULT_BEAM` -- a
 // Recording_Job carries no beam of its own -- so planning's own `current_-`
 // `of` has to be told the same value, or every second pass sees a phantom
@@ -89,6 +96,7 @@ RESUME_ENGINE_DIGEST_REPLACED :: artifact.Digest(
 resume_settings :: proc() -> planning.Settings {
 	return planning.Settings {
 		engine_version = RESUME_ENGINE_DIGEST,
+		engine_path = RESUME_ENGINE_PATH,
 		model = artifact.Model{path = "m.bin", digest = a_digest('r'), bytes = 1},
 		beam = artifact.ENGINE_DEFAULT_BEAM,
 		merge_profile = transcript.profile_name(transcript.DEFAULT_PROFILE),
@@ -107,6 +115,7 @@ resume_options :: proc(tree: string, settings: planning.Settings) -> Batch_Optio
 	return Batch_Options {
 		cache = tree,
 		model = settings.model,
+		engine_exe = settings.engine_path,
 		engine_version = string(settings.engine_version),
 		profile = transcript.DEFAULT_PROFILE,
 		config = Config{extract_workers = 1, queue_depth = 1, join_bound_ms = JOIN_BOUND_MS},

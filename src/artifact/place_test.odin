@@ -20,6 +20,7 @@ FIXTURE_MS :: transcript.Millis(253_949)
 @(require_results)
 made_by :: proc(profile := transcript.DEFAULT_PROFILE) -> Sidecar {
 	return sidecar_of(
+		engine = "C:\\tools\\whisper-cli.exe",
 		engine_version = "whisper.cpp v1.9.1",
 		model = Model {
 			path = "C:\\models\\ggml-large-v3.bin",
@@ -49,7 +50,7 @@ rendered_as :: proc(
 	return transcript.Render_Context {
 		now = time.unix(1_754_136_000, 0),
 		source_display = source,
-		engine_version = made.engine_version,
+		engine_version = engine_display_name(made.engine),
 		model = model_display_name(made.model),
 		profile = profile,
 	}
@@ -240,6 +241,50 @@ the_sidecar_a_completed_recording_leaves_reads_back_as_the_settings_it_was_made_
 	testing.expect(t, readable, "the Sidecar this program wrote could not be read back")
 	testing.expect_value(t, changed(recorded, made_by()), Change.None)
 	testing.expect_value(t, changed(recorded, made_by(.Conversation)), Change.Merge_Profile)
+}
+
+// Finding 1 of the #50 fix round: the Transcript's header used to carry the
+// Engine's DIGEST under the `engine:` key -- the same shape the Model's own
+// `model:` key never took, since that one has always carried a display name
+// with the digest recorded separately. This proves the header carries the
+// Engine's stem, never the sixty-four-hex-character digest `made_by` builds
+// with, and that the Sidecar records the path a reader would need to notice
+// which Engine that display name came from.
+@(test)
+a_completed_recordings_header_names_the_engine_rather_than_its_digest :: proc(t: ^testing.T) {
+	b := set_out(t, "engine-header")
+	defer cleared(b)
+
+	placed, err := completed(b)
+	defer destroy_names(placed, context.allocator)
+	if !testing.expectf(t, err.fault == .None, "a good Recording failed: %v", err.fault) {
+		return
+	}
+
+	document, unreadable := os.read_entire_file_from_path(placed[.Transcript], context.allocator)
+	defer delete(document, context.allocator)
+	testing.expect(t, unreadable == nil, "the Transcript that was placed could not be read")
+	testing.expect(
+		t,
+		strings.contains(string(document), "engine: \"whisper-cli\""),
+		"the header did not carry the Engine's own display name",
+	)
+	testing.expect(
+		t,
+		!strings.contains(string(document), "engine: \"whisper.cpp v1.9.1\""),
+		"the header carried the raw engine_version value rather than a display name",
+	)
+
+	written, sidecar_unreadable := os.read_entire_file_from_path(
+		placed[.Sidecar],
+		context.allocator,
+	)
+	defer delete(written, context.allocator)
+	testing.expect(t, sidecar_unreadable == nil, "the Sidecar that was written could not be read")
+	recorded, readable := read_sidecar(string(written), context.allocator)
+	defer destroy_sidecar(recorded, context.allocator)
+	testing.expect(t, readable, "the Sidecar this program wrote could not be read back")
+	testing.expect_value(t, recorded.engine, "C:\\tools\\whisper-cli.exe")
 }
 
 @(test)

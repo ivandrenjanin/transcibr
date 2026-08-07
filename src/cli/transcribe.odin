@@ -93,6 +93,7 @@ run_one :: proc(
 		o.cache,
 		identified,
 		o.prompt,
+		o.engine,
 		string(engine_digest),
 		o.profile,
 		engine.Report{on_progress = show},

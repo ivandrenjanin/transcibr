@@ -90,6 +90,17 @@ normally, because both sides are digests from that point on.
 ticket touches — `current_of`, the deleted `engine_of`, `resumed`'s deleted assertion — is proven by
 `src/planning/plan_test.odin`, not by anything in `src/cli`.
 
-**What reopens ADR-0027 is now closed**, and there is no further reopening clause: both the Model and
-the Engine are identified from their own bytes, and `planning.Settings` carries no field left that is
-merely nameable rather than measured.
+**What reopens ADR-0027 is now closed for the named binary, and only for the named binary.** Both the
+Model and the Engine are identified from their own bytes, and `planning.Settings` carries no field
+left that is merely nameable rather than measured — but a Model genuinely is one file, where a real
+whisper.cpp Windows distribution is not: `whisper-cli.exe` is a thin driver beside `whisper.dll`,
+`ggml.dll`, `ggml-cpu.dll` and `ggml-cuda.dll`, and the compute backend lives in the DLLs.
+`identify_engine` hashes exactly the one path handed to `--engine-exe` and nothing beside it.
+Measured: hashing an unchanged `whisper-cli.exe` before and after a sibling `ggml-cuda.dll` is
+replaced with different content produces the identical digest, so a backend-only swap is exactly the
+failure this record's own "What an Engine binary replaced under the same name now does" section
+above says is fixed — it is not, for that one shape of replacement. The residual is narrow (a tagged
+whisper.cpp release bumps the exe too, so an upgrade a user actually installs is still caught) and is
+recorded here rather than closed over: a future ticket that wants to hash the whole distribution
+directory, not just the named exe, reopens this ADR to do it. That is the one reopening clause this
+record leaves — everything else about `planning.Settings` carrying no merely-nameable field stands.

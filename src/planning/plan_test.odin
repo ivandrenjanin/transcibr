@@ -17,6 +17,7 @@ AN_ENGINE_DIGEST :: artifact.Digest(
 settings :: proc() -> Settings {
 	return Settings {
 		engine_version = AN_ENGINE_DIGEST,
+		engine_path = "C:\\tools\\whisper-cli.exe",
 		model = artifact.Model {
 			path = "C:\\models\\ggml-large-v3-turbo.bin",
 			digest = A_DIGEST,
@@ -34,6 +35,7 @@ settings :: proc() -> Settings {
 matching_sidecar :: proc(found: Found) -> artifact.Sidecar {
 	s := settings()
 	return artifact.sidecar_of(
+		s.engine_path,
 		string(s.engine_version),
 		s.model,
 		s.beam,
@@ -57,6 +59,7 @@ matching_sidecar :: proc(found: Found) -> artifact.Sidecar {
 zero_duration_sidecar :: proc(found: Found) -> artifact.Sidecar {
 	s := settings()
 	return artifact.sidecar_of(
+		s.engine_path,
 		string(s.engine_version),
 		s.model,
 		s.beam,
@@ -327,6 +330,11 @@ a_transcript_whose_recorded_settings_differ_is_done_again :: proc(t: ^testing.T)
 			{
 				"an Engine upgraded since",
 				proc(r: ^artifact.Sidecar) {r.engine_version = "whisper.cpp 1.8.0"},
+				.Engine_Version,
+			},
+			{
+				"an Engine installed at another path",
+				proc(r: ^artifact.Sidecar) {r.engine = "C:\\tools\\whisper-cli-old.exe"},
 				.Engine_Version,
 			},
 			{

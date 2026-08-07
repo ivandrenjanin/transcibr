@@ -119,6 +119,20 @@ model_display_name :: proc(path: string) -> string {
 	return transcript.named_or_unknown(filepath.stem(path))
 }
 
+// The Engine's own display name, for a Transcript's header -- the human half
+// of the Model's own two-part shape (a name for a reader, a digest for
+// `artifact.changed`), which `identify_engine` alone does not carry: it
+// hands back only a Digest, the same way `model_display_name` is a second
+// call rather than a field `identify_model` returns. `filepath.stem` on
+// purpose, for the same reason `model_display_name` reads it that way: an
+// Engine binary is never the dotfile `stem_of`'s own comment warns about.
+@(require_results)
+engine_display_name :: proc(path: string) -> string {
+	assert(len(path) > 0, "there is no Engine here to name")
+
+	return transcript.named_or_unknown(filepath.stem(path))
+}
+
 // The other half of the same cut, so a caller asking what kind of file this is
 // and a caller naming its artifacts agree about where the name ends. Empty where
 // there is no extension AND where the path names no file at all -- `.mp4` is a

@@ -94,6 +94,7 @@ report_plan :: proc(
 		o.root,
 		identified,
 		engine_digest,
+		o.engine,
 		o.prompt,
 		o.profile,
 		o.follow,
@@ -109,7 +110,7 @@ report_plan :: proc(
 // `--plan` reports both unconditionally and `--batch` (`planned_and_run`,
 // `src/cli/batch.odin`) only when `runnable` says no, so neither belongs
 // inside this procedure (PR #67's review, finding 4). What both callers
-// build `planning.Settings` from is exactly these six arguments, so a field
+// build `planning.Settings` from is exactly these seven arguments, so a field
 // added there is a signature both call sites fail to compile against until
 // it is threaded through -- never a silent mismatch between what `--plan`
 // predicted and what `--batch` actually did.
@@ -119,6 +120,7 @@ planned :: proc(
 	root: string,
 	identified: artifact.Model,
 	engine_digest: artifact.Digest,
+	engine_path: string,
 	prompt: string,
 	profile: transcript.Merge_Profile,
 	follow: bool,
@@ -133,6 +135,7 @@ planned :: proc(
 		len(engine_digest) == artifact.DIGEST_CHARS,
 		"an Engine nobody identified reached the plan",
 	)
+	assert(len(engine_path) > 0, "an Engine nobody named reached the plan")
 
 	inventory = planning.discover(
 		[]string{root},
@@ -145,6 +148,7 @@ planned :: proc(
 		inventory,
 		planning.Settings {
 			engine_version = engine_digest,
+			engine_path = engine_path,
 			model = identified,
 			beam = artifact.ENGINE_DEFAULT_BEAM,
 			merge_profile = transcript.profile_name(profile),
