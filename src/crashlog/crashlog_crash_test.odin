@@ -267,6 +267,44 @@ mains_own_wiring_installs_the_assertion_hook_without_the_drills_help :: proc(t: 
 	)
 }
 
+// Fix round 1, issue #270 finding 1: `install`'s own `if refusal != .None {
+// note(...) }` wiring was reachable from no red mutation -- deleting it left
+// every crashlog test green, because `rotate_test.odin`'s own refusal test
+// calls `note` directly rather than through `install`. This drives the real
+// seam: the drill's own child process runs a real `crashlog.install` against
+// a directory this test process holds an over-bound log open in (without
+// `FILE_SHARE_DELETE`, the same fixture shape `rotate_test.odin` uses), so
+// only the drill's OWN `install` call can put the WARN line in the log.
+@(test)
+installs_own_warn_line_reaches_the_log_when_rotation_is_refused :: proc(t: ^testing.T) {
+	dir := testkit.scratch_cache(t, "crashlog", "rotation_warn_drill", context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	holder, holder_refusal, holder_ok := open_log(dir, context.allocator)
+	defer close_log(&holder)
+	if !testing.expect(t, holder_ok, "could not open the holder handle this fixture needs") {
+		return
+	}
+	testing.expect_value(t, holder_refusal, Rotation_Refusal.None)
+
+	padding := make([]byte, LOG_CEILING_BYTES + 1, context.allocator)
+	defer delete(padding, context.allocator)
+	write_bytes(holder.file, padding)
+
+	if !run_crash_drill(t, "rotation-warn", dir) {
+		return
+	}
+
+	text := read_log(t, dir)
+	defer delete(text, context.allocator)
+	testing.expect(
+		t,
+		strings.contains(text, "WARN rotation refused: a second process holds transcibr.log open"),
+		"the drill's own install call did not log the rotation refusal",
+	)
+}
+
 // The bounds-check path is the one `assertion_hook` never sees at all
 // (`base:runtime`'s own `bounds_check_error` raises SEH directly) -- the
 // negated check is what actually distinguishes this from the assert tests

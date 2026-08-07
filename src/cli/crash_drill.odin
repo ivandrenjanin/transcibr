@@ -49,6 +49,15 @@ CRASH_DRILL_WORKER_ASSERT :: "worker-assert"
 // `crashlog.default_directory` call resolved that to.
 CRASH_DRILL_WIRING_ASSERT :: "wiring-assert"
 
+// Fix round 1, issue #270 finding 1: the WARN line `crashlog.install` writes
+// for a refused rotation was reachable from no red mutation, because the
+// only test exercising its wording called `note` directly rather than
+// through `install` itself. This mode crashes nothing -- it calls
+// `crashlog.install` (which the dispatch below already does for every mode
+// but `wiring-assert`) and returns cleanly, so the spawning test's only way
+// to see the WARN line is `install`'s own wiring actually running it.
+CRASH_DRILL_ROTATION_WARN :: "rotation-warn"
+
 // `arguments` is `<mode> <directory>`, both required: a drill that does not
 // know where to write leaves nothing for the spawning test to read. An empty
 // directory or an unknown mode is an operating error, not a programmer error
@@ -70,7 +79,8 @@ run_crash_drill :: proc(arguments: []string) -> int {
 	     CRASH_DRILL_ASSERT_THREAD,
 	     CRASH_DRILL_BOUNDS,
 	     CRASH_DRILL_WIRING_ASSERT,
-	     CRASH_DRILL_WORKER_ASSERT:
+	     CRASH_DRILL_WORKER_ASSERT,
+	     CRASH_DRILL_ROTATION_WARN:
 	case:
 		_ = refuse(
 			cliargs.make_refusal(
@@ -106,6 +116,7 @@ run_crash_drill :: proc(arguments: []string) -> int {
 			false,
 			"crashlog drill: deliberate assertion relying on main's own wiring for issue #76 measurement",
 		)
+	case CRASH_DRILL_ROTATION_WARN:
 	case:
 		assert(false, "mode was already validated above")
 	}

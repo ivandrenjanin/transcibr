@@ -14,12 +14,12 @@ open_log_opens_and_appends_under_a_fresh_directory :: proc(t: ^testing.T) {
 	defer delete(dir, context.allocator)
 	defer testkit.remove_cache(dir, context.allocator)
 
-	h, rotation_refused, ok := open_log(dir, context.allocator)
+	h, refusal, ok := open_log(dir, context.allocator)
 	defer close_log(&h)
 
 	testing.expect(t, ok, "open_log refused a directory it should have been able to create")
 	testing.expect(t, handle_is_open(h), "open_log reported success with no open handle")
-	testing.expect(t, !rotation_refused, "a fresh directory has nothing to rotate")
+	testing.expect_value(t, refusal, Rotation_Refusal.None)
 }
 
 // Issue #76 review round 2: a `FILE_SHARE_READ`-only `open_log` refused a

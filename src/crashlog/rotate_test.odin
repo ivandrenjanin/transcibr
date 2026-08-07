@@ -3,6 +3,7 @@ package crashlog
 
 import "core:os"
 import "core:strings"
+import win32 "core:sys/windows"
 import "core:testing"
 import "transcibr:testkit"
 
@@ -25,10 +26,10 @@ open_log_rotates_an_over_bound_log_to_generation_one :: proc(t: ^testing.T) {
 		"could not plant an over-bound log fixture",
 	)
 
-	h, rotation_refused, ok := open_log(dir, context.allocator)
+	h, refusal, ok := open_log(dir, context.allocator)
 	defer close_log(&h)
 	testing.expect(t, ok, "open_log refused a directory it should have been able to create")
-	testing.expect(t, !rotation_refused, "rotation should not be refused with no second opener")
+	testing.expect_value(t, refusal, Rotation_Refusal.None)
 
 	generation_path := strings.concatenate({dir, "\\", LOG_FILE_NAME, ".1"}, context.allocator)
 	defer delete(generation_path, context.allocator)
@@ -59,14 +60,10 @@ open_log_leaves_an_under_bound_log_untouched :: proc(t: ^testing.T) {
 		"could not plant an under-bound log fixture",
 	)
 
-	h, rotation_refused, ok := open_log(dir, context.allocator)
+	h, refusal, ok := open_log(dir, context.allocator)
 	defer close_log(&h)
 	testing.expect(t, ok, "open_log refused a directory it should have been able to create")
-	testing.expect(
-		t,
-		!rotation_refused,
-		"rotation should not be refused when nothing needed rotating",
-	)
+	testing.expect_value(t, refusal, Rotation_Refusal.None)
 
 	generation_path := strings.concatenate({dir, "\\", LOG_FILE_NAME, ".1"}, context.allocator)
 	defer delete(generation_path, context.allocator)
@@ -90,27 +87,23 @@ open_log_refuses_rotation_while_a_second_opener_holds_the_log :: proc(t: ^testin
 	defer delete(dir, context.allocator)
 	defer testkit.remove_cache(dir, context.allocator)
 
-	holder, holder_refused, holder_ok := open_log(dir, context.allocator)
+	holder, holder_refusal, holder_ok := open_log(dir, context.allocator)
 	defer close_log(&holder)
 	testing.expect(t, holder_ok, "could not open the holder handle this fixture needs")
-	testing.expect(t, !holder_refused, "the holder's own open should not see anything to rotate")
+	testing.expect_value(t, holder_refusal, Rotation_Refusal.None)
 
 	padding := make([]byte, LOG_CEILING_BYTES + 1, context.allocator)
 	defer delete(padding, context.allocator)
 	write_bytes(holder.file, padding)
 
-	h, rotation_refused, ok := open_log(dir, context.allocator)
+	h, refusal, ok := open_log(dir, context.allocator)
 	defer close_log(&h)
 	testing.expect(
 		t,
 		ok,
 		"a second opener should still get a usable log even when rotation is refused",
 	)
-	testing.expect(
-		t,
-		rotation_refused,
-		"rotation should be refused while a handle without FILE_SHARE_DELETE is open on the log",
-	)
+	testing.expect_value(t, refusal, Rotation_Refusal.Second_Opener)
 
 	previous := g_log
 	g_log = h
@@ -124,4 +117,61 @@ open_log_refuses_rotation_while_a_second_opener_holds_the_log :: proc(t: ^testin
 		strings.contains(text, "WARN rotation refused"),
 		"the refusal did not log a WARN line",
 	)
+}
+
+// Fix round 1, issue #270 finding 2: a live probe against the real binary
+// held only the DESTINATION generation file open (no `FILE_SHARE_DELETE`,
+// with nothing at all holding the source), and the prior code still
+// answered `.Second_Opener`'s fixed wording -- MoveFileExW's own
+// `MOVEFILE_REPLACE_EXISTING` delete fails on the held destination with
+// `ERROR_ACCESS_DENIED`, not `ERROR_SHARING_VIOLATION`, and no second
+// transcibr exists in this scenario at all. This reproduces that exact
+// shape and pins the classification to `.Unknown`.
+@(test)
+open_log_reports_an_unknown_cause_when_only_the_destination_is_held :: proc(t: ^testing.T) {
+	dir := testkit.made_scratch_cache(t, "crashlog", "rotate_dest_held", context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	path := strings.concatenate({dir, "\\", LOG_FILE_NAME}, context.allocator)
+	defer delete(path, context.allocator)
+	old := make([]byte, LOG_CEILING_BYTES + 1, context.allocator)
+	defer delete(old, context.allocator)
+	testing.expect(
+		t,
+		os.write_entire_file(path, old) == nil,
+		"could not plant an over-bound log fixture",
+	)
+
+	generation_path := strings.concatenate({dir, "\\", LOG_FILE_NAME, ".1"}, context.allocator)
+	defer delete(generation_path, context.allocator)
+	testing.expect(
+		t,
+		os.write_entire_file(generation_path, transmute([]byte)string("stale generation")) == nil,
+		"could not plant a stale generation fixture",
+	)
+
+	generation_wide := win32.utf8_to_utf16(generation_path, context.allocator)
+	defer delete(generation_wide, context.allocator)
+	testing.expect(t, generation_wide != nil, "could not encode the generation path")
+	dest_handle := win32.CreateFileW(
+		win32.wstring(raw_data(generation_wide)),
+		win32.GENERIC_READ,
+		win32.FILE_SHARE_READ | win32.FILE_SHARE_WRITE,
+		nil,
+		win32.OPEN_EXISTING,
+		win32.FILE_ATTRIBUTE_NORMAL,
+		nil,
+	)
+	testing.expect(
+		t,
+		dest_handle != win32.INVALID_HANDLE_VALUE,
+		"could not hold the destination generation file open for this fixture",
+	)
+	defer win32.CloseHandle(dest_handle)
+
+	h, refusal, ok := open_log(dir, context.allocator)
+	defer close_log(&h)
+	testing.expect(t, ok, "a second opener should still get a usable log even when rotation fails")
+	testing.expect_value(t, refusal, Rotation_Refusal.Unknown)
 }

@@ -22,19 +22,24 @@ import "core:mem"
 // `g_log`, and `g_log` is not set until `register` runs, so `open_log`
 // cannot call it -- the refusal fact leaves `open_log` as a second result
 // instead, and this is the one place downstream of `register` that can
-// finally report it.
+// finally report it. The wording per cause is `Rotation_Refusal`'s own
+// concern (see `rotate.odin`); this switch only decides whether to warn.
 @(require_results)
 install :: proc(dir: string, allocator: mem.Allocator) -> (ok: bool) {
 	assert(len(dir) > 0, "crashlog cannot be installed with nowhere to write")
 	assert(allocator.procedure != nil, "opening the crash log needs an allocator for its path")
 
-	h, rotation_refused, opened := open_log(dir, allocator)
+	h, refusal, opened := open_log(dir, allocator)
 	if !opened {
 		return false
 	}
 	register(h)
-	if rotation_refused {
+	switch refusal {
+	case .None:
+	case .Second_Opener:
 		note(.Warn, "rotation refused", "a second process holds transcibr.log open")
+	case .Unknown:
+		note(.Warn, "rotation refused", "the previous transcibr.log could not be rotated")
 	}
 	return true
 }
