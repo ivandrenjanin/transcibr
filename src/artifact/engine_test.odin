@@ -217,7 +217,9 @@ an_unreadable_engine_carries_its_callers_framing_across_missing_directory_and_lo
 	for shape in ([]string{missing, as_directory, locked}) {
 		digest, fault := identify_engine(shape, context.allocator)
 		defer delete(string(digest), context.allocator)
-		testing.expectf(t, fault == .Unreadable, "%s did not report Unreadable", shape)
+		if !testing.expectf(t, fault == .Unreadable, "%s did not report Unreadable", shape) {
+			continue
+		}
 
 		message := engine_error_message(
 			fault,
