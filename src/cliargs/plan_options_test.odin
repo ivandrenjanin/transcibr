@@ -183,7 +183,7 @@ read_plan_options_refuses_the_earliest_missing_field_for_every_prefix_of_supplie
 		expected_arg: string,
 	}
 	cases := []Case {
-		{arguments = []string{}, expected_arg = PLAN},
+		{arguments = []string{}, expected_arg = "--plan"},
 		{arguments = []string{PLAN, "recordings"}, expected_arg = "--model-file"},
 		{
 			arguments = []string{PLAN, "recordings", "--model-file", "model.bin"},

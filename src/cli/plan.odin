@@ -12,8 +12,6 @@ import "transcibr:transcript"
 // spending no GPU time at all. Every decision, every sentence and every refusal
 // is `transcibr:planning`'s; what is here is argument reading and a write.
 
-PLAN :: "--plan"
-
 // `--engine-exe` is mandatory, the same as `--model-file`: the Engine is
 // identified by its own SHA-256, exactly the way the Model is (ADR-0027's
 // reopening clause, closed by issue #50), so there is no absent case for
@@ -23,7 +21,10 @@ Plan_Options :: cliargs.Plan_Options
 @(require_results)
 plan_batch :: proc(arguments: []string) -> int {
 	assert(len(arguments) > 0, "no arguments at all is the version banner, settled before this")
-	assert(arguments[0] == PLAN, "main dispatched a command line that does not open with --plan")
+	assert(
+		arguments[0] == cliargs.PLAN,
+		"main dispatched a command line that does not open with --plan",
+	)
 
 	o, ok, refusal := cliargs.read_plan_options(arguments)
 	if !ok {

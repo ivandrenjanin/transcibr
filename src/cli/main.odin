@@ -150,7 +150,7 @@ main :: proc() {
 	if args[1] == cliargs.TRANSCRIBE {
 		os.exit(transcribe_one(args[1:]))
 	}
-	if args[1] == PLAN {
+	if args[1] == cliargs.PLAN {
 		os.exit(plan_batch(args[1:]))
 	}
 	if args[1] == BATCH {
