@@ -476,6 +476,248 @@ is_remove_all_call :: proc(call: ^ast.Call_Expr, os_name: string) -> bool {
 	return target.name == os_name
 }
 
+// One `defer` this file registers, wherever it sits, that this walk can name
+// a container for: `f(X, ...)` where `X` is a plain identifier. A defer whose
+// argument is a field access, an alias, or anything else with no single name
+// is not one of these -- see collect_defer_order_issues.
+Defer_Call :: struct {
+	line:      int,
+	proc_name: string,
+	arg:       string,
+}
+
+// A `defer` that walks or derefs an identifier, registered in the same block
+// AHEAD of a later `defer` that deletes or frees that same identifier.
+// Odin's own defers run LIFO, so the later-registered free fires FIRST and
+// the walk this records then runs on freed memory -- issue #219's class,
+// fixed by hand three times before this check existed (main.odin's own
+// `violations`/`delete` pair among them, #184).
+//
+// `line` is the WALKING defer's own line: the one that reads freed memory,
+// and the one ground truth (the #178 review's six pre-fix hits) reports
+// against.
+Defer_Order_Issue :: struct {
+	line:      int,
+	walk_proc: string,
+	free_proc: string,
+	free_line: int,
+	arg:       string,
+}
+
+// Every `defer` frees a container by name: the two builtins that hold this
+// class, `delete` and `free`, matched the same way is_remove_all_call
+// matches a selector's own field -- against the name the call was written
+// with, never against what it resolves to.
+DEFER_FREE_NAMES :: []string{"delete", "free"}
+
+@(require_results)
+is_freeing_call :: proc(name: string) -> bool {
+	assert(len(name) > 0, "asked whether no proc name at all frees its argument")
+	for freeing in DEFER_FREE_NAMES {
+		if name == freeing {
+			return true
+		}
+	}
+	return false
+}
+
+// Every place in one file where a `defer` that walks or derefs an
+// identifier is registered ahead of a later `defer`, in the SAME block,
+// that deletes or frees that identifier.
+//
+// Scoped to the known shape (CLAUDE.md rule A2's discipline, generalised to
+// a whole check rather than one assertion): same-identifier pairs, where
+// "same identifier" means the call's first argument is written as the exact
+// same plain identifier both times. What this deliberately does not see:
+// a DIFFERENT scope (a nested block's own defer pair is read as that
+// block's own scope, never paired with an outer one), an ALIAS (`t := tree;
+// defer walk(t)` beside `defer delete(tree)` names two different tokens),
+// and a FIELD ACCESS (`defer walk(state.tree)` has no single identifier for
+// this to key on at all). Precision over recall: a check that reached for
+// any of those would need to resolve what a name binds to, which is the
+// second model of Odin ADR-0028 exists to keep this program from building.
+@(require_results)
+collect_defer_order_issues :: proc(
+	file: ^ast.File,
+	tree: mem.Allocator,
+	allocator: mem.Allocator,
+) -> []Defer_Order_Issue {
+	assert(file != nil, "asked for the defer order of no file at all")
+	assert(allocator.procedure != nil, "the issues outlive this walk and need a chosen allocator")
+
+	found := make([dynamic]Defer_Order_Issue, 0, 0, tree)
+	state := Defer_Order_State {
+		found = &found,
+		tree  = tree,
+		text  = allocator,
+	}
+	walker := ast.Visitor {
+		visit = note_defer_order_node,
+		data  = &state,
+	}
+	for declaration in file.decls {
+		ast.walk(&walker, declaration)
+	}
+
+	return slice.clone(found[:], allocator)
+}
+
+// What the defer-order walk is accumulating, and where the reported
+// strings are allocated: `tree` for scratch work this program throws away
+// with the parse, `text` for the strings a Defer_Order_Issue hands back --
+// the same split note_declared makes between `state.names` and the tree
+// arena, and for the same reason: the tree dies with read_source's scratch
+// arena, and a reported string has to outlive that.
+Defer_Order_State :: struct {
+	found: ^[dynamic]Defer_Order_Issue,
+	tree:  mem.Allocator,
+	text:  mem.Allocator,
+}
+
+// One node of the defer-order walk: only a block's own direct statements
+// are ever gathered as a scope, so a Block_Stmt is the only node this reads
+// for anything -- descent into a nested block still happens (returning the
+// visitor carries it on), and that nested block is read as its own scope
+// when the walk reaches it as its own node.
+@(require_results)
+note_defer_order_node :: proc(walker: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
+	if node == nil {
+		return nil
+	}
+	assert(walker != nil, "ast.walk called a visit procedure through no visitor")
+	assert(walker.data != nil, "the walk carries no state to record anything into")
+
+	state := (^Defer_Order_State)(walker.data)
+	#partial switch found in node.derived {
+	case ^ast.Block_Stmt:
+		note_block_defers(state, found)
+	}
+	return walker
+}
+
+// One block's own defer-call pairs: every `defer` among its direct
+// statements that names a container, checked pairwise for a walk registered
+// ahead of a later free on the same identifier.
+note_block_defers :: proc(state: ^Defer_Order_State, block: ^ast.Block_Stmt) {
+	assert(state != nil, "asked to record a block's defers into no state at all")
+	assert(block != nil, "asked to record the defers of no block at all")
+
+	calls := make([dynamic]Defer_Call, 0, 0, state.tree)
+	for stmt in block.stmts {
+		call, is_named := named_defer_call(stmt)
+		if is_named {
+			append(&calls, call)
+		}
+	}
+
+	for walk, i in calls {
+		if is_freeing_call(walk.proc_name) {
+			continue
+		}
+		free, has_free := later_free_of(calls[i + 1:], walk.arg)
+		if !has_free {
+			continue
+		}
+		append(
+			state.found,
+			Defer_Order_Issue {
+				line = walk.line,
+				walk_proc = strings.clone(walk.proc_name, state.text),
+				free_proc = strings.clone(free.proc_name, state.text),
+				free_line = free.line,
+				arg = strings.clone(walk.arg, state.text),
+			},
+		)
+	}
+}
+
+// The first later defer in `rest` that frees `arg`, if there is one.
+@(require_results)
+later_free_of :: proc(rest: []Defer_Call, arg: string) -> (free: Defer_Call, found: bool) {
+	assert(len(arg) > 0, "asked for a free of no identifier at all")
+	for candidate in rest {
+		if !is_freeing_call(candidate.proc_name) {
+			continue
+		}
+		if candidate.arg != arg {
+			continue
+		}
+		return candidate, true
+	}
+	return {}, false
+}
+
+// One statement, read as a `defer` whose payload is a plain call naming a
+// container as its first argument -- `defer for x in xs {...}`, `defer if
+// ... {...}`, and a defer with no arguments at all carry no such name and
+// answer `false`, never a guess.
+@(require_results)
+named_defer_call :: proc(stmt: ^ast.Stmt) -> (call: Defer_Call, found: bool) {
+	assert(stmt != nil, "asked to read no statement at all as a defer")
+
+	defer_stmt, is_defer := stmt.derived.(^ast.Defer_Stmt)
+	if !is_defer {
+		return {}, false
+	}
+	assert(defer_stmt.stmt != nil, "a defer with no statement to run is a parser defect")
+
+	expr_stmt, is_expr := defer_stmt.stmt.derived.(^ast.Expr_Stmt)
+	if !is_expr {
+		return {}, false
+	}
+	assert(expr_stmt.expr != nil, "an expression statement with no expression is a parser defect")
+
+	invocation, is_call_expr := expr_stmt.expr.derived.(^ast.Call_Expr)
+	if !is_call_expr {
+		return {}, false
+	}
+
+	name, has_name := defer_callee_name(invocation)
+	if !has_name {
+		return {}, false
+	}
+	arg, has_arg := defer_first_arg_name(invocation)
+	if !has_arg {
+		return {}, false
+	}
+	return Defer_Call{line = defer_stmt.pos.line, proc_name = name, arg = arg}, true
+}
+
+// The name a defer's own call was written with: the bare identifier for
+// `delete(...)`, or the field for a qualified call like
+// `testkit.remove_cache(...)`. A callee that is neither -- a call through
+// an expression this cannot name -- answers `false`.
+@(require_results)
+defer_callee_name :: proc(call: ^ast.Call_Expr) -> (name: string, found: bool) {
+	assert(call != nil, "asked for the callee of no call at all")
+	assert(call.expr != nil, "a call expression with no callee is a parser defect")
+
+	#partial switch callee in call.expr.derived {
+	case ^ast.Ident:
+		return callee.name, true
+	case ^ast.Selector_Expr:
+		assert(callee.field != nil, "a selector with no field is a parser defect")
+		return callee.field.name, true
+	}
+	return "", false
+}
+
+// A call's first argument, read as the plain identifier it names -- never a
+// field access, an index, or anything else with no single name to key a
+// pair on.
+@(require_results)
+defer_first_arg_name :: proc(call: ^ast.Call_Expr) -> (name: string, found: bool) {
+	assert(call != nil, "asked for the first argument of no call at all")
+	if len(call.args) == 0 {
+		return "", false
+	}
+	identifier, is_ident := call.args[0].derived.(^ast.Ident)
+	if !is_ident {
+		return "", false
+	}
+	return identifier.name, true
+}
+
 // The `#+vet` names one file declares for itself.
 //
 // Read off the file's TAGS, which the parser collects only from above the package

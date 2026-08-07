@@ -89,6 +89,7 @@ Source_Facts :: struct {
 	comments:         []Body_Comment,
 	vet_tags:         []string,
 	remove_all_lines: []int,
+	defer_order:      []Defer_Order_Issue,
 	fault:            Fault,
 }
 
@@ -329,6 +330,7 @@ read_source :: proc(name: string, src: string, allocator: mem.Allocator) -> (fac
 		comments = collect_body_comments(&file, found, tree, allocator),
 		vet_tags = collect_vet_tags(&file, tree, allocator),
 		remove_all_lines = collect_remove_all_calls(&file, tree, allocator),
+		defer_order = collect_defer_order_issues(&file, tree, allocator),
 	}
 }
 
@@ -358,4 +360,11 @@ facts_destroy :: proc(facts: Source_Facts, allocator: mem.Allocator) {
 	delete(facts.vet_tags, allocator)
 
 	delete(facts.remove_all_lines, allocator)
+
+	for issue in facts.defer_order {
+		delete(issue.walk_proc, allocator)
+		delete(issue.free_proc, allocator)
+		delete(issue.arg, allocator)
+	}
+	delete(facts.defer_order, allocator)
 }
