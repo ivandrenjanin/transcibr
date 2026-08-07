@@ -34,8 +34,9 @@ example and the linked original differ, the rule is the same and the linked docu
 The operative contract is self-documenting code with comments driven toward minimal. Comments are banned inside procedure bodies. IF a comment is needed, it must be a comment that explains why the code is doing what it is doing, not a comment that repeats the code's logic.
 
 Enforced mechanically, repository-wide, and it fails `just check`: `collect_comment_violations` in
-`tools\policy\check.odin` reads every `.odin` file `discover_odin_files` walks — `docs\reference\`
-included — and names the file, line and procedure of anything it finds. It reads with
+`tools\policy\check.odin` reads every `.odin` file `discover_odin_files` walks — every directory the
+repository holds `.odin` files under, `src` and `tools` included — and names the file, line and
+procedure of anything it finds. It reads with
 `core:odin/parser`, inside `tools\policy` itself (ADR-0028), so a `//` inside a raw string is text and not
 a comment, and a procedure declared inside a `when` block is covered like any other.
 
@@ -285,12 +286,12 @@ it out at a call site: the `justfile` at the repository root holds the only exec
 The formatter half is `odinfmt.json` at the repository root — the one copy, and the name odinfmt
 looks for on its own, so an editor formatting on save and the build agree by construction. Do not
 reformat a file by hand or with a different config; `just fmt` is the way. A misformatted file fails
-`just ci` (`just fmt-check`), which walks `src`, `tools` and `docs\reference` — each spelled once in
+`just ci` (`just fmt-check`), which walks `src` and `tools` — each spelled once in
 `fmt` and once in `fmt-check` — comparing odinfmt's own reformatted output for each file against the
-file on disk, byte for byte, never `git diff`. That three-directory scope is NARROWER than `check`'s:
+file on disk, byte for byte, never `git diff`. That two-directory scope is NARROWER than `check`'s:
 `check_repository` calls `discover_odin_files` with the repository root itself, excluding only
 `.git`, `build`, `.scratch` and `.tools` (ADR-0035's "same repository-wide scope"), so a `.odin` file
-added anywhere outside `src`, `tools` and `docs\reference` — under `examples\`, say — is read against
+added anywhere outside `src` and `tools` — under `examples\`, say — is read against
 every source policy by `just check` but never read by `just fmt-check` at all. `fmt`/`fmt-check` do
 not yet have a way to name a scope by exclusion the way `discover_odin_files` does; keeping the two
 in sync is a manual discipline until they do.
@@ -300,7 +301,7 @@ just build       # debug build of src/cli, vet set, subsystem console
 just release     # -o:speed build of src/cli, vet set
 just check       # tools/policy: CLAUDE.md's source policies and the package-accounting check
 just test        # every package under src\ and tools\policy, vet set, memory failures fatal
-just fmt         # every .odin file under src, tools and docs/reference against odinfmt.json, rewritten in place
+just fmt         # every .odin file under src and tools against odinfmt.json, rewritten in place
 just fmt-check   # per file, odinfmt's own output byte-compared against the file on disk (no git diff)
 just ci          # fmt-check, check, build, release, test, test-single, smoke, in that order
 ```

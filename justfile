@@ -42,15 +42,15 @@ check:
 	if not exist build mkdir build
 	{{ odin }} run tools/policy {{ collection }} -out:build/transcibr-policy.exe {{ vet }}
 
-# Rewrite every .odin file under src, tools and docs/reference as
-# odinfmt.json says -- the same repository-wide scope `check` walks (minus
-# the build/vendor directories tools/policy also excludes), so the one
-# committed .odin file outside src and tools does not go unformatted
-# (round 2 review finding 2).
+# Rewrite every .odin file under src and tools as odinfmt.json says -- the
+# same repository-wide scope `check` walks (minus the build/vendor
+# directories tools/policy also excludes). docs/reference is no longer named
+# here: this PR deleted its only file (absorbed into src/net/winhttp.odin,
+# closing #55), so the directory does not exist in a fresh checkout and
+# odinfmt exits nonzero over a missing path (fix round 1 finding 1).
 fmt:
 	{{ odinfmt }} -w -path:src -config:odinfmt.json
 	{{ odinfmt }} -w -path:tools -config:odinfmt.json
-	{{ odinfmt }} -w -path:docs/reference -config:odinfmt.json
 
 # The same check, refused if odinfmt would change anything -- compared file
 # by file against odinfmt's own un-written output, never against `git diff`,
@@ -62,10 +62,9 @@ fmt-check:
 	if not exist build mkdir build
 	for /r src %f in (*.odin) do @({{ odinfmt }} -path:"%f" -config:odinfmt.json > build\fmt-check.tmp & fc /b "%f" build\fmt-check.tmp >nul || (echo NOT FORMATTED: %f & del /q build\fmt-check.tmp & exit /b 1))
 	for /r tools %f in (*.odin) do @({{ odinfmt }} -path:"%f" -config:odinfmt.json > build\fmt-check.tmp & fc /b "%f" build\fmt-check.tmp >nul || (echo NOT FORMATTED: %f & del /q build\fmt-check.tmp & exit /b 1))
-	for /r docs\reference %f in (*.odin) do @({{ odinfmt }} -path:"%f" -config:odinfmt.json > build\fmt-check.tmp & fc /b "%f" build\fmt-check.tmp >nul || (echo NOT FORMATTED: %f & del /q build\fmt-check.tmp & exit /b 1))
 	del /q build\fmt-check.tmp
 
-# One explicit line per package: the 11 src/ packages that hold tests, plus
+# One explicit line per package: the 12 src/ packages that hold tests, plus
 # tools/policy, which reads Odin and is tested in Odin (ADR-0028). `cli` is
 # the one src/ package with none, by ADR-0009 -- an entry point thin enough
 # to read, with no logic of its own worth testing.
@@ -76,6 +75,7 @@ test:
 	{{ odin }} test src/child {{ collection }} -out:build/odin-test/child.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/doctor {{ collection }} -out:build/odin-test/doctor.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/engine {{ collection }} -out:build/odin-test/engine.exe {{ memory }} {{ vet }}
+	{{ odin }} test src/net {{ collection }} -out:build/odin-test/net.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/pipeline {{ collection }} -out:build/odin-test/pipeline.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/planning {{ collection }} -out:build/odin-test/planning.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/process {{ collection }} -out:build/odin-test/process.exe {{ memory }} {{ vet }}

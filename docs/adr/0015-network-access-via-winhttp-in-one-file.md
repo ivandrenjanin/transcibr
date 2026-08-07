@@ -20,7 +20,8 @@ memory to hash it.
 for antivirus to score, and turns progress and cancellation into an IPC protocol instead of a byte
 counter and a flag. The WinHTTP path is a few hundred lines and a working prototype already
 type-checks under the project's full vet set — there is no complexity being avoided by splitting it
-out. A reference implementation is kept at `docs/reference/winhttp-download.odin`.
+out. Issue #14 absorbed that prototype directly into `src/net/winhttp.odin`; the reference file
+itself is gone (closes #55).
 
 ## Consequences
 

@@ -22,8 +22,7 @@ layer needed something to call. With it gone, the verdicts moved into `tools\pol
   report.
 - `discover.odin` walks the repository for `.odin` files itself (`os.Walker`), replacing
   `Get-OdinSource`'s PowerShell walk. Same exclusions — `.git`, `build`, `.scratch` — same
-  repository-wide scope (`docs\reference\` included, exactly as CLAUDE.md's Odin notes record for
-  the comment ban).
+  repository-wide scope, exactly as CLAUDE.md's Odin notes record for the comment ban.
 - `packages.odin` is new: the package-accounting check the ticket asked for, over **both** package
   roots — `src\` and `tools\`, the same two `$OdinPackageRoots` covered — and in **both**
   directions. Every package under either root holding a `*_test.odin` file must be named in the

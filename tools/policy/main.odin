@@ -7,7 +7,7 @@ import "core:os"
 import "core:strings"
 
 // This is what `just check` runs. It discovers every `.odin` file the
-// repository holds -- docs\reference\ included, the scope CLAUDE.md's source
+// repository holds -- repository-wide, the scope CLAUDE.md's source
 // policies have always had -- computes the verdicts check.odin knows about
 // for each one, and refuses the package-accounting check this ticket added:
 // every `src\` and `tools\` package holding a `*_test.odin` file must be
