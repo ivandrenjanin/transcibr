@@ -167,10 +167,11 @@ an_executable_that_is_not_there_is_refused_rather_than_asserted :: proc(t: ^test
 	c, err := start(&group, "transcibr-no-such-executable.exe", {}, context.allocator)
 	defer close(&c)
 	testing.expect_value(t, err.fault, Fault.Not_Started)
-
-	message := error_message(err, context.allocator)
-	defer delete(message, context.allocator)
-	testing.expect(t, len(message) > 0, "a refusal rendered as nothing at all")
+	if err.fault == .Not_Started {
+		message := error_message(err, context.allocator)
+		defer delete(message, context.allocator)
+		testing.expect(t, len(message) > 0, "a refusal rendered as nothing at all")
+	}
 }
 
 @(test)

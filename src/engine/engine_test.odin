@@ -730,10 +730,18 @@ an_executable_that_is_not_there_is_reported_and_not_asserted :: proc(t: ^testing
 	defer delete(produced.output, context.allocator)
 
 	testing.expect_value(t, err.fault, Fault.Not_Started)
-
-	message := error_message(err, "C:\\recordings\\lecture.mkv", context.allocator)
-	defer delete(message, context.allocator)
-	testing.expect(t, len(message) > 0, "a refusal rendered as nothing at all")
+	if err.fault == .Not_Started {
+		testing.expect(
+			t,
+			err.child.fault != .None,
+			"a Not_Started error carried no child fault, which error_message relies on",
+		)
+		if err.child.fault != .None {
+			message := error_message(err, "C:\\recordings\\lecture.mkv", context.allocator)
+			defer delete(message, context.allocator)
+			testing.expect(t, len(message) > 0, "a refusal rendered as nothing at all")
+		}
+	}
 }
 
 // exit_code is nonzero for .Refused: that fault's exit_code is documented
