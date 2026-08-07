@@ -33,3 +33,36 @@ a_batch_setup_refusal_names_its_subject_and_says_the_batch_cannot_start :: proc(
 		message,
 	)
 }
+
+// Issue #216: `engine_error_message` hard-coded `process.batch_setup_message`,
+// whose text ends "-- the Batch cannot start" -- a lie for every non-Batch
+// caller. `framing` is the read_natural `max_digits` precedent: the variable
+// part supplied by the caller, defaulted so every un-migrated call site (the
+// test above, `artifact.model_error_message`, `audio`'s cache fault) keeps
+// today's exact bytes without passing anything new.
+@(test)
+a_batch_setup_refusal_ends_on_a_caller_supplied_framing_instead_of_the_batch :: proc(
+	t: ^testing.T,
+) {
+	says := "a made-up reason, unconnected to any real Fault sentence"
+	message := batch_setup_message(
+		"D:\\scratch-42\\cache",
+		says,
+		context.allocator,
+		"--doctor cannot verify this Engine",
+	)
+	defer delete(message, context.allocator)
+
+	testing.expectf(
+		t,
+		strings.contains(message, " -- --doctor cannot verify this Engine"),
+		"a batch setup refusal ignored its caller-supplied framing: <%s>",
+		message,
+	)
+	testing.expectf(
+		t,
+		!strings.contains(message, "the Batch cannot start"),
+		"a caller-supplied framing still carries the Batch's own framing: <%s>",
+		message,
+	)
+}
