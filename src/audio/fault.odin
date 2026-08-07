@@ -176,12 +176,24 @@ borrowed_message :: proc(err: Error, source: string, allocator: mem.Allocator) -
 //
 // The `.Probe_Not_Started, .Extraction_Not_Started` arm below calls
 // `child.error_message(err.child, allocator)` unconditionally, relying on
-// `err.child.fault != .None` for both: `child.run_bounded` has exactly one
-// return site for `.Not_Started` (src/child/run.odin), so every
-// `.Probe_Not_Started`/`.Extraction_Not_Started` this package can produce
-// already carries a real child fault. Pinned, guard-side, by
-// src/child/run_test.odin's a_child_that_will_not_start_is_reported_rather_than_asserted
-// (issue #208), not reproved here as a second assert (issue #223).
+// `err.child.fault != .None` for both -- but the two arms reach that
+// guarantee through different paths. `produce`'s extraction call goes
+// straight through `child.run_bounded` (src/audio/run.odin:640), which has
+// exactly one return site for `.Not_Started` (src/child/run.odin), pinned
+// guard-side by src/child/run_test.odin's
+// a_child_that_will_not_start_is_reported_rather_than_asserted (issue #208).
+// `probe_using`'s call goes through its injectable `run: Probe_Run`
+// parameter (src/audio/run.odin:293, issue #125's round-4 seam) instead --
+// `child.run_bounded`'s own guard test cannot see that arm, because it never
+// calls through `probe_using` at all. `probe`'s only production wiring
+// (src/audio/run.odin:271) always passes `run_probe_child`, itself a plain
+// forward into `child.run_bounded`, so production inherits the same
+// guarantee; that specific path is what
+// src/audio/run_test.odin's a_probe_that_will_not_start_carries_a_child_fault_through_its_real_wiring
+// pins guard-side (issue #223's fix round 2). A test that swaps in a
+// different `Probe_Run` stub is not covered by either guard test and must
+// supply a real `child.Error` itself, the same way
+// stub_unstoppable_probe_run supplies a real `child.Run` ending.
 @(require_results)
 error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> string {
 	assert(err.fault != .None, "there is no message for a Recording that came through")
