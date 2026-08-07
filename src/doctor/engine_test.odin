@@ -185,13 +185,17 @@ an_engine_that_will_not_start_is_reported_rather_than_asserted :: proc(t: ^testi
 // is proved against a genuine release rather than only against fixtures.
 // Skipped, not failed, wherever that install is absent: this is GPU behaviour
 // (docs/spec/0001-transcibr-v1.md's Testing Decisions names it out of every
-// automated seam) and CI carries no such directory.
+// automated seam) and CI carries no such directory. Issue #230: the skip is
+// named in the test itself and logged, so a green run still says what it
+// did not measure.
 @(private)
 REFERENCE_ENGINE :: `C:\tools\whisper\Release\whisper-cli.exe`
 
 @(test)
-the_reference_engine_install_reports_cuda_loaded_when_it_is_present :: proc(t: ^testing.T) {
-	if !os.exists(REFERENCE_ENGINE) {
+the_reference_engine_install_reports_cuda_loaded_when_reference_assets_exist :: proc(
+	t: ^testing.T,
+) {
+	if reference_asset_missing(t, "reference engine", REFERENCE_ENGINE) {
 		return
 	}
 
