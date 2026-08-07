@@ -4,6 +4,22 @@ package main
 // --doctor: the preflight check story 8 asks for. Every decision -- what
 // passes, what an actionable reason says -- is transcibr:doctor's; what is
 // here is argument reading, wiring the shared spawner, and a write.
+//
+// Issue #189: --doctor identifies the Engine binary the same way --batch,
+// --plan and --transcribe already do, through the shared `engine_identified`
+// (main.odin) -- never a second identification path -- so a doctor pass and
+// a Batch pass over the same binary report the same digest (ADR-0037,
+// ADR-0038).
+//
+// Fix round 1, finding 1: identifying the Engine runs AFTER `run_preflight`
+// and its five rows print, and refuses OPERATING_ERROR only once they are
+// already on the user's screen. `run.odin`'s own contract ("Every check runs
+// even after an earlier one fails, so a user sees every actionable reason at
+// once") held for the five Checks, but an unreadable Engine binary used to
+// return before any of them ran at all -- suppressing the whole report on
+// exactly the run --doctor exists for. An unreadable binary is still refused
+// with OPERATING_ERROR, the same A8 shape run_batch_command already refuses
+// one with; only the ORDER changed.
 
 import "transcibr:audio"
 import "transcibr:child"
@@ -44,6 +60,17 @@ run_doctor :: proc(arguments: []string) -> int {
 	for check in checks {
 		pipeline.report_line(doctor.render_check(check, context.allocator), context.allocator)
 	}
+
+	engine_digest, engine_named := engine_identified(o.engine)
+	defer delete(string(engine_digest), context.allocator)
+	if !engine_named {
+		return OPERATING_ERROR
+	}
+	pipeline.report_line(
+		doctor.render_engine_identity(engine_digest, context.allocator),
+		context.allocator,
+	)
+
 	if !doctor.report_ok(checks) {
 		return OPERATING_ERROR
 	}
