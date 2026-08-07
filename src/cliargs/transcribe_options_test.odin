@@ -170,6 +170,23 @@ read_transcribe_options_refuses_a_missing_cache_fourth :: proc(t: ^testing.T) {
 	testing.expect_value(t, refusal.args[0], Refusal_Arg("--cache"))
 }
 
+// The four single-field tests above each omit exactly one required field, so
+// none of them can go red on a reordering of required_fields_present's row
+// list -- omitting two or more is the only shape that can (fix round 1, PR
+// #201 finding 2). Omitting every field pins the row order end to end:
+// source is refused first only because it is the FIRST row, not because it
+// is the only one missing.
+@(test)
+read_transcribe_options_refuses_the_earliest_missing_field_when_several_are_missing :: proc(
+	t: ^testing.T,
+) {
+	ok, refusal := transcribe_options_refusal([]string{})
+
+	testing.expect(t, !ok, "a command line naming nothing at all was accepted")
+	testing.expect_value(t, refusal.complaint, "%s names nothing.")
+	testing.expect_value(t, refusal.args[0], Refusal_Arg("--transcribe"))
+}
+
 @(private)
 @(require_results)
 transcribe_options_refusal :: proc(arguments: []string) -> (ok: bool, refusal: Refusal) {

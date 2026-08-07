@@ -21,17 +21,14 @@ import "transcibr:transcript"
 // placement `--batch` runs many of, so a Recording transcribed on either
 // command line is recorded from the same code (PR #67's review, finding 1).
 
+// A single pairing (audio.Tools's own two fields) instead of a seven-field
+// hand copy: `using parsed: cliargs.Transcribe_Options` promotes source,
+// model, engine, cache, prompt and profile straight through, so there is
+// nothing left here to drop or swap by hand (fix round 1, PR #201 finding 3).
 Transcribe_Options :: struct {
-	source:  string,
-	model:   string,
-	engine:  string,
-	cache:   string,
-	prompt:  string,
-	profile: transcript.Merge_Profile,
-	tools:   audio.Tools,
+	using parsed: cliargs.Transcribe_Options,
+	audio_tools:  audio.Tools,
 }
-
-TRANSCRIBE :: "--transcribe"
 
 @(require_results)
 transcribe_one :: proc(arguments: []string) -> int {
@@ -44,15 +41,10 @@ transcribe_one :: proc(arguments: []string) -> int {
 	}
 
 	o := Transcribe_Options {
-		source = parsed.source,
-		model = parsed.model,
-		engine = parsed.engine,
-		cache = parsed.cache,
-		prompt = parsed.prompt,
-		profile = parsed.profile,
-		tools = audio.Tools{ffmpeg = parsed.tools.ffmpeg, ffprobe = parsed.tools.ffprobe},
+		parsed = parsed,
+		audio_tools = audio.Tools{ffmpeg = parsed.tools.ffmpeg, ffprobe = parsed.tools.ffprobe},
 	}
-	audio.defaulted_tools(&o.tools)
+	audio.defaulted_tools(&o.audio_tools)
 
 	group, opened := job_object_opened()
 	defer child.job_object_close(&group)
@@ -103,7 +95,7 @@ run_one :: proc(
 		o.source,
 		name,
 		group,
-		pipeline.Tools{audio = o.tools, engine = engine.Tools{engine = o.engine}},
+		pipeline.Tools{audio = o.audio_tools, engine = engine.Tools{engine = o.engine}},
 		o.cache,
 		identified,
 		o.prompt,
