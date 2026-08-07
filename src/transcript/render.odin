@@ -63,6 +63,19 @@ written_by_transcibr :: proc(head: string) -> bool {
 // "transcibr forgot" where this reads as "nobody knew" (ADR-0003).
 UNKNOWN :: "unknown"
 
+// The one place "nobody named it" turns into the word above, so every site
+// that settles a provenance field this way reads identically rather than
+// open-coding its own `if len(x) == 0 { x = UNKNOWN }`. `--from-json`'s
+// Render_Context (src/cli/main.odin) is the last of the family issue #50
+// settles this way; `artifact.model_display_name` is the other.
+@(require_results)
+named_or_unknown :: proc(named: string) -> string {
+	if len(named) == 0 {
+		return UNKNOWN
+	}
+	return named
+}
+
 // The document outlives this call and crosses a worker boundary (ADR-0010):
 // free it with `delete`, passing the same allocator.
 @(require_results)

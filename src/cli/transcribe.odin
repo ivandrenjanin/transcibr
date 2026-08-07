@@ -20,14 +20,13 @@ import "transcibr:transcript"
 // command line is recorded from the same code (PR #67's review, finding 1).
 
 Transcribe_Options :: struct {
-	source:         string,
-	model:          string,
-	engine:         string,
-	cache:          string,
-	engine_version: Maybe(string),
-	prompt:         string,
-	profile:        transcript.Merge_Profile,
-	tools:          audio.Tools,
+	source:  string,
+	model:   string,
+	engine:  string,
+	cache:   string,
+	prompt:  string,
+	profile: transcript.Merge_Profile,
+	tools:   audio.Tools,
 }
 
 TRANSCRIBE :: "--transcribe"
@@ -60,7 +59,13 @@ transcribe_one :: proc(arguments: []string) -> int {
 	if !named {
 		return OPERATING_ERROR
 	}
-	return run_one(&group, o, identified)
+
+	engine_digest, engine_named := engine_identified(o.engine)
+	defer delete(string(engine_digest), context.allocator)
+	if !engine_named {
+		return OPERATING_ERROR
+	}
+	return run_one(&group, o, identified, engine_digest)
 }
 
 @(private)
@@ -69,6 +74,7 @@ run_one :: proc(
 	group: ^child.Job_Object,
 	o: Transcribe_Options,
 	identified: artifact.Model,
+	engine_digest: artifact.Digest,
 ) -> int {
 	assert(group != nil, "a child started outside a job object outlives transcibr")
 	assert(len(o.source) > 0, "there is no Recording here to transcribe")
@@ -87,7 +93,7 @@ run_one :: proc(
 		o.cache,
 		identified,
 		o.prompt,
-		pipeline.settled_engine_version(o.engine_version),
+		string(engine_digest),
 		o.profile,
 		engine.Report{on_progress = show},
 		pipeline.Health_Watch{},
@@ -126,10 +132,10 @@ show :: proc(shown: process.Progress, user: rawptr) {
 // `audio.defaulted_tools` runs AFTER the loop below, not before it:
 // `--ffmpeg ""` is an ordinary shell invocation with an unset variable in it,
 // and a default set only before the loop is overwritten by the empty value.
-// `engine_version` is never defaulted here at all -- it stays `Maybe(string)`,
-// absent where the command line named none, and forwarded that way into
-// planning, where `pipeline.settled_engine_version` is what decides UNKNOWN,
-// and only for the Sidecar this run actually records (issue #70).
+// There is no `--engine-version` to default any more: the Engine is
+// identified from `--engine-exe` by its own SHA-256, exactly like the Model
+// (ADR-0027's reopening clause, closed by issue #50), so nothing here is
+// ever absent for `pipeline.settled_engine_version` to have settled.
 @(private)
 @(require_results)
 read_transcribe_options :: proc(arguments: []string) -> (o: Transcribe_Options, ok: bool) {
@@ -195,7 +201,6 @@ read_transcribe_option :: proc(o: ^Transcribe_Options, name, value: string) -> (
 			&o.engine,
 			&o.cache,
 			&o.tools,
-			&o.engine_version,
 			&o.prompt,
 			&o.profile,
 			name,
@@ -206,11 +211,13 @@ read_transcribe_option :: proc(o: ^Transcribe_Options, name, value: string) -> (
 }
 
 // `--model-file`, `--engine-exe`, `--cache`, `--ffmpeg`, `--ffprobe`,
-// `--engine-version`, `--prompt` and `--profile`: the whole of what
-// `--transcribe` and `--batch` read identically, once `--prompt` closed PR
-// #67's review finding 1 and made the two grammars agree on an eighth case
-// as well as the first seven. `--plan` shares only a few of these fields --
-// it names no Engine path, no scratch cache and no ffmpeg -- and keeps its
+// `--prompt` and `--profile`: the whole of what `--transcribe` and `--batch`
+// read identically. There is no `--engine-version` case any more -- the
+// version-string flag ADR-0027's supersession retires (issue #50); the
+// Engine is identified from `--engine-exe`'s own bytes, the same as the
+// Model, and a caller who still passes `--engine-version` is refused as an
+// unknown option like any other retired flag. `--plan` shares only a few of
+// these fields -- it names no scratch cache and no ffmpeg -- and keeps its
 // own smaller switch rather than pass nil pointers through here for options
 // its own grammar must still refuse (A8).
 @(private)
@@ -220,7 +227,6 @@ read_common_option :: proc(
 	engine_exe: ^string,
 	cache: ^string,
 	tools: ^audio.Tools,
-	engine_version: ^Maybe(string),
 	prompt: ^string,
 	profile: ^transcript.Merge_Profile,
 	name: string,
@@ -242,8 +248,6 @@ read_common_option :: proc(
 		tools.ffmpeg = value
 	case "--ffprobe":
 		tools.ffprobe = value
-	case "--engine-version":
-		engine_version^ = value
 	case "--prompt":
 		prompt^ = value
 	case "--profile":

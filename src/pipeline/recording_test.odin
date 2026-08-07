@@ -38,6 +38,7 @@ recording_sidecar_never_carries_a_stale_recorded_engine_version :: proc(t: ^test
 	defer delete(string(digest), context.allocator)
 	job := Recording_Job {
 		source = "C:\\clips\\talk.mp4",
+		tools = Tools{engine = engine.Tools{engine = "C:\\tools\\whisper-cli.exe"}},
 		engine_version = "whisper.cpp 1.9.9",
 		model = artifact.Model{path = "C:\\models\\large.bin", digest = digest, bytes = 500},
 		prompt = "names and jargon",
@@ -51,6 +52,7 @@ recording_sidecar_never_carries_a_stale_recorded_engine_version :: proc(t: ^test
 	made := recording_sidecar(job, extracted)
 
 	testing.expect_value(t, made.engine_version, "whisper.cpp 1.9.9")
+	testing.expect_value(t, made.engine, "C:\\tools\\whisper-cli.exe")
 	testing.expect_value(t, made.model, "C:\\models\\large.bin")
 	testing.expect_value(t, made.merge_profile, "conversation")
 	testing.expect_value(t, made.prompt, "names and jargon")
@@ -79,6 +81,7 @@ recording_sidecar_reflects_whichever_engine_its_own_job_named :: proc(t: ^testin
 
 	first := recording_sidecar(
 		Recording_Job {
+			tools = Tools{engine = engine.Tools{engine = "engine-one.exe"}},
 			engine_version = "engine-one",
 			model = model,
 			profile = transcript.DEFAULT_PROFILE,
@@ -87,6 +90,7 @@ recording_sidecar_reflects_whichever_engine_its_own_job_named :: proc(t: ^testin
 	)
 	second := recording_sidecar(
 		Recording_Job {
+			tools = Tools{engine = engine.Tools{engine = "engine-two.exe"}},
 			engine_version = "engine-two",
 			model = model,
 			profile = transcript.DEFAULT_PROFILE,
@@ -117,6 +121,7 @@ recording_sidecar_passes_a_pre_1970_modification_time_through_without_crashing :
 
 	made := recording_sidecar(
 		Recording_Job {
+			tools = Tools{engine = engine.Tools{engine = "whisper-cli.exe"}},
 			engine_version = "whisper.cpp 1.9.9",
 			model = artifact.Model{path = "m.bin", digest = digest, bytes = 1},
 			profile = transcript.DEFAULT_PROFILE,
@@ -125,20 +130,6 @@ recording_sidecar_passes_a_pre_1970_modification_time_through_without_crashing :
 	)
 
 	testing.expect_value(t, made.source_modified_ns, i64(-1))
-}
-
-// The derivation issue #70 hoists out of `src/cli`: absent (no
-// `--engine-version` on the command line) settles to `transcript.UNKNOWN`
-// only here, at the record site -- never earlier, where it would leak into
-// `planning.Settings` as a SET value and make a flagless `--batch` see an
-// Engine changed that a flagless `--plan` never did.
-@(test)
-settled_engine_version_defaults_to_unknown_only_when_the_command_line_named_none :: proc(
-	t: ^testing.T,
-) {
-	testing.expect_value(t, settled_engine_version(nil), transcript.UNKNOWN)
-	testing.expect_value(t, settled_engine_version("whisper.cpp 1.9.9"), "whisper.cpp 1.9.9")
-	testing.expect_value(t, settled_engine_version(""), transcript.UNKNOWN)
 }
 
 // The three outcomes `sort_entry` settles without ever building a Recording
@@ -182,6 +173,7 @@ sort_entry_builds_exactly_one_job_for_a_transcribe_decision :: proc(t: ^testing.
 	defer delete(string(digest), context.allocator)
 	o := Batch_Options {
 		model = artifact.Model{path = "m.bin", digest = digest, bytes = 1},
+		tools = Tools{engine = engine.Tools{engine = "whisper-cli.exe"}},
 		profile = transcript.DEFAULT_PROFILE,
 	}
 	summary: Summary
@@ -201,6 +193,45 @@ sort_entry_builds_exactly_one_job_for_a_transcribe_decision :: proc(t: ^testing.
 	testing.expect_value(t, jobs[0].source, "C:\\clips\\talk.mp4")
 	testing.expect_value(t, jobs[0].name, "talk")
 	testing.expect(t, jobs[0].arena != nil, "a Job built for the pipeline carries no arena")
+}
+
+// A round-4 adversarial review measured `Recording_Job.engine_exe` as a
+// second, independently-set copy of the Engine path alongside `tools.engine.-`
+// `engine` (the one `engine.transcribe` actually spawns): mutating the
+// recorded copy alone at `recording_job_of` left the whole suite green,
+// because nothing tied the two together. `new_recording_job` now takes only
+// one Engine path -- `tools.engine.engine` -- and `recording_sidecar` reads
+// it from there, so there is no second field left for a caller to set
+// differently from what gets spawned. This pins that through the real
+// constructor rather than through a hand-built `Recording_Job` literal, which
+// would not have exercised the missing field at all.
+@(test)
+recording_job_of_records_the_same_engine_path_it_will_spawn :: proc(t: ^testing.T) {
+	digest := a_digest('e')
+	defer delete(string(digest), context.allocator)
+	job := new_recording_job(
+		"C:\\clips\\talk.mp4",
+		"talk",
+		nil,
+		Tools{engine = engine.Tools{engine = "C:\\tools\\whisper-cli.exe"}},
+		"C:\\cache",
+		artifact.Model{path = "C:\\models\\large.bin", digest = digest, bytes = 500},
+		"",
+		"whisper.cpp 1.9.9",
+		transcript.DEFAULT_PROFILE,
+		engine.Report{},
+		Health_Watch{},
+	)
+	defer abandon_recording_job(job)
+
+	extracted := Recording_Extracted {
+		planned = audio.Reading{bytes = 1, modified_ns = 1},
+		extracted = audio.Extracted{container_ms = 1_000},
+	}
+	made := recording_sidecar(job, extracted)
+
+	testing.expect_value(t, made.engine, job.tools.engine.engine)
+	testing.expect_value(t, made.engine, "C:\\tools\\whisper-cli.exe")
 }
 
 // Shared by `health_check_job` (one job, its own fresh watch) and the round-4
@@ -235,7 +266,7 @@ health_checked_job :: proc(
 		"C:\\clips\\talk.mp4",
 		"talk",
 		nil,
-		Tools{},
+		Tools{engine = engine.Tools{engine = "whisper-cli.exe"}},
 		dir,
 		artifact.Model{},
 		"",

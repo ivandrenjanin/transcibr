@@ -9,6 +9,7 @@ import "core:testing"
 // and then compared with itself.
 @(private)
 EXAMPLE :: Sidecar {
+	engine             = "C:\\tools\\whisper-cli.exe",
 	engine_version     = "whisper.cpp v1.9.1",
 	model              = "C:\\models\\ggml-large-v3.bin",
 	model_digest       = Digest(EMPTY_SHA256),
@@ -29,8 +30,9 @@ EMPTY_SHA256 :: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85
 // raw literal spanning lines would pin a format nothing writes.
 @(private)
 GOLDEN_SIDECAR ::
-	"transcibr-sidecar 1\n" +
-	"engine: \"whisper.cpp v1.9.1\"\n" +
+	"transcibr-sidecar 2\n" +
+	"engine: \"C:\\\\tools\\\\whisper-cli.exe\"\n" +
+	"engine_sha256: \"whisper.cpp v1.9.1\"\n" +
 	"model: \"C:\\\\models\\\\ggml-large-v3.bin\"\n" +
 	"model_sha256: \"" +
 	EMPTY_SHA256 +
@@ -54,6 +56,7 @@ a_sidecar_is_written_in_one_fixed_order_a_later_run_can_read :: proc(t: ^testing
 @(test)
 the_one_constructor_carries_every_field_through_to_the_record :: proc(t: ^testing.T) {
 	built := sidecar_of(
+		engine = EXAMPLE.engine,
 		engine_version = EXAMPLE.engine_version,
 		model = Model {
 			path = EXAMPLE.model,
@@ -81,6 +84,7 @@ a_sidecar_reads_back_as_the_record_that_was_written :: proc(t: ^testing.T) {
 	testing.expect(t, ok, "a Sidecar this package wrote could not be read back")
 	testing.expect_value(t, changed(read, EXAMPLE), Change.None)
 	testing.expect_value(t, read.engine_version, EXAMPLE.engine_version)
+	testing.expect_value(t, read.engine, EXAMPLE.engine)
 	testing.expect_value(t, read.model, EXAMPLE.model)
 	testing.expect_value(t, read.model_digest, EXAMPLE.model_digest)
 	testing.expect_value(t, read.model_bytes, EXAMPLE.model_bytes)
@@ -99,7 +103,7 @@ a_prompt_carrying_a_newline_survives_being_written_and_read_back :: proc(t: ^tes
 
 	written := sidecar_text(awkward, context.allocator)
 	defer delete(written, context.allocator)
-	testing.expect_value(t, strings.count(written, "\n"), 11)
+	testing.expect_value(t, strings.count(written, "\n"), 12)
 
 	read, ok := read_sidecar(written, context.allocator)
 	defer destroy_sidecar(read, context.allocator)
@@ -114,7 +118,7 @@ a_sidecar_that_is_not_what_transcibr_writes_is_unknown_rather_than_half_read :: 
 	rejected := [?]string {
 		"",
 		"transcibr-sidecar 1\n",
-		"transcibr-sidecar 2\n" + GOLDEN_SIDECAR[len("transcibr-sidecar 1\n"):],
+		"transcibr-sidecar 3\n" + GOLDEN_SIDECAR[len("transcibr-sidecar 1\n"):],
 		GOLDEN_SIDECAR[len("transcibr-sidecar 1\n"):],
 		GOLDEN_SIDECAR[:len(GOLDEN_SIDECAR) / 2],
 		GOLDEN_SIDECAR + "beam: 4\n",
@@ -128,6 +132,32 @@ a_sidecar_that_is_not_what_transcibr_writes_is_unknown_rather_than_half_read :: 
 		testing.expectf(t, !ok, "rejected case %d was read as a Sidecar", at)
 		testing.expectf(t, len(read.model) == 0, "rejected case %d was half read", at)
 	}
+}
+
+// A hand-edited or third-party-written Sidecar can carry `engine: ""` --
+// `unquoted` treats an empty quoted body as a valid value on its own. Without
+// this check the record reads back with `s.engine == ""`, which nothing
+// downstream re-validates: `complete`'s own `assert_filled_in` and
+// `engine_display_name`'s `assert(len(path) > 0, ...)` both treat that as a
+// programmer error rather than the corrupt-input case it is (A8). Refusing
+// it here, the same way an unreadable number is refused, is the boundary fix.
+@(test)
+a_sidecar_naming_no_engine_is_unknown_rather_than_read_with_an_empty_one :: proc(t: ^testing.T) {
+	golden := GOLDEN_SIDECAR
+	corrupted := strings.concatenate(
+		{
+			golden[:strings.index(golden, "engine: \"")],
+			"engine: \"\"\n",
+			golden[strings.index(golden, "engine_sha256"):],
+		},
+		context.temp_allocator,
+	)
+
+	read, ok := read_sidecar(corrupted, context.allocator)
+	defer destroy_sidecar(read, context.allocator)
+
+	testing.expect(t, !ok, "a Sidecar naming no Engine was read rather than refused")
+	testing.expect(t, len(read.model) == 0, "a refused Sidecar was half read")
 }
 
 @(test)
@@ -191,6 +221,19 @@ every_setting_a_sidecar_records_names_itself_when_it_changes :: proc(t: ^testing
 	moved = EXAMPLE
 	moved.merge_profile = "conversation"
 	testing.expect_value(t, changed(moved, EXAMPLE), Change.Merge_Profile)
+}
+
+// The Engine is identified by digest, never by path (ADR-0027/ADR-0037): a
+// relocated or differently spelled `--engine-exe` argument with the same
+// bytes is not a changed Engine, even though `engine` itself is a recorded
+// field that legitimately differs between two runs of the very same binary.
+@(test)
+an_engine_recorded_under_a_different_spelling_of_the_same_path_is_not_a_changed_engine :: proc(
+	t: ^testing.T,
+) {
+	moved := EXAMPLE
+	moved.engine = "C:\\tools\\.\\whisper-cli.exe"
+	testing.expect_value(t, changed(moved, EXAMPLE), Change.None)
 }
 
 @(test)

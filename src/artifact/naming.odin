@@ -116,11 +116,27 @@ stem_of :: proc(source: string) -> string {
 model_display_name :: proc(path: string) -> string {
 	assert(len(path) > 0, "there is no Model here to name")
 
-	named := filepath.stem(path)
-	if len(named) == 0 {
-		return transcript.UNKNOWN
-	}
-	return named
+	return transcript.named_or_unknown(filepath.stem(path))
+}
+
+// The Engine's own display name, for a Transcript's header -- the human half
+// of the Model's own two-part shape (a name for a reader, a digest for
+// `artifact.changed`), which `identify_engine` alone does not carry: it
+// hands back only a Digest, the same way `model_display_name` is a second
+// call rather than a field `identify_model` returns. `filepath.stem` on
+// purpose, for the same reason `model_display_name` reads it that way: an
+// Engine binary is never the dotfile `stem_of`'s own comment warns about.
+//
+// An empty path IS a programmer error to assert on: `read_sidecar`
+// (src/artifact/sidecar.odin) refuses to hand back a record whose `engine`
+// field is empty, so nothing that reaches here -- fresh from `sidecar_of` or
+// read back off disk -- can carry one. The boundary is the read, not this
+// call.
+@(require_results)
+engine_display_name :: proc(path: string) -> string {
+	assert(len(path) > 0, "there is no Engine here to name")
+
+	return transcript.named_or_unknown(filepath.stem(path))
 }
 
 // The other half of the same cut, so a caller asking what kind of file this is

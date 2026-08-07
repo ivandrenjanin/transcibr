@@ -123,7 +123,7 @@ assert_agree :: proc(
 	made: Sidecar,
 ) {
 	assert(
-		rc.engine_version == made.engine_version,
+		rc.engine_version == engine_display_name(made.engine),
 		"the Transcript's header and its Sidecar name two different Engines",
 	)
 	assert(

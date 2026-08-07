@@ -26,7 +26,6 @@ Batch_Options :: struct {
 	model:           string,
 	engine:          string,
 	cache:           string,
-	engine_version:  Maybe(string),
 	prompt:          string,
 	profile:         transcript.Merge_Profile,
 	follow:          bool,
@@ -107,7 +106,13 @@ run_batch_command :: proc(arguments: []string) -> int {
 		return OPERATING_ERROR
 	}
 
-	return planned_and_run(&group, o, identified)
+	engine_digest, engine_named := engine_identified(o.engine)
+	defer delete(string(engine_digest), context.allocator)
+	if !engine_named {
+		return OPERATING_ERROR
+	}
+
+	return planned_and_run(&group, o, identified, engine_digest)
 }
 
 // Best-effort by construction (ADR-0023): a scratch cache another worker is
@@ -143,13 +148,15 @@ planned_and_run :: proc(
 	group: ^child.Job_Object,
 	o: Batch_Options,
 	identified: artifact.Model,
+	engine_digest: artifact.Digest,
 ) -> int {
 	assert(group != nil, "a child started outside a job object outlives transcibr")
 
 	inventory, plan, runnable := planned(
 		o.root,
 		identified,
-		o.engine_version,
+		engine_digest,
+		o.engine,
 		o.prompt,
 		o.profile,
 		o.follow,
@@ -161,7 +168,7 @@ planned_and_run :: proc(
 		return plan_verdict(plan, inventory, runnable)
 	}
 
-	return run_the_batch(group, o, identified, plan)
+	return run_the_batch(group, o, identified, engine_digest, plan)
 }
 
 @(private)
@@ -170,6 +177,7 @@ run_the_batch :: proc(
 	group: ^child.Job_Object,
 	o: Batch_Options,
 	identified: artifact.Model,
+	engine_digest: artifact.Digest,
 	plan: planning.Plan,
 ) -> int {
 	sync.atomic_store(&cancel_requested, false)
@@ -186,7 +194,7 @@ run_the_batch :: proc(
 			cache = o.cache,
 			model = identified,
 			prompt = o.prompt,
-			engine_version = pipeline.settled_engine_version(o.engine_version),
+			engine_version = string(engine_digest),
 			profile = o.profile,
 			config = pipeline.Config {
 				extract_workers = o.extract_workers,
@@ -315,7 +323,6 @@ read_batch_option :: proc(o: ^Batch_Options, name, value: string) -> (ok: bool) 
 			&o.engine,
 			&o.cache,
 			&o.tools,
-			&o.engine_version,
 			&o.prompt,
 			&o.profile,
 			name,

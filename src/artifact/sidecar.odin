@@ -13,8 +13,10 @@ import "transcibr:transcript"
 
 // A later transcibr that adds a field bumps this: every Sidecar an older build
 // wrote then reads as unknown, and ADR-0003's disposition for unknown -- re-do
-// it -- costs one Batch of GPU time rather than wrong provenance.
-SIDECAR_VERSION_LINE :: "transcibr-sidecar 1"
+// it -- costs one Batch of GPU time rather than wrong provenance. Bumped to 2
+// by issue #50's fix round: `engine` (the Engine's own path, the human half
+// of its identity) is a field no version-1 Sidecar carries.
+SIDECAR_VERSION_LINE :: "transcibr-sidecar 2"
 
 // The Model's identity, as the sixty-four lower-case hexadecimal characters of
 // its SHA-256. Distinct so the Model's path cannot be handed in where its
@@ -43,7 +45,16 @@ ENGINE_DEFAULT_BEAM :: u32(0)
 // success (ADR-0024). The strings are BORROWED in a Sidecar a caller built and
 // OWNED in one read_sidecar handed back; destroy_sidecar is for the latter only.
 Sidecar :: struct {
+	// The Engine's own SHA-256, the same digest `changed` compares -- ADR-0027's
+	// reopening clause, closed by issue #50.
 	engine_version:     string,
+	// The Engine binary's own path -- the human half of its identity, mirroring
+	// `model` below exactly. Recorded and never compared: `changed` still
+	// answers off `engine_version` alone, because identity by content-hash and
+	// not by name or location is the whole point of ADR-0027's reopening
+	// (ADR-0037) -- a relocated Engine binary with the same bytes is not a
+	// changed Engine.
+	engine:             string,
 	// The path alone cannot notice a Model file replaced under the same name,
 	// and the Engine's output reports every large Model as the bare string
 	// `large`.
@@ -82,6 +93,7 @@ Sidecar :: struct {
 // `model_digest` would write an empty one that compares equal to the next.
 @(require_results)
 sidecar_of :: proc(
+	engine: string,
 	engine_version: string,
 	model: Model,
 	beam: u32,
@@ -96,6 +108,7 @@ sidecar_of :: proc(
 	defer assert_filled_in(made)
 
 	return Sidecar {
+		engine = engine,
 		engine_version = engine_version,
 		model = model.path,
 		model_digest = model.digest,
@@ -112,6 +125,10 @@ sidecar_of :: proc(
 @(private)
 assert_filled_in :: proc(made: Sidecar) {
 	assert(len(made.engine_version) > 0, "an Engine nobody named is UNKNOWN, never empty")
+	assert(
+		len(made.engine) > 0,
+		"a Sidecar that names no Engine records no human provenance for it",
+	)
 	assert(len(made.model) > 0, "a Sidecar that names no Model cannot notice one changing")
 	assert(len(made.model_digest) == DIGEST_CHARS, "a Model identified by a partial digest")
 	assert(len(made.merge_profile) > 0, "a Sidecar that names no Merge Profile records nothing")
@@ -131,11 +148,23 @@ Change :: enum u8 {
 	Merge_Profile,
 }
 
-// Why presence-only resume is not enough: ADR-0003.
+// Why presence-only resume is not enough: ADR-0003. `engine` is NOT part of
+// this comparison -- the Engine's identity is `engine_version`, its digest,
+// alone (ADR-0027/ADR-0037); a relocated or differently spelled
+// `--engine-exe` argument with the same bytes is not a changed Engine. The
+// deferred assert below therefore compares every field but `engine`: a
+// `.None` answer can legitimately disagree with `recorded == current` on
+// that one field alone, which is the exact case this comparison exists to
+// permit rather than to catch.
 @(require_results)
 changed :: proc(recorded, current: Sidecar) -> (answer: Change) {
 	defer if answer == .None {
-		assert(recorded == current, "two Sidecars that differ somewhere were called unchanged")
+		ignoring_engine_path := current
+		ignoring_engine_path.engine = recorded.engine
+		assert(
+			recorded == ignoring_engine_path,
+			"two Sidecars that differ somewhere other than the Engine's path were called unchanged",
+		)
 	} else {
 		assert(recorded != current, "two identical Sidecars were called changed")
 	}
@@ -197,6 +226,7 @@ recordable :: proc(s: Sidecar) -> bool {
 @(private)
 Key :: enum u8 {
 	Engine,
+	Engine_Sha256,
 	Model,
 	Model_Sha256,
 	Model_Bytes,
@@ -212,6 +242,7 @@ Key :: enum u8 {
 @(private, rodata)
 KEY := [Key]string {
 	.Engine             = "engine",
+	.Engine_Sha256      = "engine_sha256",
 	.Model              = "model",
 	.Model_Sha256       = "model_sha256",
 	.Model_Bytes        = "model_bytes",
@@ -242,7 +273,8 @@ sidecar_text :: proc(s: Sidecar, allocator: mem.Allocator) -> (written: string) 
 
 	strings.write_string(&out, SIDECAR_VERSION_LINE)
 	strings.write_byte(&out, '\n')
-	write_text(&out, .Engine, s.engine_version)
+	write_text(&out, .Engine, s.engine)
+	write_text(&out, .Engine_Sha256, s.engine_version)
 	write_text(&out, .Model, s.model)
 	write_text(&out, .Model_Sha256, string(s.model_digest))
 	write_number(&out, .Model_Bytes, s.model_bytes)
@@ -322,6 +354,7 @@ not_a_sidecar :: proc(s: Sidecar, allocator: mem.Allocator) -> (Sidecar, bool) {
 // built out of borrowed strings -- see Sidecar.
 destroy_sidecar :: proc(s: Sidecar, allocator: mem.Allocator) {
 	delete(s.engine_version, allocator)
+	delete(s.engine, allocator)
 	delete(s.model, allocator)
 	delete(string(s.model_digest), allocator)
 	delete(s.merge_profile, allocator)
@@ -380,6 +413,10 @@ key_named :: proc(name: string) -> (key: Key, known: bool) {
 // Every arm refuses rather than defaulting: a number this reader shrugged at
 // would be stored as zero, and a zero compares equal to another zero -- so a
 // corrupt Sidecar would report a Recording as still matching its settings.
+// `.Engine` refuses an empty value the same way: `unquoted` alone accepts an
+// empty quoted body, and nothing downstream re-checks the field before
+// `engine_display_name` and `complete`'s `assert_filled_in` both treat it as
+// present -- refusing it here, rather than there, is the A8 boundary.
 @(private)
 @(require_results)
 store :: proc(s: ^Sidecar, key: Key, value: string, allocator: mem.Allocator) -> (ok: bool) {
@@ -387,6 +424,9 @@ store :: proc(s: ^Sidecar, key: Key, value: string, allocator: mem.Allocator) ->
 
 	switch key {
 	case .Engine:
+		s.engine, ok = unquoted(value, allocator)
+		ok = ok && len(s.engine) > 0
+	case .Engine_Sha256:
 		s.engine_version, ok = unquoted(value, allocator)
 	case .Model:
 		s.model, ok = unquoted(value, allocator)

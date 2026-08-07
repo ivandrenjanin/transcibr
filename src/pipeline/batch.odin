@@ -114,7 +114,7 @@ re_rendered_and_placed :: proc(
 		transcript.Render_Context {
 			now = time.now(),
 			source_display = source,
-			engine_version = made.engine_version,
+			engine_version = artifact.engine_display_name(made.engine),
 			model = artifact.model_display_name(made.model),
 			profile = o.profile,
 		},

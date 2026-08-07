@@ -96,3 +96,17 @@ The `$OdinPackagesWithoutTests` pointer this record's "Consequences" section car
 is named there, so a rule that lived there could not be turned red — is now `TEST_LESS_SRC_PACKAGES`
 in `tools\policy\packages.odin`. The untestability rationale for keeping this decision in
 `transcibr:planning` rather than `src/cli` is unchanged.
+
+## Superseded (2026-08-07, #50)
+
+This decision is superseded by ADR-0037. The reopening clause this record's own "What reopens this"
+paragraph named — the Engine becoming identifiable rather than merely nameable — is exactly what
+issue #50 built: `--plan` gained `--engine-exe`, `artifact.identify_engine` hashes the Engine binary
+the same way `identify_model` hashes the Model, `planning.Settings.engine_version` stopped being a
+`Maybe(string)`, and `engine_of`'s absent branch — along with `resumed`'s paired assertion about it —
+is deleted. The trade this record accepted, "a user who upgrades their Engine and does not say so is
+not noticed," no longer holds: the Engine is noticed the same way a replaced Model file already is.
+Corpora whose recorded Engine version was a typed string, rather than a digest, re-transcribe once
+under the new comparison — the migration cost ADR-0037 records and the point of taking it. This
+record's history is left as written above; nothing in its prior text is corrected or withdrawn, only
+overtaken.

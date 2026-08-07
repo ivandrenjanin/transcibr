@@ -12,10 +12,13 @@ package pipeline
 // output in place of a real Engine run.
 
 import "core:fmt"
+import "core:mem"
 import "core:os"
+import "core:strings"
 import "core:testing"
 import "transcibr:artifact"
 import "transcibr:audio"
+import "transcibr:engine"
 import "transcibr:planning"
 import "transcibr:testkit"
 import "transcibr:transcript"
@@ -65,8 +68,27 @@ FAKE_RESUME_STAGES := Stages(Recording_Job, Recording_Extracted) {
 	abandon_job = abandon_recording_job,
 }
 
+// A digest-shaped placeholder, not a real hash of anything: identifying the
+// Engine for real is `artifact.identify_engine`'s job (src/artifact/engine.odin),
+// exercised by that package's own tests. This package only needs a value the
+// same length a real digest is, since `planning.current_of` now asserts that
+// (issue #50).
 @(private)
-RESUME_ENGINE_VERSION :: "resume-test-engine"
+RESUME_ENGINE_DIGEST :: artifact.Digest(
+	"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+)
+
+@(private)
+RESUME_ENGINE_DIGEST_REPLACED :: artifact.Digest(
+	"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+)
+
+// The Engine binary's own path -- a plain literal, not a fixture on disk:
+// `resume_settings`/`resume_options` only need a nonempty value to satisfy
+// `planning.current_of`'s and `recording_sidecar`'s own asserts, the same
+// role `RESUME_ENGINE_DIGEST` plays for the digest.
+@(private)
+RESUME_ENGINE_PATH :: "C:\\tools\\whisper-cli.exe"
 
 // `recording_sidecar` always stamps `artifact.ENGINE_DEFAULT_BEAM` -- a
 // Recording_Job carries no beam of its own -- so planning's own `current_-`
@@ -76,20 +98,28 @@ RESUME_ENGINE_VERSION :: "resume-test-engine"
 @(require_results)
 resume_settings :: proc() -> planning.Settings {
 	return planning.Settings {
-		engine_version = RESUME_ENGINE_VERSION,
+		engine_version = RESUME_ENGINE_DIGEST,
+		engine_path = RESUME_ENGINE_PATH,
 		model = artifact.Model{path = "m.bin", digest = a_digest('r'), bytes = 1},
 		beam = artifact.ENGINE_DEFAULT_BEAM,
 		merge_profile = transcript.profile_name(transcript.DEFAULT_PROFILE),
 	}
 }
 
+// The Engine's digest is computed once, the same way `--batch` computes it
+// once and hands it to both `planning.Settings` and `Batch_Options`
+// (src/cli/batch.odin) -- so a test that wants a Batch to see a DIFFERENT
+// Engine changes `settings.engine_version` and rebuilds these options from
+// it, rather than editing the two independently and risking exactly the
+// drift issue #70 found between `--plan` and `--batch`.
 @(private)
 @(require_results)
 resume_options :: proc(tree: string, settings: planning.Settings) -> Batch_Options {
 	return Batch_Options {
 		cache = tree,
 		model = settings.model,
-		engine_version = RESUME_ENGINE_VERSION,
+		tools = Tools{engine = engine.Tools{engine = settings.engine_path}},
+		engine_version = string(settings.engine_version),
 		profile = transcript.DEFAULT_PROFILE,
 		config = Config{extract_workers = 1, queue_depth = 1, join_bound_ms = JOIN_BOUND_MS},
 	}
@@ -423,23 +453,17 @@ placed_from_engine_output_places_a_final_cue_offset_that_advances :: proc(t: ^te
 	testing.expect_value(t, summary.failed, 0)
 }
 
-// The corpus-level claim issue #70 is about, pinned where both --batch and
-// --plan actually converge: `settled_engine_version` (src/pipeline/recording.odin)
-// runs AFTER `planning.plan_batch` decides, never before, so a flagless
-// --batch's Maybe(string) reaches planning as nil and skips exactly where a
-// flagless --plan does -- not as a Settings_Changed retranscribe caused by
-// UNKNOWN leaking in ahead of the decision.
-@(private)
-@(require_results)
-settled_options :: proc(tree: string, settings: planning.Settings) -> Batch_Options {
-	o := resume_options(tree, settings)
-	o.engine_version = settled_engine_version(settings.engine_version)
-	return o
-}
-
+// Issue #50, at the corpus level where --batch and --plan actually converge:
+// a Batch always identifies its Engine now (planning.Settings.engine_version
+// is no longer Maybe), so the resume rule this pins is that a matching
+// digest skips and a CHANGED one -- an Engine binary replaced under the same
+// name is exactly this, since a path alone cannot notice it -- retranscribes.
+// This is the failure ADR-0027 accepted and issue #50 closes: it used to
+// take a hand-typed `--engine-version` matching byte for byte to notice, and
+// a flagless Batch skipped every corpus in existence, upgraded Engine or not.
 @(test)
-a_flagless_batch_skips_a_recording_and_keeps_its_recorded_engine_version :: proc(t: ^testing.T) {
-	tree := testkit.made_scratch_cache(t, "pipeline", "provenance", context.allocator)
+a_batch_whose_engine_digest_changed_since_re_transcribes_rather_than_skips :: proc(t: ^testing.T) {
+	tree := testkit.made_scratch_cache(t, "pipeline", "engine-replaced", context.allocator)
 	defer testkit.remove_cache(tree, context.allocator)
 	defer delete(tree, context.allocator)
 
@@ -454,75 +478,34 @@ a_flagless_batch_skips_a_recording_and_keeps_its_recorded_engine_version :: proc
 	defer planning.destroy_plan(first_plan, context.allocator)
 	first := run_recordings(
 		first_plan,
-		settled_options(tree, named),
+		resume_options(tree, named),
 		context.allocator,
 		nil,
 		FAKE_RESUME_STAGES,
 	)
 	testing.expect_value(t, first.transcribed, 1)
 
-	unnamed := named
-	unnamed.engine_version = nil
-	second_inventory, second_plan := planned_resume(t, tree, unnamed)
-	defer planning.destroy_inventory(second_inventory, context.allocator)
-	defer planning.destroy_plan(second_plan, context.allocator)
-	second := run_recordings(
-		second_plan,
-		settled_options(tree, unnamed),
+	unchanged_inventory, unchanged_plan := planned_resume(t, tree, named)
+	defer planning.destroy_inventory(unchanged_inventory, context.allocator)
+	defer planning.destroy_plan(unchanged_plan, context.allocator)
+	unchanged := run_recordings(
+		unchanged_plan,
+		resume_options(tree, named),
 		context.allocator,
 		nil,
 		FAKE_RESUME_STAGES,
 	)
-	testing.expect_value(t, second.skipped, 1)
-	testing.expect_value(t, second.transcribed, 0)
+	testing.expect_value(t, unchanged.skipped, 1)
+	testing.expect_value(t, unchanged.transcribed, 0)
 
-	third_inventory, third_plan := planned_resume(t, tree, unnamed)
-	defer planning.destroy_inventory(third_inventory, context.allocator)
-	defer planning.destroy_plan(third_plan, context.allocator)
-	for entry in third_plan.entries {
-		recorded, known := entry.found.recorded.?
-		testing.expect(t, known, "no Sidecar survived the flagless pass")
-		testing.expect_value(t, recorded.engine_version, RESUME_ENGINE_VERSION)
-	}
-}
-
-// Sensitivity check on the test above: naming transcript.UNKNOWN as if it
-// were a real Engine -- exactly what a pre-fix `defaulted_batch` put into
-// Settings before planning ever saw it -- makes the second pass retranscribe
-// rather than skip, so the guard above is not passing regardless of what
-// planning decided.
-@(test)
-a_batch_naming_unknown_as_its_engine_retranscribes_rather_than_skips :: proc(t: ^testing.T) {
-	tree := testkit.made_scratch_cache(t, "pipeline", "provenance-defect", context.allocator)
-	defer testkit.remove_cache(tree, context.allocator)
-	defer delete(tree, context.allocator)
-
-	one := resume_recording(t, tree, "one")
-	defer delete(one, context.allocator)
-
-	named := resume_settings()
-	defer delete(string(named.model.digest), context.allocator)
-
-	first_inventory, first_plan := planned_resume(t, tree, named)
-	defer planning.destroy_inventory(first_inventory, context.allocator)
-	defer planning.destroy_plan(first_plan, context.allocator)
-	first := run_recordings(
-		first_plan,
-		settled_options(tree, named),
-		context.allocator,
-		nil,
-		FAKE_RESUME_STAGES,
-	)
-	testing.expect_value(t, first.transcribed, 1)
-
-	defaulted := named
-	defaulted.engine_version = transcript.UNKNOWN
-	second_inventory, second_plan := planned_resume(t, tree, defaulted)
+	replaced := named
+	replaced.engine_version = RESUME_ENGINE_DIGEST_REPLACED
+	second_inventory, second_plan := planned_resume(t, tree, replaced)
 	defer planning.destroy_inventory(second_inventory, context.allocator)
 	defer planning.destroy_plan(second_plan, context.allocator)
 	second := run_recordings(
 		second_plan,
-		settled_options(tree, defaulted),
+		resume_options(tree, replaced),
 		context.allocator,
 		nil,
 		FAKE_RESUME_STAGES,
@@ -604,4 +587,109 @@ a_merge_profile_change_alone_drives_the_real_re_render_and_placement :: proc(t: 
 			entry.outcome.decision,
 		)
 	}
+}
+
+// Rewrites the recorded `engine: "..."` line to `engine: ""`, standing in for
+// a hand-edited or third-party-written Sidecar -- `read_sidecar` accepts the
+// result (an empty quoted body is a valid value), which is exactly what lets
+// the corruption reach `re_rendered_and_placed` rather than being refused on
+// the way in.
+@(private)
+@(require_results)
+corrupted_engine_field :: proc(
+	text: string,
+	allocator: mem.Allocator,
+) -> (
+	corrupted: string,
+	ok: bool,
+) {
+	lines := strings.split(text, "\n", context.temp_allocator)
+	defer delete(lines, context.temp_allocator)
+
+	found := false
+	for &line in lines {
+		if strings.has_prefix(line, "engine: \"") {
+			line = "engine: \"\""
+			found = true
+			break
+		}
+	}
+	if !found {
+		return "", false
+	}
+	return strings.join(lines, "\n", allocator), true
+}
+
+// A hand-edited or third-party-written Sidecar can carry `engine: ""` --
+// `unquoted` alone accepts an empty quoted body as a valid value. Before
+// `artifact.read_sidecar` refused this case (src/artifact/sidecar.odin's
+// `store`), such a record still read back as `known`, and a later Re_Render
+// built off it crashed the whole runner reaching `engine_display_name`'s or
+// `complete`'s assert (issue #22's failure mode, no summary, no report).
+// This drives that exact path end to end: plant a real Sidecar, corrupt its
+// `engine:` line on disk, then plan and run again with the SAME settings.
+// `read_sidecar`'s refusal makes the record `Provenance_Unknown` rather than
+// `known`, so the Recording is transcribed again -- the disposition ADR-0003
+// already gives unknown provenance -- rather than crashing the Batch.
+@(test)
+a_recorded_sidecar_with_an_empty_engine_field_is_redone_rather_than_crashing :: proc(
+	t: ^testing.T,
+) {
+	tree := testkit.made_scratch_cache(t, "pipeline", "empty-engine", context.allocator)
+	defer testkit.remove_cache(tree, context.allocator)
+	defer delete(tree, context.allocator)
+
+	one := resume_recording(t, tree, "one")
+	defer delete(one, context.allocator)
+
+	settings := resume_settings()
+	defer delete(string(settings.model.digest), context.allocator)
+	o := resume_options(tree, settings)
+
+	first_inventory, first_plan := planned_resume(t, tree, settings)
+	defer planning.destroy_inventory(first_inventory, context.allocator)
+	defer planning.destroy_plan(first_plan, context.allocator)
+	first := run_recordings(first_plan, o, context.allocator, nil, FAKE_RESUME_STAGES)
+	testing.expect_value(t, first.transcribed, 1)
+	testing.expect_value(t, first.failed, 0)
+
+	names, named := artifact.names_of(one, context.allocator)
+	testing.expect(t, named, "a Recording this case just wrote was refused a name")
+	defer artifact.destroy_names(names, context.allocator)
+
+	original, unreadable := os.read_entire_file_from_path(names[.Sidecar], context.allocator)
+	testing.expectf(
+		t,
+		unreadable == nil,
+		"could not read the Sidecar this case just wrote: %s",
+		names[.Sidecar],
+	)
+	defer delete(original, context.allocator)
+
+	corrupted, corrupted_ok := corrupted_engine_field(string(original), context.allocator)
+	testing.expect(t, corrupted_ok, "the recorded Sidecar carried no `engine:` line to corrupt")
+	defer delete(corrupted, context.allocator)
+	testing.expectf(
+		t,
+		os.write_entire_file(names[.Sidecar], transmute([]u8)corrupted) == nil,
+		"could not corrupt %s",
+		names[.Sidecar],
+	)
+
+	second_inventory, second_plan := planned_resume(t, tree, settings)
+	defer planning.destroy_inventory(second_inventory, context.allocator)
+	defer planning.destroy_plan(second_plan, context.allocator)
+	for entry in second_plan.entries {
+		testing.expectf(
+			t,
+			entry.outcome.reason == .Provenance_Unknown,
+			"%s with a corrupted `engine:` field was not read as unrecorded: %v",
+			entry.found.source,
+			entry.outcome.reason,
+		)
+	}
+
+	second := run_recordings(second_plan, o, context.allocator, nil, FAKE_RESUME_STAGES)
+	testing.expect_value(t, second.transcribed, 1)
+	testing.expect_value(t, second.failed, 0)
 }

@@ -329,7 +329,7 @@ placed_from_engine_output :: proc(
 		transcript.Render_Context {
 			now = time.now(),
 			source_display = job.source,
-			engine_version = job.engine_version,
+			engine_version = artifact.engine_display_name(job.tools.engine.engine),
 			model = artifact.model_display_name(job.model.path),
 			profile = job.profile,
 		},
@@ -352,8 +352,10 @@ placed_from_engine_output :: proc(
 @(require_results)
 recording_sidecar :: proc(job: Recording_Job, extracted: Recording_Extracted) -> artifact.Sidecar {
 	assert(len(job.engine_version) > 0, "a Sidecar was built with no Engine version settled")
+	assert(len(job.tools.engine.engine) > 0, "a Sidecar was built with no Engine path settled")
 
 	return artifact.sidecar_of(
+		job.tools.engine.engine,
 		job.engine_version,
 		job.model,
 		artifact.ENGINE_DEFAULT_BEAM,
@@ -363,27 +365,6 @@ recording_sidecar :: proc(job: Recording_Job, extracted: Recording_Extracted) ->
 		extracted.planned.modified_ns,
 		extracted.extracted.container_ms,
 	)
-}
-
-// The derivation `src/cli` used to make ahead of planning, defaulting
-// `Batch_Options.engine_version` to `transcript.UNKNOWN` before a flagless
-// `--batch` ever reached `planning.plan_batch` -- the implicit string-to-
-// `Maybe(string)` conversion at that call site then read as a NAMED Engine,
-// so `planning.engine_of` compared the record against the literal word
-// "unknown" instead of leaving the comparison to the record's own value
-// (issue #70). Settling belongs here instead: after planning has already
-// seen presence or absence exactly as `--plan` does, and only for the one
-// string `recording_sidecar` actually writes.
-@(require_results)
-settled_engine_version :: proc(named: Maybe(string)) -> (version: string) {
-	defer assert(len(version) > 0, "an Engine nobody named is UNKNOWN, never empty")
-
-	if value, on_purpose := named.?; on_purpose {
-		if len(value) > 0 {
-			return value
-		}
-	}
-	return transcript.UNKNOWN
 }
 
 discard_recording_audio :: proc(extracted: Recording_Extracted) {
@@ -436,6 +417,7 @@ new_recording_job :: proc(
 ) -> Recording_Job {
 	assert(len(source) > 0, "there is no Recording here to build a Job for")
 	assert(len(name) > 0, "a Recording with no artifact stem has nowhere to put its output")
+	assert(len(tools.engine.engine) > 0, "a Recording Job was built with no Engine to spawn")
 
 	arena := new(mem.Dynamic_Arena, runtime.heap_allocator())
 	mem.dynamic_arena_init(
