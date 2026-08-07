@@ -22,12 +22,16 @@ import "transcibr:testkit"
 // actually testing (deny, run the operation, restore, then assert on the
 // captured result) precisely so a dead run has as little to catch as
 // possible -- but the window cannot be closed to zero, so a strand is
-// still an operating possibility, not a bug to keep chasing. Recovery is
-// manual and always the same two steps, run against the exact stranded
-// path and never a wildcard: `icacls <path> /reset /t` first, which is
-// what actually clears the deny (a bare delete against a reset-less
-// directory still fails the same way), then `Remove-Item -Recurse -Force
-// <path>`.
+// still an operating possibility, not a bug to keep chasing. The dominant
+// residual is not the narrowed operation itself: `undenied`'s restoring
+// icacls child is measured at roughly 20ms against the sub-2ms the fix
+// actually removes from the window, so the restoring child -- not
+// `discover` -- is where most of the remaining exposure sits, and no
+// further narrowing of this file touches it. Recovery is manual and
+// always the same two steps, run against the exact stranded path and
+// never a wildcard: `icacls <path> /reset /t` first, which is what
+// actually clears the deny (a bare delete against a reset-less directory
+// still fails the same way), then `Remove-Item -Recurse -Force <path>`.
 @(private)
 ICACLS :: "icacls.exe"
 
