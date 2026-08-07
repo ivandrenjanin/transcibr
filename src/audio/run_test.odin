@@ -30,9 +30,10 @@ SETTLING_GAP_NS :: i64(2_000_000_000)
 @(private)
 UNSETTLED_GAP_NS :: i64(50_000_000)
 
-// The caller frees the path. The age is set and never waited for, which is what
-// makes any of this a case at all: the sweep's ceilings are days and its floor
-// is an hour.
+// A thin adapter over testkit.fixture_file's own age twist: every call site
+// in this suite wants a fixture of a given SIZE, aged by a given amount,
+// never real content, so this is the one place that turns `bytes` into the
+// zero-filled buffer fixture_file actually writes. The caller frees the path.
 @(private)
 @(require_results)
 aged_file :: proc(
@@ -42,18 +43,12 @@ aged_file :: proc(
 	bytes: int,
 	age: time.Duration,
 ) -> string {
-	path := fmt.aprintf("%s\\%s", cache, name, allocator = context.allocator)
-
 	content := make([]u8, bytes, context.allocator)
 	defer delete(content, context.allocator)
-	testing.expectf(t, os.write_entire_file(path, content) == nil, "could not write %s", path)
-
-	dated := time.time_add(time.now(), -age)
-	testing.expectf(t, os.change_times(path, dated, dated) == nil, "could not age %s", path)
-	return path
+	return testkit.fixture_file(t, cache, name, content, age, context.allocator)
 }
 
-// Spelled the same way at all three call sites (transcibr:testkit's own
+// Spelled the same way at all four call sites (transcibr:testkit's own
 // header explains why this one is not among them): child_test.odin is part of
 // package child, and a testkit that imported child could not be imported back
 // by child's own tests without a cycle.
