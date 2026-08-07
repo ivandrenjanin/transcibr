@@ -17,8 +17,6 @@
 // those four needs to fire at least once.
 package policy
 
-import "core:fmt"
-import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:testing"
@@ -32,7 +30,7 @@ import "core:testing"
 // exemption roster, so `bare` is a violation however it is named -- plus one
 // `*_test.odin` file sitting directly under `tools/` and belonging to no
 // package. Directories are listed parent before child, the order
-// `os.make_directory` needs and `remove_e2e_fixture` walks in reverse.
+// `os.make_directory` needs and `remove_fixture` walks in reverse.
 E2E_FIXTURE_DIRS :: []string {
 	"src",
 	"src/kept",
@@ -53,11 +51,8 @@ E2E_FIXTURE_DIRS :: []string {
 // (rule M2), and an `os.remove_all(...)` call (issue #97/#105). Every other
 // planted file declares its vet tag, names no network code, calls no
 // `remove_all`, and stays within the line limit, so the only per-file
-// violations `check_repository` can report are these six.
-E2E_Fixture_File :: struct {
-	path:    string,
-	content: string,
-}
+// violations `check_repository` can report are these six. `Fixture_File`
+// itself lives in fixture_test.odin now, shared by every fixture family.
 
 // `padded`'s 69 blank lines between its header and its closing brace put its
 // own span at 71 lines, one over CLAUDE.md rule F1's 70-line limit -- rule
@@ -151,7 +146,7 @@ wipes :: proc() {
 }
 `
 
-E2E_FIXTURE_FILES :: []E2E_Fixture_File {
+E2E_FIXTURE_FILES :: []Fixture_File {
 	{
 		"src/kept/kept_test.odin",
 		"#+vet explicit-allocators\npackage kept\n\nimport \"core:testing\"\n\n@(test)\nchecks :: proc(t: ^testing.T) {\n}\n",
@@ -196,14 +191,18 @@ E2E_FIXTURE_JUSTFILE :: "test:\n\todin test src/kept {{vet}}\n"
 // then the three `tools/` violations.
 @(test)
 check_repository_reports_the_full_violation_set_over_a_planted_fixture :: proc(t: ^testing.T) {
-	base, base_ok := fixture_root("transcibr-policy-e2e-fixture", context.allocator)
+	base, base_ok := fixture_root(t, "transcibr-policy-e2e-fixture", context.allocator)
 	testing.expect_value(t, base_ok, true)
 	defer delete(base, context.allocator)
 	if !base_ok {
 		return
 	}
-	plant_e2e_fixture(t, base)
-	defer testing.expect_value(t, remove_e2e_fixture(base), os.Error(nil))
+	plant_fixture(t, base, E2E_FIXTURE_DIRS, E2E_FIXTURE_FILES, E2E_FIXTURE_JUSTFILE)
+	defer testing.expect_value(
+		t,
+		remove_fixture(base, E2E_FIXTURE_DIRS, E2E_FIXTURE_FILES),
+		os.Error(nil),
+	)
 
 	violations := check_repository(base, context.allocator)
 	defer delete(violations)
@@ -275,66 +274,7 @@ expect_e2e_violation :: proc(
 	testing.expect(t, strings.contains(violations[index].message, message_contains))
 }
 
-@(require_results)
-e2e_fixture_path :: proc(base: string, name: string, allocator: mem.Allocator) -> string {
-	assert(len(base) > 0, "asked to name an e2e fixture file under no root at all")
-	assert(len(name) > 0, "asked to name an e2e fixture file with no name at all")
-	return fmt.aprintf("%s/%s", base, name, allocator = allocator)
-}
-
-// Plants the fixture, per-entry -- no `os.remove_all` counterpart is needed
-// here since planting never removes anything, but the same hand-rolled
-// per-path shape is used for both halves so the pairing (CLAUDE.md rule A4)
-// reads the same way at both ends.
-plant_e2e_fixture :: proc(t: ^testing.T, base: string) {
-	assert(t != nil, "asked to plant an e2e fixture for no test at all")
-	assert(len(base) > 0, "asked to plant an e2e fixture at no path at all")
-
-	testing.expect_value(t, os.make_directory(base), os.Error(nil))
-	for name in E2E_FIXTURE_DIRS {
-		path := e2e_fixture_path(base, name, context.allocator)
-		defer delete(path, context.allocator)
-		testing.expect_value(t, os.make_directory(path), os.Error(nil))
-	}
-
-	for file in E2E_FIXTURE_FILES {
-		path := e2e_fixture_path(base, file.path, context.allocator)
-		defer delete(path, context.allocator)
-		testing.expect_value(
-			t,
-			os.write_entire_file(path, transmute([]byte)file.content),
-			os.Error(nil),
-		)
-	}
-
-	justfile := e2e_fixture_path(base, "justfile", context.allocator)
-	defer delete(justfile, context.allocator)
-	recipe := E2E_FIXTURE_JUSTFILE
-	testing.expect_value(t, os.write_entire_file(justfile, transmute([]byte)recipe), os.Error(nil))
-}
-
-// Removes the fixture, per-entry: the #97/#105 rule (CLAUDE.md's Odin notes)
-// bans `os.remove_all` anywhere in this tree, build-enforced by
-// `collect_remove_all_violations` itself, so teardown here follows the same
-// hand-rolled shape `packages_test.odin`'s own fixtures already use -- files
-// first, then directories in reverse (child before parent), then the base.
-@(require_results)
-remove_e2e_fixture :: proc(base: string) -> os.Error {
-	assert(len(base) > 0, "asked to remove an e2e fixture at no path at all")
-
-	justfile := e2e_fixture_path(base, "justfile", context.allocator)
-	defer delete(justfile, context.allocator)
-	os.remove(justfile)
-
-	for file in E2E_FIXTURE_FILES {
-		path := e2e_fixture_path(base, file.path, context.allocator)
-		defer delete(path, context.allocator)
-		os.remove(path)
-	}
-	#reverse for name in E2E_FIXTURE_DIRS {
-		path := e2e_fixture_path(base, name, context.allocator)
-		defer delete(path, context.allocator)
-		os.remove(path)
-	}
-	return os.remove(base)
-}
+// `e2e_fixture_path`, `plant_e2e_fixture` and `remove_e2e_fixture` are gone
+// -- this fixture now plants and removes through `fixture_path` and
+// `plant_fixture`/`remove_fixture` in fixture_test.odin, the one shape every
+// fixture family in this package uses (issue #202's consolidation item).
