@@ -70,6 +70,11 @@ run_plan_drill :: proc(
 // The #237 doctor shape's PR body names this as the covering test for the
 // call site itself: an unreadable Engine used to tell a `--plan` user "the
 // Batch cannot start" (issue #216) even though no Batch was ever asked for.
+//
+// Fix round 1 (PR #245's review, finding 2): the first assertion used to
+// check only `strings.contains(stderr_text, "--plan")`, which a wrong-noun
+// framing (e.g. "--plan cannot verify this Model") still satisfies. Pinned
+// to the exact sentence.
 @(test)
 a_plan_refuses_an_unreadable_engine_naming_itself_and_not_the_batch :: proc(t: ^testing.T) {
 	directory := testkit.made_scratch_cache(t, "planning", "engine-refusal-cli", context.allocator)
@@ -109,8 +114,8 @@ a_plan_refuses_an_unreadable_engine_naming_itself_and_not_the_batch :: proc(t: ^
 	testing.expect_value(t, exit_code, 1)
 	testing.expectf(
 		t,
-		strings.contains(stderr_text, "--plan"),
-		"the plan refusal never named --plan: %s",
+		strings.contains(stderr_text, "--plan cannot verify this Engine"),
+		"the plan refusal did not name itself, in its exact words: %s",
 		stderr_text,
 	)
 	testing.expectf(

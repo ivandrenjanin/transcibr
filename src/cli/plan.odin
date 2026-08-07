@@ -26,31 +26,10 @@ import "transcibr:transcript"
 // shared one.
 PLAN_ENGINE_REFUSAL_FRAMING :: "--plan cannot verify this Engine"
 
-// The same shape as `main.odin`'s `engine_identified`, with one deliberate
-// difference: the framing passed to `artifact.engine_error_message`. See the
-// issue #216 note above for why this is a second call site and not a second
-// hasher.
-@(private)
-@(require_results)
-plan_engine_identified :: proc(path: string) -> (identified: artifact.Digest, ok: bool) {
-	assert(len(path) > 0, "there is no Engine here to identify")
-
-	unidentified: artifact.Engine_Fault
-	identified, unidentified = artifact.identify_engine(path, context.allocator)
-	if unidentified == .None {
-		return identified, true
-	}
-
-	message := artifact.engine_error_message(
-		unidentified,
-		path,
-		context.allocator,
-		PLAN_ENGINE_REFUSAL_FRAMING,
-	)
-	assert(len(message) > 0, "an Engine was refused and nothing said why")
-	pipeline.report_fault(message, context.allocator)
-	return identified, false
-}
+// Fix round 1 (PR #245's review, finding 3): the call site below used to
+// call a private `plan_engine_identified` here, byte-identical to
+// `transcribe.odin`'s own copy but for the framing constant it closed over.
+// `engine_identified_framed` (src/cli/engine_identify.odin) replaces both.
 
 // `--engine-exe` is mandatory, the same as `--model-file`: the Engine is
 // identified by its own SHA-256, exactly the way the Model is (ADR-0027's
@@ -80,7 +59,7 @@ plan_batch :: proc(arguments: []string) -> int {
 	}
 
 	fmt.eprintfln("  identifying %s", o.engine)
-	engine_digest, engine_named := plan_engine_identified(o.engine)
+	engine_digest, engine_named := engine_identified_framed(o.engine, PLAN_ENGINE_REFUSAL_FRAMING)
 	defer delete(string(engine_digest), context.allocator)
 	if !engine_named {
 		return OPERATING_ERROR

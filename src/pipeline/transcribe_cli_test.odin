@@ -127,14 +127,70 @@ a_transcribe_refuses_an_unreadable_engine_naming_itself_and_not_the_batch :: pro
 	testing.expect_value(t, exit_code, 1)
 	testing.expectf(
 		t,
-		strings.contains(stderr_text, "--transcribe"),
-		"the transcribe refusal never named --transcribe: %s",
+		strings.contains(stderr_text, "--transcribe cannot verify this Engine"),
+		"the transcribe refusal did not name itself, in its exact words: %s",
 		stderr_text,
 	)
 	testing.expectf(
 		t,
 		!strings.contains(stderr_text, "the Batch cannot start"),
 		"the transcribe refusal still claims a Batch cannot start: %s",
+		stderr_text,
+	)
+}
+
+// Fix round 1 (PR #245's review, finding 1): `transcribe_one` opens the
+// scratch cache before it ever touches the Engine or the Model, and that
+// refusal kept the default `process.BATCH_CANNOT_START` framing -- issue
+// #216's own headline defect, unfenced, one call site away from the Engine
+// refusal the test above already covers.
+@(test)
+a_transcribe_refuses_an_unusable_cache_naming_itself_and_not_the_batch :: proc(t: ^testing.T) {
+	directory := testkit.made_scratch_cache(t, "pipeline", "cache-refusal-cli", context.allocator)
+	defer delete(directory, context.allocator)
+	defer testkit.remove_cache(directory, context.allocator)
+
+	not_a_directory := testkit.fixture_file(
+		t,
+		directory,
+		"not-a-dir.txt",
+		"a file, so the cache path names it instead of a directory",
+		context.allocator,
+	)
+	defer delete(not_a_directory, context.allocator)
+	recording_path := testkit.fixture_file(
+		t,
+		directory,
+		"clip.mp4",
+		"never read: the drill refuses at the cache before it is ever opened",
+		context.allocator,
+	)
+	defer delete(recording_path, context.allocator)
+
+	stderr_text, exit_code, ran := run_transcribe_drill(
+		t,
+		recording_path,
+		"whisper-cli.exe",
+		"ggml-model.bin",
+		not_a_directory,
+		context.allocator,
+	)
+	defer delete(stderr_text, context.allocator)
+	if !ran {
+		return
+	}
+
+	testing.expect_value(t, exit_code, 1)
+	testing.expectf(
+		t,
+		strings.contains(stderr_text, "--transcribe cannot open this cache"),
+		"the transcribe cache refusal did not name itself, in its exact words: %s",
+		stderr_text,
+	)
+	testing.expectf(
+		t,
+		!strings.contains(stderr_text, "the Batch cannot start"),
+		"the transcribe cache refusal still claims a Batch cannot start: %s",
 		stderr_text,
 	)
 }
