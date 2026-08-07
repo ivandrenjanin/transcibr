@@ -347,35 +347,35 @@ directory does not have to be re-derived on every later Batch:
 
 - **The marker is already there.** Trusted outright; nothing is listed.
 - **The directory is empty.** Trivially transcibr's to take; the marker is written.
-- **The directory holds only the four shapes this package and the Engine ever write into a
-  scratch cache** — a `.wav` carrying the source key `wav_cache_path` always writes onto it
-  (`<stem>.<16 lowercase hex chars>.wav`), `.json`, `.probe`, `.part` — **and nothing that is not a
-  plain file.** Adopted: the marker is written, and nothing already there is touched. This is the
-  migration story an ownership check has to answer honestly or not ship at all — a directory from
-  before this ticket, holding a Batch's worth of leftover, correctly-keyed audio and Engine output
-  and nothing else, reads as transcibr's own on first contact and is never stranded.
-- **Anything else** — a subdirectory, a single file whose name is not one of those four shapes, or
-  a `.wav` with no source key on it — refuses with the new `Cache_Fault.Foreign_Directory`, naming
-  the remedy ("point `--cache` at an empty directory, or one transcibr already owns") through the
-  same `cache_error_message` channel every other `Cache_Fault` already renders through. No
-  `src/cli` edit was needed: `--transcribe`'s and `--batch`'s existing calls to
-  `audio.cache_error_message` already render whatever `Cache_Fault` `open_cache` hands back.
+- **Anything else** — the directory holds any entry at all — refuses with the new
+  `Cache_Fault.Foreign_Directory`, naming the remedy ("point `--cache` at an empty directory, or
+  one transcibr already owns") through the same `cache_error_message` channel every other
+  `Cache_Fault` already renders through. No `src/cli` edit was needed: `--transcribe`'s and
+  `--batch`'s existing calls to `audio.cache_error_message` already render whatever `Cache_Fault`
+  `open_cache` hands back.
 
-**The residual this section originally accepted is closed, not merely stated, as of #256's round-1
-review.** The first cut of the adoption rule read a bare `<stem>.wav` (no key) as transcibr's own by
-suffix alone, and three probes proved that shape genuinely destructive: a folder of a user's own
-voice memos (`memo-2019-holiday.wav`, `memo-2020-grandma.wav`), and a podcast/DAW export
-(`podcast-ep12.wav` + `podcast-ep12.json`, the exact pairing this addendum had called "still a
-narrow pairing" — measured, it was adopted and swept whole) were both adopted and destroyed by
-`sweep_cache` under the suffix-only rule, and once a marker landed for a wav-only folder the
-adoption never re-checked, so a single video dropped in later was still silently swept. Requiring
-`wav_name_key_shaped` (`src/audio/run.odin`) — exactly `SOURCE_KEY_CHARS` lowercase hex characters
-after the last `.` before `.wav` — closes all three: nothing a user or another program plausibly
-writes carries that key, so none of the three probed directories are adopted, and none reach the
-marker at all. The cost is that a bare-`.wav`-only cache from strictly before this ticket's own wav
-key existed is refused once rather than silently adopted — acceptable because the scratch cache
-itself is disposable and the refusal names its own remedy (an empty or already-owned `--cache`),
-where the directories the old rule destroyed were not disposable at all.
+**#258's round-2 review deleted content-shape adoption outright; ownership is never inferred from
+what a directory holds, only from the marker or from emptiness.** Two earlier cuts of this
+addendum tried to make adoption of a non-empty, unmarked directory safe — first by suffix alone,
+then (#256's round-1 review) by requiring a `.wav` to also carry its own source key
+(`wav_name_key_shaped`) — and both were proved unsafe in turn. The round-1 tightening closed the
+`.wav` entrance (a folder of the user's own voice memos, or a podcast/DAW export's
+`<name>.wav`/`<name>.json` pair) but left `.json`, `.probe` and `.part` as bare suffix matches, so
+a JSON-export folder (`invoices-2019.json`, `invoices-2020.json`) or a browser/yt-dlp
+download-in-progress folder (`lecture-series.mp4.part`) still matched the shape check, was still
+adopted, and was still swept whole — and once a marker landed for either shape, a later file
+dropped into the same directory (a video, say) was still silently trusted through the marker's
+short-circuit. The round-2 review also established that shape adoption, even working exactly as
+designed, never rescued a real pre-#256 cache in the first place: every wav `produce` wrote before
+this ticket was keyed on `job.name` alone (`<cache>\<stem>.wav`), which is precisely the unkeyed
+shape the round-1 tightening refuses — so the adoption branch's entire remaining effect, after
+round 1, was the data-loss surface named above, with no migration value left to weigh against it.
+Deleting `cache_directory_is_transcibr_shaped`, `entry_name_transcibr_written`,
+`wav_name_key_shaped` and `is_source_key_shaped` and refusing every non-empty, unmarked directory
+closes the class rather than the three or five shapes a given review round happened to probe: a
+pre-#256 cache is refused once, exactly as a JSON-export or download-in-progress or voice-memo
+folder now is, and the refusal names its own remedy (an empty or already-owned `--cache`) — the
+scratch cache is disposable; the directories the old rule destroyed were not.
 
 **Defense in depth, stated exactly as far as it goes.** `sweep_cache` gates through `open_cache` on
 every call, unconditionally — so a caller that reaches it directly is refused before anything is
@@ -389,10 +389,11 @@ architecture this package already committed to. The gate is `open_cache`, called
 downstream of it re-derives the answer.
 
 The marker itself is excluded from `cache_entries` (`src/audio/run.odin`), and so from the age/size
-sweep: a marker aged out by the 7-day ceiling would strand nothing (the next `open_cache` would
-simply re-derive ownership from the still-shaped contents), but excluding it outright avoids one
-aggressive sweep call ever making that re-derivation necessary at all, and avoids a
-directory-holding-only-transcibr-content losing its trust to its own housekeeping.
+sweep, and this is now load-bearing rather than an optimization: since ownership is never
+re-derived from a directory's contents (round-2 addendum above), a marker the sweep took out from
+under a live, non-empty cache would leave the next `open_cache` seeing a non-empty, unmarked
+directory and refusing it with `Cache_Fault.Foreign_Directory` — a working cache stranded by its
+own housekeeping. Excluding the marker by name keeps that from ever being reachable.
 
 ### The wav key stops colliding on a shared stem
 

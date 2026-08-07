@@ -831,22 +831,26 @@ open_cache :: proc(cache: string, allocator: mem.Allocator) -> Cache_Fault {
 
 // Written into a cache directory transcibr created or has already verified it
 // owns, so the NEXT `open_cache` against the same directory does not have to
-// re-walk its contents to answer the same question again. Its own name is
-// not one of the four shapes `entry_name_transcibr_written` below
-// recognizes, so it is never itself read as evidence of ownership.
+// re-walk its contents to answer the same question again.
 CACHE_MARKER_NAME :: ".transcibr-cache"
 
 // The ownership boundary: transcibr may write into a cache directory it
-// created, one already carrying its own marker, or a directory holding
-// nothing but the four shapes this package itself ever writes there --
-// yesterday's cache, from before this ticket, adopted rather than stranded.
+// created, one already carrying its own marker, or an empty directory --
+// trivially transcibr's to take, since there is nothing in it to strand.
 // Anything else is a directory this program did not make and cannot prove it
 // owns, and `sweep_cache`'s age/size sweep or `produce`'s unconditional
 // rename over `<cache>\<name>...wav` is what a wrong answer here would hand
-// to it. Issue #256: `sweep_cache` gates through `open_cache` on every call,
-// so this is the one seam that has to hold; `produce` and `extract` do not
-// re-verify ownership per Recording, exactly as `extract`'s own doc comment
-// already states for cache validity in general -- a Batch calls this once.
+// to it. Issue #256's round-2 review: content-shape adoption of a non-empty,
+// unmarked directory was deleted outright -- every pre-#256 wav was
+// unkeyed, so shape adoption never rescued a real pre-#256 cache, while a
+// `.json`/`.probe`/`.part`-only folder (a JSON export, a download in
+// progress) still matched the four written shapes and was adopted and swept
+// whole. Ownership is now inferred only from the marker or from emptiness,
+// never from content. `sweep_cache` gates through `open_cache` on every
+// call, so this is the one seam that has to hold; `produce` and `extract` do
+// not re-verify ownership per Recording, exactly as `extract`'s own doc
+// comment already states for cache validity in general -- a Batch calls
+// this once.
 @(private)
 @(require_results)
 verify_cache_ownership :: proc(cache: string, allocator: mem.Allocator) -> Cache_Fault {
@@ -865,105 +869,13 @@ verify_cache_ownership :: proc(cache: string, allocator: mem.Allocator) -> Cache
 	}
 	defer os.file_info_slice_delete(listing, allocator)
 
-	if !cache_directory_is_transcibr_shaped(listing) {
+	if len(listing) != 0 {
 		return .Foreign_Directory
 	}
 	if !write_cache_marker(marker) {
 		return .Unusable
 	}
 	return .None
-}
-
-// A directory nothing has marked reads as transcibr's own only when every
-// entry is a plain file (never a subdirectory transcibr never creates) whose
-// name is one of the four shapes `produce`, `probe` and the Engine's own
-// output ever write into a scratch cache -- an empty directory satisfies this
-// trivially, since there is nothing in it to fail the check.
-@(private)
-@(require_results)
-cache_directory_is_transcibr_shaped :: proc(listing: []os.File_Info) -> bool {
-	for info in listing {
-		if info.type != .Regular && info.type != .Undetermined {
-			return false
-		}
-		if !entry_name_transcibr_written(info.name) {
-			return false
-		}
-	}
-	return true
-}
-
-// The four suffixes this package (`.wav`, `.probe`, `.part`) and the Engine
-// (`.json`, `process.ENGINE_OUTPUT_SUFFIX`) ever write into a scratch cache.
-// A `.wav` is required to also carry its own source key
-// (`wav_name_key_shaped`, issue #256's round-1 review): a suffix check alone
-// cannot tell a real transcibr wav from a user's own `<name>.wav` voice
-// memo or a podcast/DAW export's `<name>.wav` + `<name>.json` pair -- both
-// measured, both destroyed by the sweep, under the suffix-only shape this
-// replaces. Every wav `wav_cache_path` writes carries the key; nothing else
-// plausibly does.
-@(private)
-@(require_results)
-entry_name_transcibr_written :: proc(name: string) -> bool {
-	assert(len(name) > 0, "there is no cache entry name here to classify")
-	if strings.has_suffix(name, ".wav") {
-		return wav_name_key_shaped(name)
-	}
-	return(
-		strings.has_suffix(name, ".json") ||
-		strings.has_suffix(name, ".probe") ||
-		strings.has_suffix(name, ".part") \
-	)
-}
-
-// True only for `<stem>.<key>.wav`, where `<key>` is exactly
-// `SOURCE_KEY_CHARS` lowercase hex characters -- the exact shape
-// `wav_cache_path` builds and `hex.encode` renders. A bare `<stem>.wav`, the
-// shape every wav this package wrote before issue #256's key existed and the
-// shape a user's own raw recording or a podcast/DAW export both take, does
-// not match; the migration cost is that a scratch cache is disposable and a
-// refused one names its own remedy, while the directories this refuses
-// instead of adopting are not.
-@(private)
-@(require_results)
-wav_name_key_shaped :: proc(name: string) -> bool {
-	assert(
-		strings.has_suffix(name, ".wav"),
-		"only a .wav-suffixed name reaches the key shape check",
-	)
-
-	trimmed := name[:len(name) - len(".wav")]
-	dot := strings.last_index(trimmed, ".")
-	if dot < 0 {
-		return false
-	}
-	stem := trimmed[:dot]
-	key := trimmed[dot + 1:]
-	if len(stem) == 0 {
-		return false
-	}
-	return is_source_key_shaped(key)
-}
-
-// `key` is exactly `SOURCE_KEY_CHARS` characters, every one a lowercase hex
-// digit -- what `hex.encode` in `source_key` above always renders, and
-// nothing a hand-typed or externally produced filename plausibly matches by
-// chance at this length (the same birthday-bound reasoning `SOURCE_KEY_BYTES`
-// already carries for collision, applied here to accidental resemblance).
-@(private)
-@(require_results)
-is_source_key_shaped :: proc(key: string) -> bool {
-	if len(key) != SOURCE_KEY_CHARS {
-		return false
-	}
-	for r in key {
-		is_digit := r >= '0' && r <= '9'
-		is_lower_hex_letter := r >= 'a' && r <= 'f'
-		if !is_digit && !is_lower_hex_letter {
-			return false
-		}
-	}
-	return true
 }
 
 @(private)
