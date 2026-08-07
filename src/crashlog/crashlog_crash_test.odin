@@ -20,6 +20,7 @@
 // `odin build src/cli -collection:transcibr=src -out:build/odin-test/transcibr-cli-drill.exe -subsystem:console -debug <vet set>`.
 package crashlog
 
+import "core:os"
 import "core:strings"
 import "core:testing"
 import "transcibr:child"
@@ -172,6 +173,62 @@ an_assertion_failure_on_a_worker_thread_leaves_its_message_in_the_log :: proc(t:
 		t,
 		strings.contains(text, "deliberate assertion on a worker thread"),
 		"the worker thread's assertion never reached the log",
+	)
+}
+
+// Fix round 5, issue #76's PR #166: `main` used to write
+// `context.assertion_failure_proc = crashlog.assertion_hook` inside the `if`
+// that decides whether the log opened -- a block-scoped assignment that
+// reverted the instant the block closed, so `main`'s own copy of the
+// context never actually carried the hook. Every other test in this file
+// runs `--crash-drill`'s own modes, which set the hook a second time at
+// `run_crash_drill`'s own proc scope and so passed regardless of whether
+// `main`'s install worked. `wiring-assert` sets nothing itself (see
+// `src/cli/crash_drill.odin`'s `CRASH_DRILL_WIRING_ASSERT` doc comment), so
+// this test is red against the pre-fix `main` and green only once the
+// assignment sits at `main`'s own top level. `main` reads its crash
+// directory from %LOCALAPPDATA%, not from an argument, so this test points
+// that variable at a scratch base for the duration of the drill and restores
+// it afterward; `main` opens its log one level below that base, under
+// `<base>\transcibr`, so cleanup removes that subdirectory before the base
+// itself -- `defer`'s reverse-of-registration order is what sequences the
+// two removals correctly.
+@(test)
+mains_own_wiring_installs_the_assertion_hook_without_the_drills_help :: proc(t: ^testing.T) {
+	base := testkit.scratch_cache(t, "crashlog", "wiring_drill", context.allocator)
+	defer delete(base, context.allocator)
+	dir := strings.concatenate({base, "\\transcibr"}, context.allocator)
+	defer delete(dir, context.allocator)
+	defer os.remove(base)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	previous, had_previous := os.lookup_env("LOCALAPPDATA", context.allocator)
+	defer if had_previous {
+		delete(previous, context.allocator)
+	}
+	if !testing.expect(
+		t,
+		os.set_env("LOCALAPPDATA", base) == nil,
+		"could not point LOCALAPPDATA at the scratch base for this test",
+	) {
+		return
+	}
+	defer if had_previous {
+		_ = os.set_env("LOCALAPPDATA", previous)
+	} else {
+		_ = os.unset_env("LOCALAPPDATA")
+	}
+
+	if !run_crash_drill(t, "wiring-assert", base) {
+		return
+	}
+
+	text := read_log(t, dir)
+	defer delete(text, context.allocator)
+	testing.expect(
+		t,
+		strings.contains(text, "relying on main's own wiring"),
+		"main's own crash-capture wiring never reached the log -- context.assertion_failure_proc was not set at main's own scope",
 	)
 }
 

@@ -113,20 +113,29 @@ OPERATING_ERROR :: 1
 // `context` propagates forward into what a scope calls next, never back out
 // of a call that already returned, so `context.assertion_failure_proc =
 // crashlog.assertion_hook` set inside a helper `main` merely called would
-// vanish the moment that helper returned. Best-effort and silent either way
-// (spec story 57: nothing here phones home, and a machine with no usable
-// %LOCALAPPDATA% still has to transcribe recordings). `--crash-drill`
-// installs a second time, over the directory it was given -- the second
-// call just overwrites where the exception filter points.
+// vanish the moment that helper returned. The SAME rule is why that
+// assignment sits at `main`'s own top level rather than inside the `if` that
+// decides whether the log actually opened: a block is a scope too, so an
+// assignment written inside the `if`'s braces reverts the instant that block
+// closes and `main`'s own copy of the context never carries the hook at all
+// (fix round 5, issue #76's PR #166). Setting the hook unconditionally means
+// `assertion_hook` has to tolerate a log that never opened --
+// `hooks.odin`'s `assertion_hook` skips the write rather than asserting on a
+// closed handle, and still mirrors the failure to stderr. Best-effort and
+// silent either way (spec story 57: nothing here phones home, and a machine
+// with no usable %LOCALAPPDATA% still has to transcribe recordings).
+// `--crash-drill` installs a second time, over the directory it was given --
+// the second call just overwrites where the exception filter points.
 main :: proc() {
 	args, acquired := process.process_argv(context.allocator)
 	assert(acquired, "the operating system did not hand this process its own command line")
 	assert(len(args) > 0, "a process started with no argv at all, not even its own name")
 
 	crash_dir, crash_dir_ok := crashlog.default_directory(context.allocator)
-	if crash_dir_ok && crashlog.install(crash_dir, context.allocator) {
-		context.assertion_failure_proc = crashlog.assertion_hook
+	if crash_dir_ok {
+		_ = crashlog.install(crash_dir, context.allocator)
 	}
+	context.assertion_failure_proc = crashlog.assertion_hook
 
 	if len(args) == 1 {
 		print_version()

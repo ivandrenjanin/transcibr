@@ -64,13 +64,20 @@ enter_assertion_hook :: proc() -> bool {
 // reads the same thing it always did; the log line is the one story 51 asks
 // for. Stack symbolization follows `core:debug/trace`'s own doc example
 // exactly -- it degrades to nothing on a non-`-debug` build rather than
-// failing, per that package's own doc comment.
+// failing, per that package's own doc comment. `main` now sets this hook
+// unconditionally (fix round 5, issue #76's PR #166) rather than only when
+// `install` already opened a log, so `g_log` can still be closed here --
+// `write_bytes`'s own `runtime.assert_contextless(h != nil, ...)` would fire
+// on that handle, which is why the log write below is skipped rather than
+// attempted whenever `g_log` never opened; the stderr mirror still runs.
 assertion_hook :: proc(prefix, message: string, loc: runtime.Source_Code_Location) -> ! {
 	if !enter_assertion_hook() {
 		runtime.trap()
 	}
 
-	record_assert_line(g_log.file, prefix, message, loc)
+	if handle_is_open(g_log) {
+		record_assert_line(g_log.file, prefix, message, loc)
+	}
 
 	runtime.print_caller_location(loc)
 	runtime.print_string(" ")

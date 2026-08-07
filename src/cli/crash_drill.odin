@@ -20,6 +20,21 @@ CRASH_DRILL_ASSERT :: "assert"
 CRASH_DRILL_ASSERT_THREAD :: "assert-thread"
 CRASH_DRILL_BOUNDS :: "bounds"
 
+// Exercises `main`'s OWN crash-capture wiring rather than duplicating it:
+// every other mode below calls `crashlog.install` and sets
+// `context.assertion_failure_proc` itself, at this procedure's own scope,
+// which is exactly what masked fix round 5's issue #76 finding -- `main`'s
+// install had the same bug (the assignment lived inside an `if` block and
+// reverted at the closing brace) and every crash-drill test still passed,
+// because this procedure's own duplicate assignment covered for it. This
+// mode installs nothing and assigns nothing; it relies entirely on whatever
+// `main` already did before dispatching here, so a regression of that bug
+// shows up as a log with no "runtime assertion" line rather than a green
+// test. `dir` is unused by this mode -- the log it should reach is
+// %LOCALAPPDATA%\transcibr\transcibr.log, wherever `main`'s own
+// `crashlog.default_directory` call resolved that to.
+CRASH_DRILL_WIRING_ASSERT :: "wiring-assert"
+
 // `arguments` is `<mode> <directory>`, both required: a drill that does not
 // know where to write leaves nothing for the spawning test to read. An empty
 // directory or an unknown mode is an operating error, not a programmer error
@@ -37,7 +52,10 @@ run_crash_drill :: proc(arguments: []string) -> int {
 	dir := arguments[1]
 
 	switch mode {
-	case CRASH_DRILL_ASSERT, CRASH_DRILL_ASSERT_THREAD, CRASH_DRILL_BOUNDS:
+	case CRASH_DRILL_ASSERT,
+	     CRASH_DRILL_ASSERT_THREAD,
+	     CRASH_DRILL_BOUNDS,
+	     CRASH_DRILL_WIRING_ASSERT:
 	case:
 		_ = refuse("--crash-drill does not know the mode %q.", mode)
 		return USAGE_ERROR
@@ -47,10 +65,12 @@ run_crash_drill :: proc(arguments: []string) -> int {
 		return USAGE_ERROR
 	}
 
-	if !crashlog.install(dir, context.allocator) {
-		return OPERATING_ERROR
+	if mode != CRASH_DRILL_WIRING_ASSERT {
+		if !crashlog.install(dir, context.allocator) {
+			return OPERATING_ERROR
+		}
+		context.assertion_failure_proc = crashlog.assertion_hook
 	}
-	context.assertion_failure_proc = crashlog.assertion_hook
 
 	switch mode {
 	case CRASH_DRILL_ASSERT:
@@ -59,6 +79,11 @@ run_crash_drill :: proc(arguments: []string) -> int {
 		crash_in_a_worker_thread()
 	case CRASH_DRILL_BOUNDS:
 		crash_out_of_bounds(len(arguments))
+	case CRASH_DRILL_WIRING_ASSERT:
+		assert(
+			false,
+			"crashlog drill: deliberate assertion relying on main's own wiring for issue #76 measurement",
+		)
 	case:
 		assert(false, "mode was already validated above")
 	}
