@@ -696,7 +696,15 @@ ensure_fixture_root_refuses_a_nonempty_existing_directory :: proc(t: ^testing.T)
 // (fix round 1 still asserted a bare `os.make_directory(old_shape)` nil
 // ahead of it, which reds on a genuine leftover instead of surviving one) --
 // a real, non-empty collision there still fails loudly, since
-// `ensure_fixture_root` refuses to touch a non-empty directory at all.
+// `ensure_fixture_root` refuses to touch a non-empty directory at all. Issue
+// #202 fix round 3: `fixture_root` itself never touches the filesystem -- it
+// only builds a string -- so the string comparisons below never actually
+// exercised the collision this test's name claims to survive; deleting the
+// plant left the test green. A file written into `old_shape` makes the
+// collision real and non-empty, and `ensure_fixture_root(base)` -- creating
+// the computed root for real, right beside the planted stray -- is the
+// load-bearing proof: it only stays nil if `base` is a genuinely distinct,
+// creatable path.
 @(test)
 fixture_root_survives_a_stray_directory_at_the_old_sibling_name :: proc(t: ^testing.T) {
 	root := os.get_env("TEMP", context.allocator)
@@ -710,12 +718,20 @@ fixture_root_survives_a_stray_directory_at_the_old_sibling_name :: proc(t: ^test
 	testing.expect_value(t, ensure_fixture_root(old_shape), os.Error(nil))
 	defer testing.expect_value(t, os.remove(old_shape), os.Error(nil))
 
+	stray := fixture_path(old_shape, "stray.txt", context.allocator)
+	defer delete(stray, context.allocator)
+	testing.expect_value(t, os.write_entire_file(stray, []byte{}), os.Error(nil))
+	defer testing.expect_value(t, os.remove(stray), os.Error(nil))
+
 	base, base_ok := fixture_root(t, name, context.allocator)
 	defer delete(base, context.allocator)
 
 	testing.expect_value(t, base_ok, true)
 	testing.expect(t, base != old_shape)
 	testing.expect(t, strings.has_prefix(base, root))
+
+	testing.expect_value(t, ensure_fixture_root(base), os.Error(nil))
+	defer testing.expect_value(t, os.remove(base), os.Error(nil))
 }
 
 // Fix round 1 finding 1: the `test:` recipe body carried the token
