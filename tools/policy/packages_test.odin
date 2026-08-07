@@ -349,59 +349,16 @@ an_exempt_untested_package_is_not_reported :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(missing), 0)
 }
 
-// Issue #174: a package the accounting check already requires to be tested
-// (holding a `*_test.odin` file) but with no `@(test)` procedure found in any
-// of its test files -- this is the reported violation, distinct from
-// `untested_packages`, which only ever asks about the file's PRESENCE.
-@(test)
-a_tested_package_with_no_test_procedure_is_reported_missing :: proc(t: ^testing.T) {
-	missing := packages_missing_test_procedures(
-		[]string{"child", "version"},
-		[]string{"child"},
-		TEST_LESS_SRC_PACKAGES,
-		context.allocator,
-	)
-	defer {
-		for name in missing {
-			delete(name, context.allocator)
-		}
-		delete(missing, context.allocator)
-	}
-
-	testing.expect_value(t, len(missing), 1)
-	testing.expect_value(t, missing[0], "version")
-}
-
-@(test)
-a_tested_package_with_a_test_procedure_is_not_reported :: proc(t: ^testing.T) {
-	missing := packages_missing_test_procedures(
-		[]string{"child"},
-		[]string{"child"},
-		TEST_LESS_SRC_PACKAGES,
-		context.allocator,
-	)
-	defer delete(missing, context.allocator)
-
-	testing.expect_value(t, len(missing), 0)
-}
-
-// The exempt roster excuses a package from being REQUIRED tested at all
-// (ADR-0009), so it is not this check's business either -- exactly the
-// wording the AC uses: "every package the accounting check requires to be
-// tested." `cli` holding a test file with zero `@(test)` procedures inside it
-// is `exempt_packages_holding_tests`' own question, not this one's.
-@(test)
-an_exempt_package_is_never_reported_here_even_with_no_test_procedure :: proc(t: ^testing.T) {
-	missing := packages_missing_test_procedures(
-		[]string{"cli"},
-		[]string{},
-		TEST_LESS_SRC_PACKAGES,
-		context.allocator,
-	)
-	defer delete(missing, context.allocator)
-
-	testing.expect_value(t, len(missing), 0)
-}
+// Fix round 1 finding 2: `packages_missing_test_procedures` was a
+// behavior-identical duplicate of `untested_packages` -- the same set
+// difference over a different pair of lists. Its call site (main.odin's
+// `report_packages_missing_test_procedures`) now calls `untested_packages`
+// directly, so issue #174's own question (a `*_test.odin` file present but
+// no `@(test)` procedure inside it) is pinned by the existing
+// `untested_and_unexempt_package_is_reported`, `a_tested_package_is_not_reported_as_untested`
+// and `an_exempt_untested_package_is_not_reported` tests above, over
+// `untested_packages` itself -- there is nothing left for a second,
+// differently-named copy of the same three tests to pin.
 
 @(test)
 a_tested_package_is_not_reported_as_untested :: proc(t: ^testing.T) {
@@ -555,6 +512,7 @@ ACCOUNTING_FIXTURE_DIRS :: []string {
 	"tools",
 	"tools/newtool",
 	"tools/bare",
+	"tools/hollow",
 }
 ACCOUNTING_FIXTURE_FILES :: []string {
 	"src/kept/kept_test.odin",
@@ -563,19 +521,24 @@ ACCOUNTING_FIXTURE_FILES :: []string {
 	"tools/newtool/newtool_test.odin",
 	"tools/bare/bare.odin",
 	"tools/stray_test.odin",
+	"tools/hollow/hollow_test.odin",
 }
-ACCOUNTING_FIXTURE_JUSTFILE :: "test:\n\todin test src/kept {{vet}}\n\todin test src/hollow {{vet}}\n"
+ACCOUNTING_FIXTURE_JUSTFILE :: "test:\n\todin test src/kept {{vet}}\n\todin test src/hollow {{vet}}\n\todin test tools/hollow {{vet}}\n"
 
-// `src/hollow/hollow_test.odin` is the one file this fixture plants with NO
-// `@(test)` procedure at all -- issue #174's own shape, a `*_test.odin` file
-// whose test procedure was rewritten away while the file itself stayed put.
-// Every other `_test.odin` file gets a real `@(test)` procedure so the new
-// check this ticket adds does not flag them for a reason unrelated to what
-// they are already planted to exercise.
+// `src/hollow/hollow_test.odin` and `tools/hollow/hollow_test.odin` are the
+// files this fixture plants with NO `@(test)` procedure at all -- issue
+// #174's own shape, a `*_test.odin` file whose test procedure was rewritten
+// away while the file itself stayed put. Both roots get one: the reviewer's
+// round 1 finding measured that a mutation silencing the new check for
+// `tools/` alone left the whole suite green, because only `src/hollow`
+// existed to prove the check fires at all. Every other `_test.odin` file
+// gets a real `@(test)` procedure so the new check this ticket adds does not
+// flag them for a reason unrelated to what they are already planted to
+// exercise.
 @(require_results)
 accounting_fixture_source :: proc(name: string) -> string {
 	assert(len(name) > 0, "asked for the source of no fixture file at all")
-	if name == "src/hollow/hollow_test.odin" {
+	if name == "src/hollow/hollow_test.odin" || name == "tools/hollow/hollow_test.odin" {
 		return "package fixture\n\n@(private)\nchecks_something :: proc() {\n}\n"
 	}
 	if strings.has_suffix(name, "_test.odin") {
@@ -602,7 +565,7 @@ tools_packages_are_accounted_for_beside_src_packages :: proc(t: ^testing.T) {
 	defer violations_destroy(violations, context.allocator)
 	check_package_accounting(base, &violations, context.allocator)
 
-	testing.expect_value(t, len(violations), 4)
+	testing.expect_value(t, len(violations), 5)
 	testing.expect(
 		t,
 		violations_mention(violations, "tools/newtool holds a *_test.odin file but is not named"),
@@ -612,6 +575,10 @@ tools_packages_are_accounted_for_beside_src_packages :: proc(t: ^testing.T) {
 	testing.expect(
 		t,
 		violations_mention(violations, "src/hollow holds a *_test.odin file but no @(test)"),
+	)
+	testing.expect(
+		t,
+		violations_mention(violations, "tools/hollow holds a *_test.odin file but no @(test)"),
 	)
 }
 

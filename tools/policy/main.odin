@@ -286,7 +286,7 @@ report_packages_missing_test_procedures :: proc(
 		return false
 	}
 
-	missing := packages_missing_test_procedures(tested, with_test, scope.exempt, allocator)
+	missing := untested_packages(tested, with_test, scope.exempt, allocator)
 	defer delete(missing, allocator)
 	for name in missing {
 		message := fmt.aprintf(

@@ -176,16 +176,26 @@ note_present_package :: proc(
 	append(into, name)
 }
 
-// Every name in `all` that `tested` does not hold and that `exempt` does not
-// name -- a package with no `*_test.odin` file at all, new or emptied, that
-// `missing_from_test_recipe` alone never asks about because it only ever
-// walks packages that already hold a test file. `exempt` is the calling
-// root's own roster: TEST_LESS_SRC_PACKAGES under `src\`, and the empty
-// NO_TEST_LESS_PACKAGES under `tools\`.
+// Every name in `all` that `have` does not hold and that `exempt` does not
+// name -- the set difference the accounting check asks twice, over two
+// different pairs of lists sharing one exemption roster. Called with
+// (all_packages, tested_packages) it answers "which package holds no
+// `*_test.odin` file at all," which `missing_from_test_recipe` alone never
+// asks because it only ever walks packages that already hold a test file.
+// Called with (tested_packages, packages_with_test_procedures) it answers
+// issue #174's question instead: which package the accounting check already
+// requires tested (a `*_test.odin` file present) holds no `@(test)`
+// procedure among its own test files at all -- a package rewritten so every
+// `@(test)` becomes `@(private)` still keeps its test file, so `tested`
+// alone cannot tell the two apart. `exempt` is the calling root's own
+// roster: TEST_LESS_SRC_PACKAGES under `src\`, and the empty
+// NO_TEST_LESS_PACKAGES under `tools\`; either way it excuses a package from
+// being required at all, never from holding a *_test.odin file with nothing
+// live inside it -- that is `exempt_packages_holding_tests`' own question.
 @(require_results)
 untested_packages :: proc(
 	all: []string,
-	tested: []string,
+	have: []string,
 	exempt: []string,
 	allocator: mem.Allocator,
 ) -> []string {
@@ -200,7 +210,7 @@ untested_packages :: proc(
 			continue
 		}
 		has_test := false
-		for candidate in tested {
+		for candidate in have {
 			if candidate == name {
 				has_test = true
 				break
@@ -320,50 +330,6 @@ file_declares_test_procedure :: proc(name: string, src: string, allocator: mem.A
 		}
 	}
 	return false
-}
-
-// Every name in `tested` -- packages the accounting check already REQUIRES
-// to be tested, holding a `*_test.odin` file, and not named by `exempt` --
-// that `with_test_procedures` does not also hold. Issue #174: a package that
-// loses every `@(test)` procedure while keeping its test file (rewritten to
-// `@(private)`, say) still shows up in `tested`, and this is the fact
-// `tested` alone cannot answer.
-//
-// `exempt` is read the same way `untested_packages` reads it: a package the
-// accounting check does not require tested at all is not this check's
-// business either, even if it happens to hold a test file with nothing in
-// it -- that is `exempt_packages_holding_tests`' own question, matching the
-// AC's own wording ("every package the accounting check requires to be
-// tested").
-@(require_results)
-packages_missing_test_procedures :: proc(
-	tested: []string,
-	with_test_procedures: []string,
-	exempt: []string,
-	allocator: mem.Allocator,
-) -> []string {
-	assert(
-		allocator.procedure != nil,
-		"the missing package names outlive this call and need a chosen allocator",
-	)
-
-	missing := make([dynamic]string, 0, allocator)
-	for name in tested {
-		if is_test_less_package(name, exempt) {
-			continue
-		}
-		has_test := false
-		for candidate in with_test_procedures {
-			if candidate == name {
-				has_test = true
-				break
-			}
-		}
-		if !has_test {
-			append(&missing, strings.clone(name, allocator))
-		}
-	}
-	return missing[:]
 }
 
 // Whether `roster` names `name` exempt from appearing in the justfile's
