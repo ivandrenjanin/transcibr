@@ -1,7 +1,10 @@
 #+vet explicit-allocators
-// Package crashlog is the rolling on-disk log and the two Windows crash hooks
+// Package crashlog is the on-disk crash log and the two Windows crash hooks
 // spec stories 50 and 51 ask for, and no more than they ask for: no network
-// path exists anywhere in this package (story 57). Issue #76's maintainer
+// path exists anywhere in this package (story 57), and no procedure here
+// writes a non-crash line -- nothing in this package rotates or bounds the
+// file either, since nothing here grows it outside a crash (docs/adr/0036's
+// "What this build deliberately does not do"). Issue #76's maintainer
 // ruling is the design: `context.assertion_failure_proc`, reinstalled at
 // every S3 context rebuild, for `assert`/`ensure`/`panic`; a process-wide
 // `SetUnhandledExceptionFilter` for the bounds/slice-check path that bypasses

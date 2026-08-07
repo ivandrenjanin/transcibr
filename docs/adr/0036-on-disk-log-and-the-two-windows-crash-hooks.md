@@ -16,10 +16,11 @@ GUI binary installs the same two calls with no rework.
 program is handed by a user, so reading it is the one place this package touches the environment;
 an unset or empty value is an operating error handed back through `ok`, never asserted (CLAUDE.md
 A8 — external input, even environment-shaped, is rejected through an error return). One file, append
-mode (`FILE_APPEND_DATA`), holding both the rolling operational trail and every crash artifact this
-build produces: spec story 50 asks where to "look at a failure after the program has been closed,"
-and a user does not get to know in advance whether that failure was an assertion or an unhandled
-exception, so both write into the one place they would look.
+mode (`FILE_APPEND_DATA`): every crash artifact this build produces, whether the process asserted or
+took an unhandled exception, lands in the one place spec story 50 asks a user to "look at a failure
+after the program has been closed" — a user does not get to know in advance which of the two it was,
+so both hooks write into the same place. This build does not yet write a rolling operational trail
+into that file on the non-crash path; see "What this build deliberately does not do" below.
 
 ## The log layer: this package's own thin writer, not `core:log.create_file_logger`
 
@@ -111,3 +112,13 @@ demonstrates the exact mechanism a real worker thread would use — `context.ass
 crashlog.assertion_hook` at the top of the thread's own entry point — so wiring `pipeline`'s two
 worker entry points (`run_extract_worker`, `run_transcribe_worker` in `src/pipeline/run.odin`) is a
 mechanical two-line follow-up, not a design question. Re-entry path: exactly that.
+
+**No rolling operational trail — only crash artifacts land in the file.** Spec story 50's "look at a
+failure after the program has been closed" is served today only when that failure was a crash: no
+procedure in this package ever writes a non-crash line, so a normal run, and an ordinary operating
+error such as a refused CLI argument, leave the file untouched (issue #76 review round 3 measured
+this directly — the file exists at 0 bytes after a version print, a refused `--plan`, and a
+`--doctor` run). Nothing here rotates or bounds the file either, since nothing here grows it outside
+a crash. Re-entry path: a `context.logger` (or this package's own writer, reused) wired into
+`src/cli/main.odin`'s normal control flow, writing at the same everyday points the boundary already
+reports through `refuse`/`ok`.

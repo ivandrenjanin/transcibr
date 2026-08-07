@@ -21,7 +21,12 @@ CRASH_DRILL_ASSERT_THREAD :: "assert-thread"
 CRASH_DRILL_BOUNDS :: "bounds"
 
 // `arguments` is `<mode> <directory>`, both required: a drill that does not
-// know where to write leaves nothing for the spawning test to read.
+// know where to write leaves nothing for the spawning test to read. An empty
+// directory or an unknown mode is an operating error, not a programmer error
+// -- both are refused through the same USAGE_ERROR path every other CLI flag
+// uses, before `crashlog.install` ever runs, since its own
+// `assert(len(dir) > 0, ...)` guards an internal invariant of the crashlog
+// package, not the CLI's own argument boundary (CLAUDE.md A8).
 @(require_results)
 run_crash_drill :: proc(arguments: []string) -> int {
 	if len(arguments) < 2 {
@@ -30,6 +35,17 @@ run_crash_drill :: proc(arguments: []string) -> int {
 	}
 	mode := arguments[0]
 	dir := arguments[1]
+
+	switch mode {
+	case CRASH_DRILL_ASSERT, CRASH_DRILL_ASSERT_THREAD, CRASH_DRILL_BOUNDS:
+	case:
+		_ = refuse("--crash-drill does not know the mode %q.", mode)
+		return USAGE_ERROR
+	}
+	if len(dir) == 0 {
+		_ = refuse("--crash-drill needs a directory to write to.")
+		return USAGE_ERROR
+	}
 
 	if !crashlog.install(dir, context.allocator) {
 		return OPERATING_ERROR
@@ -44,8 +60,7 @@ run_crash_drill :: proc(arguments: []string) -> int {
 	case CRASH_DRILL_BOUNDS:
 		crash_out_of_bounds(len(arguments))
 	case:
-		_ = refuse("--crash-drill does not know the mode %q.", mode)
-		return USAGE_ERROR
+		assert(false, "mode was already validated above")
 	}
 	return 0
 }

@@ -9,11 +9,15 @@
 // for it to end, and reads back what it left in the log -- never asserts or
 // crashes in this process itself.
 //
-// `just ci` builds `transcibr-cli` before it runs `test` (the `build` recipe
-// precedes `test` in `ci`'s own recipe list), so `build\transcibr-cli.exe`
-// is already there by the time these run under `just ci`. Running
-// `just test-one crashlog <name>` for one of these in isolation needs
-// `just build` run first for the same reason.
+// `just test`'s own first line builds the drill binary at the path below
+// before any package's tests run, so it is already there by the time these
+// run under `just test` or `just ci`. It is NOT `build\transcibr-cli.exe` --
+// that path is shared by `build` and `release`, and issue #76 review round 3
+// measured `test` failing depending on which of those last wrote it (a
+// release binary carries no usable line info for `assertion_hook`'s stack
+// walk). Running `just test-one crashlog <name>` for one of these in
+// isolation needs the same drill-build line run first, by hand:
+// `odin build src/cli -collection:transcibr=src -out:build/odin-test/transcibr-cli-drill.exe -subsystem:console -debug <vet set>`.
 package crashlog
 
 import "core:strings"
@@ -22,7 +26,7 @@ import "transcibr:child"
 import "transcibr:testkit"
 
 @(private)
-DRILL_CLI :: "build\\transcibr-cli.exe"
+DRILL_CLI :: "build\\odin-test\\transcibr-cli-drill.exe"
 
 @(private)
 DRILL_BOUND_MS :: u32(30_000)
@@ -64,6 +68,39 @@ run_crash_drill :: proc(t: ^testing.T, mode: string, dir: string) -> (ok: bool) 
 		child.wait(&c, DRILL_BOUND_MS),
 		"the crash drill did not exit within the bound",
 	)
+}
+
+// Issue #76 review round 3: an empty directory argument used to reach
+// `crashlog.install`'s own `assert(len(dir) > 0, ...)` before the mode was
+// even validated -- an A8 violation, since a CLI argument is an external
+// boundary and every sibling flag refuses an empty value cleanly instead of
+// crashing. This spawns the drill directly (rather than through
+// `run_crash_drill`, which only reports whether the process signalled) so it
+// can read back the exit code and tell USAGE_ERROR apart from a crash.
+@(test)
+an_empty_directory_argument_is_refused_rather_than_crashing :: proc(t: ^testing.T) {
+	group, opened := open_drill_group(t)
+	defer child.job_object_close(&group)
+	if !opened {
+		return
+	}
+
+	c, err := child.start(&group, DRILL_CLI, {"--crash-drill", "assert", ""}, context.allocator)
+	defer child.close(&c)
+	if !testing.expectf(t, err.fault == .None, "the crash drill did not start: %v", err.fault) {
+		return
+	}
+	if !testing.expect(
+		t,
+		child.wait(&c, DRILL_BOUND_MS),
+		"the crash drill did not exit within the bound",
+	) {
+		return
+	}
+
+	code, exited := child.exit_code(&c)
+	testing.expect(t, exited, "the crash drill's exit code was not available after it signalled")
+	testing.expect_value(t, code, u32(2))
 }
 
 @(test)

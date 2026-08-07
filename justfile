@@ -69,8 +69,19 @@ fmt-check:
 # tools/policy, which reads Odin and is tested in Odin (ADR-0028). `cli` is
 # the one src/ package with none, by ADR-0009 -- an entry point thin enough
 # to read, with no logic of its own worth testing.
+#
+# `src/crashlog`'s crash-drill tests spawn a debug build of transcibr-cli as a
+# child process and need a real PDB for `assertion_hook`'s stack symbolization
+# (issue #76 review round 1). Sharing `build/transcibr-cli.exe` with `build`
+# and `release` made `test` pass or fail depending on which of those last ran
+# (issue #76 review round 3) -- a `just ci` ending on `release` left a
+# non-debug binary at that path, so `test` run again afterward failed a
+# symbolization assertion the first `just ci` pass never saw. The drill gets
+# its own binary at its own path instead, built here and never touched by
+# `build` or `release`.
 test:
 	if not exist build\odin-test mkdir build\odin-test
+	{{ odin }} build src/cli {{ collection }} -out:build/odin-test/transcibr-cli-drill.exe -subsystem:console -debug {{ vet }}
 	{{ odin }} test src/artifact {{ collection }} -out:build/odin-test/artifact.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/audio {{ collection }} -out:build/odin-test/audio.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/child {{ collection }} -out:build/odin-test/child.exe {{ memory }} {{ vet }}
@@ -124,13 +135,13 @@ install-tools:
 # failure: formatting first, source policy second, then the debug build, the
 # full test sweep, the single-threaded detector, the release build, and the
 # smoke test last. `build` and `release` both write to the same
-# `build/transcibr-cli.exe` path, and each of the two consumers below needs a
-# specific one on disk when it runs: `test`'s crashlog crash-drill tests
-# (`src/crashlog/crashlog_crash_test.odin`) need the `-debug` binary with a
-# PDB present for `assertion_hook`'s stack symbolization (issue #76 review
-# round 1), and `smoke` is the only recipe that runs the CLI as the shipping
-# artifact, so it needs the `-o:speed` release binary actually built and
-# executed rather than left untested (issue #76 review round 2). `build`
-# before `test`, `release` before `smoke`, is the one ordering that gives
-# both consumers the binary they need.
+# `build/transcibr-cli.exe` path, and `smoke` is the only recipe that runs the
+# CLI as the shipping artifact, so `release` runs immediately before it to put
+# the `-o:speed` binary actually built and executed rather than left untested
+# (issue #76 review round 2). `test` no longer shares that path or its
+# ordering constraint: it builds its own debug binary for the crashlog
+# crash-drill tests at `build/odin-test/transcibr-cli-drill.exe`, as its own
+# first line (issue #76 review round 3), so `test` and `test-single` can run
+# in any order relative to `build`/`release` without one leaving the other a
+# binary it cannot use.
 ci: fmt-check check build test test-single release smoke
