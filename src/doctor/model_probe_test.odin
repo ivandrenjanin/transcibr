@@ -42,9 +42,11 @@ an_overflowed_probe_is_refused_by_the_model_verdict_rather_than_judged_on_its_ca
 // nothing exercised it, and it was the one assert in the package standing
 // between external data and a fault report. Drives the child-originated
 // exit code through `model_load_verdict` directly, the seam a real doctor
-// run reaches this through, and pins the rendered wording rather than only
-// `check.ok`, so a mutation that renders the wrong sentence for a refused
-// engine still turns this red.
+// run reaches this through, and pins the branch-distinguishing prefix
+// ("was refused by the engine") rather than only the substring the two
+// `says` branches share ("truncated or corrupt"), so a mutation that
+// renders the marker branch's sentence ("failed to load in the engine...")
+// for a refused-without-marker engine still turns this red.
 @(test)
 a_refused_engine_probe_names_its_exit_status_without_asserting :: proc(t: ^testing.T) {
 	probe := Probe {
@@ -61,6 +63,11 @@ a_refused_engine_probe_names_its_exit_status_without_asserting :: proc(t: ^testi
 		t,
 		strings.contains(check.reason, "engine exit status 0x1"),
 		"a refused probe's message did not name the engine's own exit status",
+	)
+	testing.expect(
+		t,
+		strings.contains(check.reason, "was refused by the engine"),
+		"a refused-without-marker probe's message did not carry the branch-distinguishing wording",
 	)
 	testing.expect(
 		t,

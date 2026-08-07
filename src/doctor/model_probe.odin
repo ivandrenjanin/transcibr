@@ -270,12 +270,16 @@ model_load_verdict :: proc(probe: Probe, model_path: string, allocator: mem.Allo
 // standing between external, child-originated data and a fault report, and
 // nothing exercised it. Per #137/#141's shape (an assert redundant with a
 // guarantee the caller already holds is removed rather than recorded), the
-// assert is gone: a zero exit code reaching here through some future call
-// site renders "engine exit status 0x0" instead of crashing the test
-// runner, which is what A8 asks of a boundary either way. Covered by
+// assert is gone. That removal is unpinned: nothing in this package calls
+// `model_refused` with a zero exit code, so no test observes whether a
+// future call site would have tripped the old assert or, now, rendered
+// "engine exit status 0x0" -- restoring the deleted assert leaves the whole
+// package green. What IS pinned, by
 // `a_refused_engine_probe_names_its_exit_status_without_asserting` in
-// `model_probe_test.odin`, driven through `model_load_verdict`, the seam a
-// real doctor run reaches this through.
+// `model_probe_test.odin`, is the guard side: `model_load_verdict`'s `if
+// probe.exit_code != 0` dispatch and this renderer's wording for a
+// genuinely refused engine (`exit_code = 1`), through the seam a real
+// doctor run reaches this through.
 @(private)
 @(require_results)
 model_refused :: proc(probe: Probe, model_path: string, allocator: mem.Allocator) -> Check {
