@@ -49,62 +49,14 @@ the_join_bound_default_outlasts_a_real_transcribe_bound_and_stays_inside_what_ch
 	)
 }
 
-// Issue #94: `read_worker_count` (src/cli/batch.odin) used to refuse both
-// `--extract-workers` and `--queue-depth` against `MAX_QUEUE_DEPTH` alone, so
-// a future drop in `MAX_EXTRACT_WORKERS` below `MAX_QUEUE_DEPTH` would have
-// let an over-ceiling `--extract-workers` value sail past the refusal and
-// crash at `run_recordings`'s own assert instead. `worker_count_within_-`
-// `ceiling` is what both the CLI refusal and this test now call, so the two
-// can never drift back apart -- ADR-0009 keeps `src/cli` test-less, so this
-// is where that pairing is held. Walking both ceilings independently, rather
-// than only today's shared value of 2, is what proves the check is keyed to
-// whichever ceiling is passed in and not to the other option's.
-@(test)
-worker_count_within_ceiling_checks_its_own_ceiling_and_not_the_others :: proc(t: ^testing.T) {
-	for ceiling in ([]int{MAX_EXTRACT_WORKERS, MAX_QUEUE_DEPTH, 1, 5}) {
-		testing.expectf(
-			t,
-			!worker_count_within_ceiling(0, ceiling),
-			"zero workers passed against ceiling %d",
-			ceiling,
-		)
-		for count in 1 ..= ceiling {
-			testing.expectf(
-				t,
-				worker_count_within_ceiling(count, ceiling),
-				"%d workers refused against a ceiling of %d",
-				count,
-				ceiling,
-			)
-		}
-		testing.expectf(
-			t,
-			!worker_count_within_ceiling(ceiling + 1, ceiling),
-			"%d workers passed against a ceiling of %d",
-			ceiling + 1,
-			ceiling,
-		)
-	}
-
-	testing.expectf(
-		t,
-		worker_count_within_ceiling(MAX_EXTRACT_WORKERS, MAX_EXTRACT_WORKERS),
-		"MAX_EXTRACT_WORKERS itself was refused against its own ceiling",
-	)
-	testing.expectf(
-		t,
-		worker_count_within_ceiling(MAX_QUEUE_DEPTH, MAX_QUEUE_DEPTH),
-		"MAX_QUEUE_DEPTH itself was refused against its own ceiling",
-	)
-}
-
-// Issue #94, fix round 1: `worker_count_within_ceiling` alone proves that
-// expression is that expression -- it says nothing about WHICH ceiling
-// `src/cli/batch.odin` hands each option, which is what the original defect
-// was actually about. `WORKER_OPTION_CEILINGS` now holds that pairing, and
-// `read_batch_option` looks an option's ceiling up in it by name instead of
-// naming `MAX_EXTRACT_WORKERS`/`MAX_QUEUE_DEPTH` at the call site, so a
-// mispairing can only live in the table -- where this test walks it.
+// Issue #94, fix round 1: `worker_count_within_ceiling` alone (relocated to
+// `transcibr:process` with ADR-0038's batch migration, #75; its own test now
+// lives at `src/process/worker_ceiling_test.odin`) proves that expression is
+// that expression -- it says nothing about WHICH ceiling an option name
+// resolves to, which is what the original defect was actually about.
+// `WORKER_OPTION_CEILINGS` still holds that pairing, and `worker_option_-`
+// `ceiling` still looks a name up in it here, so a mispairing in THIS table
+// can only live here -- where this test walks it.
 //
 // Issue #192: the two `== MAX_EXTRACT_WORKERS` / `== MAX_QUEUE_DEPTH` value
 // comparisons below are unfirable on their own -- both constants are 2 today,
@@ -117,9 +69,20 @@ worker_count_within_ceiling_checks_its_own_ceiling_and_not_the_others :: proc(t:
 // each entry's NAME to its expected array position, and two distinct option
 // strings are never equal to each other regardless of what their ceilings
 // happen to be, so a swap of the table's two entries flips a name comparison
-// even while the ceilings stay numerically indistinguishable. The enum-keyed
-// table that closes this class structurally arrives with ADR-0038's batch
-// migration (#75); this is the door available before that lands.
+// even while the ceilings stay numerically indistinguishable.
+//
+// ADR-0038's batch migration (#75) landed the structural close this comment
+// used to point ahead to: `src/cliargs` now dispatches `--extract-workers`
+// and `--queue-depth` through its own enum-keyed `Worker_Ceilings`
+// (`[Worker_Option]int`), built as a package-level constant in
+// `src/cli/batch.odin` directly from `MAX_EXTRACT_WORKERS`/
+// `MAX_QUEUE_DEPTH` -- a composite literal the compiler refuses to build
+// incomplete, which is what actually makes a swapped or missing pairing
+// unbuildable for the grammar's own dispatch. `WORKER_OPTION_CEILINGS` and
+// `worker_option_ceiling` are no longer called from `src/cli` after this
+// migration; they stay, tested, as `pipeline`'s own record of the pairing --
+// this test's name-position pins are what still catch a swap of THIS table,
+// which the structural close in `cliargs` does not reach.
 @(test)
 worker_option_ceilings_pair_each_option_with_its_own_max :: proc(t: ^testing.T) {
 	testing.expectf(
