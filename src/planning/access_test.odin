@@ -77,6 +77,8 @@ undenied :: proc(t: ^testing.T, path: string) {
 // discovery failure a user cannot detect.
 @(test)
 a_sub_directory_that_cannot_be_enumerated_is_an_operating_error :: proc(t: ^testing.T) {
+	sweep_dead_runs_once()
+
 	tree := testkit.made_scratch_cache(t, "planning", "unlistable", context.allocator)
 	defer delete(tree, context.allocator)
 	defer testkit.remove_tree(tree, context.allocator)
