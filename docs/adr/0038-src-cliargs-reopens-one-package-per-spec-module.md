@@ -91,7 +91,11 @@ The grammar — every `Options` struct, every `read_*_option(s)` procedure, the 
   and that constraint is deliberate, not an oversight to lift when the grammar moves;
 - the **job-object prologue** (`job_object_opened`, `main.odin:389-403`);
 - the **Ctrl+C handler** (`console_ctrl_handler`, `batch.odin:71-82`) — `proc "system"`, no Odin
-  `context`, nothing a package with no vet tag of its own should hold;
+  `context` at entry, so S3 requires it to rebuild one from stored state before touching anything
+  allocator- or logger-dependent; that stored state is the batch-run wiring `src/cli` already holds,
+  which is the reason it stays there, not the file's vet tag (`src/cliargs` carries
+  `#+vet explicit-allocators` too, like every file in the tree — see the allocation-tag paragraph
+  below);
 - **model and engine identification I/O** (`model_identified`, `engine_identified`,
   `main.odin:344-381`) — both open a file and hash it;
 - **pipeline wiring** — `planned_and_run`, `run_the_batch`, `run_one`, `report_plan`, the calls into
@@ -168,14 +172,32 @@ this package:
   closes the LOOKUP breach (which option's ceiling) without touching this one (comparing a count
   against whichever ceiling it was handed), because the comparison itself is still made by calling
   into `pipeline`. **The shape that closes it: `worker_count_within_ceiling` relocates to
-  `src/process`, not `src/pipeline`.** Its own comment already says why it can — it takes `ceiling` as
-  a parameter rather than reading `MAX_EXTRACT_WORKERS`/`MAX_QUEUE_DEPTH` by name, so nothing in its
-  body is pipeline-specific; `WORKER_OPTION_CEILINGS` and the two `MAX_*` constants stay in
-  `pipeline`, which still owns the LOOKUP (`pipeline.worker_option_ceiling`) and still walks the table
-  in `worker_option_ceilings_pair_each_option_with_its_own_max`
-  (`defaults_test.odin:109-131`) — only the bound check itself, and its pinned test
-  (`worker_count_within_ceiling_checks_its_own_ceiling_and_not_the_others`, `defaults_test.odin:63-99`),
-  move with it. This is `read_natural`'s own `max_digits` precedent (`process/engine.odin:199`,
+  `src/process`, not `src/pipeline` — and its pinned test SPLITS rather than moving whole, because the
+  test as written cannot compile in `src/process` at all.** It names
+  `MAX_EXTRACT_WORKERS`/`MAX_QUEUE_DEPTH` five times (`defaults_test.odin:64`, `:91`, `:96`);
+  `pipeline` already imports `transcibr:process`; and Odin compiles `_test.odin` files into the
+  package under test, so a relocated copy that still names those two constants would make
+  `src/process` import `pipeline` while `pipeline` imports `process` — a cyclic importation, a hard
+  build failure the compiler reports at the relocated file, not a test-only wrinkle. Its own comment
+  already says why the PREDICATE can move — it takes `ceiling` as a parameter rather than reading
+  `MAX_EXTRACT_WORKERS`/`MAX_QUEUE_DEPTH` by name, so nothing in its body is pipeline-specific — and
+  that same fact is what makes the pinned test's coverage independent of the constants too: walking
+  `MAX_EXTRACT_WORKERS`, `MAX_QUEUE_DEPTH`, `1` and `5` proves the predicate is keyed to whichever
+  ceiling it is handed and not to the other option's, a property that holds for any two distinct
+  ceilings, not only today's pipeline-specific pair. The relocated test walks literal representative
+  ceilings (for example `1`, `2`, `5`, `9`) instead of naming `MAX_EXTRACT_WORKERS`/`MAX_QUEUE_DEPTH`,
+  keeping every assertion the original test makes — including the "itself was refused against its own
+  ceiling" boundary check at each walked value — while never importing `pipeline`.
+  `WORKER_OPTION_CEILINGS` and the two `MAX_*` constants stay in `pipeline`, which still owns the
+  LOOKUP (`pipeline.worker_option_ceiling`) and still walks the table in
+  `worker_option_ceilings_pair_each_option_with_its_own_max` (`defaults_test.odin:109-131`) — that
+  test is what continues to prove `MAX_EXTRACT_WORKERS`/`MAX_QUEUE_DEPTH` are the exact values paired
+  to each option name, unaffected by this split since it never calls `worker_count_within_ceiling` at
+  all. Together the two tests still cover exactly what issue #94 was about: the pairing test proves
+  the table maps each option name to the right constant, and the relocated predicate test proves the
+  check honors whichever ceiling it is given and not the other's — the same guarantee, held by two
+  tests on either side of the import fence instead of one test that cannot exist, unmodified, on
+  either side alone. This is `read_natural`'s own `max_digits` precedent (`process/engine.odin:199`,
   `artifact/sidecar.odin`'s `MAX_SIDECAR_DIGITS`) applied a second time, this time literally rather
   than by analogy: a bound check that takes its ceiling as a parameter belongs beside the reader that
   takes its digit cap as a parameter, in the one package both `src/cli` and `src/cliargs` may import.
@@ -193,7 +215,7 @@ this package:
   (`batch.odin:355-370`) reads `pipeline.DEFAULT_EXTRACT_WORKERS` and `pipeline.DEFAULT_QUEUE_DEPTH`,
   but it runs after the read loop returns, on the `Options` struct the grammar handed back — the same
   place it calls `audio.defaulted_tools` today. It never moves to `src/cliargs`; it is exactly the
-  "pipeline wiring" this ADR already lists as staying in `src/cli` (line 97-98), and its import of
+  "pipeline wiring" this ADR already lists as staying in `src/cli` (line 101-102), and its import of
   `pipeline` was never part of the grammar's closure to begin with.
 
 **`Common_Options` embeds via `using` in `Batch_Options` and `Transcribe_Options` only.**
