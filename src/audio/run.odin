@@ -659,9 +659,11 @@ cache_key_prefix :: proc(job: Job, allocator: mem.Allocator) -> string {
 @(private)
 @(require_results)
 wav_cache_path :: proc(job: Job, allocator: mem.Allocator) -> string {
+	assert(allocator.procedure != nil, "a wav cache path outliving this call needs an allocator")
 	prefix := cache_key_prefix(job, allocator)
 	defer delete(prefix, allocator)
 	path := fmt.aprintf("%s.wav", prefix, allocator = allocator)
+	assert(strings.has_suffix(path, ".wav"), "a wav cache path was not built with its own suffix")
 	return path
 }
 
@@ -674,9 +676,14 @@ wav_cache_path :: proc(job: Job, allocator: mem.Allocator) -> string {
 @(private)
 @(require_results)
 probe_cache_path :: proc(job: Job, allocator: mem.Allocator) -> string {
+	assert(allocator.procedure != nil, "a probe cache path outliving this call needs an allocator")
 	prefix := cache_key_prefix(job, allocator)
 	defer delete(prefix, allocator)
 	path := fmt.aprintf("%s.%d.probe", prefix, os.get_pid(), allocator = allocator)
+	assert(
+		strings.has_suffix(path, ".probe"),
+		"a probe cache path was not built with its own suffix",
+	)
 	return path
 }
 
