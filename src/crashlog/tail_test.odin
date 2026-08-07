@@ -73,3 +73,30 @@ last_run_ended_in_a_crash_is_false_for_a_tail_with_no_complete_line_at_all :: pr
 		"a tail with no complete line at all cannot be judged, so it must not read as a crash",
 	)
 }
+
+// The exact truncated-mid-write case `last_run_ended_in_a_crash`'s own doc
+// comment names as motivating: a CRASH line cut off before its trailing
+// `\n` landed. Dropping the partial line outright (as an earlier version of
+// this procedure did) falls back to the routine note line ahead of it and
+// answers false -- the opposite of what happened.
+@(test)
+last_run_ended_in_a_crash_is_true_for_a_tail_truncated_mid_crash_line :: proc(t: ^testing.T) {
+	tail :=
+		"2026-08-07T12:00:00Z INFO process start: transcibr-cli 1.0.0\n" +
+		"CRASH exception=0xc000008c address=0x1234"
+	testing.expect(
+		t,
+		last_run_ended_in_a_crash(tail),
+		"a tail truncated mid-CRASH-line should still read as a crash",
+	)
+}
+
+@(test)
+last_run_ended_in_a_crash_is_true_for_a_bare_truncated_crash_line :: proc(t: ^testing.T) {
+	tail := "CRASH exception=0xc000008c address=0x1234"
+	testing.expect(
+		t,
+		last_run_ended_in_a_crash(tail),
+		"a tail that is nothing but a truncated CRASH line should read as a crash",
+	)
+}

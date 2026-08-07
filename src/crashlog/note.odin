@@ -1,6 +1,7 @@
 #+vet explicit-allocators
 package crashlog
 
+import "base:runtime"
 import win32 "core:sys/windows"
 
 // The three severities a routine trail line can carry (ADR-0039 D1). `enum
@@ -31,6 +32,7 @@ level_name :: proc "contextless" (level: Level) -> string {
 	case .Error:
 		return "ERROR"
 	}
+	runtime.assert_contextless(false, "an unlisted Level reached level_name")
 	return ""
 }
 
@@ -44,7 +46,13 @@ level_name :: proc "contextless" (level: Level) -> string {
 // silent no-op rather than an assertion -- an unopened log is an operating
 // error `main` already decided how to tolerate at startup (ADR-0036), not a
 // programmer error at every one of `note`'s call sites downstream of it.
+// `subject` is asserted non-empty (A1): A8 does not bar this because every
+// real call site hands it a literal ("process start", "refused", "doctor"),
+// never a string that passed through here on its way from argv or a file,
+// so an empty subject can only be a programmer error at the call site.
 note :: proc "contextless" (level: Level, subject, detail: string) {
+	runtime.assert_contextless(len(subject) > 0, "a routine trail line must name a subject")
+
 	if g_log.file == nil || g_log.file == win32.INVALID_HANDLE_VALUE {
 		return
 	}

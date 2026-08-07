@@ -81,7 +81,10 @@ record_exception_line :: proc "contextless" (h: win32.HANDLE, info: ^win32.EXCEP
 // `format_int`/`format_hex`-family, multi-write, contextless discipline as
 // the three shapes above; `stamp` arrives pre-formatted because
 // `format_timestamp` (`raw_write.odin`) needs its own caller-owned buffer,
-// which is `note`'s stack and not this procedure's.
+// which is `note`'s stack and not this procedure's. A4: asserts the same
+// non-empty-`subject` precondition `note` asserts on entry, again here on
+// the write side -- `record_note_line` is `@(private)` but not unreachable
+// from a caller inside this package that skips `note`.
 @(private)
 record_note_line :: proc "contextless" (
 	h: win32.HANDLE,
@@ -89,6 +92,8 @@ record_note_line :: proc "contextless" (
 	level: Level,
 	subject, detail: string,
 ) {
+	runtime.assert_contextless(len(subject) > 0, "a routine trail line must name a subject")
+
 	write_str(h, stamp)
 	write_str(h, " ")
 	write_str(h, level_name(level))
