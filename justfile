@@ -86,9 +86,44 @@ test:
 
 # One test, focused: `just test-one version banner_names_the_program_and_its_version`.
 # `policy` resolves to tools/policy; every other name resolves to src/<pkg>.
+#
+# odin test exits 0 with "No tests to run." (core/testing/runner.odin) when
+# ODIN_TEST_NAMES matches no @(test) procedure -- a bogus name reports green
+# having run nothing (issue #154). tools/policy's package-accounting check
+# does not cover this: it proves the test recipe names every tested package,
+# not that one focused run inside a package actually found its target, so
+# the guard has to sit where the runner's own words land -- here, not there.
+# Output is NOT live: it is redirected into build\odin-test\focus.out and only
+# `type`-d back to the console after the odin test process has already exited.
+# A run that hangs (the #22 runner hang CLAUDE.md's Odin notes document) or is
+# interrupted with Ctrl+C prints nothing at all while it is running and shows
+# nothing after the interrupt either -- the `type` replay only runs on the
+# success/failure branches below, never on an interrupted invocation, so
+# whatever bytes had already landed in focus.out stay on disk, unread on the
+# console, until someone opens the file by hand. The odin test exit code
+# itself is left untouched for a real pass or a real test failure, and only
+# the exit-0-but-nothing-collected case is escalated.
+#
+# Deliberately grepped for "No tests to run.", not the ticket's suggested
+# "Finished 0 tests" -- the zero-collected path in core/testing/runner.odin
+# returns before the "Finished %i test%s" line is ever reached, so that
+# string does not exist at this pin.
+#
+# Accepted risk, stated here and in the PR body: this guard has ZERO automated
+# coverage. `ci: fmt-check check build release test test-single smoke` never
+# invokes test-one, and .github/workflows/ci.yml runs only `just ci`, so no
+# CI gate ever exercises this line. The findstr pattern is a literal,
+# case-sensitive match on one line of text owned by the Odin toolchain, not
+# by this repository; if a future Odin release changes that wording, the
+# guard degrades silently back to exit 0 rather than failing loudly about its
+# own staleness, and nothing in this repository pins that string -- the
+# nearest real precedent is ADR-0035's third accepted risk (no doc-test-name
+# pins), which is the same kind of repository text going stale unpinned.
+# Nothing re-proves this guard still matches short of a human running
+# `just test-one <pkg> <bogus-name>` by hand.
 test-one pkg name:
 	if not exist build\odin-test mkdir build\odin-test
-	{{ odin }} test {{ if pkg == "policy" { "tools/policy" } else { "src/" + pkg } }} {{ collection }} -out:build/odin-test/focus.exe -define:ODIN_TEST_NAMES={{ pkg }}.{{ name }} {{ memory }} {{ vet }}
+	{{ odin }} test {{ if pkg == "policy" { "tools/policy" } else { "src/" + pkg } }} {{ collection }} -out:build/odin-test/focus.exe -define:ODIN_TEST_NAMES={{ pkg }}.{{ name }} {{ memory }} {{ vet }} > build\odin-test\focus.out 2>&1 && (type build\odin-test\focus.out & findstr /b /c:"No tests to run." build\odin-test\focus.out >nul && (echo TEST-ONE: "{{ pkg }}.{{ name }}" matched no test procedure -- 0 tests collected & exit /b 1) || exit /b 0) || (type build\odin-test\focus.out & exit /b 1)
 
 # The #97-class detector (issue #104): src/child under ODIN_TEST_THREADS=1,
 # the one setting that surfaces a defect the default 12-thread sweep cannot.
