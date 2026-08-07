@@ -293,12 +293,14 @@ an_engine_that_produced_an_empty_file_is_a_failure :: proc(t: ^testing.T) {
 // `placed_from_engine_output` with no refusal of its own -- `landed_bounded`
 // only sees a file that is there and not empty, and the wrote-nothing case
 // is the only one that surfaced as `.No_Output`. Mutation check (run by hand,
-// not committed -- issue #22 bans a test that trips an assert): dropping
-// `on_exit = watched_exit` in `run_engine`, or the `ending.exit_code != 0`
-// branch in `refused`, does not leave this test red -- both mutations trip
-// `ending_for`'s `watch_state.exited` assert instead, which fires for every
-// case in this file that reaches `.Finished`, and aborts the whole test
-// process with a FATAL rather than reporting a clean failure here.
+// not committed -- issue #22 bans a test that trips an assert): dropping the
+// `ending.exit_code != 0` branch in `refused` leaves this test cleanly red
+// (expected Fault.Refused/3, got Fault.None/0) -- this is the mutation AC2's
+// "Mutation-checked per the #109 pattern" asks for. Dropping
+// `on_exit = watched_exit` in `run_engine` instead trips `ending_for`'s
+// `watch_state.exited` assert, which fires for every case in this file that
+// reaches `.Finished`, and aborts the whole test process with a FATAL rather
+// than reporting a clean failure here.
 @(test)
 an_engine_that_writes_output_and_then_exits_nonzero_is_a_refusal :: proc(t: ^testing.T) {
 	group, ok := open_group(t)
@@ -761,6 +763,31 @@ every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testin
 			fault,
 		)
 	}
+}
+
+// AC1 asks for a refusal carrying the code, and `error_message`'s `.Refused`
+// arm is the half a user actually sees -- `every_fault_renders_a_line_...`
+// above only asserts `len(message) > 0`, which the catch-all arm satisfies
+// just as well, so it cannot tell the `%q: %s (exit code %d)` arm apart from
+// the catch-all `%q: %s` arm. Mirrors src/audio/fault_test.odin's
+// `a_refused_fault_names_its_exit_code_in_the_message`, written for the same
+// gap under #109.
+@(test)
+a_refused_fault_names_its_exit_code_in_the_message :: proc(t: ^testing.T) {
+	err := Error {
+		fault     = .Refused,
+		exit_code = 13,
+	}
+	message := error_message(err, "C:\\recordings\\lecture.mkv", context.allocator)
+	defer delete(message, context.allocator)
+
+	testing.expectf(
+		t,
+		strings.contains(message, "13"),
+		"%v rendered <%s>, which does not carry its exit code",
+		err.fault,
+		message,
+	)
 }
 
 @(private)
