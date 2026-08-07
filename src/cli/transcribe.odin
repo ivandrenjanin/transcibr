@@ -119,7 +119,7 @@ run_one :: proc(
 		health,
 	)
 	assert(
-		health != pipeline.Health_Watch{},
+		job.health != pipeline.Health_Watch{},
 		"a single Recording is its own first Recording (#113) -- the watch it runs under must not be empty",
 	)
 
