@@ -28,8 +28,11 @@ BATCH :: "--batch"
 // value the compiler checks for completeness at THIS composite literal.
 // pipeline.MAX_EXTRACT_WORKERS and pipeline.MAX_QUEUE_DEPTH are already `::`
 // constants, so this needs no runtime pipeline.worker_option_ceiling lookup
-// at all -- a swap or an omission here fails the build rather than reaching
-// a refusal or a crash.
+// at all -- an omission here (a Worker_Option member left unfilled) fails
+// the build. A SWAP of the two rows below does not: the compiler checks
+// completeness, not which value sits at which correctly-labelled key, so a
+// swap of these two lines is caught by review alone, same as any other
+// mis-copied value at a correct key (ADR-0038 addendum, PR #212 fix round 1).
 BATCH_WORKER_CEILINGS :: cliargs.Worker_Ceilings {
 	.Extract_Workers = pipeline.MAX_EXTRACT_WORKERS,
 	.Queue_Depth     = pipeline.MAX_QUEUE_DEPTH,

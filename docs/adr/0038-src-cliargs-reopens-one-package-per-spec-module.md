@@ -359,12 +359,18 @@ This needs no runtime `pipeline.worker_option_ceiling` lookup at all — both `M
 and `MAX_QUEUE_DEPTH` were already `::` constants (`pipeline.odin:37-38`), so the composite literal
 above is itself a compile-time value, closing the #192 deposit's own ask ("make the replacement
 immutable, an enumerated-array constant") for the table that actually governs the grammar's own
-dispatch. The literal is also exhaustive: a third `Worker_Option` member added and left out of it
-fails the build (`Unhandled enumerated array case`) rather than reaching `src/cliargs` with a
-silently absent ceiling. What review still has to see — this record said as much the first time
-(lines 244-245 above) — is a WRONG constant named at a correctly-labelled `.Extract_Workers =`/
-`.Queue_Depth =` line; the enum closes an omission or a swap of the two rows, not a mis-copied
-value at a correct one.
+dispatch. The literal's exhaustiveness closes exactly one thing: an OMISSION. A third
+`Worker_Option` member added and left out of it fails the build (`Unhandled enumerated array case`)
+rather than reaching `src/cliargs` with a silently absent ceiling. What review still has to see —
+this record said as much the first time (lines 244-245 above) — is a WRONG constant named at a
+correctly-labelled `.Extract_Workers =`/`.Queue_Depth =` line, and that class INCLUDES a swap of the
+two rows' values: in an enum-keyed literal the key is the label, so
+`.Extract_Workers = pipeline.MAX_QUEUE_DEPTH, .Queue_Depth = pipeline.MAX_EXTRACT_WORKERS` is a
+mis-copied value at two correctly-labelled keys, not a shape the exhaustiveness check reaches. That
+swap builds clean and passes the full suite (measured against issue #212's own review, fix round 1);
+with ADR-0006's two bounds diverged it reproduces issue #94's defect end to end in the shipped
+binary. The enum buys completeness, not correctness of the values written into each row — that stays
+review's job, unchanged from what this record said the first time.
 
 **`pipeline.WORKER_OPTION_CEILINGS` and `pipeline.worker_option_ceiling` are not deleted.** They stay
 exactly where they were — `src/pipeline` still owns the string-keyed lookup and its own pairing
