@@ -42,11 +42,35 @@ import "core:time"
 // window is the fix; retrying forever is not, so both figures are bounded
 // and named rather than tuned per call site. REMOVE_SETTLE_DELAY is chosen
 // above Windows' own timer quantization (about 15.6 ms) so a single retry
-// is not spent on a sleep that rounds up to nothing, and REMOVE_SETTLE_-
-// ATTEMPTS keeps the worst case (every attempt but the last failing) under
-// a fifth of a second -- long enough to outlast the window this package has
-// measured, short enough that a caller whose directory is genuinely stuck
-// still fails in test time rather than hanging the suite.
+// is not spent on a sleep that rounds up to nothing.
+//
+// 5 * 20ms (80ms of sleep before the last try) was sized on isolated
+// `odin test src/pipeline` runs (issue #178) and held there through #229's
+// first two fix rounds at a widened 10 * 30ms (270ms). Round 3 of the #238
+// review reverted the widening: it proved the widening's only covering test
+// was tautological (RELEASE_DELAY sat by construction between the old and
+// new budgets, so it could only ever report old-fails/new-passes); that the
+// wider budget cost a measured ~33% more wall time on src/planning's suite,
+// spent entirely on give-up cases whose targets can never succeed at any
+// budget; and that a fresh, empty testkit-managed scratch directory was
+// observed, once, still present with the widened budget in place right
+// after a real `just ci` run. That single observation is not replicated and
+// not decisive: a directory that later vanishes with nothing recorded as
+// having deleted it (round 4 of the #238 review reproduced exactly that
+// shape once, in eleven further attempts) is consistent with a
+// delete-pending directory entry that stayed visible past the run rather
+// than with a genuine, permanent leak, and the same round's own replication
+// attempt (eleven isolated package runs) produced zero further cases. A
+// bounded retry against a genuine pending-delete window is still correct
+// (see remove_settled below), but no evidence gathered across three rounds
+// showed that widening this pair of constants is what closes that window,
+// and no evidence gathered rules it out either; reverting removes an
+// unproven, measurably costly change rather than keeping it on the theory
+// that "wider can't hurt." Whether a real fix for #229 needs a different
+// mechanism than a bigger sleep budget, or no fix at all because the
+// window described is not reliably reproducible on this machine, remains
+// open -- see issue #229 and the #238 PR body for the current evidence
+// record.
 REMOVE_SETTLE_ATTEMPTS :: 5
 REMOVE_SETTLE_DELAY :: 20 * time.Millisecond
 #assert(REMOVE_SETTLE_ATTEMPTS > 1)
