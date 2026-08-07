@@ -349,6 +349,17 @@ an_exempt_untested_package_is_not_reported :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(missing), 0)
 }
 
+// Fix round 1 finding 2: `packages_missing_test_procedures` was a
+// behavior-identical duplicate of `untested_packages` -- the same set
+// difference over a different pair of lists. Its call site (main.odin's
+// `report_packages_missing_test_procedures`) now calls `untested_packages`
+// directly, so issue #174's own question (a `*_test.odin` file present but
+// no `@(test)` procedure inside it) is pinned by the existing
+// `untested_and_unexempt_package_is_reported`, `a_tested_package_is_not_reported_as_untested`
+// and `an_exempt_untested_package_is_not_reported` tests above, over
+// `untested_packages` itself -- there is nothing left for a second,
+// differently-named copy of the same three tests to pin.
+
 @(test)
 a_tested_package_is_not_reported_as_untested :: proc(t: ^testing.T) {
 	missing := untested_packages(
@@ -360,6 +371,62 @@ a_tested_package_is_not_reported_as_untested :: proc(t: ^testing.T) {
 	defer delete(missing, context.allocator)
 
 	testing.expect_value(t, len(missing), 0)
+}
+
+// A small fixture on disk: two packages under one throwaway root, one whose
+// `*_test.odin` file still holds a real `@(test)` procedure and one whose
+// `*_test.odin` file holds none at all -- issue #174's own mutation, planted
+// rather than merely asserted about. `packages_with_test_procedures` must
+// name only the first.
+@(test)
+packages_with_test_procedures_finds_only_files_holding_a_test_attribute :: proc(t: ^testing.T) {
+	base, base_ok := fixture_root("transcibr-policy-test-proc-fixture", context.allocator)
+	testing.expect_value(t, base_ok, true)
+	defer delete(base, context.allocator)
+	if !base_ok {
+		return
+	}
+	live_dir := fixture_path(base, "live", context.allocator)
+	defer delete(live_dir, context.allocator)
+	hollow_dir := fixture_path(base, "hollow", context.allocator)
+	defer delete(hollow_dir, context.allocator)
+
+	testing.expect_value(t, os.make_directory(base), os.Error(nil))
+	testing.expect_value(t, os.make_directory(live_dir), os.Error(nil))
+	testing.expect_value(t, os.make_directory(hollow_dir), os.Error(nil))
+	defer testing.expect_value(t, os.remove(base), os.Error(nil))
+	defer os.remove(live_dir)
+	defer os.remove(hollow_dir)
+
+	live_file := fixture_path(base, "live/run_test.odin", context.allocator)
+	defer delete(live_file, context.allocator)
+	hollow_file := fixture_path(base, "hollow/run_test.odin", context.allocator)
+	defer delete(hollow_file, context.allocator)
+
+	live_source := "package live\n\nimport \"core:testing\"\n\n@(test)\nchecks_something :: proc(t: ^testing.T) {\n\t_ = t\n}\n"
+	hollow_source := "package hollow\n\nimport \"core:testing\"\n\n@(private)\nchecks_something :: proc(t: ^testing.T) {\n\t_ = t\n}\n"
+	testing.expect_value(
+		t,
+		os.write_entire_file(live_file, transmute([]byte)live_source),
+		os.Error(nil),
+	)
+	defer os.remove(live_file)
+	testing.expect_value(
+		t,
+		os.write_entire_file(hollow_file, transmute([]byte)hollow_source),
+		os.Error(nil),
+	)
+	defer os.remove(hollow_file)
+
+	names, ok := packages_with_test_procedures(base, context.allocator)
+	defer delete(names, context.allocator)
+	defer for name in names {
+		delete(name, context.allocator)
+	}
+
+	testing.expect_value(t, ok, true)
+	testing.expect_value(t, len(names), 1)
+	testing.expect_value(t, names[0], "live")
 }
 
 // A small fixture on disk: one package holding only production source, no
@@ -438,15 +505,49 @@ a_stray_test_file_directly_under_a_package_root_is_reported_not_asserted :: proc
 // only seam that proves `tools\` is accounted for at all: every helper above
 // takes its root and its prefix as a parameter, so a run that simply never
 // asks the question of `tools\` passes all of them (the reviewer's finding).
-ACCOUNTING_FIXTURE_DIRS :: []string{"src", "src/kept", "tools", "tools/newtool", "tools/bare"}
+ACCOUNTING_FIXTURE_DIRS :: []string {
+	"src",
+	"src/kept",
+	"src/hollow",
+	"tools",
+	"tools/newtool",
+	"tools/bare",
+	"tools/hollow",
+}
 ACCOUNTING_FIXTURE_FILES :: []string {
 	"src/kept/kept_test.odin",
+	"src/hollow/hollow_test.odin",
 	"tools/newtool/newtool.odin",
 	"tools/newtool/newtool_test.odin",
 	"tools/bare/bare.odin",
 	"tools/stray_test.odin",
+	"tools/hollow/hollow_test.odin",
 }
-ACCOUNTING_FIXTURE_JUSTFILE :: "test:\n\todin test src/kept {{vet}}\n"
+ACCOUNTING_FIXTURE_JUSTFILE :: "test:\n\todin test src/kept {{vet}}\n\todin test src/hollow {{vet}}\n\todin test tools/hollow {{vet}}\n"
+
+// `src/hollow/hollow_test.odin` and `tools/hollow/hollow_test.odin` are the
+// files this fixture plants with NO `@(test)` procedure at all -- issue
+// #174's own shape, a `*_test.odin` file whose test procedure was rewritten
+// away while the file itself stayed put. Both roots get one: the reviewer's
+// round 1 finding measured that a mutation silencing the new check for
+// `tools/` alone left the whole suite green, because only `src/hollow`
+// existed to prove the check fires at all. Every other `_test.odin` file
+// gets a real `@(test)` procedure so the new check this ticket adds does not
+// flag them for a reason unrelated to what they are already planted to
+// exercise.
+@(require_results)
+accounting_fixture_source :: proc(name: string) -> string {
+	assert(len(name) > 0, "asked for the source of no fixture file at all")
+	if name == "src/hollow/hollow_test.odin" || name == "tools/hollow/hollow_test.odin" {
+		return "package fixture\n\n@(private)\nchecks_something :: proc() {\n}\n"
+	}
+	if strings.has_suffix(name, "_test.odin") {
+		return(
+			"package fixture\n\nimport \"core:testing\"\n\n@(test)\nchecks_something :: proc(t: ^testing.T) {\n\t_ = t\n}\n" \
+		)
+	}
+	return "package fixture\n"
+}
 
 @(test)
 tools_packages_are_accounted_for_beside_src_packages :: proc(t: ^testing.T) {
@@ -464,13 +565,21 @@ tools_packages_are_accounted_for_beside_src_packages :: proc(t: ^testing.T) {
 	defer violations_destroy(violations, context.allocator)
 	check_package_accounting(base, &violations, context.allocator)
 
-	testing.expect_value(t, len(violations), 3)
+	testing.expect_value(t, len(violations), 5)
 	testing.expect(
 		t,
 		violations_mention(violations, "tools/newtool holds a *_test.odin file but is not named"),
 	)
 	testing.expect(t, violations_mention(violations, "tools/bare holds no *_test.odin file"))
 	testing.expect(t, violations_mention(violations, "belongs to no package under tools/"))
+	testing.expect(
+		t,
+		violations_mention(violations, "src/hollow holds a *_test.odin file but no @(test)"),
+	)
+	testing.expect(
+		t,
+		violations_mention(violations, "tools/hollow holds a *_test.odin file but no @(test)"),
+	)
 }
 
 @(require_results)
@@ -533,10 +642,10 @@ plant_accounting_fixture :: proc(t: ^testing.T, base: string) {
 		testing.expect_value(t, os.make_directory(path), os.Error(nil))
 	}
 
-	source := "package fixture\n"
 	for name in ACCOUNTING_FIXTURE_FILES {
 		path := fixture_path(base, name, context.allocator)
 		defer delete(path, context.allocator)
+		source := accounting_fixture_source(name)
 		testing.expect_value(t, os.write_entire_file(path, transmute([]byte)source), os.Error(nil))
 	}
 

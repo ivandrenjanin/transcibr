@@ -176,16 +176,26 @@ note_present_package :: proc(
 	append(into, name)
 }
 
-// Every name in `all` that `tested` does not hold and that `exempt` does not
-// name -- a package with no `*_test.odin` file at all, new or emptied, that
-// `missing_from_test_recipe` alone never asks about because it only ever
-// walks packages that already hold a test file. `exempt` is the calling
-// root's own roster: TEST_LESS_SRC_PACKAGES under `src\`, and the empty
-// NO_TEST_LESS_PACKAGES under `tools\`.
+// Every name in `all` that `have` does not hold and that `exempt` does not
+// name -- the set difference the accounting check asks twice, over two
+// different pairs of lists sharing one exemption roster. Called with
+// (all_packages, tested_packages) it answers "which package holds no
+// `*_test.odin` file at all," which `missing_from_test_recipe` alone never
+// asks because it only ever walks packages that already hold a test file.
+// Called with (tested_packages, packages_with_test_procedures) it answers
+// issue #174's question instead: which package the accounting check already
+// requires tested (a `*_test.odin` file present) holds no `@(test)`
+// procedure among its own test files at all -- a package rewritten so every
+// `@(test)` becomes `@(private)` still keeps its test file, so `tested`
+// alone cannot tell the two apart. `exempt` is the calling root's own
+// roster: TEST_LESS_SRC_PACKAGES under `src\`, and the empty
+// NO_TEST_LESS_PACKAGES under `tools\`; either way it excuses a package from
+// being required at all, never from holding a *_test.odin file with nothing
+// live inside it -- that is `exempt_packages_holding_tests`' own question.
 @(require_results)
 untested_packages :: proc(
 	all: []string,
-	tested: []string,
+	have: []string,
 	exempt: []string,
 	allocator: mem.Allocator,
 ) -> []string {
@@ -200,7 +210,7 @@ untested_packages :: proc(
 			continue
 		}
 		has_test := false
-		for candidate in tested {
+		for candidate in have {
 			if candidate == name {
 				has_test = true
 				break
@@ -211,6 +221,115 @@ untested_packages :: proc(
 		}
 	}
 	return missing[:]
+}
+
+// Every package name under `package_root` that holds at least one `@(test)`
+// procedure in any of its own `*_test.odin` files -- the file's own content,
+// read and parsed the same way `check_one_file` parses every file the build
+// sweeps (`read_source`), never trusted from the file's mere existence the
+// way `tested_packages` names one. Issue #174: a `*_test.odin` file rewritten
+// so every `@(test)` becomes `@(private)` still exists, so `tested_packages`
+// still names its package -- this is the read that tells the two apart.
+@(require_results)
+packages_with_test_procedures :: proc(
+	package_root: string,
+	allocator: mem.Allocator,
+) -> (
+	names: []string,
+	ok: bool,
+) {
+	assert(len(package_root) > 0, "asked which packages under no root at all hold test procedures")
+	assert(
+		allocator.procedure != nil,
+		"the package names outlive this call and need a chosen allocator",
+	)
+
+	seen := make([dynamic]string, 0, allocator)
+	walker := os.walker_create(package_root)
+	defer os.walker_destroy(&walker)
+
+	for entry in os.walker_walk(&walker) {
+		if entry.type == .Directory {
+			if is_excluded_directory(entry.name) {
+				os.walker_skip_dir(&walker)
+			}
+			continue
+		}
+		if entry.type != .Regular || !strings.has_suffix(entry.name, "_test.odin") {
+			continue
+		}
+		note_package_with_test_procedure(entry.fullpath, package_root, &seen, allocator)
+	}
+
+	if _, walk_error := os.walker_error(&walker); walk_error != nil {
+		return seen[:], false
+	}
+	return seen[:], true
+}
+
+// Records the package one `*_test.odin` file belongs to, but only once that
+// file's own source is read and parsed and found to hold a procedure carrying
+// `@(test)`. A package already recorded is skipped before the file is even
+// read: one live test file anywhere in a package is enough to clear it, and
+// a stray file sitting directly in `package_root` (`relative_slashed` trims
+// the whole path and returns the empty string) belongs to no package and is
+// dropped here exactly as `note_tested_package` drops it, since
+// `tested_packages` already reports it through `strays`.
+note_package_with_test_procedure :: proc(
+	test_file: string,
+	package_root: string,
+	into: ^[dynamic]string,
+	allocator: mem.Allocator,
+) {
+	assert(len(test_file) > 0, "asked to attribute no test file at all to a package")
+	assert(into != nil, "asked to record a package into nothing at all")
+
+	directory, _ := os.split_path(test_file)
+	name := relative_slashed(directory, package_root, allocator)
+	if len(name) == 0 {
+		delete(name, allocator)
+		return
+	}
+	defer delete(name, allocator)
+
+	for existing in into {
+		if existing == name {
+			return
+		}
+	}
+
+	src, read_error := os.read_entire_file(test_file, allocator)
+	if read_error != nil {
+		return
+	}
+	defer delete(src, allocator)
+
+	if !file_declares_test_procedure(test_file, string(src), allocator) {
+		return
+	}
+	append(into, strings.clone(name, allocator))
+}
+
+// Whether one file's own source, parsed the same way `read_source` answers
+// every other question this program asks about a file, declares at least one
+// procedure carrying `@(test)`. A file that fails to parse at all answers
+// false rather than crashing this walk: A8 -- a source file is external
+// input, and a file too broken to parse is not proof it holds a live test.
+@(require_results)
+file_declares_test_procedure :: proc(name: string, src: string, allocator: mem.Allocator) -> bool {
+	assert(len(name) > 0, "asked whether no file at all declares a test procedure")
+
+	facts := read_source(name, src, allocator)
+	defer facts_destroy(facts, allocator)
+	if facts.fault != Fault.None {
+		return false
+	}
+	for procedure in facts.procedures {
+		if procedure.is_test {
+			return true
+		}
+	}
+	return false
 }
 
 // Whether `roster` names `name` exempt from appearing in the justfile's

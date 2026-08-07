@@ -248,6 +248,57 @@ check_root_accounting :: proc(
 	if scope.justfile_ok {
 		report_missing_from_test_recipe(scope, tested, into, allocator)
 	}
+	_ = report_packages_missing_test_procedures(scope, tested, into, allocator)
+}
+
+// One violation per package under this root that the accounting check
+// already requires to be tested (holding a `*_test.odin` file, and not named
+// by the root's own exemption roster) but whose test files hold no `@(test)`
+// procedure at all -- issue #174: the presence-only check above cannot see a
+// `*_test.odin` file rewritten so every `@(test)` becomes `@(private)`.
+// Returns false only when the walk itself failed, matching
+// `report_untested_packages`' own failure shape.
+@(require_results)
+report_packages_missing_test_procedures :: proc(
+	scope: Accounting_Scope,
+	tested: []string,
+	into: ^[dynamic]Violation,
+	allocator: mem.Allocator,
+) -> bool {
+	assert(
+		len(scope.package_root) > 0,
+		"asked to find missing test procedures under no root at all",
+	)
+	assert(into != nil, "asked to collect violations into nothing at all")
+
+	with_test, discovered := packages_with_test_procedures(scope.package_root, allocator)
+	defer delete(with_test, allocator)
+	defer for name in with_test {
+		delete(name, allocator)
+	}
+	if !discovered {
+		message := fmt.aprintf(
+			"could not walk %s\\ looking for @(test) procedures",
+			scope.prefix,
+			allocator = allocator,
+		)
+		append(into, make_violation(scope.package_root, 0, message, allocator))
+		return false
+	}
+
+	missing := untested_packages(tested, with_test, scope.exempt, allocator)
+	defer delete(missing, allocator)
+	for name in missing {
+		message := fmt.aprintf(
+			"%s/%s holds a *_test.odin file but no @(test) procedure (issue #174)",
+			scope.prefix,
+			name,
+			allocator = allocator,
+		)
+		append(into, make_violation(scope.package_root, 0, message, allocator))
+		delete(name, allocator)
+	}
+	return true
 }
 
 // One violation per stray `*_test.odin` file -- a file `tested_packages`

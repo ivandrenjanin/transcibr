@@ -54,6 +54,12 @@ Fault :: enum u8 {
 // It is a claim about how the body was DECLARED and never about how it was
 // named: `_ :: proc()` reads as a hole and takes an attribute like anything else,
 // and conflating the two exempted it from both rules.
+// `is_test` is issue #174's own field: whether `@(test)` sits on this
+// declaration, read the same way `annotated` reads `@(require_results)` --
+// off the declaration's own attribute list, never off the file's name. A
+// package-accounting check that only asked whether a `*_test.odin` file
+// EXISTS could not see a file rewritten from `@(test)` to `@(private)`; this
+// is what lets it see that rewrite.
 Procedure :: struct {
 	name:         string,
 	declared_at:  int,
@@ -61,6 +67,7 @@ Procedure :: struct {
 	returns:      bool,
 	annotated:    bool,
 	attributable: bool,
+	is_test:      bool,
 }
 
 // One comment inside a procedure body, with the procedure it sits in.
@@ -89,6 +96,11 @@ Source_Facts :: struct {
 // Both `@(require_results)` and the bare `@require_results` parse to this one
 // identifier, so there is no second spelling for a reader to miss.
 REQUIRE_RESULTS :: "require_results"
+
+// The attribute issue #174's check is about, spelled as `core:testing`'s
+// runner itself requires it: a bare `test`, inside `@(test)` or stacked
+// beside another name in the same parenthesised list.
+TEST_ATTRIBUTE :: "test"
 
 // The file tag rule M2 is about. The compiler reads one only above the `package`
 // clause, and several names may sit on one of these lines.

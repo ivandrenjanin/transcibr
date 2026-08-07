@@ -273,6 +273,60 @@ a_procedure_declared_indented_is_measured_rather_than_refused :: proc(t: ^testin
 	testing.expect_value(t, found.attributable, true)
 }
 
+// Issue #174: the package-accounting check keys on the PRESENCE of a
+// `*_test.odin` file, never on whether it still holds an `@(test)`
+// procedure. This is the fact that check reads instead: whether `@(test)`
+// sits on a declaration, stacked with another attribute exactly the way
+// `core:testing` itself requires it be spelled.
+@(test)
+a_test_attribute_is_read :: proc(t: ^testing.T) {
+	facts := facts_of(
+		t,
+		PROBE + "@(test)\nchecks_something :: proc(t: ^testing.T) {\n\t_ = t\n}\n",
+	)
+	defer facts_destroy(facts, context.allocator)
+
+	found := one_procedure(t, facts)
+	testing.expect_value(t, found.is_test, true)
+}
+
+@(test)
+a_procedure_with_no_test_attribute_is_not_a_test :: proc(t: ^testing.T) {
+	facts := facts_of(t, PROBE + "helper :: proc() {\n}\n")
+	defer facts_destroy(facts, context.allocator)
+
+	found := one_procedure(t, facts)
+	testing.expect_value(t, found.is_test, false)
+}
+
+// The row the #174 mutation-check exercises directly: `@(test)` rewritten to
+// `@(private)` must read as NOT a test procedure -- the whole hole this
+// ticket closes.
+@(test)
+a_private_procedure_is_not_read_as_a_test :: proc(t: ^testing.T) {
+	facts := facts_of(t, PROBE + "@(private)\nchecks_something :: proc() {\n}\n")
+	defer facts_destroy(facts, context.allocator)
+
+	found := one_procedure(t, facts)
+	testing.expect_value(t, found.is_test, false)
+}
+
+// `@(test)` reaches a procedure declared inside a `when` block exactly the
+// way `@(require_results)` already does (issue #53's own finding, carried
+// here): a second attribute name is not a second walk.
+@(test)
+a_test_attribute_inside_a_when_block_is_read :: proc(t: ^testing.T) {
+	hidden :=
+		PROBE +
+		"when ODIN_OS == .Windows {\n" +
+		"\t@(test)\n\tchecks_something :: proc(t: ^testing.T) {\n\t\t_ = t\n\t}\n}\n"
+	facts := facts_of(t, hidden)
+	defer facts_destroy(facts, context.allocator)
+
+	found := one_procedure(t, facts)
+	testing.expect_value(t, found.is_test, true)
+}
+
 @(test)
 a_procedure_nested_in_another_body_is_measured :: proc(t: ^testing.T) {
 	nested := PROBE + "outer :: proc() {\n\tinner :: proc() {\n\t\treturn\n\t}\n\tinner()\n}\n"
