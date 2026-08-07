@@ -4,6 +4,7 @@ package policy
 import "core:mem"
 import "core:odin/ast"
 import "core:odin/parser"
+import "core:os"
 import "core:slice"
 import "core:strings"
 
@@ -794,17 +795,37 @@ collect_vet_tags :: proc(
 // it, would be a second model of `#+build` beside the one the compiler
 // maintains, which is the defect ADR-0028 is about (issue #239).
 // `ODIN_OS`/`ODIN_ARCH` are the compiler's own builtin constants for the
-// platform this build is running on; `parse_file_tags` reads a file's docs
-// as well as its tags, matching the compiler's own rule that a `#+build`
-// line can be written either way.
+// platform this build is running on.
+//
+// `parse_file_tags` also reads a file's leading doc comment for a `+build`
+// line (`file.docs`), but measurement showed the real `odin test` does not
+// honor that spelling: a `//+build linux` (or `// +build linux`) line as
+// the first line of a file still compiles and runs on Windows, where a
+// `#+build linux` file tag correctly excludes it (issue #239 fix round 1).
+// Feeding `file.docs` into the evaluator would make this check flag a file
+// the compiler happily builds, so `docs` is cleared on the copy passed in
+// -- only `file.tags`, the `#+` lines the tokenizer itself recognizes as
+// file tags, drive the verdict.
+//
+// `target.project_name` is the compiler's own name for the package being
+// built (`ODIN_BUILD_PROJECT_NAME`), which for `odin test <dir>` is
+// `<dir>`'s base name -- pinned by measurement against the installed
+// compiler. Leaving it at its zero value makes `match_build_tags` treat
+// every `#+build-project-name` group as satisfied regardless of what it
+// names, which would silently ignore that whole tag family.
 @(require_results)
 platform_excludes_file :: proc(file: ^ast.File, tree: mem.Allocator) -> bool {
 	assert(file != nil, "asked whether no file at all is excluded by a build tag")
 
-	tags := parser.parse_file_tags(file^, tree)
+	tags_only := file^
+	tags_only.docs = nil
+
+	tags := parser.parse_file_tags(tags_only, tree)
+	directory, _ := os.split_path(file.fullpath)
 	target := parser.Build_Target {
-		os   = ODIN_OS,
-		arch = ODIN_ARCH,
+		os           = ODIN_OS,
+		arch         = ODIN_ARCH,
+		project_name = os.base(directory),
 	}
 	return !parser.match_build_tags(tags, target)
 }

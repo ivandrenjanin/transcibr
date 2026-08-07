@@ -410,6 +410,60 @@ a_build_tagged_test_file_naming_the_current_platform_still_declares_its_test_pro
 	)
 }
 
+// Issue #239 fix round 1: `#+build-project-name` is part of the same
+// `#+build` tag family `platform_excludes_file` evaluates, and
+// `parser.match_build_tags` treats an empty `target.project_name` as
+// satisfying every group unconditionally (`file_tags.odin`'s
+// `project_name_correct := len(target.project_name) == 0 || ...`). A file
+// naming a project other than the one it lives under must still be read as
+// excluded.
+@(test)
+a_build_project_name_tagged_test_file_naming_a_different_project_declares_no_test_procedure :: proc(
+	t: ^testing.T,
+) {
+	source := "#+build-project-name zzz\npackage fixture\n\nimport \"core:testing\"\n\n@(test)\nchecks_something :: proc(t: ^testing.T) {\n\t_ = t\n}\n"
+	testing.expect_value(
+		t,
+		file_declares_test_procedure("src/version/version_test.odin", source, context.allocator),
+		false,
+	)
+}
+
+// The positive-space counterpart (CLAUDE.md rule A3): a
+// `#+build-project-name` group naming the package's own directory must
+// still credit the file.
+@(test)
+a_build_project_name_tagged_test_file_naming_its_own_project_still_declares_its_test_procedure :: proc(
+	t: ^testing.T,
+) {
+	source := "#+build-project-name version\npackage fixture\n\nimport \"core:testing\"\n\n@(test)\nchecks_something :: proc(t: ^testing.T) {\n\t_ = t\n}\n"
+	testing.expect_value(
+		t,
+		file_declares_test_procedure("src/version/version_test.odin", source, context.allocator),
+		true,
+	)
+}
+
+// Issue #239 fix round 1: `parser.parse_file_tags` also reads a `+build`
+// line out of a file's leading doc comment (`file.docs`), but the real
+// `odin test` does not honor that spelling -- measured directly against the
+// installed compiler, a `//+build linux` first line still compiles and runs
+// on Windows where a `#+build linux` file tag correctly excludes it. Feeding
+// `file.docs` into the evaluator would flag a file the compiler happily
+// builds, which is a false-positive `just check` failure on legitimate
+// source.
+@(test)
+a_leading_doc_comment_spelled_build_tag_is_not_honored_and_still_declares_its_test_procedure :: proc(
+	t: ^testing.T,
+) {
+	source := "//+build linux\npackage fixture\n\nimport \"core:testing\"\n\n@(test)\nchecks_something :: proc(t: ^testing.T) {\n\t_ = t\n}\n"
+	testing.expect_value(
+		t,
+		file_declares_test_procedure("tagged_test.odin", source, context.allocator),
+		true,
+	)
+}
+
 // A small fixture on disk: two packages under one throwaway root, one whose
 // `*_test.odin` file still holds a real `@(test)` procedure and one whose
 // `*_test.odin` file holds none at all -- issue #174's own mutation, planted
