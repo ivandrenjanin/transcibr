@@ -50,6 +50,33 @@ Riff_Fault :: enum u8 {
 	Nonsense_Format,
 }
 
+// See CLAUDE.md, Odin notes: enumerated arrays and switches.
+@(private, rodata)
+RIFF_FAULT := [Riff_Fault]string {
+	.None             = "",
+	.Not_Riff         = "does not start with a RIFF header",
+	.Not_Wave         = "is a RIFF container but not a WAVE one",
+	.Truncated        = "is shorter than its own chunk headers say it is",
+	.Head_Too_Short   = "does not hold enough of a header to walk",
+	.No_Fmt_Chunk     = "carries no fmt chunk describing the audio",
+	.Short_Fmt_Chunk  = "carries a fmt chunk too short to describe the audio",
+	.Not_Pcm          = "does not hold PCM audio",
+	.No_Data_Chunk    = "carries no data chunk at all",
+	.Empty_Data_Chunk = "carries a data chunk with no audio in it",
+	.Nonsense_Format  = "declares a fmt chunk with a channel count, sample rate, or byte rate of zero",
+}
+
+// The #71/#131 pattern: a Riff_Fault reaches a user as words, never as the raw
+// enum member `%v` would print.
+@(require_results)
+riff_fault_says :: proc(fault: Riff_Fault) -> string {
+	assert(fault != .None, "the success value is not a fault and says nothing")
+
+	says := RIFF_FAULT[fault]
+	assert(len(says) > 0, "a fault was added to Riff_Fault without a row in RIFF_FAULT")
+	return says
+}
+
 // `data_offset` has one consumer and it is riff_test.odin's pin. It is the only
 // field that moves when the fixture's chunk table does, so it is not dead.
 Wav_Facts :: struct {
