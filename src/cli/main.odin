@@ -10,6 +10,7 @@ import "core:strings"
 import "core:time"
 import "transcibr:artifact"
 import "transcibr:child"
+import "transcibr:cliargs"
 import "transcibr:crashlog"
 import "transcibr:pipeline"
 import "transcibr:process"
@@ -146,7 +147,7 @@ main :: proc() {
 		write_usage(os.stdout)
 		return
 	}
-	if args[1] == TRANSCRIBE {
+	if args[1] == cliargs.TRANSCRIBE {
 		os.exit(transcribe_one(args[1:]))
 	}
 	if args[1] == PLAN {
