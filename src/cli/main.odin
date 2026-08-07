@@ -93,11 +93,6 @@ was made. The engine's own output cannot settle them -- it carries no engine
 version and reports every large model as "large" (ADR-0003) -- so anything
 not given, or given empty, is recorded as "unknown" rather than guessed at.`
 
-// The one thing this binary reads that takes no value, so the loop that pairs a
-// name off with the argument after it cannot express it and it is answered before
-// that loop runs.
-HELP :: "--help"
-
 // Two failures and not one: a command line the caller must fix, and a Recording's
 // output that will not render, which is a file to go and look at.
 USAGE_ERROR :: 2
@@ -144,7 +139,7 @@ main :: proc() {
 		print_version()
 		return
 	}
-	if asks_for_help(args[1:]) {
+	if cliargs.asks_for_help(args[1:]) {
 		write_usage(os.stdout)
 		return
 	}
@@ -189,10 +184,13 @@ print_version :: proc() {
 // Issue #75 Stage 6 (the contraction): `--from-json`'s grammar (the old
 // `Options`, `read_options`, `read_option`) moved to
 // `cliargs.Render_Options`/`cliargs.read_render_options`, the fifth and last
-// of ADR-0038's migration sites. Nothing left here decides anything --
-// `render_context_of` below is a field-for-field copy from what the grammar
-// already settled, never a second place `--source`, `--model` or `--engine`
-// could be defaulted differently than `src/cliargs` already did.
+// of ADR-0038's migration sites. `Render_Options` embeds
+// `transcript.Render_Context` itself, so `options.rc` below is already the
+// context the grammar settled -- nothing here decides anything or copies a
+// field under a different name (fix round 1, PR #253 finding 1: a former
+// field-for-field copy, `render_context_of`, paired `--model` and `--engine`
+// onto `Render_Context`'s differently-named fields by hand, and a swap of
+// those two lines compiled clean and passed the whole suite).
 @(require_results)
 re_render :: proc(arguments: []string) -> int {
 	assert(
@@ -202,7 +200,7 @@ re_render :: proc(arguments: []string) -> int {
 
 	options, ok, refusal := cliargs.read_render_options(arguments)
 	if !ok {
-		_ = refuse(refusal.complaint, refusal.args[:refusal.arg_count])
+		_ = refuse(refusal)
 		return USAGE_ERROR
 	}
 	assert(len(options.json_path) > 0, "accepted a command line with nothing to render")
@@ -222,35 +220,12 @@ re_render :: proc(arguments: []string) -> int {
 	}
 	json_text := string(json_bytes)
 
-	rc := render_context_of(options)
+	rc := options.rc
 	rc.now = time.now()
 	rc.language = transcript.parse_language(json_text, context.allocator)
 	defer delete(rc.language, context.allocator)
 
 	return write_transcript(options.json_path, json_text, rc)
-}
-
-// Plumbing, not a decision: every field here was already settled by
-// `cliargs.read_render_options` (the source fallback, the model/engine
-// "unknown" settling) -- this only reshapes the grammar's own verdict into
-// the wider `transcript.Render_Context` `write_transcript` takes, which also
-// carries `now` and `language`, neither of which the grammar could settle
-// (issue #27, ADR-0038's own "what stays in src/cli" list: model and engine
-// identification I/O and pipeline wiring, not grammar).
-@(private)
-@(require_results)
-render_context_of :: proc(o: cliargs.Render_Options) -> transcript.Render_Context {
-	assert(len(o.json_path) > 0, "a render context was built from nothing to render")
-	assert(len(o.source) > 0, "a render context was built with no source settled")
-	assert(len(o.model) > 0, "a render context was built with no model settled")
-	assert(len(o.engine) > 0, "a render context was built with no engine settled")
-
-	rc: transcript.Render_Context
-	rc.source_display = o.source
-	rc.model = o.model
-	rc.engine_version = o.engine
-	rc.profile = o.profile
-	return rc
 }
 
 // The Recording's length is passed as nothing: this binary holds the Engine's
@@ -286,21 +261,6 @@ write_transcript :: proc(
 		return OPERATING_ERROR
 	}
 	return 0
-}
-
-// Scanned across the positions a NAME can stand in, stepping by two as
-// read_options walks the same list: a scan of everything read `--from-json
-// --help` as a request for usage and reported success on a render that never
-// happened.
-@(private)
-@(require_results)
-asks_for_help :: proc(arguments: []string) -> bool {
-	for at := 0; at < len(arguments); at += 2 {
-		if arguments[at] == HELP {
-			return true
-		}
-	}
-	return false
 }
 
 // The Model, identified once per run, with its refusal already reported. Both
@@ -371,32 +331,39 @@ job_object_opened :: proc() -> (group: child.Job_Object, ok: bool) {
 	return opened, false
 }
 
-// Issue #75 Stage 6 (the contraction): the ADR-0038 refuse-shape paragraph's
-// own letter -- `refuse(complaint: string, args: []Refusal_Arg) -> bool`,
-// taking the union slice directly rather than a pre-built `[]any` -- adopted
-// here in place of the two siblings expand-contract had left standing: this
-// procedure's own former `..any` form (which every src/cliargs-backed
-// command had already stopped calling) and `refuse_cliargs`
-// (`transcribr.odin`), which existed only because this one had not yet made
-// the move. `refuse_cliargs` is deleted; every one of its five call sites
-// and every one of `refuse`'s surviving three (`crash_drill.odin`) now
-// reach this same procedure. Nothing here allocates: `strs`, `ints` and
-// `built` are fixed arrays on this call's own stack, sized to
-// `cliargs.MAX_REFUSAL_ARGS`, and the `any` values `fmt.eprintf` receives
-// point at them and never at `args`' own backing bytes.
+// Issue #75 Stage 6 (the contraction), fix round 1 (PR #253 finding 4):
+// `refuse` now takes the whole `cliargs.Refusal` by value rather than a
+// pre-split `(complaint: string, args: []Refusal_Arg)` pair. The split shape
+// moved the `args[:arg_count]` slicing to every one of its five grammar call
+// sites, none of which `just ci` can red (`src/cli` carries no tests,
+// ADR-0009) -- and the plausible near-miss `refusal.args[:]` (the FULL fixed
+// array, not the used prefix) is well-typed at every one of them, silently
+// corrupting every refusal that command prints with trailing
+// `%!(EXTRA <nil>, <nil>)` bytes. Taking the whole `Refusal` removes the
+// slicing from every call site: there is exactly one place left that reads
+// `arg_count`, inside this procedure, and nothing outside `transcibr:cliargs`
+// can misname it. `crash_drill.odin`'s own refusals, which never went
+// through a `cliargs.read_*_options` call, now build one through
+// `cliargs.make_refusal` so every refusal in `src/cli` takes this same
+// shape. Nothing here allocates: `strs`, `ints` and `built` are fixed arrays
+// on this call's own stack, sized to `cliargs.MAX_REFUSAL_ARGS`, and the
+// `any` values `fmt.eprintf` receives point at them and never at `r.args`'
+// own backing bytes.
 @(private)
 @(require_results)
-refuse :: proc(complaint: string, args: []cliargs.Refusal_Arg) -> (ok: bool) {
-	assert(len(complaint) > 0, "refused a command line without saying what was wrong with it")
+refuse :: proc(refusal: cliargs.Refusal) -> (ok: bool) {
+	r := refusal
+	assert(len(r.complaint) > 0, "refused a command line without saying what was wrong with it")
 	assert(
-		len(args) <= cliargs.MAX_REFUSAL_ARGS,
+		r.arg_count <= cliargs.MAX_REFUSAL_ARGS,
 		"a refusal carries more arguments than refuse can print",
 	)
+	assert(r.arg_count >= 0, "a refusal cannot carry a negative argument count")
 
 	strs: [cliargs.MAX_REFUSAL_ARGS]string
 	ints: [cliargs.MAX_REFUSAL_ARGS]int
 	built: [cliargs.MAX_REFUSAL_ARGS]any
-	for arg, i in args {
+	for arg, i in r.args[:r.arg_count] {
 		switch v in arg {
 		case string:
 			strs[i] = v
@@ -407,7 +374,7 @@ refuse :: proc(complaint: string, args: []cliargs.Refusal_Arg) -> (ok: bool) {
 		}
 	}
 
-	fmt.eprintf(complaint, ..built[:len(args)])
+	fmt.eprintf(r.complaint, ..built[:r.arg_count])
 	fmt.eprint("\n\n")
 	write_usage(os.stderr)
 	return false

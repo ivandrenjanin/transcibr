@@ -53,7 +53,7 @@ plan_batch :: proc(arguments: []string) -> int {
 
 	o, ok, refusal := cliargs.read_plan_options(arguments)
 	if !ok {
-		_ = refuse(refusal.complaint, refusal.args[:refusal.arg_count])
+		_ = refuse(refusal)
 		return USAGE_ERROR
 	}
 

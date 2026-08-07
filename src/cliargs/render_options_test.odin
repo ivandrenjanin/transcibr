@@ -23,10 +23,24 @@ read_render_options_accepts_a_well_formed_command_line :: proc(t: ^testing.T) {
 
 	testing.expect(t, ok, "a well-formed --from-json command line was refused")
 	testing.expect_value(t, o.json_path, "engine-output.json")
-	testing.expect_value(t, o.source, "recording.wav")
+	testing.expect_value(t, o.source_display, "recording.wav")
 	testing.expect_value(t, o.model, "large")
-	testing.expect_value(t, o.engine, "1.5.0")
+	testing.expect_value(t, o.engine_version, "1.5.0")
 	testing.expect_value(t, o.profile, transcript.Merge_Profile.Conversation)
+}
+
+// TRANSCRIBE and PLAN are pinned incidentally by their own earliest-missing-
+// field test, whose expected_arg is the bare literal "--transcribe"/"--plan"
+// rather than the symbol -- BATCH and FROM_JSON were not, so a token drift
+// (e.g. BATCH :: "--batchX") passed the whole suite green. This test names
+// the literal directly: mutate FROM_JSON and "--from-json" no longer opens
+// this grammar's own case, so the token reads as an unknown option instead.
+@(test)
+read_render_options_pins_the_from_json_token :: proc(t: ^testing.T) {
+	o, ok, _ := read_render_options([]string{"--from-json", "engine-output.json"})
+
+	testing.expect(t, ok, "the literal \"--from-json\" token was not recognized")
+	testing.expect_value(t, o.json_path, "engine-output.json")
 }
 
 @(test)
@@ -44,7 +58,7 @@ read_render_options_falls_the_source_back_to_the_json_path_when_none_is_given ::
 	o, ok, _ := read_render_options([]string{FROM_JSON, "engine-output.json"})
 
 	testing.expect(t, ok, "a command line with no --source was refused")
-	testing.expect_value(t, o.source, "engine-output.json")
+	testing.expect_value(t, o.source_display, "engine-output.json")
 }
 
 @(test)
@@ -54,7 +68,7 @@ read_render_options_keeps_an_explicit_source_rather_than_the_json_path :: proc(t
 	)
 
 	testing.expect(t, ok, "a command line with an explicit --source was refused")
-	testing.expect_value(t, o.source, "recording.wav")
+	testing.expect_value(t, o.source_display, "recording.wav")
 }
 
 @(test)
@@ -63,7 +77,7 @@ read_render_options_settles_an_unnamed_model_and_engine_to_unknown :: proc(t: ^t
 
 	testing.expect(t, ok, "a command line with no --model or --engine was refused")
 	testing.expect_value(t, o.model, transcript.UNKNOWN)
-	testing.expect_value(t, o.engine, transcript.UNKNOWN)
+	testing.expect_value(t, o.engine_version, transcript.UNKNOWN)
 }
 
 @(test)

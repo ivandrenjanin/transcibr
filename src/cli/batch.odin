@@ -113,7 +113,7 @@ run_batch_command :: proc(arguments: []string) -> int {
 
 	parsed, parsed_ok, refusal := cliargs.read_batch_options(arguments, BATCH_WORKER_CEILINGS)
 	if !parsed_ok {
-		_ = refuse(refusal.complaint, refusal.args[:refusal.arg_count])
+		_ = refuse(refusal)
 		return USAGE_ERROR
 	}
 

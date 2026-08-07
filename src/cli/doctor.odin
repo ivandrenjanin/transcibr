@@ -98,7 +98,7 @@ doctor_engine_identified :: proc(path: string) -> (identified: artifact.Digest, 
 run_doctor :: proc(arguments: []string) -> int {
 	parsed, parsed_ok, refusal := cliargs.read_doctor_options(arguments)
 	if !parsed_ok {
-		_ = refuse(refusal.complaint, refusal.args[:refusal.arg_count])
+		_ = refuse(refusal)
 		return USAGE_ERROR
 	}
 

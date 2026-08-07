@@ -59,7 +59,7 @@ CRASH_DRILL_WIRING_ASSERT :: "wiring-assert"
 @(require_results)
 run_crash_drill :: proc(arguments: []string) -> int {
 	if len(arguments) < 2 {
-		_ = refuse("--crash-drill needs a mode and a directory.", nil)
+		_ = refuse(cliargs.make_refusal("--crash-drill needs a mode and a directory."))
 		return USAGE_ERROR
 	}
 	mode := arguments[0]
@@ -73,13 +73,15 @@ run_crash_drill :: proc(arguments: []string) -> int {
 	     CRASH_DRILL_WORKER_ASSERT:
 	case:
 		_ = refuse(
-			"--crash-drill does not know the mode %q.",
-			[]cliargs.Refusal_Arg{cliargs.Refusal_Arg(mode)},
+			cliargs.make_refusal(
+				"--crash-drill does not know the mode %q.",
+				cliargs.Refusal_Arg(mode),
+			),
 		)
 		return USAGE_ERROR
 	}
 	if len(dir) == 0 {
-		_ = refuse("--crash-drill needs a directory to write to.", nil)
+		_ = refuse(cliargs.make_refusal("--crash-drill needs a directory to write to."))
 		return USAGE_ERROR
 	}
 

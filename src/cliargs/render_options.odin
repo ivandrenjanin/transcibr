@@ -22,8 +22,21 @@
 // DEFAULT_PROFILE already does inside every migrated command's grammar, not
 // the tool/worker-ceiling defaulting ADR-0038 keeps in src/cli because that
 // needs transcibr:audio or transcibr:pipeline behind it. Folding it in here
-// leaves src/cli's own re_render with nothing left to decide -- argv in,
-// a transcript.Render_Context out.
+// leaves src/cli's own re_render with nothing left to decide -- argv in, a
+// transcript.Render_Context out.
+//
+// Render_Options embeds transcript.Render_Context itself (`using rc`)
+// rather than shadowing its fields under different names -- a former
+// `source`/`model`/`engine` trio that src/cli/main.odin's own
+// render_context_of then hand-copied onto Render_Context's
+// `source_display`/`model`/`engine_version` (fix round 1, PR #253 finding
+// 1). That copy was a second place the same four fields could be paired off
+// wrong -- a swap of two lines compiled clean and was caught only by
+// rebuilding the binary and diffing its output, never by `just test`.
+// Assigning straight into the embedded Render_Context's own field names
+// means the mapping happens exactly once, here, where
+// read_render_options_accepts_a_well_formed_command_line already reds on a
+// swap between two of these case arms.
 package cliargs
 
 import "transcibr:transcript"
@@ -34,10 +47,7 @@ NOTHING_TO_RENDER_COMPLAINT :: "nothing to render."
 
 Render_Options :: struct {
 	json_path: string,
-	source:    string,
-	model:     string,
-	engine:    string,
-	profile:   transcript.Merge_Profile,
+	using rc:  transcript.Render_Context,
 }
 
 @(require_results)
@@ -50,9 +60,9 @@ read_render_options :: proc(
 ) {
 	defer if ok {
 		assert(len(o.json_path) > 0, "accepted a command line with nothing to render")
-		assert(len(o.source) > 0, "accepted a command line that settled no source")
+		assert(len(o.source_display) > 0, "accepted a command line that settled no source")
 		assert(len(o.model) > 0, "a model nobody named is UNKNOWN, never empty")
-		assert(len(o.engine) > 0, "an engine nobody named is UNKNOWN, never empty")
+		assert(len(o.engine_version) > 0, "an engine nobody named is UNKNOWN, never empty")
 	} else {
 		assert(len(o.json_path) == 0, "refused a command line and kept what it asked for")
 	}
@@ -67,11 +77,11 @@ read_render_options :: proc(
 	if len(o.json_path) == 0 {
 		return {}, false, make_refusal(NOTHING_TO_RENDER_COMPLAINT)
 	}
-	if len(o.source) == 0 {
-		o.source = o.json_path
+	if len(o.source_display) == 0 {
+		o.source_display = o.json_path
 	}
 	o.model = transcript.named_or_unknown(o.model)
-	o.engine = transcript.named_or_unknown(o.engine)
+	o.engine_version = transcript.named_or_unknown(o.engine_version)
 	return o, true, {}
 }
 
@@ -92,11 +102,11 @@ read_render_option :: proc(
 	case FROM_JSON:
 		o.json_path = value
 	case "--source":
-		o.source = value
+		o.source_display = value
 	case "--model":
 		o.model = value
 	case "--engine":
-		o.engine = value
+		o.engine_version = value
 	case "--profile":
 		profile, known, profile_refusal := parse_profile(value)
 		if !known {

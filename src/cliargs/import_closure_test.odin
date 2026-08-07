@@ -31,14 +31,15 @@ CLIARGS_DIRECTORY :: "src/cliargs"
 // constant asked for the floor-vs-pin call to be made once slack stopped
 // being cheap, and the stage-5 deposit measured it running 6 files behind
 // the real count -- a gap that only ever widens under `>=`, silently, one
-// migration at a time. This package is done growing after this stage
-// (ADR-0038's five migration sites are all landed, the readers they
-// replaced are deleted), so `==` is the stronger guarantee: it catches a
-// file's DELETION as loudly as its addition, where a floor forgives one and
-// the other silently. 22 is every .odin file src/cliargs holds once this
-// stage's render_options.odin and render_options_test.odin land.
+// migration at a time. `==` is the stronger guarantee regardless of whether
+// the package is still growing: it catches a file's DELETION as loudly as
+// its addition, where a floor forgives one and the other silently. 24 is
+// every .odin file src/cliargs holds once fix round 1 (PR #253 finding 2)
+// adds help.odin/help_test.odin -- asks_for_help moved here from src/cli,
+// where it was a second, untested pair-off loop -- on top of this stage's
+// own render_options.odin/render_options_test.odin (22).
 @(private)
-MIN_PACKAGE_FILE_COUNT :: 22
+MIN_PACKAGE_FILE_COUNT :: 24
 
 @(private)
 Package_File :: struct {
