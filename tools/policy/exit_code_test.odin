@@ -54,7 +54,7 @@ policy_exit_code :: proc(t: ^testing.T, root: string) -> (code: int, exited: boo
 
 EXIT_CLEAN_DIRS :: []string{"src", "src/pkg", "tools"}
 
-EXIT_CLEAN_FILES :: []E2E_Fixture_File {
+EXIT_CLEAN_FILES :: []Fixture_File {
 	{
 		"src/pkg/pkg_test.odin",
 		"#+vet explicit-allocators\npackage pkg\n\nimport \"core:testing\"\n\n@(test)\nchecks :: proc(t: ^testing.T) {\n}\n",
@@ -66,7 +66,7 @@ EXIT_CLEAN_JUSTFILE :: "test:\n\todin test src/pkg {{vet}}\n"
 // The dirty fixture is the clean one plus one file with no
 // `#+vet explicit-allocators` tag at all -- the single, minimal M2 violation
 // CLAUDE.md rule M2 requires every file to carry.
-EXIT_DIRTY_FILES :: []E2E_Fixture_File {
+EXIT_DIRTY_FILES :: []Fixture_File {
 	{
 		"src/pkg/pkg_test.odin",
 		"#+vet explicit-allocators\npackage pkg\n\nimport \"core:testing\"\n\n@(test)\nchecks :: proc(t: ^testing.T) {\n}\n",
@@ -74,53 +74,13 @@ EXIT_DIRTY_FILES :: []E2E_Fixture_File {
 	{"src/pkg/bad.odin", "package pkg\n\nhelp :: proc() {\n}\n"},
 }
 
-plant_exit_fixture :: proc(t: ^testing.T, base: string, files: []E2E_Fixture_File) {
-	assert(t != nil, "asked to plant an exit-code fixture for no test at all")
-	assert(len(base) > 0, "asked to plant an exit-code fixture at no path at all")
-
-	testing.expect_value(t, os.make_directory(base), os.Error(nil))
-	for name in EXIT_CLEAN_DIRS {
-		path := fixture_path(base, name, context.allocator)
-		defer delete(path, context.allocator)
-		testing.expect_value(t, os.make_directory(path), os.Error(nil))
-	}
-
-	for file in files {
-		path := fixture_path(base, file.path, context.allocator)
-		defer delete(path, context.allocator)
-		testing.expect_value(
-			t,
-			os.write_entire_file(path, transmute([]byte)file.content),
-			os.Error(nil),
-		)
-	}
-
-	justfile := fixture_path(base, "justfile", context.allocator)
-	defer delete(justfile, context.allocator)
-	recipe := EXIT_CLEAN_JUSTFILE
-	testing.expect_value(t, os.write_entire_file(justfile, transmute([]byte)recipe), os.Error(nil))
-}
-
-@(require_results)
-remove_exit_fixture :: proc(base: string, files: []E2E_Fixture_File) -> os.Error {
-	assert(len(base) > 0, "asked to remove an exit-code fixture at no path at all")
-
-	justfile := fixture_path(base, "justfile", context.allocator)
-	defer delete(justfile, context.allocator)
-	os.remove(justfile)
-
-	for file in files {
-		path := fixture_path(base, file.path, context.allocator)
-		defer delete(path, context.allocator)
-		os.remove(path)
-	}
-	#reverse for name in EXIT_CLEAN_DIRS {
-		path := fixture_path(base, name, context.allocator)
-		defer delete(path, context.allocator)
-		os.remove(path)
-	}
-	return os.remove(base)
-}
+// `plant_exit_fixture`/`remove_exit_fixture` are gone -- #184's near-verbatim
+// copy of the accounting and e2e planters now plants and removes through
+// `plant_fixture`/`remove_fixture` in fixture_test.odin, the one shape every
+// fixture family in this package uses (issue #202's consolidation item).
+// Both dirty and clean fixtures write the same justfile: `EXIT_CLEAN_JUSTFILE`
+// names `src/pkg`, and both `EXIT_CLEAN_FILES` and `EXIT_DIRTY_FILES` still
+// plant a real `src/pkg/pkg_test.odin` for it to name.
 
 // The `os.exit(VIOLATION_ERROR)` half of the pin: a repository holding one
 // violation must exit `VIOLATION_ERROR`, not 0. Before the #184 fix this
@@ -129,14 +89,18 @@ remove_exit_fixture :: proc(base: string, files: []E2E_Fixture_File) -> os.Error
 // what this test now is.
 @(test)
 main_exits_violation_error_on_a_dirty_repository :: proc(t: ^testing.T) {
-	base, base_ok := fixture_root("transcibr-policy-exit-code-dirty-fixture", context.allocator)
+	base, base_ok := fixture_root(t, "transcibr-policy-exit-code-dirty-fixture", context.allocator)
 	testing.expect_value(t, base_ok, true)
 	defer delete(base, context.allocator)
 	if !base_ok {
 		return
 	}
-	plant_exit_fixture(t, base, EXIT_DIRTY_FILES)
-	defer testing.expect_value(t, remove_exit_fixture(base, EXIT_DIRTY_FILES), os.Error(nil))
+	plant_fixture(t, base, EXIT_CLEAN_DIRS, EXIT_DIRTY_FILES, EXIT_CLEAN_JUSTFILE)
+	defer testing.expect_value(
+		t,
+		remove_fixture(base, EXIT_CLEAN_DIRS, EXIT_DIRTY_FILES),
+		os.Error(nil),
+	)
 
 	code, exited := policy_exit_code(t, base)
 	testing.expect_value(t, exited, true)
@@ -148,14 +112,18 @@ main_exits_violation_error_on_a_dirty_repository :: proc(t: ^testing.T) {
 // VIOLATION_ERROR here instead).
 @(test)
 main_exits_zero_on_a_clean_repository :: proc(t: ^testing.T) {
-	base, base_ok := fixture_root("transcibr-policy-exit-code-clean-fixture", context.allocator)
+	base, base_ok := fixture_root(t, "transcibr-policy-exit-code-clean-fixture", context.allocator)
 	testing.expect_value(t, base_ok, true)
 	defer delete(base, context.allocator)
 	if !base_ok {
 		return
 	}
-	plant_exit_fixture(t, base, EXIT_CLEAN_FILES)
-	defer testing.expect_value(t, remove_exit_fixture(base, EXIT_CLEAN_FILES), os.Error(nil))
+	plant_fixture(t, base, EXIT_CLEAN_DIRS, EXIT_CLEAN_FILES, EXIT_CLEAN_JUSTFILE)
+	defer testing.expect_value(
+		t,
+		remove_fixture(base, EXIT_CLEAN_DIRS, EXIT_CLEAN_FILES),
+		os.Error(nil),
+	)
 
 	code, exited := policy_exit_code(t, base)
 	testing.expect_value(t, exited, true)
