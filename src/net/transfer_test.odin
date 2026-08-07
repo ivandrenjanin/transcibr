@@ -167,6 +167,40 @@ a_download_over_plain_http_is_refused_before_any_request_is_sent :: proc(t: ^tes
 }
 
 @(test)
+a_stale_part_file_at_the_expected_size_is_discarded_before_any_request_is_sent :: proc(
+	t: ^testing.T,
+) {
+	cache := testkit.made_scratch_cache(t, "net", "transfer-stale-part-entry", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	destination := fmt.aprintf("%s\\stale.bin", cache, allocator = context.allocator)
+	defer delete(destination, context.allocator)
+	part := fmt.aprintf("%s.part", destination, allocator = context.allocator)
+	defer delete(part, context.allocator)
+	testing.expect(
+		t,
+		os.write_entire_file(part, []u8{1, 2, 3, 4}) == nil,
+		"could not write the fixture",
+	)
+
+	spec := Download_Spec {
+		url             = "https://",
+		expected_bytes  = 4,
+		expected_sha256 = "0000000000000000000000000000000000000000000000000000000000000000",
+	}
+	result := download(spec, destination, context.allocator)
+
+	testing.expect_value(t, result.fault, Download_Fault.Unreachable)
+	testing.expect_value(t, result.status, 0)
+	testing.expect(
+		t,
+		!os.exists(part),
+		"a stale part file at the expected size must be discarded before the request is even sent",
+	)
+}
+
+@(test)
 a_body_larger_than_expected_is_refused_rather_than_written_in_full :: proc(t: ^testing.T) {
 	cache := testkit.made_scratch_cache(t, "net", "transfer-body-too-long", context.allocator)
 	defer delete(cache, context.allocator)
