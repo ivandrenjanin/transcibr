@@ -97,7 +97,7 @@ fault_says :: proc(fault: Fault) -> string {
 	case .Not_Stopped:
 		return "the Engine would not finish and would not stop"
 	case .No_Output:
-		return "the Engine left no output at all, whatever it exited with"
+		return "the Engine exited cleanly and left no output at all"
 	case .Output_Empty:
 		return "the Engine left an empty output file"
 	case .Refused:
@@ -122,6 +122,9 @@ error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> s
 	assert(len(says) > 0, "a fault was added to Fault without a sentence")
 	if err.fault == .Not_Started {
 		assert(err.child.fault != .None, "an Engine that would not start named no reason")
+	}
+	if err.fault == .Refused {
+		assert(err.exit_code != 0, "a refused Recording named the exit code that is success")
 	}
 
 	message: string

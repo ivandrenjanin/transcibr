@@ -3,6 +3,7 @@ package engine
 
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import "core:testing"
 import "core:time"
 import "transcibr:child"
@@ -199,7 +200,7 @@ a_stand_in_engine_that_reports_progress_drives_the_display :: proc(t: ^testing.T
 }
 
 @(test)
-an_engine_that_produced_nothing_is_a_failure_whatever_it_exited_with :: proc(t: ^testing.T) {
+an_engine_that_exits_zero_and_produces_nothing_is_a_failure :: proc(t: ^testing.T) {
 	group, ok := open_group(t)
 	defer child.job_object_close(&group)
 	if !ok {
@@ -223,6 +224,46 @@ an_engine_that_produced_nothing_is_a_failure_whatever_it_exited_with :: proc(t: 
 	defer delete(produced.output, context.allocator)
 
 	testing.expect_value(t, err.fault, Fault.No_Output)
+
+	message := error_message(err, "C:\\recordings\\lecture.mkv", context.allocator)
+	defer delete(message, context.allocator)
+	testing.expect(
+		t,
+		strings.contains(message, "exited cleanly"),
+		"the No_Output message no longer names the exit it now always implies (issue #186 made .Refused, not .No_Output, the fault for a nonzero exit)",
+	)
+}
+
+// `refused(ending)` runs before `landed_bounded` in `transcribe`, so an
+// Engine that writes nothing and exits nonzero is `.Refused`, never
+// `.No_Output` -- #206's diff changed which fault a wrote-nothing run
+// reaches, and nothing pinned the changed case until this test.
+@(test)
+an_engine_that_exits_nonzero_and_produces_nothing_is_a_refusal :: proc(t: ^testing.T) {
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	cache := testkit.made_scratch_cache(t, "engine", "nothing-nonzero", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	executable := stand_in(
+		t,
+		cache,
+		"nothing-nonzero",
+		">&2 echo error: failed to read audio\r\nexit /b 5",
+	)
+	defer delete(executable, context.allocator)
+
+	tools, job := job_in(cache, executable)
+	produced, err := transcribe(&group, tools, job, Report{}, context.allocator, SHORT_LIMITS)
+	defer delete(produced.output, context.allocator)
+
+	testing.expect_value(t, err.fault, Fault.Refused)
+	testing.expect_value(t, err.exit_code, u32(5))
 }
 
 @(test)
@@ -251,10 +292,13 @@ an_engine_that_produced_an_empty_file_is_a_failure :: proc(t: ^testing.T) {
 // that writes a real, non-empty output and then exits nonzero used to reach
 // `placed_from_engine_output` with no refusal of its own -- `landed_bounded`
 // only sees a file that is there and not empty, and the wrote-nothing case
-// is the only one that surfaced as `.No_Output`. Mutation check: dropping
+// is the only one that surfaced as `.No_Output`. Mutation check (run by hand,
+// not committed -- issue #22 bans a test that trips an assert): dropping
 // `on_exit = watched_exit` in `run_engine`, or the `ending.exit_code != 0`
-// branch in `refused`, leaves this red while every other case in this file
-// stays green.
+// branch in `refused`, does not leave this test red -- both mutations trip
+// `ending_for`'s `watch_state.exited` assert instead, which fires for every
+// case in this file that reaches `.Finished`, and aborts the whole test
+// process with a FATAL rather than reporting a clean failure here.
 @(test)
 an_engine_that_writes_output_and_then_exits_nonzero_is_a_refusal :: proc(t: ^testing.T) {
 	group, ok := open_group(t)
@@ -690,6 +734,10 @@ an_executable_that_is_not_there_is_reported_and_not_asserted :: proc(t: ^testing
 	testing.expect(t, len(message) > 0, "a refusal rendered as nothing at all")
 }
 
+// exit_code is nonzero for .Refused: that fault's exit_code is documented
+// "Only for .Refused" and `refused` only ever constructs it under
+// `ending.exit_code != 0`, so a zeroed one is a state no production path can
+// build and error_message asserts against it.
 @(test)
 every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testing.T) {
 	for fault in Fault {
@@ -697,8 +745,9 @@ every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testin
 			continue
 		}
 		reason := child.Error{} if fault != .Not_Started else child.Error{fault = .Not_Started}
+		exit_code := u32(0) if fault != .Refused else u32(3)
 		message := error_message(
-			Error{fault = fault, child = reason},
+			Error{fault = fault, child = reason, exit_code = exit_code},
 			"C:\\recordings\\lecture.mkv",
 			context.allocator,
 		)
