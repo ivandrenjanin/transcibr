@@ -2,7 +2,9 @@
 package artifact
 
 import "core:fmt"
+import "core:os"
 import "core:strings"
+import win32 "core:sys/windows"
 import "core:testing"
 import "transcibr:testkit"
 
@@ -63,9 +65,11 @@ an_engine_binary_replaced_under_the_same_name_identifies_as_a_different_engine :
 
 // The 17-E blocker property (ADR-0037, issue #189): `--doctor` and `--batch`
 // each call this same `identify_engine`, never a second hasher of their own
-// (`transcibr:cli`'s `engine_identified` is the one wrapper both route
-// through), so a doctor pass and a Batch pass over the identical binary
-// necessarily agree about what they looked at.
+// -- issue #216 gave `--doctor` its own cli-level call site
+// (`doctor_engine_identified`, `src/cli/doctor.odin`) so its refusal could
+// stop naming the Batch, but both it and `--batch`'s `engine_identified`
+// still call this one hasher -- so a doctor pass and a Batch pass over the
+// identical binary necessarily agree about what they looked at.
 @(test)
 a_doctor_pass_and_a_batch_pass_identify_the_same_engine_binary_the_same_way :: proc(
 	t: ^testing.T,
@@ -118,6 +122,123 @@ every_engine_fault_renders_a_line_naming_the_engine_and_stopping_the_batch :: pr
 			strings.contains(message, "whisper-cli.exe"),
 			"%v does not name the Engine it is about",
 			fault,
+		)
+	}
+}
+
+// Issue #216: `engine_error_message` used to hard-code
+// `process.batch_setup_message`'s own "the Batch cannot start" ending
+// unconditionally, so `--doctor` (and, until their fenced files migrate,
+// `--plan` and `--transcribe`) told the user a Batch could not start when
+// none was ever asked for. `framing` threads a caller's own consequence
+// clause down to `batch_setup_message` in its place.
+@(test)
+an_engine_refusal_can_end_on_a_callers_own_framing_instead_of_the_batch :: proc(t: ^testing.T) {
+	message := engine_error_message(
+		.Unreadable,
+		"C:\\engine\\whisper-cli.exe",
+		context.allocator,
+		"--doctor cannot verify this Engine",
+	)
+	defer delete(message, context.allocator)
+
+	testing.expectf(
+		t,
+		strings.contains(message, "--doctor cannot verify this Engine"),
+		"an Engine refusal ignored its caller-supplied framing: <%s>",
+		message,
+	)
+	testing.expectf(
+		t,
+		!strings.contains(message, "the Batch cannot start"),
+		"a caller-supplied framing still carries the Batch's own framing: <%s>",
+		message,
+	)
+}
+
+// The same primitive `planning`'s `a_transcript_locked_by_another_process_reads_as_unreadable_not_absent`
+// uses: `share_mode = 0` conflicts with every other open handle, so this
+// holds one open while `identify_engine` tries to read it.
+@(private)
+@(require_results)
+locked_engine_fixture :: proc(t: ^testing.T, path: string) -> win32.HANDLE {
+	wide := win32.utf8_to_utf16(path, context.allocator)
+	defer delete(wide, context.allocator)
+	handle := win32.CreateFileW(
+		win32.wstring(raw_data(wide)),
+		win32.GENERIC_READ,
+		0,
+		nil,
+		win32.OPEN_EXISTING,
+		win32.FILE_ATTRIBUTE_NORMAL,
+		nil,
+	)
+	testing.expect(
+		t,
+		handle != win32.INVALID_HANDLE_VALUE,
+		"could not lock the Engine fixture this case exists to test against",
+	)
+	return handle
+}
+
+// Issue #216's covering matrix: the #189 review's three unreadable shapes --
+// a missing path, a directory passed as `--engine-exe`, and a locked file --
+// re-driven here to prove a caller-supplied framing survives every one of
+// them, not only the synthetic `.Unreadable` case above.
+@(test)
+an_unreadable_engine_carries_its_callers_framing_across_missing_directory_and_locked_shapes :: proc(
+	t: ^testing.T,
+) {
+	directory := testkit.made_scratch_cache(
+		t,
+		"artifact",
+		"engine-unreadable-shapes",
+		context.allocator,
+	)
+	defer delete(directory, context.allocator)
+	defer testkit.remove_cache(directory, context.allocator)
+
+	missing := fmt.aprintf("%s\\never-written.exe", directory, allocator = context.allocator)
+	defer delete(missing, context.allocator)
+
+	as_directory := fmt.aprintf("%s\\not-a-file.exe", directory, allocator = context.allocator)
+	defer delete(as_directory, context.allocator)
+	testing.expect(
+		t,
+		os.make_directory_all(as_directory) == nil,
+		"could not make the directory-as-exe fixture",
+	)
+
+	locked := testkit.fixture_file(t, directory, "locked.exe", "abc", context.allocator)
+	defer delete(locked, context.allocator)
+	handle := locked_engine_fixture(t, locked)
+	defer win32.CloseHandle(handle)
+
+	for shape in ([]string{missing, as_directory, locked}) {
+		digest, fault := identify_engine(shape, context.allocator)
+		defer delete(string(digest), context.allocator)
+		testing.expectf(t, fault == .Unreadable, "%s did not report Unreadable", shape)
+
+		message := engine_error_message(
+			fault,
+			shape,
+			context.allocator,
+			"--doctor cannot verify this Engine",
+		)
+		defer delete(message, context.allocator)
+		testing.expectf(
+			t,
+			strings.contains(message, "--doctor cannot verify this Engine"),
+			"%s's refusal ignored its caller-supplied framing: <%s>",
+			shape,
+			message,
+		)
+		testing.expectf(
+			t,
+			!strings.contains(message, "the Batch cannot start"),
+			"%s's refusal still carries the Batch's own framing: <%s>",
+			shape,
+			message,
 		)
 	}
 }

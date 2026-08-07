@@ -96,11 +96,18 @@ engine_fault_says :: proc(fault: Engine_Fault) -> string {
 
 // %q because a refusal reaches a user through a UTF-16 Win32 call, the same
 // reason `model_error_message` carries it: CLAUDE.md, Odin notes.
+//
+// Issue #216: `framing` used to be absent entirely, so this always reported
+// `process.batch_setup_message`'s own "the Batch cannot start" -- a lie for
+// every non-Batch caller (`--doctor`, and until their fenced files migrate,
+// `--plan` and `--transcribe`). Defaulted to `process.BATCH_CANNOT_START` so
+// every call site that does not pass one keeps today's exact bytes.
 @(require_results)
 engine_error_message :: proc(
 	fault: Engine_Fault,
 	engine_exe: string,
 	allocator: mem.Allocator,
+	framing: string = process.BATCH_CANNOT_START,
 ) -> string {
 	assert(fault != .None, "there is no message for an Engine that was identified")
 	assert(len(engine_exe) > 0, "a refusal must name the Engine binary it is reported against")
@@ -112,5 +119,5 @@ engine_error_message :: proc(
 	says := engine_fault_says(fault)
 	assert(len(says) > 0, "a fault was added to Engine_Fault without a sentence")
 
-	return process.batch_setup_message(engine_exe, says, allocator)
+	return process.batch_setup_message(engine_exe, says, allocator, framing)
 }
