@@ -263,11 +263,27 @@ model_load_verdict :: proc(probe: Probe, model_path: string, allocator: mem.Allo
 // 0xC0000409, and the marker line never printed at all, because the process
 // died before whisper.cpp could report anything about it. A probe that reads
 // the marker alone calls that a PASS.
+//
+// Issue #145: this renderer used to re-assert `probe.exit_code != 0`, the
+// identical condition its one call site in `model_load_verdict` already
+// checks -- a legitimate A4 pair, but the only assert in this package
+// standing between external, child-originated data and a fault report, and
+// nothing exercised it. Per #137/#141's shape (an assert redundant with a
+// guarantee the caller already holds is removed rather than recorded), the
+// assert is gone. That removal is unpinned: nothing in this package calls
+// `model_refused` with a zero exit code, so no test observes whether a
+// future call site would have tripped the old assert or, now, rendered
+// "engine exit status 0x0" -- restoring the deleted assert leaves the whole
+// package green. What IS pinned, by
+// `a_refused_engine_probe_names_its_exit_status_without_asserting` in
+// `model_probe_test.odin`, is the guard side: `model_load_verdict`'s `if
+// probe.exit_code != 0` dispatch and this renderer's wording for a
+// genuinely refused engine (`exit_code = 1`), through the seam a real
+// doctor run reaches this through.
 @(private)
 @(require_results)
 model_refused :: proc(probe: Probe, model_path: string, allocator: mem.Allocator) -> Check {
 	assert(len(model_path) > 0, "there is no model here to report a refusal against")
-	assert(probe.exit_code != 0, "a clean exit was reported as the engine refusing the model")
 
 	says := "was refused by the engine; the download is truncated or corrupt"
 	if strings.contains(probe.captured, MODEL_LOAD_FAILURE_MARKER) {
