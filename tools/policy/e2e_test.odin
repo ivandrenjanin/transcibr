@@ -196,16 +196,8 @@ E2E_FIXTURE_JUSTFILE :: "test:\n\todin test src/kept {{vet}}\n"
 // then the three `tools/` violations.
 @(test)
 check_repository_reports_the_full_violation_set_over_a_planted_fixture :: proc(t: ^testing.T) {
-	root, root_err := os.temp_dir(context.allocator)
-	testing.expect_value(t, root_err, nil)
-	defer delete(root, context.allocator)
-
-	base := fmt.aprintf(
-		"%stranscibr-policy-e2e-fixture-%d",
-		root,
-		os.get_pid(),
-		allocator = context.allocator,
-	)
+	base, base_ok := fixture_root("transcibr-policy-e2e-fixture", context.allocator)
+	testing.expect_value(t, base_ok, true)
 	defer delete(base, context.allocator)
 	plant_e2e_fixture(t, base)
 	defer remove_e2e_fixture(base)
