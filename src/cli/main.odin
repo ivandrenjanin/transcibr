@@ -170,6 +170,7 @@ print_version :: proc() {
 	assert(line[len(PROGRAM)] == ' ', "banner does not separate the program name from the version")
 	assert(strings.index_byte(line, '\n') == -1, "banner rendered more than one line")
 
+	crashlog.note(.Info, "process start", line)
 	pipeline.report_line(line, context.allocator)
 }
 
@@ -373,6 +374,10 @@ refuse :: proc(refusal: cliargs.Refusal) -> (ok: bool) {
 			built[i] = ints[i]
 		}
 	}
+
+	rendered := fmt.aprintf(r.complaint, ..built[:r.arg_count], allocator = context.allocator)
+	defer delete(rendered, context.allocator)
+	crashlog.note(.Warn, "refused", rendered)
 
 	fmt.eprintf(r.complaint, ..built[:r.arg_count])
 	fmt.eprint("\n\n")
