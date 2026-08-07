@@ -4,14 +4,15 @@ package artifact
 import "core:fmt"
 import "core:strings"
 import "core:testing"
+import "transcibr:testkit"
 
 @(test)
 an_engines_identity_is_the_content_of_the_file_and_not_its_name :: proc(t: ^testing.T) {
-	directory := scratch(t, "engine-abc")
+	directory := testkit.made_scratch_cache(t, "artifact", "engine-abc", context.allocator)
 	defer delete(directory, context.allocator)
-	defer remove_scratch(directory)
+	defer testkit.remove_cache(directory, context.allocator)
 
-	path := file_in(t, directory, "whisper-cli.exe", "abc")
+	path := testkit.fixture_file(t, directory, "whisper-cli.exe", "abc", context.allocator)
 	defer delete(path, context.allocator)
 
 	digest, fault := identify_engine(path, context.allocator)
@@ -28,18 +29,24 @@ an_engines_identity_is_the_content_of_the_file_and_not_its_name :: proc(t: ^test
 an_engine_binary_replaced_under_the_same_name_identifies_as_a_different_engine :: proc(
 	t: ^testing.T,
 ) {
-	directory := scratch(t, "engine-replaced")
+	directory := testkit.made_scratch_cache(t, "artifact", "engine-replaced", context.allocator)
 	defer delete(directory, context.allocator)
-	defer remove_scratch(directory)
+	defer testkit.remove_cache(directory, context.allocator)
 
-	path := file_in(t, directory, "whisper-cli.exe", "abc")
+	path := testkit.fixture_file(t, directory, "whisper-cli.exe", "abc", context.allocator)
 	defer delete(path, context.allocator)
 
 	before, before_fault := identify_engine(path, context.allocator)
 	defer delete(string(before), context.allocator)
 	testing.expect_value(t, before_fault, Engine_Fault.None)
 
-	path2 := file_in(t, directory, "whisper-cli.exe", "a different build entirely")
+	path2 := testkit.fixture_file(
+		t,
+		directory,
+		"whisper-cli.exe",
+		"a different build entirely",
+		context.allocator,
+	)
 	defer delete(path2, context.allocator)
 	testing.expect_value(t, path, path2)
 
@@ -56,9 +63,9 @@ an_engine_binary_replaced_under_the_same_name_identifies_as_a_different_engine :
 
 @(test)
 an_engine_binary_that_is_not_there_is_refused_rather_than_asserted :: proc(t: ^testing.T) {
-	directory := scratch(t, "engine-absent")
+	directory := testkit.made_scratch_cache(t, "artifact", "engine-absent", context.allocator)
 	defer delete(directory, context.allocator)
-	defer remove_scratch(directory)
+	defer testkit.remove_cache(directory, context.allocator)
 
 	path := fmt.aprintf("%s\\never-written.exe", directory, allocator = context.allocator)
 	defer delete(path, context.allocator)
