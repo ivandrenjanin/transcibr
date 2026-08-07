@@ -107,14 +107,25 @@ check_one_file_reports_cannot_be_read_for_an_acl_denied_source_file :: proc(t: ^
 }
 
 // The process-level half: what exit code the real binary answers with when
-// one source file is unreadable. Measured, not assumed -- `Fault.Unreadable`
-// is gone, so a read failure is folded into the ordinary per-file violation
-// list `check_repository` returns, which is the same list every other
-// violation drives `os.exit(VIOLATION_ERROR)` from. There is no separate
-// ROOT_ERROR-shaped path for a file (as opposed to the repository root)
-// being unreadable; this pins that measurement rather than a name.
+// the fixture's only source file is ACL-denied. Measured, not assumed, and
+// the measurement is NOT what the read-failure rendering would suggest: an
+// ACL-denied file is invisible to `discover_odin_files` (an icacls `(R)`
+// deny hides the entry from the walk itself, confirmed by planting a
+// readable sibling and observing only the sibling get checked) -- so the
+// denied file never reaches `check_one_file`, and no `"cannot be read:"`
+// violation is ever produced through this path. What actually fires is
+// `check_repository`'s own `len(files) == 0` guard (main.odin): with its
+// only file gone from the walk, the fixture reports zero `.odin` files
+// discovered, and THAT is the one violation driving `os.exit(VIOLATION_ERROR)`
+// here, not ROOT_ERROR (there is no root-argument problem) and not a
+// read-failure violation (that message never renders through this path --
+// `check_one_file_reports_cannot_be_read_for_an_acl_denied_source_file`
+// above is what pins the "cannot be read:" rendering, calling
+// `check_one_file` directly rather than through `discover_odin_files`).
 @(test)
-main_exits_violation_error_not_root_error_when_a_source_file_is_acl_denied :: proc(t: ^testing.T) {
+main_exits_violation_error_via_the_zero_files_guard_when_the_only_source_file_is_acl_denied :: proc(
+	t: ^testing.T,
+) {
 	base, base_ok := fixture_root(t, "transcibr-policy-acl-exit-fixture", context.allocator)
 	testing.expect_value(t, base_ok, true)
 	defer delete(base, context.allocator)

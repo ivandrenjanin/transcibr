@@ -56,10 +56,85 @@ strip_package_test_line :: proc(
 	return strings.join(kept[:], "\n", allocator)
 }
 
+// How many lines of `text` contain `needle` at all -- used both to count a
+// package's own token before any strip, and (with an empty needle, which
+// every line contains) to count `text`'s lines outright.
+@(require_results)
+count_lines_containing :: proc(text: string, needle: string, allocator: mem.Allocator) -> int {
+	lines := strings.split_lines(text, allocator)
+	defer delete(lines, allocator)
+	count := 0
+	for line in lines {
+		if strings.contains(line, needle) {
+			count += 1
+		}
+	}
+	return count
+}
+
+// Strips `name`'s own line and asserts the strip removed EXACTLY as many
+// lines as its own needle matches in the UNSTRIPPED text -- no fewer (a
+// strip that only widens a substring match would remove more) and no more
+// (a strip broad enough to empty the whole justfile still removes every
+// line, not just the needle's). A package's own token can legitimately
+// appear on more than one line (`src/child` names its own recipe line and
+// `test-single`'s, both containing "test src/child "), so the expected
+// count is measured from the real text rather than assumed to be one.
+// Returns the mutated text (caller frees) and whether both checks passed.
+@(require_results)
+assert_strip_removed_expected_lines :: proc(
+	t: ^testing.T,
+	prefix: string,
+	name: string,
+	justfile_text: string,
+) -> (
+	mutated: string,
+	ok: bool,
+) {
+	needle := fmt.aprintf("test %s/%s ", prefix, name, allocator = context.allocator)
+	defer delete(needle, context.allocator)
+
+	expected_removed := count_lines_containing(justfile_text, needle, context.allocator)
+	if !testing.expectf(
+		t,
+		expected_removed > 0,
+		"%s/%s's own needle matched no line in the real justfile at all",
+		prefix,
+		name,
+	) {
+		return "", false
+	}
+
+	mutated = strip_package_test_line(justfile_text, prefix, name, context.allocator)
+
+	before := count_lines_containing(justfile_text, "", context.allocator)
+	after := count_lines_containing(mutated, "", context.allocator)
+	removed := before - after
+	if !testing.expectf(
+		t,
+		removed == expected_removed,
+		"%s/%s's own line strip removed %d lines, not the %d its needle matches",
+		prefix,
+		name,
+		removed,
+		expected_removed,
+	) {
+		delete(mutated, context.allocator)
+		return "", false
+	}
+	return mutated, true
+}
+
 // Strips `name`'s own line and requires `missing_from_test_recipe` to report
-// exactly `name` and nothing else. Returns 1 when it did, 0 when the
-// expectation itself failed -- the caller sums this across every package it
-// walks, so a walk that checked nothing at all is visible too.
+// exactly `name` and nothing else. Returns 1 when it did, 0 when any
+// expectation failed -- the caller sums this across every package it walks,
+// so a walk that checked nothing at all is visible too.
+//
+// Two checks bracket the strip so a broad or vacuous strip cannot pass
+// silently: BEFORE stripping, `name` must already be accounted for (a
+// baseline of "already missing" would let the post-strip check pass having
+// tested nothing) -- `assert_strip_removed_expected_lines` above is the
+// second bracket, on the strip itself.
 @(require_results)
 assert_stripping_reddens_one_package :: proc(
 	t: ^testing.T,
@@ -71,7 +146,33 @@ assert_stripping_reddens_one_package :: proc(
 	assert(t != nil, "there is no test here to report a stripped line's result through")
 	assert(len(name) > 0, "asked to strip the test line of no package at all")
 
-	mutated := strip_package_test_line(justfile_text, prefix, name, context.allocator)
+	baseline := missing_from_test_recipe(
+		[]string{name},
+		justfile_text,
+		prefix,
+		exempt,
+		context.allocator,
+	)
+	defer {
+		for missed in baseline {
+			delete(missed, context.allocator)
+		}
+		delete(baseline, context.allocator)
+	}
+	if !testing.expectf(
+		t,
+		len(baseline) == 0,
+		"%s/%s was already missing from the test recipe before any line was stripped",
+		prefix,
+		name,
+	) {
+		return 0
+	}
+
+	mutated, stripped_ok := assert_strip_removed_expected_lines(t, prefix, name, justfile_text)
+	if !stripped_ok {
+		return 0
+	}
 	defer delete(mutated, context.allocator)
 
 	missing := missing_from_test_recipe([]string{name}, mutated, prefix, exempt, context.allocator)
