@@ -14,8 +14,6 @@ import "transcibr:transcript"
 
 TRANSCRIBE :: "--transcribe"
 
-UNKNOWN_OPTION_COMPLAINT :: "unknown option %q."
-
 Transcribe_Options :: struct {
 	using common: Common_Options,
 	source:       string,

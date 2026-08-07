@@ -28,9 +28,11 @@ import "core:testing"
 CLIARGS_DIRECTORY :: "src/cliargs"
 
 // The fewest files this package can hold and still be the package this test
-// is written against: the ten this test file counted at round 1, plus itself.
+// is written against: the 11 stage-3 left this floor at, plus the three
+// ADR-0038 batch migration (#75) landed -- batch_options.odin,
+// batch_options_test.odin and worker_options.odin.
 @(private)
-MIN_PACKAGE_FILE_COUNT :: 11
+MIN_PACKAGE_FILE_COUNT :: 14
 
 @(private)
 Package_File :: struct {
