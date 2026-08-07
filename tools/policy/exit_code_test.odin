@@ -107,6 +107,27 @@ main_exits_violation_error_on_a_dirty_repository :: proc(t: ^testing.T) {
 	testing.expect_value(t, code, VIOLATION_ERROR)
 }
 
+// The third arm of the mapping family (issue #222): a root that cannot be
+// resolved to an absolute path exits ROOT_ERROR (2). `GetCurrentDirectoryW`
+// and `GetFullPathNameW` (`repo_root`'s two seams, `core:os`'s
+// `get_working_directory` and `get_absolute_path`) are both pure string
+// operations on Windows -- neither touches the filesystem, so neither an
+// ACL-denied nor a deleted working directory can make them fail (measured:
+// `os.remove` on a process' own cwd itself answers `Permission_Denied`, and
+// spawning a child with its working directory ACL-denied down to `(N)` still
+// leaves `GetCurrentDirectoryW` reading back the same path with `err=nil`).
+// What DOES fail `get_absolute_path` -> `GetFullPathNameW`, measured the same
+// way: a whitespace-only argument, which Windows trims down to nothing and
+// answers `INVALID_NAME` for. That is the one reachable way to drive
+// `repo_root`'s `ok` to false from outside the process, so it is what this
+// pins -- through the same `policy_exit_code` seam the other two arms use.
+@(test)
+main_exits_root_error_when_the_root_argument_cannot_be_resolved :: proc(t: ^testing.T) {
+	code, exited := policy_exit_code(t, "   ")
+	testing.expect_value(t, exited, true)
+	testing.expect_value(t, code, ROOT_ERROR)
+}
+
 // The other half: a repository holding no violations at all must exit 0, the
 // silent-green failure the ticket named (an inverted mapping would exit
 // VIOLATION_ERROR here instead).

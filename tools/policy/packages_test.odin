@@ -739,62 +739,11 @@ fixture_root_survives_a_stray_directory_at_the_old_sibling_name :: proc(t: ^test
 	defer testing.expect_value(t, os.remove(base), os.Error(nil))
 }
 
-// Fix round 1 finding 1: the `test:` recipe body carried the token
-// `tools/policy` TWICE -- once on the real `odin test tools/policy` line,
-// once on the `policy-cli.exe` build line the exit-code tests need -- so
-// `missing_from_test_recipe` still saw `tools/policy` as present even with
-// the real test line gone. Reads THIS REPOSITORY'S OWN justfile (the test
-// process's working directory is the repository root, the same convention
-// `repo_root` in main.odin relies on) and reproduces the reviewer's own
-// mutation: strip the line that runs `odin test tools/policy`, keep every
-// other line untouched, and require the package still be reported missing.
-// A stray second occurrence of the token anywhere else in the body defeats
-// this the same way the build line did.
-@(test)
-the_real_justfiles_test_recipe_reports_policy_missing_once_its_test_line_is_gone :: proc(
-	t: ^testing.T,
-) {
-	root, root_err := os.get_working_directory(context.allocator)
-	testing.expect_value(t, root_err, nil)
-	defer delete(root, context.allocator)
-
-	justfile_path := strings.concatenate({root, "/justfile"}, context.allocator)
-	defer delete(justfile_path, context.allocator)
-	justfile_bytes, read_err := os.read_entire_file(justfile_path, context.allocator)
-	testing.expect_value(t, read_err, os.Error(nil))
-	defer delete(justfile_bytes, context.allocator)
-
-	lines := strings.split_lines(string(justfile_bytes), context.allocator)
-	defer delete(lines, context.allocator)
-
-	kept := make([dynamic]string, 0, len(lines), context.allocator)
-	defer delete(kept)
-	for line in lines {
-		if strings.contains(line, "test tools/policy") {
-			continue
-		}
-		append(&kept, line)
-	}
-
-	mutated := strings.join(kept[:], "\n", context.allocator)
-	defer delete(mutated, context.allocator)
-
-	missing := missing_from_test_recipe(
-		[]string{"policy"},
-		mutated,
-		"tools",
-		NO_TEST_LESS_PACKAGES,
-		context.allocator,
-	)
-	defer {
-		for name in missing {
-			delete(name, context.allocator)
-		}
-		delete(missing, context.allocator)
-	}
-
-	testing.expect_value(t, len(missing), 1)
-	if len(missing) == 1 {
-		testing.expect_value(t, missing[0], "policy")
-	}
-}
+// Fix round 1 finding 1's own regression test -- strip the real justfile's
+// `odin test tools/policy` line and require `missing_from_test_recipe` to
+// still report `policy` missing -- is gone from here. Issue #222 work item 2
+// generalizes it: `justfile_guard_test.odin`'s
+// `every_tested_packages_own_test_line_reddens_the_accounting_check_when_stripped`
+// runs the same mutation over EVERY real tested package under both roots,
+// `tools/policy` included, so this file's one hand-picked case is now a
+// single iteration of that wider loop rather than a separate test.
