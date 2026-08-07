@@ -8,6 +8,7 @@ import "core:strings"
 import "core:thread"
 import "core:time"
 import "transcibr:child"
+import "transcibr:crashlog"
 import "transcibr:process"
 
 // This file starts the Engine, drains what it says while it runs, and reads
@@ -162,8 +163,12 @@ Landed_Job :: struct {
 	stall_ms: i64,
 }
 
+// A fresh `core:thread` context arrives without the crash hook; see
+// `transcibr:child`'s `read_worker` doc comment for why the line is written
+// here rather than installed once by a helper.
 @(private)
 landed_worker :: proc(data: rawptr) {
+	context.assertion_failure_proc = crashlog.assertion_hook
 	job := (^Landed_Job)(data)
 	assert(job != nil, "a landed-check thread was started with no job to check")
 	assert(len(job.output) > 0, "a landed-check thread was started with no path to check")
