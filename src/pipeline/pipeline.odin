@@ -40,6 +40,13 @@ MAX_QUEUE_DEPTH :: 2
 #assert(MAX_EXTRACT_WORKERS > 0)
 #assert(MAX_QUEUE_DEPTH > 0)
 
+// ADR-0006's own recorded bound -- "one or two CPU workers ... a bounded
+// channel of depth one or two" -- held in checked code rather than only in
+// the comment above (A5), so raising either past two fails the build instead
+// of silently passing every test (issue #192).
+#assert(MAX_EXTRACT_WORKERS <= 2)
+#assert(MAX_QUEUE_DEPTH <= 2)
+
 // The one check `--extract-workers` and `--queue-depth` each run against
 // their own ceiling (src/cli/batch.odin's `read_worker_count`), pulled out
 // here so a test can walk both ceilings without reaching into `src/cli`,
