@@ -199,6 +199,9 @@ check_repository_reports_the_full_violation_set_over_a_planted_fixture :: proc(t
 	base, base_ok := fixture_root("transcibr-policy-e2e-fixture", context.allocator)
 	testing.expect_value(t, base_ok, true)
 	defer delete(base, context.allocator)
+	if !base_ok {
+		return
+	}
 	plant_e2e_fixture(t, base)
 	defer remove_e2e_fixture(base)
 

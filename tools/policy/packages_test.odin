@@ -252,6 +252,9 @@ tested_packages_finds_only_directories_holding_a_test_file :: proc(t: ^testing.T
 	base, base_ok := fixture_root("transcibr-policy-fixture", context.allocator)
 	testing.expect_value(t, base_ok, true)
 	defer delete(base, context.allocator)
+	if !base_ok {
+		return
+	}
 	tested_dir := fmt.aprintf("%s/tested", base, allocator = context.allocator)
 	defer delete(tested_dir, context.allocator)
 	plain_dir := fmt.aprintf("%s/plain", base, allocator = context.allocator)
@@ -260,7 +263,7 @@ tested_packages_finds_only_directories_holding_a_test_file :: proc(t: ^testing.T
 	testing.expect_value(t, os.make_directory(base), os.Error(nil))
 	testing.expect_value(t, os.make_directory(tested_dir), os.Error(nil))
 	testing.expect_value(t, os.make_directory(plain_dir), os.Error(nil))
-	defer os.remove(base)
+	defer testing.expect_value(t, os.remove(base), os.Error(nil))
 	defer os.remove(tested_dir)
 	defer os.remove(plain_dir)
 
@@ -367,12 +370,15 @@ all_packages_finds_a_package_with_no_test_file :: proc(t: ^testing.T) {
 	base, base_ok := fixture_root("transcibr-policy-untested-fixture", context.allocator)
 	testing.expect_value(t, base_ok, true)
 	defer delete(base, context.allocator)
+	if !base_ok {
+		return
+	}
 	plain_dir := fmt.aprintf("%s/plain", base, allocator = context.allocator)
 	defer delete(plain_dir, context.allocator)
 
 	testing.expect_value(t, os.make_directory(base), os.Error(nil))
 	testing.expect_value(t, os.make_directory(plain_dir), os.Error(nil))
-	defer os.remove(base)
+	defer testing.expect_value(t, os.remove(base), os.Error(nil))
 	defer os.remove(plain_dir)
 
 	plain_file := fmt.aprintf("%s/run.odin", plain_dir, allocator = context.allocator)
@@ -401,6 +407,9 @@ a_stray_test_file_directly_under_a_package_root_is_reported_not_asserted :: proc
 	base, base_ok := fixture_root("transcibr-policy-stray-fixture", context.allocator)
 	testing.expect_value(t, base_ok, true)
 	defer delete(base, context.allocator)
+	if !base_ok {
+		return
+	}
 
 	testing.expect_value(t, os.make_directory(base), os.Error(nil))
 	defer os.remove(base)
@@ -444,6 +453,9 @@ tools_packages_are_accounted_for_beside_src_packages :: proc(t: ^testing.T) {
 	base, base_ok := fixture_root("transcibr-policy-tools-fixture", context.allocator)
 	testing.expect_value(t, base_ok, true)
 	defer delete(base, context.allocator)
+	if !base_ok {
+		return
+	}
 	plant_accounting_fixture(t, base)
 	defer remove_accounting_fixture(base)
 
