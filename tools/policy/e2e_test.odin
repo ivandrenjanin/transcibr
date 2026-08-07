@@ -18,13 +18,22 @@ import "core:os"
 import "core:strings"
 import "core:testing"
 
-// The fixture's shape: two packages under `src/` sharing one directory --
-// `kept`, tested and named in the planted justfile -- and two packages under
-// `tools/`, one tested but unnamed and one holding no test file at all, plus
-// one `*_test.odin` file sitting directly under `tools/` and belonging to no
-// package. Directories are listed parent before child, the order
+// The fixture's shape: under `src/`, one package holding tests and named in
+// the planted justfile (`kept`) beside one holding none at all and excused
+// by no roster (`spare`); under `tools/`, one package holding tests but
+// unnamed in the recipe (`newtool`) beside one holding none at all -- `tools/`
+// has no exemption roster, so `bare` is a violation however it is named --
+// plus one `*_test.odin` file sitting directly under `tools/` and belonging
+// to no package. Directories are listed parent before child, the order
 // `os.make_directory` needs and `remove_e2e_fixture` walks in reverse.
-E2E_FIXTURE_DIRS :: []string{"src", "src/kept", "tools", "tools/newtool", "tools/bare"}
+E2E_FIXTURE_DIRS :: []string {
+	"src",
+	"src/kept",
+	"src/spare",
+	"tools",
+	"tools/newtool",
+	"tools/bare",
+}
 
 // `messy.odin` is the one file in this fixture with anything wrong with it,
 // on purpose: a comment inside a procedure body (section 0), a returning
@@ -48,6 +57,7 @@ E2E_FIXTURE_FILES :: []E2E_Fixture_File {
 		"src/kept/messy.odin",
 		"package kept\n\nanswers :: proc(x: int) -> bool {\n\t// this comment trips section 0\n\treturn x > 0\n}\n",
 	},
+	{"src/spare/spare.odin", "#+vet explicit-allocators\npackage spare\n\nhelp :: proc() {\n}\n"},
 	{
 		"tools/newtool/newtool.odin",
 		"#+vet explicit-allocators\npackage newtool\n\nhelp :: proc() {\n}\n",
@@ -70,11 +80,14 @@ E2E_FIXTURE_JUSTFILE :: "test:\n\todin test src/kept {{vet}}\n"
 // exercised by the one seam `main` itself calls. Ordering is asserted too --
 // `check_repository` appends every per-file violation before it ever calls
 // `check_package_accounting`, so the three violations `messy.odin` carries
-// come first, in the order section 0, rule F2, rule M2 read (`collect_violations`),
-// followed by the accounting violations in the order `check_root_accounting`
-// computes them for the `tools/` scope: strays, then untested packages, then
-// packages missing from the recipe. `src/` contributes none of its own,
-// since `kept` is both tested and named.
+// come first, in the order section 0, rule F2, rule M2 read
+// (`collect_violations`); `check_package_accounting` then runs the `src/`
+// scope before the `tools/` one, and within each scope
+// `check_root_accounting` computes strays, then untested packages, then
+// packages missing from the recipe, in that fixed order -- `src/` has no
+// stray and nothing missing from the recipe, only its one untested package,
+// so the ordering collapses to: `spare` untested, then the three `tools/`
+// violations.
 @(test)
 check_repository_reports_the_full_violation_set_over_a_planted_fixture :: proc(t: ^testing.T) {
 	root, root_err := os.temp_dir(context.allocator)
@@ -95,8 +108,8 @@ check_repository_reports_the_full_violation_set_over_a_planted_fixture :: proc(t
 	defer violations_destroy(violations, context.allocator)
 	defer delete(violations)
 
-	testing.expect_value(t, len(violations), 6)
-	if len(violations) != 6 {
+	testing.expect_value(t, len(violations), 7)
+	if len(violations) != 7 {
 		return
 	}
 
@@ -118,21 +131,26 @@ check_repository_reports_the_full_violation_set_over_a_planted_fixture :: proc(t
 		strings.contains(violations[2].message, "does not declare #+vet explicit-allocators"),
 	)
 
-	testing.expect(t, strings.contains(violations[3].file, "stray_test.odin"))
 	testing.expect(
 		t,
-		strings.contains(violations[3].message, "belongs to no package under tools/"),
+		strings.contains(violations[3].message, "src/spare holds no *_test.odin file"),
+	)
+
+	testing.expect(t, strings.contains(violations[4].file, "stray_test.odin"))
+	testing.expect(
+		t,
+		strings.contains(violations[4].message, "belongs to no package under tools/"),
 	)
 
 	testing.expect(
 		t,
-		strings.contains(violations[4].message, "tools/bare holds no *_test.odin file"),
+		strings.contains(violations[5].message, "tools/bare holds no *_test.odin file"),
 	)
 
 	testing.expect(
 		t,
 		strings.contains(
-			violations[5].message,
+			violations[6].message,
 			"tools/newtool holds a *_test.odin file but is not named",
 		),
 	)
