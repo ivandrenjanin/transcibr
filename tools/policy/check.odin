@@ -1,11 +1,14 @@
 #+vet explicit-allocators
-// This file turns one file's Source_Facts into the verdicts CLAUDE.md's
-// source policies ask for, computed here directly -- ADR-0028's argument,
-// read Odin with Odin, carried one step further, so nothing downstream
-// re-parses this program's own report to decide pass or fail. Before #152's
-// justfile migration these five verdicts were computed by
-// scripts\common.ps1's Assert-Odin* procedures instead, reading that report
-// back in a second language.
+// This file turns one file's facts into the verdicts CLAUDE.md's source
+// policies ask for, computed here directly -- ADR-0028's argument, read Odin
+// with Odin, carried one step further, so nothing downstream re-parses this
+// program's own report to decide pass or fail. Six collect_*_violations
+// procedures compute those verdicts: five read Source_Facts, and
+// collect_network_violations reads raw source text instead, because the
+// network-confinement check has no need of a parse. Before #152's justfile
+// migration these verdicts were computed by scripts\common.ps1's
+// Assert-Odin* procedures instead, reading that report back in a second
+// language.
 //
 // The file-tag roster is here too: CLAUDE.md rule M2's other half, the names
 // every file a scope covers must declare on a `#+vet` line above its own

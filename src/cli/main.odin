@@ -12,6 +12,7 @@ import "transcibr:artifact"
 import "transcibr:child"
 import "transcibr:crashlog"
 import "transcibr:pipeline"
+import "transcibr:process"
 import "transcibr:transcript"
 import "transcibr:version"
 
@@ -99,7 +100,13 @@ HELP :: "--help"
 USAGE_ERROR :: 2
 OPERATING_ERROR :: 1
 
-// Why this binary's own argv arrives mangled: ADR-0025, issue #35.
+// Why this binary cannot read `os.args`: ADR-0025, issue #35 -- Odin's Windows
+// entry point hands `main` the C runtime's ANSI argv, which has already lost
+// any byte outside the system code page by the time it gets here. The fix is
+// `process.process_argv`: `GetCommandLineW` plus `CommandLineToArgvW`, the same
+// route ffmpeg takes and ADR-0025 names as what retires the wrong-reason
+// refusal. `src/cli` carries no test (ADR-0009); `process.process_argv` and
+// the parser under it are what `src/process/command_line_test.odin` covers.
 //
 // Crash capture (issue #76) installs here, before anything else can assert
 // or fault, and inline rather than through a helper: Odin's implicit
@@ -112,37 +119,39 @@ OPERATING_ERROR :: 1
 // installs a second time, over the directory it was given -- the second
 // call just overwrites where the exception filter points.
 main :: proc() {
-	assert(len(os.args) > 0, "a process started with no argv at all, not even its own name")
+	args, acquired := process.process_argv(context.allocator)
+	assert(acquired, "the operating system did not hand this process its own command line")
+	assert(len(args) > 0, "a process started with no argv at all, not even its own name")
 
 	crash_dir, crash_dir_ok := crashlog.default_directory(context.allocator)
 	if crash_dir_ok && crashlog.install(crash_dir, context.allocator) {
 		context.assertion_failure_proc = crashlog.assertion_hook
 	}
 
-	if len(os.args) == 1 {
+	if len(args) == 1 {
 		print_version()
 		return
 	}
-	if asks_for_help(os.args[1:]) {
+	if asks_for_help(args[1:]) {
 		write_usage(os.stdout)
 		return
 	}
-	if os.args[1] == TRANSCRIBE {
-		os.exit(transcribe_one(os.args[1:]))
+	if args[1] == TRANSCRIBE {
+		os.exit(transcribe_one(args[1:]))
 	}
-	if os.args[1] == PLAN {
-		os.exit(plan_batch(os.args[1:]))
+	if args[1] == PLAN {
+		os.exit(plan_batch(args[1:]))
 	}
-	if os.args[1] == BATCH {
-		os.exit(run_batch_command(os.args[1:]))
+	if args[1] == BATCH {
+		os.exit(run_batch_command(args[1:]))
 	}
-	if os.args[1] == DOCTOR {
-		os.exit(run_doctor(os.args[2:]))
+	if args[1] == DOCTOR {
+		os.exit(run_doctor(args[2:]))
 	}
-	if os.args[1] == CRASH_DRILL {
-		os.exit(run_crash_drill(os.args[2:]))
+	if args[1] == CRASH_DRILL {
+		os.exit(run_crash_drill(args[2:]))
 	}
-	os.exit(re_render(os.args[1:]))
+	os.exit(re_render(args[1:]))
 }
 
 

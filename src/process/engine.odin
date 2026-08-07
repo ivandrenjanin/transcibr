@@ -280,7 +280,7 @@ samples_ms :: proc(head: string) -> (duration_ms: i64, ok: bool) {
 		at -= 1
 	}
 	samples, readable := read_natural(head[at:])
-	if !readable || samples <= 0 {
+	if !readable {
 		return 0, false
 	}
 

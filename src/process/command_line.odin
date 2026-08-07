@@ -6,6 +6,7 @@ package process
 import "core:fmt"
 import "core:mem"
 import "core:strings"
+import win32 "core:sys/windows"
 import "core:unicode/utf8"
 
 // Builds the one string Windows hands a child process as its command line.
@@ -338,4 +339,79 @@ write_backslashes :: proc(b: ^strings.Builder, count: int) {
 	}
 
 	assert(strings.builder_len(b^) == start + count, "the backslash run was not written whole")
+}
+
+// Splits a UTF-16 command line the way Windows itself splits one, and hands
+// every argument back as UTF-8. The caller owns the slice and every string in
+// it; free both with `delete_argv` and the same allocator (ADR-0010).
+//
+// Why this exists: ADR-0025 / issue #35. Odin's Windows entry point is
+// `main :: proc "c" (argc: i32, argv: [^]cstring)`, the C runtime's ANSI
+// argv -- a non-ASCII byte is already lost to the system code page by the
+// time that argv reaches `main`. `GetCommandLineW`'s raw UTF-16 line has not
+// been through that conversion, and `CommandLineToArgvW` is the same parser
+// `command_line_test.odin` has verified this package's own quoter round-trips
+// through, non-ASCII cases included.
+@(require_results)
+argv_from_wide_command_line :: proc(
+	line: win32.wstring,
+	allocator: mem.Allocator,
+) -> (
+	argv: []string,
+	ok: bool,
+) {
+	assert(line != nil, "there is no command line here to split")
+	assert(
+		allocator.procedure != nil,
+		"argv is owned by the caller and needs an allocator to live in",
+	)
+
+	count: win32.c_int
+	wide_argv := win32.CommandLineToArgvW(line, &count)
+	if wide_argv == nil {
+		return nil, false
+	}
+	defer win32.LocalFree(rawptr(wide_argv))
+	assert(count > 0, "CommandLineToArgvW split a command line into zero arguments")
+
+	out := make([]string, int(count), allocator)
+	for i in 0 ..< int(count) {
+		text, err := win32.wstring_to_utf8(wide_argv[i], -1, allocator)
+		if err != .None {
+			for j in 0 ..< i {
+				delete(out[j], allocator)
+			}
+			delete(out, allocator)
+			return nil, false
+		}
+		out[i] = text
+	}
+	return out, true
+}
+
+// This process's own argv, read the way ffmpeg reads its (ADR-0025's third
+// measurement, taken against `whisper-cli`, applies here too): `GetCommandLineW`
+// plus `CommandLineToArgvW`, never `os.args`. `transcibr-cli`'s `main` is the
+// production caller; there is no test that can run as a second process with a
+// command line of its own, so `argv_from_wide_command_line` above carries the
+// coverage and this is a thin, unbranching wrapper around it.
+@(require_results)
+process_argv :: proc(allocator: mem.Allocator) -> (argv: []string, ok: bool) {
+	assert(
+		allocator.procedure != nil,
+		"argv is owned by the caller and needs an allocator to live in",
+	)
+
+	line := win32.GetCommandLineW()
+	assert(line != nil, "GetCommandLineW returned nothing for a process that is running")
+	return argv_from_wide_command_line(line, allocator)
+}
+
+// Frees an `argv` returned by `argv_from_wide_command_line` or `process_argv`,
+// and every string in it, with the same allocator both were built with.
+delete_argv :: proc(argv: []string, allocator: mem.Allocator) {
+	for text in argv {
+		delete(text, allocator)
+	}
+	delete(argv, allocator)
 }

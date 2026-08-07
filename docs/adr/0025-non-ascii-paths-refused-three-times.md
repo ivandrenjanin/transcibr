@@ -191,3 +191,23 @@ command-line paths too. A `doctor` (issue #13) arriving to take the two Batch-le
 place, as ADR-0018 already anticipates. Or a measurement showing a whisper.cpp build that re-reads
 the wide command line — which would retire the rule itself rather than relocate it, and until such a
 measurement exists the rule stays where all three copies of it are.
+
+## Addendum (issue #35): the second paragraph landed
+
+`main` no longer reads `os.args`. `process.process_argv` in `src/process/command_line.odin` reads
+`GetCommandLineW` and splits it with the same `CommandLineToArgvW` binding
+`src/process/command_line_test.odin` already verified this package's own quoter round-trips through
+(non-ASCII cases included), and hands `main` UTF-8 argv with every byte the shell actually received.
+`src/cli` still carries no test (ADR-0009); `process.process_argv` and the parser under it are what
+`command_line_test.odin` covers, and `process_argv_reads_the_running_processs_own_command_line`
+exercises the wrapper end to end against the test binary's own real argv.
+
+Verified by hand against this tree: `--model-file` under a directory named `日本語モデル` is printed
+back whole by `--plan` and refused by name as `Path_Not_Ascii` ("the Model is under a path the Engine
+cannot open, because it carries a byte outside ASCII"), not as `Unreadable`. A Recording named
+`Björn.mkv` is found and planned rather than refused as `Source_Unreadable`. Both are the wrong-reason
+refusals this ADR's table measured; both now answer by the rule that actually applies. What this does
+not reach is `engine.Fault.Path_Not_Ascii` itself, which needs a real Engine invocation this
+environment has none of to demonstrate directly — `openable_by_the_engine`'s per-Recording check
+(`src/engine/run.odin`) is unchanged and untouched by this issue, and now receives paths this binary's
+own argv no longer mangles before they reach it.
