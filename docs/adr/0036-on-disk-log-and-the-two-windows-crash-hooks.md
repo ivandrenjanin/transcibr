@@ -140,8 +140,9 @@ reports through `refuse`/`ok`.
 
 The two paragraphs above — "No rolling operational trail" and "Nothing here rotates or bounds the
 file either" — are superseded by ADR-0039, which records the re-entry path this record named:
-`crashlog.note`, a third line shape beside `record_assert_line` and `record_exception_line`, wired
-at `src/cli`'s existing report points, and generation rotation at `open_log`. The location clause
+`crashlog.note`, a fourth line shape beside `record_assert_line`, `record_stack_frame_line`, and
+`record_exception_line`, wired at `src/cli`'s existing report points, and generation rotation at
+`open_log`. The location clause
 above (`%LOCALAPPDATA%\transcibr\transcibr.log`) is unchanged and ADR-0039 says so explicitly. This
 paragraph is an addendum, not a rewrite, per this repository's convention for amending a decision
 record without erasing what it originally said.

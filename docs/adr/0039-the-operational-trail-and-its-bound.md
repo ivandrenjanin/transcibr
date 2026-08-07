@@ -16,18 +16,20 @@ This is a design record only. No code moves in this PR; 176-B wires the trail at
 existing report points, 176-C adds rotation, and 176-D (its own ADR, 0040) moves fault reporting
 out of `src/pipeline`'s stdio writes and into events. What follows is what those PRs build to.
 
-## D1. One mechanism, three line shapes — the trail rides `crashlog`'s own writer
+## D1. One mechanism, four line shapes — the trail rides `crashlog`'s own writer
 
-`record.odin` holds two line shapes today: `record_assert_line` (`record.odin:13-29`, reached from
-`assertion_hook`, `hooks.odin`) and `record_exception_line` (`record.odin:58-75`, reached from
-`exception_filter`, the process-wide `SetUnhandledExceptionFilter` callback). `record.odin` gains a
-third, `record_note_line`, beside them; `crashlog.note(level, subject, detail)` is the public entry
-point, `"contextless"` and allocation-free exactly like `assertion_hook` and `exception_filter`
-already are, built from the same `raw_write.odin` primitives (`write_str`, `format_int`,
-`format_hex`) writing into a caller-owned stack buffer, never the heap. That shared shape is what
-makes `note` callable from a wndproc, a worker thread, or the crash path itself with no second
-contract to reason about — the same handle (`g_log`, `crashlog.odin:49`), the same non-allocating
-write primitive, one more caller of it.
+`record.odin` holds three line shapes today: `record_assert_line` (`record.odin:13-29`, reached from
+`assertion_hook`, `hooks.odin`), `record_stack_frame_line` (`record.odin:37-50`, reached from
+`resolve_frame`, `hooks.odin:140`), and `record_exception_line` (`record.odin:58-75`, reached from
+`exception_filter`, the process-wide `SetUnhandledExceptionFilter` callback) — all three
+`"contextless"`, all three built from the same `write_str`/`format_int` primitives. `record.odin`
+gains a fourth, `record_note_line`, beside them; `crashlog.note(level, subject, detail)` is the
+public entry point, `"contextless"` and allocation-free like the three that exist, built from the
+same `raw_write.odin` primitives (`write_str`, `format_int`, `format_hex`) writing into a
+caller-owned stack buffer, never the heap. That shared shape is what makes `note` callable from a
+wndproc, a worker thread, or the crash path itself with no second contract to reason about — the
+same handle (`g_log`, `crashlog.odin:49`), the same non-allocating write primitive, one more caller
+of it.
 
 ADR-0036's decisive argument against `core:log.create_file_logger` — the exception filter's
 callback has no `context` at all, so `context.logger` cannot be reached from it regardless of what
@@ -36,7 +38,7 @@ to the crash path's raw writer means keeping two implementations of "put a line 
 like the same log by hand — applies to a routine-path writer exactly as it applied when ADR-0036
 was written. Nothing here reopens that argument; it is restated because a second writer for the
 non-crash path was the obvious naive move, and the reason it is not taken has not changed since
-`crashlog` was first built. `crashlog.note` is not a new writer with a new argument; it is a third
+`crashlog` was first built. `crashlog.note` is not a new writer with a new argument; it is a fourth
 call into the writer ADR-0036 already chose.
 
 Cost accepted, stated so nobody proposes recovering it later: `crashlog.note`'s three arguments
@@ -53,9 +55,19 @@ composed message builds it into its own stack buffer before calling `note`, the 
 (`MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`, replacing whatever `.1` already existed) before the
 new run's handle is opened — inside `open_log`, ahead of its `CreateFileW` call
 (`handle.odin:39-47`), and therefore ahead of `install`'s call into `register`
-(`install.odin:24, 28`). `GetFileSizeEx`, `MoveFileExW` and `DeleteFileW` are all bound at the pin
-(`grep -rlw` over `C:\odin\dist\core\sys\windows\` returns `kernel32.odin` for each), so nothing
-here is hand-declared.
+(`install.odin:24, 28`). `GetFileAttributesExW`, `MoveFileExW` and `DeleteFileW` are all bound at
+the pin (`grep -rlw` over `C:\odin\dist\core\sys\windows\` returns `kernel32.odin` for each), so
+nothing here is hand-declared. The size check is handleless — `GetFileAttributesExW`, not
+`GetFileSizeEx` —
+specifically so the size check itself never becomes the handle that blocks the rename: `handle.odin`'s
+own open flags (`FILE_APPEND_DATA`, `FILE_SHARE_READ | FILE_SHARE_WRITE`, no `FILE_SHARE_DELETE`)
+apply to any handle this package opens on the file, including a sizing one, and Windows enforces the
+missing `FILE_SHARE_DELETE` against the opening process itself, not only against a second one. A
+`GetFileSizeEx` call would need its own `CreateFileW` first and would have to close that handle again
+before `MoveFileExW` could succeed — measured directly: a `FILE_APPEND_DATA` handle opened under
+exactly `handle.odin`'s flags makes `MoveFileExW` on the same file fail `ERROR_SHARING_VIOLATION` in
+the same process, and closing that handle before the rename call is what clears it.
+`GetFileAttributesExW` never opens a handle at all, so this hazard does not arise.
 
 Rotation never runs mid-run. ADR-0036 records the crash hooks' handle as pre-opened once at process
 start and never re-opened inside a hook — "the maintainer ruling's 'pre-opened handles' constraint,
@@ -110,11 +122,14 @@ possibly-corrupted process the same way `record_exception_line`'s two `runtime.a
 calls already assume the `EXCEPTION_POINTERS` block itself is trustworthy enough to read
 (`record.odin:59-66`).
 
-Both the routine trail's lines and the two existing crash line shapes carry the same timestamp
-shape, produced by the same formatter. That is new: today `record_assert_line` and
-`record_exception_line` carry no timestamp at all, only `loc`/exception fields. Giving every line —
-routine and crash alike — the same UTC ISO-8601 stamp is what makes a crash correlatable with the
-Batch that produced it, which nothing in the tree does today. The FILETIME → `YYYY-MM-DDTHH:MM:SSZ`
+Both the routine trail's lines and the three existing crash line shapes — `record_assert_line`,
+`record_stack_frame_line`, and `record_exception_line` — carry the same timestamp shape, produced by
+the same formatter. That is new: today none of the three carry a timestamp at all, only
+`loc`/exception/frame fields. Giving every line — routine and crash alike — the same UTC ISO-8601
+stamp is what makes a crash correlatable with the Batch that produced it, which nothing in the tree
+does today. That includes `record_stack_frame_line`: a symbolized stack walk is a run of those lines,
+the majority of what an assertion crash emits, and each one gets the same stamp as the `assert:` line
+that triggered it. The FILETIME → `YYYY-MM-DDTHH:MM:SSZ`
 conversion is integer civil-calendar arithmetic — `proc "contextless"`, allocation-free, callable
 from the same three call sites `write_str`/`format_int`/`format_hex` already are, and fully testable
 against fixed FILETIME values (a leap day, a year boundary) with no real clock involved. It is the
@@ -171,7 +186,7 @@ this ticket's scope, and this record leaves it there.
 `crashlog.note` becomes the one place a routine line is built, callable from every context the two
 crash hooks already reach plus every ordinary boundary report `src/cli` already makes. Rotation
 lives entirely inside `open_log`, so every existing caller of `install`/`open_log` gets it for free
-without a signature change. The trail and the two crash line shapes now share one timestamp
+without a signature change. The trail and the three crash line shapes now share one timestamp
 formatter, one writer, and one handle — the same "one mechanism" property ADR-0036 built the package
 around, extended rather than replaced.
 
@@ -179,7 +194,9 @@ around, extended rather than replaced.
 the UI thread (once #16's wndproc exists) can interleave. `FILE_APPEND_DATA` makes each `WriteFile`
 call atomic against the file's current end, so a line can never tear mid-write, but the *order* two
 threads' lines land in is not guaranteed by anything here. A mutex around `note` would close that,
-and is deliberately not added: the crash path calls the same writer, and a mutex the crash path
-might need to acquire while the process is already in an undefined state is exactly the kind of lock
-ADR-0036's "pre-opened handles, zero allocation, nothing that can deadlock a corrupted process"
-discipline rules out.
+and is deliberately not added: the crash path calls the same writer, and if a thread the crash
+interrupted already held that mutex when `assertion_hook` or `exception_filter` fired, the crash path
+would block on it forever instead of writing its line — the same hazard ADR-0036 names for
+`MiniDumpWriteDump`/`DbgHelp`, whose "single-threaded, pre-opened handles, zero allocation in a
+possibly-corrupted process" constraints (`0036-...md:96-97`) are exactly why that record keeps the
+crash path free of anything that can wait on another thread.
