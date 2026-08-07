@@ -650,7 +650,9 @@ later_free_of :: proc(rest: []Defer_Call, arg: string) -> (free: Defer_Call, fou
 // One statement, read as a `defer` whose payload is a plain call naming a
 // container as its first argument -- `defer for x in xs {...}`, `defer if
 // ... {...}`, and a defer with no arguments at all carry no such name and
-// answer `false`, never a guess.
+// answer `false`, never a guess. The payload is read through
+// defer_payload_call, which accepts both the bare-call form (`defer f(x)`)
+// and CLAUDE.md rule F2's mandated discard form (`defer _ = f(x)`).
 @(require_results)
 named_defer_call :: proc(stmt: ^ast.Stmt) -> (call: Defer_Call, found: bool) {
 	assert(stmt != nil, "asked to read no statement at all as a defer")
@@ -661,13 +663,7 @@ named_defer_call :: proc(stmt: ^ast.Stmt) -> (call: Defer_Call, found: bool) {
 	}
 	assert(defer_stmt.stmt != nil, "a defer with no statement to run is a parser defect")
 
-	expr_stmt, is_expr := defer_stmt.stmt.derived.(^ast.Expr_Stmt)
-	if !is_expr {
-		return {}, false
-	}
-	assert(expr_stmt.expr != nil, "an expression statement with no expression is a parser defect")
-
-	invocation, is_call_expr := expr_stmt.expr.derived.(^ast.Call_Expr)
+	invocation, is_call_expr := defer_payload_call(defer_stmt.stmt)
 	if !is_call_expr {
 		return {}, false
 	}
@@ -681,6 +677,40 @@ named_defer_call :: proc(stmt: ^ast.Stmt) -> (call: Defer_Call, found: bool) {
 		return {}, false
 	}
 	return Defer_Call{line = defer_stmt.pos.line, proc_name = name, arg = arg}, true
+}
+
+// The call a defer's own statement runs, read from either of the two forms
+// CLAUDE.md's rule F2 leaves a caller free to write: a bare call statement
+// (`defer f(x)`), or F2's mandated discard of a result-carrying call (`defer
+// _ = f(x)`, an Assign_Stmt with one `_` on its left). Anything else -- a
+// `defer for`, a `defer if`, or an assignment to a real name -- carries no
+// single call this can name and answers `false`.
+@(require_results)
+defer_payload_call :: proc(stmt: ^ast.Stmt) -> (call: ^ast.Call_Expr, found: bool) {
+	assert(stmt != nil, "asked to read no defer payload at all")
+
+	if expr_stmt, is_expr := stmt.derived.(^ast.Expr_Stmt); is_expr {
+		assert(
+			expr_stmt.expr != nil,
+			"an expression statement with no expression is a parser defect",
+		)
+		call, found = expr_stmt.expr.derived.(^ast.Call_Expr)
+		return call, found
+	}
+
+	assign, is_assign := stmt.derived.(^ast.Assign_Stmt)
+	if !is_assign {
+		return nil, false
+	}
+	if assign.op.text != "=" || len(assign.lhs) != 1 || len(assign.rhs) != 1 {
+		return nil, false
+	}
+	discard, is_ident := assign.lhs[0].derived.(^ast.Ident)
+	if !is_ident || discard.name != "_" {
+		return nil, false
+	}
+	call, found = assign.rhs[0].derived.(^ast.Call_Expr)
+	return call, found
 }
 
 // The name a defer's own call was written with: the bare identifier for

@@ -46,3 +46,26 @@ a_free_defer_registered_before_a_walk_defer_is_not_a_violation :: proc(t: ^testi
 
 	testing.expect_value(t, len(facts.defer_order), 0)
 }
+
+// CLAUDE.md rule F2 mandates `defer _ = f(x)`, not `defer f(x)`, for any
+// call whose procedure returns something -- so a result-carrying walk_proc
+// (like remove_cache, once it gains a return value) is written in exactly
+// this discard form. The check must see through it the same way it sees a
+// bare call.
+@(test)
+a_walk_defer_written_in_the_discard_form_is_still_a_violation :: proc(t: ^testing.T) {
+	facts := facts_of(
+		t,
+		PROBE +
+		"held :: proc() {\n\tviolations := check()\n\tdefer _ = violations_destroy(violations, context.allocator)\n\tdefer delete(violations)\n}\n",
+	)
+	defer facts_destroy(facts, context.allocator)
+
+	testing.expect_value(t, len(facts.defer_order), 1)
+	if len(facts.defer_order) == 1 {
+		testing.expect_value(t, facts.defer_order[0].line, 5)
+		testing.expect_value(t, facts.defer_order[0].walk_proc, "violations_destroy")
+		testing.expect_value(t, facts.defer_order[0].free_proc, "delete")
+		testing.expect_value(t, facts.defer_order[0].arg, "violations")
+	}
+}
