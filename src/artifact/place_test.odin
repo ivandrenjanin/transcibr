@@ -7,6 +7,7 @@ import "core:strings"
 import "core:testing"
 import "core:time"
 import "transcibr:child"
+import "transcibr:testkit"
 import "transcibr:transcript"
 
 @(private)
@@ -74,9 +75,16 @@ set_out :: proc(t: ^testing.T, tag: string, left := ENGINE_JSON) -> (b: Bench) {
 			allocator = context.allocator,
 		)
 		defer delete(named, context.allocator)
-		directory^ = scratch(t, named)
+		directory^ = testkit.made_scratch_cache(t, "artifact", named, context.allocator)
 	}
-	b.output = file_in(t, b.cache, "talk.json", left)
+	b.output = testkit.fixture_file(
+		t,
+		b.cache,
+		"talk.json",
+		transmute([]u8)left,
+		nil,
+		context.allocator,
+	)
 	b.source = fmt.aprintf("%s\\talk.mkv", b.beside, allocator = context.allocator)
 
 	namable: bool
@@ -88,8 +96,8 @@ set_out :: proc(t: ^testing.T, tag: string, left := ENGINE_JSON) -> (b: Bench) {
 @(private)
 cleared :: proc(b: Bench) {
 	destroy_names(b.names, context.allocator)
-	remove_scratch(b.cache)
-	remove_scratch(b.beside)
+	testkit.remove_cache(b.cache, context.allocator)
+	testkit.remove_cache(b.beside, context.allocator)
 	delete(b.cache, context.allocator)
 	delete(b.beside, context.allocator)
 	delete(b.source, context.allocator)
@@ -147,7 +155,14 @@ publishing_over_an_artifact_that_is_already_there_replaces_it :: proc(t: ^testin
 	b := set_out(t, "replace")
 	defer cleared(b)
 
-	older := file_in(t, b.beside, "talk.md", "the transcript from an older run\n")
+	older := testkit.fixture_file(
+		t,
+		b.beside,
+		"talk.md",
+		transmute([]u8)string("the transcript from an older run\n"),
+		nil,
+		context.allocator,
+	)
 	defer delete(older, context.allocator)
 	testing.expect_value(t, older, b.names[.Transcript])
 
@@ -306,7 +321,14 @@ a_second_run_over_output_that_will_not_parse_replaces_the_quarantined_file :: pr
 	defer cleared(b)
 
 	for attempt in 0 ..< 2 {
-		rewritten := file_in(t, b.cache, "talk.json", ENGINE_JSON[:len(ENGINE_JSON) / 2])
+		rewritten := testkit.fixture_file(
+			t,
+			b.cache,
+			"talk.json",
+			transmute([]u8)ENGINE_JSON[:len(ENGINE_JSON) / 2],
+			nil,
+			context.allocator,
+		)
 		defer delete(rewritten, context.allocator)
 
 		placed, err := completed(b)
