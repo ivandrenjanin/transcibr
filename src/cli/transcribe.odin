@@ -98,6 +98,13 @@ run_one :: proc(
 		return OPERATING_ERROR
 	}
 
+	gpu_health_checked, gpu_health_abort, gpu_health_unhealthy := false, false, false
+	health := pipeline.Health_Watch {
+		checked   = &gpu_health_checked,
+		abort     = &gpu_health_abort,
+		unhealthy = &gpu_health_unhealthy,
+	}
+
 	job := pipeline.new_recording_job(
 		o.source,
 		name,
@@ -109,7 +116,11 @@ run_one :: proc(
 		string(engine_digest),
 		o.profile,
 		engine.Report{on_progress = show},
-		pipeline.Health_Watch{},
+		health,
+	)
+	assert(
+		health != pipeline.Health_Watch{},
+		"a single Recording is its own first Recording (#113) -- the watch it runs under must not be empty",
 	)
 
 	extracted, extracted_ok := pipeline.extract_recording(job)
@@ -119,6 +130,9 @@ run_one :: proc(
 	fmt.eprintfln("%s: %d ms of audio", name, extracted.extracted.container_ms)
 
 	if !pipeline.transcribe_and_place(extracted) {
+		return OPERATING_ERROR
+	}
+	if gpu_health_unhealthy {
 		return OPERATING_ERROR
 	}
 	return 0
