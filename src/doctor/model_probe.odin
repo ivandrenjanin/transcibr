@@ -214,6 +214,21 @@ model_load_check_using :: proc(
 // `src/child/run_test.odin`). The fault check below means this branch never
 // reaches that assert regardless of what any future caller-constructed
 // Probe carries.
+//
+// Issue #209: below the switch, this used to guard again with
+// `if !probe.exited { ... }`, reporting "the engine's own exit status could
+// not be read" -- a branch unreachable for any Probe `probe_executable`
+// builds, because `tool.odin`'s own `if run == .Finished { assert(state.exited,
+// ...) }` (tool.odin:136-137) already guarantees a `.Finished` run always
+// exited. `probe_executable` is this package's only production `Probe`
+// constructor -- `model_load_check` is the only caller of this procedure
+// outside this package's own tests, and it always routes through
+// `probe_executable` -- so every `.Finished, exited = false` Probe is a
+// caller-constructed test stub, never a production path. The guarantee is
+// the constructor's assert, not a second check here, so the dead tolerance
+// is removed rather than kept redundant with it; nothing here re-asserts the
+// same condition, per issue #22's rule that no committed test may trip an
+// assert.
 @(private)
 @(require_results)
 model_load_verdict :: proc(probe: Probe, model_path: string, allocator: mem.Allocator) -> Check {
@@ -247,15 +262,6 @@ model_load_verdict :: proc(probe: Probe, model_path: string, allocator: mem.Allo
 		)
 		return failed("model", message)
 	case .Finished:
-	}
-	if !probe.exited {
-		message := combined_message(
-			model_path,
-			"could not be verified: the engine's own exit status could not be read",
-			"",
-			allocator,
-		)
-		return failed("model", message)
 	}
 	if probe.exit_code != 0 {
 		return model_refused(probe, model_path, allocator)
