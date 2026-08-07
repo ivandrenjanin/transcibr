@@ -65,8 +65,20 @@ FAKE_RESUME_STAGES := Stages(Recording_Job, Recording_Extracted) {
 	abandon_job = abandon_recording_job,
 }
 
+// A digest-shaped placeholder, not a real hash of anything: identifying the
+// Engine for real is `artifact.identify_engine`'s job (src/artifact/engine.odin),
+// exercised by that package's own tests. This package only needs a value the
+// same length a real digest is, since `planning.current_of` now asserts that
+// (issue #50).
 @(private)
-RESUME_ENGINE_VERSION :: "resume-test-engine"
+RESUME_ENGINE_DIGEST :: artifact.Digest(
+	"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+)
+
+@(private)
+RESUME_ENGINE_DIGEST_REPLACED :: artifact.Digest(
+	"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+)
 
 // `recording_sidecar` always stamps `artifact.ENGINE_DEFAULT_BEAM` -- a
 // Recording_Job carries no beam of its own -- so planning's own `current_-`
@@ -76,20 +88,26 @@ RESUME_ENGINE_VERSION :: "resume-test-engine"
 @(require_results)
 resume_settings :: proc() -> planning.Settings {
 	return planning.Settings {
-		engine_version = RESUME_ENGINE_VERSION,
+		engine_version = RESUME_ENGINE_DIGEST,
 		model = artifact.Model{path = "m.bin", digest = a_digest('r'), bytes = 1},
 		beam = artifact.ENGINE_DEFAULT_BEAM,
 		merge_profile = transcript.profile_name(transcript.DEFAULT_PROFILE),
 	}
 }
 
+// The Engine's digest is computed once, the same way `--batch` computes it
+// once and hands it to both `planning.Settings` and `Batch_Options`
+// (src/cli/batch.odin) -- so a test that wants a Batch to see a DIFFERENT
+// Engine changes `settings.engine_version` and rebuilds these options from
+// it, rather than editing the two independently and risking exactly the
+// drift issue #70 found between `--plan` and `--batch`.
 @(private)
 @(require_results)
 resume_options :: proc(tree: string, settings: planning.Settings) -> Batch_Options {
 	return Batch_Options {
 		cache = tree,
 		model = settings.model,
-		engine_version = RESUME_ENGINE_VERSION,
+		engine_version = string(settings.engine_version),
 		profile = transcript.DEFAULT_PROFILE,
 		config = Config{extract_workers = 1, queue_depth = 1, join_bound_ms = JOIN_BOUND_MS},
 	}
@@ -423,23 +441,17 @@ placed_from_engine_output_places_a_final_cue_offset_that_advances :: proc(t: ^te
 	testing.expect_value(t, summary.failed, 0)
 }
 
-// The corpus-level claim issue #70 is about, pinned where both --batch and
-// --plan actually converge: `settled_engine_version` (src/pipeline/recording.odin)
-// runs AFTER `planning.plan_batch` decides, never before, so a flagless
-// --batch's Maybe(string) reaches planning as nil and skips exactly where a
-// flagless --plan does -- not as a Settings_Changed retranscribe caused by
-// UNKNOWN leaking in ahead of the decision.
-@(private)
-@(require_results)
-settled_options :: proc(tree: string, settings: planning.Settings) -> Batch_Options {
-	o := resume_options(tree, settings)
-	o.engine_version = settled_engine_version(settings.engine_version)
-	return o
-}
-
+// Issue #50, at the corpus level where --batch and --plan actually converge:
+// a Batch always identifies its Engine now (planning.Settings.engine_version
+// is no longer Maybe), so the resume rule this pins is that a matching
+// digest skips and a CHANGED one -- an Engine binary replaced under the same
+// name is exactly this, since a path alone cannot notice it -- retranscribes.
+// This is the failure ADR-0027 accepted and issue #50 closes: it used to
+// take a hand-typed `--engine-version` matching byte for byte to notice, and
+// a flagless Batch skipped every corpus in existence, upgraded Engine or not.
 @(test)
-a_flagless_batch_skips_a_recording_and_keeps_its_recorded_engine_version :: proc(t: ^testing.T) {
-	tree := testkit.made_scratch_cache(t, "pipeline", "provenance", context.allocator)
+a_batch_whose_engine_digest_changed_since_re_transcribes_rather_than_skips :: proc(t: ^testing.T) {
+	tree := testkit.made_scratch_cache(t, "pipeline", "engine-replaced", context.allocator)
 	defer testkit.remove_cache(tree, context.allocator)
 	defer delete(tree, context.allocator)
 
@@ -454,75 +466,34 @@ a_flagless_batch_skips_a_recording_and_keeps_its_recorded_engine_version :: proc
 	defer planning.destroy_plan(first_plan, context.allocator)
 	first := run_recordings(
 		first_plan,
-		settled_options(tree, named),
+		resume_options(tree, named),
 		context.allocator,
 		nil,
 		FAKE_RESUME_STAGES,
 	)
 	testing.expect_value(t, first.transcribed, 1)
 
-	unnamed := named
-	unnamed.engine_version = nil
-	second_inventory, second_plan := planned_resume(t, tree, unnamed)
-	defer planning.destroy_inventory(second_inventory, context.allocator)
-	defer planning.destroy_plan(second_plan, context.allocator)
-	second := run_recordings(
-		second_plan,
-		settled_options(tree, unnamed),
+	unchanged_inventory, unchanged_plan := planned_resume(t, tree, named)
+	defer planning.destroy_inventory(unchanged_inventory, context.allocator)
+	defer planning.destroy_plan(unchanged_plan, context.allocator)
+	unchanged := run_recordings(
+		unchanged_plan,
+		resume_options(tree, named),
 		context.allocator,
 		nil,
 		FAKE_RESUME_STAGES,
 	)
-	testing.expect_value(t, second.skipped, 1)
-	testing.expect_value(t, second.transcribed, 0)
+	testing.expect_value(t, unchanged.skipped, 1)
+	testing.expect_value(t, unchanged.transcribed, 0)
 
-	third_inventory, third_plan := planned_resume(t, tree, unnamed)
-	defer planning.destroy_inventory(third_inventory, context.allocator)
-	defer planning.destroy_plan(third_plan, context.allocator)
-	for entry in third_plan.entries {
-		recorded, known := entry.found.recorded.?
-		testing.expect(t, known, "no Sidecar survived the flagless pass")
-		testing.expect_value(t, recorded.engine_version, RESUME_ENGINE_VERSION)
-	}
-}
-
-// Sensitivity check on the test above: naming transcript.UNKNOWN as if it
-// were a real Engine -- exactly what a pre-fix `defaulted_batch` put into
-// Settings before planning ever saw it -- makes the second pass retranscribe
-// rather than skip, so the guard above is not passing regardless of what
-// planning decided.
-@(test)
-a_batch_naming_unknown_as_its_engine_retranscribes_rather_than_skips :: proc(t: ^testing.T) {
-	tree := testkit.made_scratch_cache(t, "pipeline", "provenance-defect", context.allocator)
-	defer testkit.remove_cache(tree, context.allocator)
-	defer delete(tree, context.allocator)
-
-	one := resume_recording(t, tree, "one")
-	defer delete(one, context.allocator)
-
-	named := resume_settings()
-	defer delete(string(named.model.digest), context.allocator)
-
-	first_inventory, first_plan := planned_resume(t, tree, named)
-	defer planning.destroy_inventory(first_inventory, context.allocator)
-	defer planning.destroy_plan(first_plan, context.allocator)
-	first := run_recordings(
-		first_plan,
-		settled_options(tree, named),
-		context.allocator,
-		nil,
-		FAKE_RESUME_STAGES,
-	)
-	testing.expect_value(t, first.transcribed, 1)
-
-	defaulted := named
-	defaulted.engine_version = transcript.UNKNOWN
-	second_inventory, second_plan := planned_resume(t, tree, defaulted)
+	replaced := named
+	replaced.engine_version = RESUME_ENGINE_DIGEST_REPLACED
+	second_inventory, second_plan := planned_resume(t, tree, replaced)
 	defer planning.destroy_inventory(second_inventory, context.allocator)
 	defer planning.destroy_plan(second_plan, context.allocator)
 	second := run_recordings(
 		second_plan,
-		settled_options(tree, defaulted),
+		resume_options(tree, replaced),
 		context.allocator,
 		nil,
 		FAKE_RESUME_STAGES,

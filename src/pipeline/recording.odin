@@ -365,27 +365,6 @@ recording_sidecar :: proc(job: Recording_Job, extracted: Recording_Extracted) ->
 	)
 }
 
-// The derivation `src/cli` used to make ahead of planning, defaulting
-// `Batch_Options.engine_version` to `transcript.UNKNOWN` before a flagless
-// `--batch` ever reached `planning.plan_batch` -- the implicit string-to-
-// `Maybe(string)` conversion at that call site then read as a NAMED Engine,
-// so `planning.engine_of` compared the record against the literal word
-// "unknown" instead of leaving the comparison to the record's own value
-// (issue #70). Settling belongs here instead: after planning has already
-// seen presence or absence exactly as `--plan` does, and only for the one
-// string `recording_sidecar` actually writes.
-@(require_results)
-settled_engine_version :: proc(named: Maybe(string)) -> (version: string) {
-	defer assert(len(version) > 0, "an Engine nobody named is UNKNOWN, never empty")
-
-	if value, on_purpose := named.?; on_purpose {
-		if len(value) > 0 {
-			return value
-		}
-	}
-	return transcript.UNKNOWN
-}
-
 discard_recording_audio :: proc(extracted: Recording_Extracted) {
 	delete(extracted.extracted.audio, extracted.job.allocator)
 	destroy_recording_arena(extracted.job)

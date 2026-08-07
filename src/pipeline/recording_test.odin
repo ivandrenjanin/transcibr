@@ -127,20 +127,6 @@ recording_sidecar_passes_a_pre_1970_modification_time_through_without_crashing :
 	testing.expect_value(t, made.source_modified_ns, i64(-1))
 }
 
-// The derivation issue #70 hoists out of `src/cli`: absent (no
-// `--engine-version` on the command line) settles to `transcript.UNKNOWN`
-// only here, at the record site -- never earlier, where it would leak into
-// `planning.Settings` as a SET value and make a flagless `--batch` see an
-// Engine changed that a flagless `--plan` never did.
-@(test)
-settled_engine_version_defaults_to_unknown_only_when_the_command_line_named_none :: proc(
-	t: ^testing.T,
-) {
-	testing.expect_value(t, settled_engine_version(nil), transcript.UNKNOWN)
-	testing.expect_value(t, settled_engine_version("whisper.cpp 1.9.9"), "whisper.cpp 1.9.9")
-	testing.expect_value(t, settled_engine_version(""), transcript.UNKNOWN)
-}
-
 // The three outcomes `sort_entry` settles without ever building a Recording
 // Job: nothing here should reach the GPU-serialising pipeline at all, which
 // this proves by checking that `jobs` stays empty rather than by mocking
