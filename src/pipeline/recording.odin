@@ -10,6 +10,7 @@ package pipeline
 import "base:runtime"
 import "core:fmt"
 import "core:mem"
+import "core:os"
 import "core:sync"
 import "core:time"
 import "transcibr:artifact"
@@ -18,6 +19,7 @@ import "transcibr:child"
 import "transcibr:doctor"
 import "transcibr:engine"
 import "transcibr:planning"
+import "transcibr:process"
 import "transcibr:transcript"
 
 // The child executables a Batch names once, never resolved per Recording --
@@ -187,10 +189,49 @@ transcribe_and_place :: proc(extracted: Recording_Extracted) -> bool {
 	}
 	if unfinished.fault != .None {
 		report_fault(engine.error_message(unfinished, job.source, job.allocator), job.allocator)
+		discard_engine_output(job, unfinished.fault)
 		return false
 	}
 	checked_first_recording_health(job, extracted.extracted.container_ms, produced)
 	return placed_from_engine_output(job, extracted, produced.output)
+}
+
+// Issue #211: a `.Refused` or `.Output_Empty` Engine run leaves its output
+// file sitting in the scratch cache -- `engine.transcribe`'s own `output`
+// local (run.odin) is freed as a *string* on any fault, never as a file on
+// disk, and nothing downstream ever revisits it once this Recording has
+// already failed. Mirrors `discard_part` in src/audio/run.odin exactly:
+// every fault removes the file except `.Not_Stopped`, whose own doc comment
+// in src/engine/engine.odin already gives the reason -- the Engine may still
+// be running and may still hold that file open, so this leaves it for the
+// age-based sweep (ADR-0023) instead. Every other fault either leaves a real
+// half-written or empty file (`.Did_Not_Finish`, `.Went_Silent`, `.Refused`,
+// `.Output_Empty`) or leaves nothing to remove at all
+// (`.Path_Not_Ascii`, `.Not_Started`, `.No_Output`) -- `os.remove` on a path
+// that was never written is exactly the tolerated failure A8 asks for, the
+// same as `discard_part`'s unconditional call.
+//
+// Exact-path delete of the one file this Recording's own Engine run could
+// have written -- `job.cache` and `job.name` rebuild the identical prefix
+// `engine.transcribe` used, and `process.engine_output_path` is the same
+// exported name that built it there. No enumeration of the cache directory,
+// no wildcard, no `os.remove_all` (CLAUDE.md's Odin notes, issue #97/#105).
+@(private)
+discard_engine_output :: proc(job: Recording_Job, fault: engine.Fault) {
+	assert(len(job.cache) > 0, "a Recording Job with no cache has nowhere to sweep")
+	assert(len(job.name) > 0, "a Recording Job with no name has nowhere to sweep")
+	assert(fault != .None, "a Recording that came through has no output to sweep")
+
+	if fault == .Not_Stopped {
+		return
+	}
+
+	prefix := fmt.aprintf("%s\\%s", job.cache, job.name, allocator = job.allocator)
+	defer delete(prefix, job.allocator)
+	output := process.engine_output_path(prefix, job.allocator)
+	defer delete(output, job.allocator)
+
+	os.remove(output)
 }
 
 // Runs against every Recording that finishes transcribing successfully,

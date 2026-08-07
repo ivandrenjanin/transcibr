@@ -2,13 +2,16 @@
 package pipeline
 
 import "core:fmt"
+import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:testing"
 import "transcibr:artifact"
 import "transcibr:audio"
+import "transcibr:child"
 import "transcibr:engine"
 import "transcibr:planning"
+import "transcibr:process"
 import "transcibr:testkit"
 import "transcibr:transcript"
 
@@ -423,4 +426,259 @@ review_a_real_engine_duration_reading_must_not_abort_a_healthy_batch :: proc(t: 
 	testing.expect_value(t, checked, true)
 	testing.expect_value(t, abort, false)
 	testing.expect_value(t, unhealthy, false)
+}
+
+// Issue #211's real-child half. A stand-in Engine that walks its own
+// arguments for `-of` rather than being handed the path, spelled the same
+// way `engine_test.odin`'s own `stand_in` is -- that copy is `@(private)` to
+// package engine and cannot be imported back here. `directory` is a place
+// OUTSIDE the Recording's own cache (round-1 adversarial review): the two
+// tests below count the cache's own entries afterward, and a stand-in
+// written inside the cache would sit in that count as an entry the sweep
+// was never supposed to touch either way.
+@(private)
+@(require_results)
+refusal_stand_in :: proc(t: ^testing.T, directory: string, tag: string, body: string) -> string {
+	assert(len(body) > 0, "a stand-in Engine that does nothing at all says nothing")
+
+	path := fmt.aprintf("%s\\stand-in-%s.cmd", directory, tag, allocator = context.allocator)
+	script := fmt.aprintf(
+		"@echo off\r\nsetlocal\r\nset \"PREFIX=\"\r\n:next\r\nif \"%%~1\"==\"\" goto ready\r\nif /i \"%%~1\"==\"-of\" set \"PREFIX=%%~2\"\r\nshift\r\ngoto next\r\n:ready\r\n%s\r\n",
+		body,
+		allocator = context.allocator,
+	)
+	defer delete(script, context.allocator)
+
+	testing.expect(
+		t,
+		os.write_entire_file(path, transmute([]u8)script) == nil,
+		"could not write the stand-in Engine",
+	)
+	return path
+}
+
+@(private)
+@(require_results)
+opened_group :: proc(t: ^testing.T) -> (group: child.Job_Object, ok: bool) {
+	opened, err := child.job_object_open()
+	if !testing.expectf(t, err.fault == .None, "no job object: %v", err.fault) {
+		return {}, false
+	}
+	return opened, true
+}
+
+// A round-1 adversarial review found the two tests below asserting only the
+// absence of one exact path -- a mutation that renamed the Engine's output
+// (`<name>-x.json` instead of `<name>.json`) left the real, renamed partial
+// sitting in the cache and both tests stayed green, because the exact path
+// they checked for never existed either way. Listing the whole cache and
+// counting its entries catches that: a renamed leftover is a real entry the
+// exact-path check could never see. The caller frees the returned names and
+// the slice itself.
+//
+// A round-2 adversarial review found the entry-set check still vacuous in the
+// OTHER direction: an Engine that never wrote into the cache at all (a broken
+// `-of` arg walk, or a broken `-of` flag name in `engine_arguments` itself)
+// leaves the cache holding only the sentinel either way, so the check passes
+// identically whether the sweep removed a real file or removed nothing. The
+// witness helper below closes that: it names an extra file the stand-in
+// writes at its own resolved prefix, alongside the Engine output proper, so
+// the cache holding the witness after the run is a positive proof the child
+// really resolved that prefix INSIDE the cache and wrote there -- not just
+// that the Engine output is absent.
+@(private)
+@(require_results)
+cache_entry_names :: proc(t: ^testing.T, cache: string, allocator: mem.Allocator) -> []string {
+	assert(len(cache) > 0, "there is no cache here to list")
+
+	listing, unreadable := os.read_all_directory_by_path(cache, allocator)
+	testing.expectf(t, unreadable == nil, "could not list %s: %v", cache, unreadable)
+	names := make([]string, len(listing), allocator)
+	for info, i in listing {
+		names[i] = strings.clone(info.name, allocator)
+	}
+	os.file_info_slice_delete(listing, allocator)
+	return names
+}
+
+// Whether `want` appears anywhere in `names` -- factored out of
+// `sweep_leaves_only_the_sentinel_audio` below purely to keep that procedure
+// under CLAUDE.md rule F1's 70-line limit once the witness check grew it.
+@(private)
+@(require_results)
+names_contain :: proc(names: []string, want: string) -> bool {
+	for name in names {
+		if name == want {
+			return true
+		}
+	}
+	return false
+}
+
+// The ticket's own proof: a Recording whose Engine run finishes and refuses
+// it (a real, non-empty output written, then a nonzero exit -- the #186
+// review's shape) must leave zero NEW entries in the scratch cache once
+// `transcribe_and_place` has settled it. Three things a bare "the exact
+// output path is gone" check cannot see (round-1 adversarial review,
+// mutations 5 and 2; round-2 adversarial review, mutations F and G): a
+// renamed leftover (the sweep built the wrong path and removed nothing
+// real), an overreaching sweep (the sweep removed a file it had no business
+// touching), and a sweep that swept nothing because the Engine never wrote
+// into the cache at all (a broken `-of` arg walk in the stand-in itself, or a
+// broken `-of` flag name in `engine_arguments`) -- the last of which the
+// first two rounds' entry-set check could not see either, because an Engine
+// that writes nothing leaves the cache holding only the sentinel exactly the
+// way a correct sweep does. `sentinel` stands in for the extracted `.wav`
+// `audio.extract` would have already written at this exact prefix by the
+// time a real Batch reaches transcription -- it must survive untouched.
+// `body` also writes a witness file at its own resolved prefix, a name
+// `discard_engine_output` never touches -- the witness surviving in the
+// cache is the positive proof that the Engine really resolved that prefix
+// INSIDE the cache and wrote there, closing the third gap above. The
+// stand-in Engine itself is written OUTSIDE the cache so the entry count in
+// the cache means only what the sweep -- and the witness write -- did to it.
+// Shared by both tests below so each stays under CLAUDE.md rule F1's 70-line
+// limit; `tag` keeps their scratch caches apart and `body` is each one's own
+// stand-in shape.
+@(private)
+sweep_leaves_only_the_sentinel_audio :: proc(t: ^testing.T, tag: string, body: string) {
+	group, ok := opened_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	cache := testkit.made_scratch_cache(t, "Pipeline", tag, context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	tools_tag := fmt.aprintf("%s-tools", tag, allocator = context.allocator)
+	defer delete(tools_tag, context.allocator)
+	tools_dir := testkit.made_scratch_cache(t, "Pipeline", tools_tag, context.allocator)
+	defer delete(tools_dir, context.allocator)
+	defer testkit.remove_cache(tools_dir, context.allocator)
+
+	sentinel := fmt.aprintf("%s\\%s.wav", cache, tag, allocator = context.allocator)
+	defer delete(sentinel, context.allocator)
+	testing.expect(
+		t,
+		os.write_entire_file(sentinel, []u8{0}) == nil,
+		"could not write the sentinel audio file",
+	)
+
+	executable := refusal_stand_in(t, tools_dir, tag, body)
+	defer delete(executable, context.allocator)
+
+	job := new_recording_job(
+		"C:\\clips\\talk.mp4",
+		tag,
+		&group,
+		Tools{engine = engine.Tools{engine = executable}},
+		cache,
+		artifact.Model{path = "C:\\nowhere\\model.bin"},
+		"",
+		"whisper.cpp 1.9.9",
+		transcript.DEFAULT_PROFILE,
+		engine.Report{},
+		Health_Watch{},
+	)
+	extracted := Recording_Extracted {
+		job = job,
+		extracted = audio.Extracted{audio = "C:\\nowhere\\talk.wav", container_ms = 2_000},
+	}
+
+	placed := transcribe_and_place(extracted)
+
+	testing.expect_value(t, placed, false)
+
+	names := cache_entry_names(t, cache, context.allocator)
+	defer {
+		for name in names {
+			delete(name, context.allocator)
+		}
+		delete(names, context.allocator)
+	}
+	testing.expectf(
+		t,
+		len(names) == 2 &&
+		names_contain(names, fmt.tprintf("%s.wav", tag)) &&
+		names_contain(names, fmt.tprintf("%s.witness", tag)),
+		"the cache held %v after %s, wanted only the surviving audio and the Engine's witness",
+		names,
+		tag,
+	)
+}
+
+@(test)
+a_refused_recording_leaves_no_engine_output_behind_in_the_scratch_cache :: proc(t: ^testing.T) {
+	sweep_leaves_only_the_sentinel_audio(
+		t,
+		"refused-sweep",
+		">\"%PREFIX%.json\" echo {}\r\n>\"%PREFIX%.witness\" echo x\r\nexit /b 3",
+	)
+}
+
+// The `.Output_Empty` precedent the ticket names converging to the same
+// shape: the Engine exits 0 but writes an empty file, `landed_bounded`
+// reports `.Output_Empty`, and the empty file must be swept exactly like a
+// `.Refused` one is -- proved the same entry-set way as the test above. The
+// witness write after the empty output is what pins WHICH fault landed here:
+// if the resolved prefix were wrong (round-2 mutation G/F), the witness would
+// never reach the cache, and neither would the real `.json` written on the
+// same line before it -- so a witness surviving in the cache is proof the
+// output existed at the expected path for `landed_bounded` to find and read
+// as empty, the shape `.No_Output` (a missing file) cannot produce.
+@(test)
+an_output_empty_recording_leaves_no_engine_output_behind_in_the_scratch_cache :: proc(
+	t: ^testing.T,
+) {
+	sweep_leaves_only_the_sentinel_audio(
+		t,
+		"empty-sweep",
+		"type nul > \"%PREFIX%.json\"\r\n>\"%PREFIX%.witness\" echo x",
+	)
+}
+
+// Issue #211's fault-walk mirror of src/audio/run_test.odin's own
+// `the_one_failure_that_leaves_a_part_behind_is_an_ffmpeg_that_would_not_stop`
+// -- every `engine.Fault` member walked through `discard_engine_output`
+// directly, no child spawn needed. A round-1 adversarial review deleted the
+// `.Not_Stopped` guard outright and the full `src/pipeline` suite stayed
+// green; this table walk is what pins that one member's own behavior rather
+// than leaving it "asserted by prose only" the way the review found it.
+@(test)
+every_engine_fault_but_not_stopped_sweeps_its_own_engine_output :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "Pipeline", "fault-walk", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	job := Recording_Job {
+		cache     = cache,
+		name      = "fault-walk",
+		allocator = context.allocator,
+	}
+	prefix := fmt.aprintf("%s\\%s", job.cache, job.name, allocator = context.allocator)
+	defer delete(prefix, context.allocator)
+	output := process.engine_output_path(prefix, context.allocator)
+	defer delete(output, context.allocator)
+
+	for fault in engine.Fault {
+		if fault == .None {
+			continue
+		}
+		testing.expectf(
+			t,
+			os.write_entire_file(output, []u8{0}) == nil,
+			"could not write %s",
+			output,
+		)
+		discard_engine_output(job, fault)
+		testing.expectf(
+			t,
+			os.exists(output) == (fault == .Not_Stopped),
+			"%v left the Engine output in the wrong state",
+			fault,
+		)
+		os.remove(output)
+	}
 }
