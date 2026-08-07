@@ -165,12 +165,13 @@ test-single:
 # caught a real stream-swap in the #119 review. Only stdout is captured, so a
 # banner printed to stderr instead leaves the file empty and findstr fails.
 # `build\` is supposed to hold only real build products (issue #165), so
-# smoke.out is deleted on both exit paths -- `if errorlevel 1` reads
-# findstr's real exit code at run time rather than a %-expanded snapshot
-# taken before findstr runs, so the deletion never overwrites the verdict
-# the recipe reports.
+# smoke.out is deleted on both exit paths. The CLI run and the findstr check
+# are chained with `&&`, not `&`, so a nonzero exit from the CLI itself
+# short-circuits straight to the failure branch instead of being swallowed
+# by an unconditional `&` and overridden by findstr's later verdict
+# (issue #231 fix round 1).
 smoke: build
-	build\transcibr-cli.exe > build\smoke.out & findstr /b /r /c:"transcibr-cli [0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*" build\smoke.out >nul & if errorlevel 1 (del build\smoke.out & exit /b 1) else (del build\smoke.out & exit /b 0)
+	(build\transcibr-cli.exe > build\smoke.out && findstr /b /r /c:"transcibr-cli [0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*" build\smoke.out >nul) && (del build\smoke.out & exit /b 0) || (del build\smoke.out & exit /b 1)
 
 # The pinned toolchain, absorbed from scripts\install-pinned-tool.ps1: a
 # tagged Odin release and the odinfmt build inside ols's release zip, both by
