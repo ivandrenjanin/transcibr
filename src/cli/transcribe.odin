@@ -11,7 +11,6 @@ import "transcibr:cliargs"
 import "transcibr:engine"
 import "transcibr:pipeline"
 import "transcibr:process"
-import "transcibr:transcript"
 
 // The one command that spends GPU time: one Recording, end to end, into a
 // Transcript and a Sidecar beside it. Every path -- ffmpeg's, the Engine's, the
@@ -146,10 +145,15 @@ show :: proc(shown: process.Progress, user: rawptr) {
 // The Refusal-consuming sibling ADR-0038 calls for (its refuse shape
 // paragraph): fed a Refusal by value instead of a pre-built format string
 // and inline `any` arguments, it feeds the identical `fmt.eprintf` path
-// `refuse` below still uses for every other command's own reader, through
-// two fixed backing arrays sized to `cliargs.MAX_REFUSAL_ARGS` and never an
-// allocation -- `refuse`'s own arity stays untouched, and its 22 call sites
-// stay exactly as they are (only `--transcribe`'s path is migrated here).
+// `refuse` (main.odin) still uses for every other command's own reader,
+// through two fixed backing arrays sized to `cliargs.MAX_REFUSAL_ARGS` and
+// never an allocation -- `refuse`'s own arity stays untouched. Its own call
+// sites number 15 on this tree (deposit #3 of the stage-3 review, PR #201,
+// already found the ADR's original "22" stale at 20; this stage's batch
+// migration retires `read_common_option`'s two and `read_batch_option`'s
+// family of five, leaving `--plan` (5), `main`'s `--from-json` (4) and
+// `--crash-drill` (3), plus `--doctor`'s own 3) -- `--plan` and `--doctor`
+// are this ticket's remaining migration sites (#75), not this one's.
 @(private)
 @(require_results)
 refuse_cliargs :: proc(r: cliargs.Refusal) -> (ok: bool) {
@@ -177,59 +181,4 @@ refuse_cliargs :: proc(r: cliargs.Refusal) -> (ok: bool) {
 	fmt.eprint("\n\n")
 	write_usage(os.stderr)
 	return false
-}
-
-// `--model-file`, `--engine-exe`, `--cache`, `--ffmpeg`, `--ffprobe`,
-// `--prompt` and `--profile`: what `--batch` still reads through this
-// procedure. `--transcribe` reads the identical set through
-// `cliargs.read_transcribe_options` now (ADR-0038 Stage 3); this reader
-// stays because `--batch`'s own migration has not landed yet, and its last
-// caller here is `read_batch_option`. There is no `--engine-version` case
-// any more -- the version-string flag ADR-0027's supersession retires (issue
-// #50); the Engine is identified from `--engine-exe`'s own bytes, the same
-// as the Model, and a caller who still passes `--engine-version` is refused
-// as an unknown option like any other retired flag. `--plan` shares only a
-// few of these fields -- it names no scratch cache and no ffmpeg -- and
-// keeps its own smaller switch rather than pass nil pointers through here
-// for options its own grammar must still refuse (A8).
-@(private)
-@(require_results)
-read_common_option :: proc(
-	model: ^string,
-	engine_exe: ^string,
-	cache: ^string,
-	tools: ^audio.Tools,
-	prompt: ^string,
-	profile: ^transcript.Merge_Profile,
-	name: string,
-	value: string,
-) -> (
-	ok: bool,
-) {
-	assert(model != nil, "there is nowhere here to read a Model path into")
-	assert(engine_exe != nil, "there is nowhere here to read an Engine path into")
-
-	switch name {
-	case "--model-file":
-		model^ = value
-	case "--engine-exe":
-		engine_exe^ = value
-	case "--cache":
-		cache^ = value
-	case "--ffmpeg":
-		tools.ffmpeg = value
-	case "--ffprobe":
-		tools.ffprobe = value
-	case "--prompt":
-		prompt^ = value
-	case "--profile":
-		named, known := transcript.profile_named(value)
-		if !known {
-			return refuse("no merge profile called %q.", value)
-		}
-		profile^ = named
-	case:
-		return refuse("unknown option %q.", name)
-	}
-	return true
 }

@@ -13,25 +13,37 @@ import win32 "core:sys/windows"
 import "transcibr:artifact"
 import "transcibr:audio"
 import "transcibr:child"
+import "transcibr:cliargs"
 import "transcibr:engine"
 import "transcibr:pipeline"
 import "transcibr:planning"
-import "transcibr:process"
-import "transcibr:transcript"
 
 BATCH :: "--batch"
 
+// The two-field ceiling handoff ADR-0038's addendum resolves the ADR's own
+// "ceiling-lookup placement" wrinkle with: cliargs' read loop now owns the
+// per-option dispatch, so src/cli can no longer resolve a ceiling
+// "immediately before" it the way the ADR's original sketch had -- both
+// ceilings are resolved once, up front, into an enum-keyed Worker_Ceilings
+// value the compiler checks for completeness at THIS composite literal.
+// pipeline.MAX_EXTRACT_WORKERS and pipeline.MAX_QUEUE_DEPTH are already `::`
+// constants, so this needs no runtime pipeline.worker_option_ceiling lookup
+// at all -- a swap or an omission here fails the build rather than reaching
+// a refusal or a crash.
+BATCH_WORKER_CEILINGS :: cliargs.Worker_Ceilings {
+	.Extract_Workers = pipeline.MAX_EXTRACT_WORKERS,
+	.Queue_Depth     = pipeline.MAX_QUEUE_DEPTH,
+}
+
+// `using parsed: cliargs.Batch_Options` promotes root, follow, the worker
+// counts and every Common_Options field straight through; `audio_tools` is
+// the defaulted audio.Tools this package builds from `parsed.tools`' two
+// bare strings after the grammar returns, the same shape
+// `transcribe.odin`'s own `Transcribe_Options` already carries (fix round 1,
+// PR #201 finding 3).
 Batch_Options :: struct {
-	root:            string,
-	model:           string,
-	engine:          string,
-	cache:           string,
-	prompt:          string,
-	profile:         transcript.Merge_Profile,
-	follow:          bool,
-	tools:           audio.Tools,
-	extract_workers: int,
-	queue_depth:     int,
+	using parsed: cliargs.Batch_Options,
+	audio_tools:  audio.Tools,
 }
 
 // Written only by the console control handler and read only by the pipeline's
@@ -86,10 +98,25 @@ run_batch_command :: proc(arguments: []string) -> int {
 	assert(len(arguments) > 0, "no arguments at all is the version banner, settled before this")
 	assert(arguments[0] == BATCH, "main dispatched a command line that does not open with --batch")
 
-	o, ok := read_batch_options(arguments)
-	if !ok {
+	parsed, parsed_ok, refusal := cliargs.read_batch_options(arguments, BATCH_WORKER_CEILINGS)
+	if !parsed_ok {
+		_ = refuse_cliargs(refusal)
 		return USAGE_ERROR
 	}
+
+	o := Batch_Options {
+		parsed = parsed,
+		audio_tools = audio.Tools{ffmpeg = parsed.tools.ffmpeg, ffprobe = parsed.tools.ffprobe},
+	}
+	defaulted_batch(&o)
+	assert(
+		len(o.audio_tools.ffmpeg) > 0,
+		"accepted a command line that unset ffmpeg's own default",
+	)
+	assert(
+		len(o.audio_tools.ffprobe) > 0,
+		"accepted a command line that unset ffprobe's own default",
+	)
 
 	group, opened := job_object_opened()
 	defer child.job_object_close(&group)
@@ -190,7 +217,10 @@ run_the_batch :: proc(
 		plan,
 		pipeline.Batch_Options {
 			group = group,
-			tools = pipeline.Tools{audio = o.tools, engine = engine.Tools{engine = o.engine}},
+			tools = pipeline.Tools {
+				audio = o.audio_tools,
+				engine = engine.Tools{engine = o.engine},
+			},
 			cache = o.cache,
 			model = identified,
 			prompt = o.prompt,
@@ -227,131 +257,13 @@ run_the_batch :: proc(
 	return 0
 }
 
-// Why not `strconv.parse_int`, which takes `_`, a sign and overflows in
-// silence: CLAUDE.md, Odin notes. Three digits is generous against any
-// machine's real core or disk count and refuses a mistyped, absurdly large
-// one before it ever reaches `chan.create`.
-//
-// `--extract-workers` used to be refused against `pipeline.MAX_QUEUE_DEPTH`
-// regardless of `ceiling` -- the shared constant happened to equal
-// `pipeline.MAX_EXTRACT_WORKERS` today, so nothing was reachable, but a
-// future drop in either ceiling independently of the other would have let an
-// over-ceiling value sail past this refusal and crash at
-// `pipeline.run_recordings`'s own assert instead (issue #94). Taking
-// `ceiling` as a parameter, and `pipeline.worker_count_within_ceiling` doing
-// the actual check, is what keeps a value outside EITHER OPTION'S OWN ceiling
-// a refusal here (A8) instead of a crash at that assertion.
-@(private)
-@(require_results)
-read_worker_count :: proc(value: string, ceiling: int) -> (count: int, ok: bool) {
-	parsed, readable := process.read_natural(value, 3)
-	if !readable || parsed <= 0 || !pipeline.worker_count_within_ceiling(int(parsed), ceiling) {
-		return 0, false
-	}
-	return int(parsed), true
-}
-
-@(private)
-@(require_results)
-read_batch_options :: proc(arguments: []string) -> (o: Batch_Options, ok: bool) {
-	defer if ok {
-		assert(len(o.root) > 0, "accepted a command line with no folder to walk")
-		assert(len(o.model) > 0, "accepted a command line naming no Model")
-		assert(len(o.engine) > 0, "accepted a command line naming no Engine")
-		assert(len(o.cache) > 0, "accepted a command line naming no scratch cache")
-		assert(len(o.tools.ffmpeg) > 0, "accepted a command line that unset ffmpeg's own default")
-		assert(
-			len(o.tools.ffprobe) > 0,
-			"accepted a command line that unset ffprobe's own default",
-		)
-		assert(
-			o.extract_workers > 0,
-			"accepted a command line that unset its worker-count default",
-		)
-		assert(o.queue_depth > 0, "accepted a command line that unset its queue-depth default")
-	} else {
-		assert(len(o.root) == 0, "refused a command line and kept what it asked for")
-	}
-
-	o.profile = transcript.DEFAULT_PROFILE
-
-	for at := 0; at < len(arguments); at += 2 {
-		name := arguments[at]
-		if at + 1 >= len(arguments) {
-			return {}, refuse("%q stands at the end of the command line with no value after it.", name)
-		}
-		if !read_batch_option(&o, name, arguments[at + 1]) {
-			return {}, false
-		}
-	}
-
-	defaulted_batch(&o)
-	for missing in ([?][2]string {
-			{o.root, BATCH},
-			{o.model, "--model-file"},
-			{o.engine, "--engine-exe"},
-			{o.cache, "--cache"},
-		}) {
-		if len(missing[0]) == 0 {
-			return {}, refuse("%s names nothing.", missing[1])
-		}
-	}
-	return o, true
-}
-
-// `--batch`'s own cases are BATCH, the worker-count pair and
-// `--follow-reparse-points`; everything else falls through to
-// `read_common_option`, the grammar `--transcribe` reads the identical way
-// (PR #67's review, finding 2).
-@(private)
-@(require_results)
-read_batch_option :: proc(o: ^Batch_Options, name, value: string) -> (ok: bool) {
-	assert(o != nil, "there is nothing here to read an option into")
-
-	switch name {
-	case BATCH:
-		o.root = value
-	case "--extract-workers":
-		return read_batch_worker_option(&o.extract_workers, name, value)
-	case "--queue-depth":
-		return read_batch_worker_option(&o.queue_depth, name, value)
-	case "--follow-reparse-points":
-		return read_follow(&o.follow, value)
-	case:
-		return read_common_option(
-			&o.model,
-			&o.engine,
-			&o.cache,
-			&o.tools,
-			&o.prompt,
-			&o.profile,
-			name,
-			value,
-		)
-	}
-	return true
-}
-
-@(private)
-@(require_results)
-read_batch_worker_option :: proc(into: ^int, name, value: string) -> (ok: bool) {
-	assert(into != nil, "there is nowhere here to read a worker count into")
-
-	ceiling, registered := pipeline.worker_option_ceiling(name)
-	assert(registered, "no ceiling registered for a worker option this switch dispatches")
-
-	count, readable := read_worker_count(value, ceiling)
-	if !readable {
-		return refuse("%s takes a whole number from 1 to %d, not %q.", name, ceiling, value)
-	}
-	into^ = count
-	return true
-}
-
-// Called AFTER the loop that reads the command line, matching
+// Called AFTER cliargs.read_batch_options returns, matching
 // `transcribe.odin`'s own tool default: `--ffmpeg ""` is an ordinary shell
 // invocation with an unset variable in it, and a default set only before the
-// loop is overwritten by the empty value.
+// grammar's own read loop is overwritten by the empty value -- the grammar
+// itself defaults neither the tools, the worker counts nor the follow flag
+// (ADR-0038's import-closure section: `pipeline.DEFAULT_EXTRACT_WORKERS` and
+// `pipeline.DEFAULT_QUEUE_DEPTH` are pipeline wiring, not grammar).
 @(private)
 defaulted_batch :: proc(o: ^Batch_Options) {
 	assert(o != nil, "there is nothing here to put a default into")
@@ -360,7 +272,7 @@ defaulted_batch :: proc(o: ^Batch_Options) {
 		assert(o.queue_depth > 0, "a default that was put back is still zero")
 	}
 
-	audio.defaulted_tools(&o.tools)
+	audio.defaulted_tools(&o.audio_tools)
 	if o.extract_workers == 0 {
 		o.extract_workers = pipeline.DEFAULT_EXTRACT_WORKERS
 	}
