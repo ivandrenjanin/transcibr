@@ -17,11 +17,11 @@ ABC_SHA256 :: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 
 @(test)
 a_models_identity_is_the_content_of_the_file_and_not_its_name :: proc(t: ^testing.T) {
-	directory := scratch(t, "model-abc")
+	directory := testkit.made_scratch_cache(t, "artifact", "model-abc", context.allocator)
 	defer delete(directory, context.allocator)
-	defer remove_scratch(directory)
+	defer testkit.remove_cache(directory, context.allocator)
 
-	path := file_in(t, directory, "ggml-large-v3.bin", "abc")
+	path := testkit.fixture_file(t, directory, "ggml-large-v3.bin", "abc", context.allocator)
 	defer delete(path, context.allocator)
 
 	identified, fault := identify_model(path, context.allocator)
@@ -39,11 +39,11 @@ a_models_identity_is_the_content_of_the_file_and_not_its_name :: proc(t: ^testin
 
 @(test)
 an_empty_model_file_is_still_identified_rather_than_treated_as_absent :: proc(t: ^testing.T) {
-	directory := scratch(t, "model-empty")
+	directory := testkit.made_scratch_cache(t, "artifact", "model-empty", context.allocator)
 	defer delete(directory, context.allocator)
-	defer remove_scratch(directory)
+	defer testkit.remove_cache(directory, context.allocator)
 
-	path := file_in(t, directory, "empty.bin", "")
+	path := testkit.fixture_file(t, directory, "empty.bin", "", context.allocator)
 	defer delete(path, context.allocator)
 
 	identified, fault := identify_model(path, context.allocator)
@@ -60,9 +60,9 @@ an_empty_model_file_is_still_identified_rather_than_treated_as_absent :: proc(t:
 
 @(test)
 a_model_bigger_than_one_read_hashes_the_same_as_the_whole_of_it_at_once :: proc(t: ^testing.T) {
-	directory := scratch(t, "model-big")
+	directory := testkit.made_scratch_cache(t, "artifact", "model-big", context.allocator)
 	defer delete(directory, context.allocator)
-	defer remove_scratch(directory)
+	defer testkit.remove_cache(directory, context.allocator)
 
 	written := strings.builder_make(context.allocator)
 	defer strings.builder_destroy(&written)
@@ -71,7 +71,7 @@ a_model_bigger_than_one_read_hashes_the_same_as_the_whole_of_it_at_once :: proc(
 	}
 	content := strings.to_string(written)
 
-	path := file_in(t, directory, "big.bin", content)
+	path := testkit.fixture_file(t, directory, "big.bin", content, context.allocator)
 	defer delete(path, context.allocator)
 
 	at_once := hash.hash_bytes(.SHA256, transmute([]u8)content, context.allocator)
@@ -89,11 +89,11 @@ a_model_bigger_than_one_read_hashes_the_same_as_the_whole_of_it_at_once :: proc(
 
 @(test)
 a_model_under_a_path_the_engine_cannot_open_is_refused_and_never_read :: proc(t: ^testing.T) {
-	directory := scratch(t, "model-\u5f55\u97f3")
+	directory := testkit.made_scratch_cache(t, "artifact", "model-\u5f55\u97f3", context.allocator)
 	defer delete(directory, context.allocator)
-	defer remove_scratch(directory)
+	defer testkit.remove_cache(directory, context.allocator)
 
-	path := file_in(t, directory, "ggml-large-v3.bin", "abc")
+	path := testkit.fixture_file(t, directory, "ggml-large-v3.bin", "abc", context.allocator)
 	defer delete(path, context.allocator)
 	testing.expect(t, os.exists(path), "the case could not put a Model where it meant to")
 
@@ -107,11 +107,11 @@ a_model_under_a_path_the_engine_cannot_open_is_refused_and_never_read :: proc(t:
 
 @(test)
 a_model_path_that_resolves_to_ascii_is_accepted_however_it_was_spelled :: proc(t: ^testing.T) {
-	directory := scratch(t, "model-resolved")
+	directory := testkit.made_scratch_cache(t, "artifact", "model-resolved", context.allocator)
 	defer delete(directory, context.allocator)
-	defer remove_scratch(directory)
+	defer testkit.remove_cache(directory, context.allocator)
 
-	path := file_in(t, directory, "ggml-large-v3.bin", "abc")
+	path := testkit.fixture_file(t, directory, "ggml-large-v3.bin", "abc", context.allocator)
 	defer delete(path, context.allocator)
 
 	spelled := fmt.aprintf(
@@ -135,9 +135,9 @@ a_model_path_that_resolves_to_ascii_is_accepted_however_it_was_spelled :: proc(t
 
 @(test)
 a_model_that_is_not_there_is_refused_rather_than_asserted :: proc(t: ^testing.T) {
-	directory := scratch(t, "model-absent")
+	directory := testkit.made_scratch_cache(t, "artifact", "model-absent", context.allocator)
 	defer delete(directory, context.allocator)
-	defer remove_scratch(directory)
+	defer testkit.remove_cache(directory, context.allocator)
 
 	path := fmt.aprintf("%s\\never-written.bin", directory, allocator = context.allocator)
 	defer delete(path, context.allocator)
@@ -181,9 +181,9 @@ MODEL_BOUND_TEST_SLACK :: 30 * time.Second
 a_model_that_cannot_be_hashed_within_its_bound_is_reported_rather_than_awaited_forever :: proc(
 	t: ^testing.T,
 ) {
-	directory := scratch(t, "model-bound")
+	directory := testkit.made_scratch_cache(t, "artifact", "model-bound", context.allocator)
 	defer delete(directory, context.allocator)
-	defer remove_scratch(directory)
+	defer testkit.remove_cache(directory, context.allocator)
 
 	path := fmt.aprintf("%s\\slow.bin", directory, allocator = context.allocator)
 	defer delete(path, context.allocator)

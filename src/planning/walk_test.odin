@@ -10,49 +10,7 @@ import win32 "core:sys/windows"
 import "core:testing"
 import "core:time"
 import "transcibr:child"
-
-// Names a place and does not create it. The caller frees the path and removes
-// the tree.
-@(private)
-@(require_results)
-scratch_tree :: proc(t: ^testing.T, tag: string) -> string {
-	directory := os.get_env("TEMP", context.allocator)
-	defer delete(directory, context.allocator)
-	testing.expect(t, len(directory) > 0, "TEMP names nowhere to put a tree to walk")
-
-	made := fmt.aprintf(
-		"%s\\transcibr-planning-%d-%s",
-		directory,
-		os.get_pid(),
-		tag,
-		allocator = context.allocator,
-	)
-	testing.expectf(t, os.make_directory_all(made) == nil, "could not make %s", made)
-	return made
-}
-
-@(private)
-@(require_results)
-in_tree :: proc(t: ^testing.T, tree: string, relative: string, content: string) -> string {
-	path := fmt.aprintf("%s\\%s", tree, relative, allocator = context.allocator)
-
-	at := strings.last_index_byte(path, '\\')
-	if at > 0 {
-		testing.expectf(
-			t,
-			os.make_directory_all(path[:at]) == nil,
-			"could not make the directory holding %s",
-			path,
-		)
-	}
-	testing.expectf(
-		t,
-		os.write_entire_file(path, transmute([]u8)content) == nil,
-		"could not write %s",
-		path,
-	)
-	return path
-}
+import "transcibr:testkit"
 
 @(private)
 @(require_results)
@@ -60,24 +18,6 @@ a_directory :: proc(t: ^testing.T, tree: string, relative: string) -> string {
 	path := fmt.aprintf("%s\\%s", tree, relative, allocator = context.allocator)
 	testing.expectf(t, os.make_directory_all(path) == nil, "could not make %s", path)
 	return path
-}
-
-// Best effort, deepest first: a case that failed half-way should not fail a
-// second time on the way out.
-@(private)
-remove_tree :: proc(path: string) {
-	listing, unreadable := os.read_all_directory_by_path(path, context.allocator)
-	if unreadable == nil {
-		defer os.file_info_slice_delete(listing, context.allocator)
-		for info in listing {
-			if info.type == .Directory {
-				remove_tree(info.fullpath)
-				continue
-			}
-			os.remove(info.fullpath)
-		}
-	}
-	os.remove(path)
 }
 
 @(private)
@@ -267,17 +207,29 @@ a_walk_that_was_stopped_part_way_blames_no_directory_for_it :: proc(t: ^testing.
 
 @(test)
 a_tree_is_walked_into_an_inventory_of_every_recording_under_it :: proc(t: ^testing.T) {
-	tree := scratch_tree(t, "walk")
+	tree := testkit.made_scratch_cache(t, "planning", "walk", context.allocator)
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
-	top := in_tree(t, tree, "keynote.mp4", "video")
+	top := testkit.fixture_file(t, tree, "keynote.mp4", "video", context.allocator)
 	defer delete(top, context.allocator)
-	nested := in_tree(t, tree, "june\\deeper\\interview.m4a", "audio")
+	nested := testkit.fixture_file(
+		t,
+		tree,
+		"june\\deeper\\interview.m4a",
+		"audio",
+		context.allocator,
+	)
 	defer delete(nested, context.allocator)
-	notes := in_tree(t, tree, "june\\notes.txt", "not a Recording")
+	notes := testkit.fixture_file(t, tree, "june\\notes.txt", "not a Recording", context.allocator)
 	defer delete(notes, context.allocator)
-	stale := in_tree(t, tree, "june\\interview.json.bad", "quarantined")
+	stale := testkit.fixture_file(
+		t,
+		tree,
+		"june\\interview.json.bad",
+		"quarantined",
+		context.allocator,
+	)
 	defer delete(stale, context.allocator)
 
 	inventory := discover([]string{tree}, Walk{}, context.allocator)
@@ -298,17 +250,29 @@ a_tree_is_walked_into_an_inventory_of_every_recording_under_it :: proc(t: ^testi
 // does not make it transcibr's.
 @(test)
 a_markdown_file_transcibr_did_not_write_is_left_alone_and_reported :: proc(t: ^testing.T) {
-	tree := scratch_tree(t, "foreign")
+	tree := testkit.made_scratch_cache(t, "planning", "foreign", context.allocator)
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
-	mine := in_tree(t, tree, "talk.mp4", "video")
+	mine := testkit.fixture_file(t, tree, "talk.mp4", "video", context.allocator)
 	defer delete(mine, context.allocator)
-	theirs := in_tree(t, tree, "notes.mp4", "video")
+	theirs := testkit.fixture_file(t, tree, "notes.mp4", "video", context.allocator)
 	defer delete(theirs, context.allocator)
-	written := in_tree(t, tree, "talk.md", "---\ngenerator: \"transcibr 0.1.0\"\n---\n")
+	written := testkit.fixture_file(
+		t,
+		tree,
+		"talk.md",
+		"---\ngenerator: \"transcibr 0.1.0\"\n---\n",
+		context.allocator,
+	)
 	defer delete(written, context.allocator)
-	authored := in_tree(t, tree, "notes.md", "# Notes on the interview\n")
+	authored := testkit.fixture_file(
+		t,
+		tree,
+		"notes.md",
+		"# Notes on the interview\n",
+		context.allocator,
+	)
 	defer delete(authored, context.allocator)
 
 	inventory := discover([]string{tree}, Walk{}, context.allocator)
@@ -344,13 +308,19 @@ a_markdown_file_transcibr_did_not_write_is_left_alone_and_reported :: proc(t: ^t
 // used the other way, to hold one open while the walk tries to read it.
 @(test)
 a_transcript_locked_by_another_process_reads_as_unreadable_not_absent :: proc(t: ^testing.T) {
-	tree := scratch_tree(t, "locked")
+	tree := testkit.made_scratch_cache(t, "planning", "locked", context.allocator)
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
-	recording := in_tree(t, tree, "talk.mp4", "video")
+	recording := testkit.fixture_file(t, tree, "talk.mp4", "video", context.allocator)
 	defer delete(recording, context.allocator)
-	written := in_tree(t, tree, "talk.md", "---\ngenerator: \"transcibr 0.1.0\"\n---\n")
+	written := testkit.fixture_file(
+		t,
+		tree,
+		"talk.md",
+		"---\ngenerator: \"transcibr 0.1.0\"\n---\n",
+		context.allocator,
+	)
 	defer delete(written, context.allocator)
 
 	wide := win32.utf8_to_utf16(written, context.allocator)
@@ -392,13 +362,13 @@ a_transcript_locked_by_another_process_reads_as_unreadable_not_absent :: proc(t:
 // was the accurate one.
 @(test)
 a_zero_byte_transcript_reads_as_foreign_and_not_unreadable :: proc(t: ^testing.T) {
-	tree := scratch_tree(t, "zerobyte")
+	tree := testkit.made_scratch_cache(t, "planning", "zerobyte", context.allocator)
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
-	recording := in_tree(t, tree, "talk.mp4", "video")
+	recording := testkit.fixture_file(t, tree, "talk.mp4", "video", context.allocator)
 	defer delete(recording, context.allocator)
-	empty := in_tree(t, tree, "talk.md", "")
+	empty := testkit.fixture_file(t, tree, "talk.md", "", context.allocator)
 	defer delete(empty, context.allocator)
 
 	inventory := discover([]string{tree}, Walk{}, context.allocator)
@@ -418,11 +388,11 @@ a_zero_byte_transcript_reads_as_foreign_and_not_unreadable :: proc(t: ^testing.T
 // directory transcibr cannot write a Transcript to is refused, not guessed.
 @(test)
 a_transcript_path_that_names_a_directory_reads_as_unreadable :: proc(t: ^testing.T) {
-	tree := scratch_tree(t, "transcriptdir")
+	tree := testkit.made_scratch_cache(t, "planning", "transcriptdir", context.allocator)
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
-	recording := in_tree(t, tree, "talk.mp4", "video")
+	recording := testkit.fixture_file(t, tree, "talk.mp4", "video", context.allocator)
 	defer delete(recording, context.allocator)
 	as_directory := a_directory(t, tree, "talk.md")
 	defer delete(as_directory, context.allocator)
@@ -442,9 +412,9 @@ a_transcript_path_that_names_a_directory_reads_as_unreadable :: proc(t: ^testing
 
 @(test)
 a_root_that_is_not_there_is_reported_against_itself_and_never_as_empty :: proc(t: ^testing.T) {
-	tree := scratch_tree(t, "missing")
+	tree := testkit.made_scratch_cache(t, "planning", "missing", context.allocator)
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
 	gone := fmt.aprintf("%s\\never-made", tree, allocator = context.allocator)
 	defer delete(gone, context.allocator)
@@ -462,11 +432,11 @@ a_root_that_is_not_there_is_reported_against_itself_and_never_as_empty :: proc(t
 // answer with nothing.
 @(test)
 a_root_that_is_a_file_rather_than_a_directory_is_an_operating_error :: proc(t: ^testing.T) {
-	tree := scratch_tree(t, "notadir")
+	tree := testkit.made_scratch_cache(t, "planning", "notadir", context.allocator)
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
-	file := in_tree(t, tree, "talk.mp4", "video")
+	file := testkit.fixture_file(t, tree, "talk.mp4", "video", context.allocator)
 	defer delete(file, context.allocator)
 
 	inventory := discover([]string{file}, Walk{}, context.allocator)
@@ -523,7 +493,7 @@ watch :: proc(progress: Progress, user: rawptr) {
 @(private)
 @(require_results)
 a_spread_tree :: proc(t: ^testing.T, tag: string) -> string {
-	tree := scratch_tree(t, tag)
+	tree := testkit.made_scratch_cache(t, "planning", tag, context.allocator)
 	for relative in ([?]string {
 			"one.mp4",
 			"june|two.mp4",
@@ -535,7 +505,7 @@ a_spread_tree :: proc(t: ^testing.T, tag: string) -> string {
 		defer if allocated {
 			delete(spelled, context.allocator)
 		}
-		path := in_tree(t, tree, spelled, "video")
+		path := testkit.fixture_file(t, tree, spelled, "video", context.allocator)
 		delete(path, context.allocator)
 	}
 	return tree
@@ -545,7 +515,7 @@ a_spread_tree :: proc(t: ^testing.T, tag: string) -> string {
 a_walk_reports_progress_as_it_goes_through_the_tree :: proc(t: ^testing.T) {
 	tree := a_spread_tree(t, "progress")
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
 	stop := false
 	seen := Watcher {
@@ -568,7 +538,7 @@ a_walk_reports_progress_as_it_goes_through_the_tree :: proc(t: ^testing.T) {
 a_walk_asked_to_stop_stops_and_answers_with_what_it_had_got_to :: proc(t: ^testing.T) {
 	tree := a_spread_tree(t, "cancel")
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
 	stop := false
 	seen := Watcher {
@@ -595,9 +565,9 @@ a_walk_asked_to_stop_stops_and_answers_with_what_it_had_got_to :: proc(t: ^testi
 // A tree deeper than the walk will go is reported and never silently truncated.
 @(test)
 a_tree_deeper_than_the_walk_will_go_says_so_rather_than_stopping_quietly :: proc(t: ^testing.T) {
-	tree := scratch_tree(t, "deep")
+	tree := testkit.made_scratch_cache(t, "planning", "deep", context.allocator)
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
 	out := strings.builder_make(context.allocator)
 	defer strings.builder_destroy(&out)
@@ -606,7 +576,7 @@ a_tree_deeper_than_the_walk_will_go_says_so_rather_than_stopping_quietly :: proc
 	}
 	strings.write_string(&out, "talk.mp4")
 
-	buried := in_tree(t, tree, strings.to_string(out), "video")
+	buried := testkit.fixture_file(t, tree, strings.to_string(out), "video", context.allocator)
 	defer delete(buried, context.allocator)
 
 	inventory := discover([]string{tree}, Walk{}, context.allocator)
@@ -686,13 +656,13 @@ file_symlink :: proc(t: ^testing.T, link: string, target: string) -> bool {
 // can actually make.
 @(test)
 a_reparse_point_is_not_followed_by_default_and_is_reported :: proc(t: ^testing.T) {
-	tree := scratch_tree(t, "junction")
+	tree := testkit.made_scratch_cache(t, "planning", "junction", context.allocator)
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
 	real := a_directory(t, tree, "real")
 	defer delete(real, context.allocator)
-	behind := in_tree(t, tree, "real\\behind.mp4", "video")
+	behind := testkit.fixture_file(t, tree, "real\\behind.mp4", "video", context.allocator)
 	defer delete(behind, context.allocator)
 
 	link := fmt.aprintf("%s\\link", tree, allocator = context.allocator)
@@ -731,13 +701,13 @@ a_reparse_point_is_not_followed_by_default_and_is_reported :: proc(t: ^testing.T
 // refusal names the root rather than answering with an empty tree.
 @(test)
 a_root_that_is_a_reparse_point_is_not_walked_either :: proc(t: ^testing.T) {
-	tree := scratch_tree(t, "junctionroot")
+	tree := testkit.made_scratch_cache(t, "planning", "junctionroot", context.allocator)
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
 	real := a_directory(t, tree, "real")
 	defer delete(real, context.allocator)
-	behind := in_tree(t, tree, "real\\behind.mp4", "video")
+	behind := testkit.fixture_file(t, tree, "real\\behind.mp4", "video", context.allocator)
 	defer delete(behind, context.allocator)
 
 	link := fmt.aprintf("%s\\link", tree, allocator = context.allocator)
@@ -760,13 +730,13 @@ a_root_that_is_a_reparse_point_is_not_walked_either :: proc(t: ^testing.T) {
 // caller can see rather than a limitation.
 @(test)
 a_walk_told_to_follow_reparse_points_walks_through_one :: proc(t: ^testing.T) {
-	tree := scratch_tree(t, "followed")
+	tree := testkit.made_scratch_cache(t, "planning", "followed", context.allocator)
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
 	real := a_directory(t, tree, "real")
 	defer delete(real, context.allocator)
-	behind := in_tree(t, tree, "real\\behind.mp4", "video")
+	behind := testkit.fixture_file(t, tree, "real\\behind.mp4", "video", context.allocator)
 	defer delete(behind, context.allocator)
 
 	link := fmt.aprintf("%s\\link", tree, allocator = context.allocator)
@@ -790,13 +760,13 @@ a_walk_told_to_follow_reparse_points_walks_through_one :: proc(t: ^testing.T) {
 // that: the default at least reports the skip.
 @(test)
 a_junction_inside_the_tree_is_walked_through_when_following_is_turned_on :: proc(t: ^testing.T) {
-	tree := scratch_tree(t, "followedinside")
+	tree := testkit.made_scratch_cache(t, "planning", "followedinside", context.allocator)
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
 	real := a_directory(t, tree, "real")
 	defer delete(real, context.allocator)
-	behind := in_tree(t, tree, "real\\behind.mp4", "video")
+	behind := testkit.fixture_file(t, tree, "real\\behind.mp4", "video", context.allocator)
 	defer delete(behind, context.allocator)
 	under := a_directory(t, tree, "sub")
 	defer delete(under, context.allocator)
@@ -832,11 +802,11 @@ a_junction_inside_the_tree_is_walked_through_when_following_is_turned_on :: proc
 // list, reached through this program's own opt-out.
 @(test)
 a_recording_that_is_itself_a_reparse_point_is_planned_and_never_skipped :: proc(t: ^testing.T) {
-	tree := scratch_tree(t, "reparsefile")
+	tree := testkit.made_scratch_cache(t, "planning", "reparsefile", context.allocator)
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
-	real := in_tree(t, tree, "real.mp4", "video")
+	real := testkit.fixture_file(t, tree, "real.mp4", "video", context.allocator)
 	defer delete(real, context.allocator)
 
 	link := fmt.aprintf("%s\\link.mp4", tree, allocator = context.allocator)
@@ -870,13 +840,13 @@ DIRECTORY_BOUND_TEST_ENTRIES :: 3000
 a_directory_listing_that_cannot_finish_within_its_bound_is_reported_rather_than_awaited_forever :: proc(
 	t: ^testing.T,
 ) {
-	tree := scratch_tree(t, "dirbound")
+	tree := testkit.made_scratch_cache(t, "planning", "dirbound", context.allocator)
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
 	for i in 0 ..< DIRECTORY_BOUND_TEST_ENTRIES {
 		name := fmt.aprintf("f%d.txt", i, allocator = context.allocator)
-		path := in_tree(t, tree, name, "")
+		path := testkit.fixture_file(t, tree, name, "", context.allocator)
 		delete(path, context.allocator)
 		delete(name, context.allocator)
 	}
@@ -917,13 +887,13 @@ a_directory_listing_that_cannot_finish_within_its_bound_is_reported_rather_than_
 
 @(test)
 a_directory_listing_within_its_bound_returns_every_entry :: proc(t: ^testing.T) {
-	tree := scratch_tree(t, "dirboundok")
+	tree := testkit.made_scratch_cache(t, "planning", "dirboundok", context.allocator)
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
-	a := in_tree(t, tree, "a.mp4", "a")
+	a := testkit.fixture_file(t, tree, "a.mp4", "a", context.allocator)
 	defer delete(a, context.allocator)
-	b := in_tree(t, tree, "b.mp4", "b")
+	b := testkit.fixture_file(t, tree, "b.mp4", "b", context.allocator)
 	defer delete(b, context.allocator)
 
 	state := Walking {

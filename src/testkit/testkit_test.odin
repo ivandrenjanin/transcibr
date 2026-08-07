@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:testing"
+import "core:time"
 
 @(test)
 scratch_cache_names_a_place_it_does_not_create :: proc(t: ^testing.T) {
@@ -95,6 +96,72 @@ write_flood_writes_at_least_the_bytes_it_was_asked_for :: proc(t: ^testing.T) {
 		strings.starts_with(string(written), "a line this case has no reading for"),
 		"write_flood did not write the filler line it was given",
 	)
+}
+
+@(test)
+fixture_file_writes_content_into_a_subdirectory_it_creates :: proc(t: ^testing.T) {
+	cache := made_scratch_cache(t, "testkit", "fixture-subdir", context.allocator)
+	defer delete(cache, context.allocator)
+	defer remove_tree(cache, context.allocator)
+
+	path := fixture_file(t, cache, "nested\\deeper\\talk.mp4", "video", context.allocator)
+	defer delete(path, context.allocator)
+
+	written, unreadable := os.read_entire_file(path, context.allocator)
+	defer delete(written, context.allocator)
+	if !testing.expect(
+		t,
+		unreadable == nil,
+		"fixture_file did not create the subdirectory it needed",
+	) {
+		return
+	}
+	as_text: string = string(written)
+	testing.expect_value(t, as_text, "video")
+}
+
+@(test)
+fixture_file_with_an_age_backdates_the_files_modified_time :: proc(t: ^testing.T) {
+	cache := made_scratch_cache(t, "testkit", "fixture-aged", context.allocator)
+	defer delete(cache, context.allocator)
+	defer remove_cache(cache, context.allocator)
+
+	content := make([]u8, 1024, context.allocator)
+	defer delete(content, context.allocator)
+
+	path := fixture_file(
+		t,
+		cache,
+		"stale.wav",
+		string(content),
+		context.allocator,
+		30 * 24 * time.Hour,
+	)
+	defer delete(path, context.allocator)
+
+	info, unreadable := os.stat(path, context.allocator)
+	defer os.file_info_delete(info, context.allocator)
+	if !testing.expect(t, unreadable == nil, "fixture_file did not write the file to age") {
+		return
+	}
+	testing.expect(
+		t,
+		time.since(info.modification_time) >= 29 * 24 * time.Hour,
+		"fixture_file did not back-date the file it wrote",
+	)
+}
+
+@(test)
+remove_tree_takes_a_tree_and_every_directory_nested_in_it :: proc(t: ^testing.T) {
+	cache := made_scratch_cache(t, "testkit", "remove-tree", context.allocator)
+	defer delete(cache, context.allocator)
+
+	nested := fixture_file(t, cache, "june\\deeper\\interview.m4a", "audio", context.allocator)
+	defer delete(nested, context.allocator)
+
+	remove_tree(cache, context.allocator)
+
+	testing.expect(t, !os.exists(cache), "remove_tree left the tree it was given behind")
 }
 
 @(test)
