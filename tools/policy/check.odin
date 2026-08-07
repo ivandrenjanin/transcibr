@@ -203,6 +203,34 @@ collect_remove_all_violations :: proc(
 	}
 }
 
+// Issue #219's class: a `defer` that walks or derefs a container registered
+// ahead of a later `defer`, in the same scope, that deletes or frees it.
+// Odin's own defers run LIFO, so the later-registered free fires FIRST and
+// the walk this reports then runs on freed memory -- silently, the way
+// #184's main.odin pair did before it was fixed by hand.
+collect_defer_order_violations :: proc(
+	file: string,
+	facts: Source_Facts,
+	into: ^[dynamic]Violation,
+) {
+	assert(len(file) > 0, "asked to check the defer order of no file at all")
+	assert(into != nil, "asked to collect violations into nothing at all")
+
+	for issue in facts.defer_order {
+		message := fmt.aprintf(
+			"defer %s(%s, ...) reads %s after defer %s(%s, ...) at line %d frees it (LIFO order; issue #219's class)",
+			issue.walk_proc,
+			issue.arg,
+			issue.arg,
+			issue.free_proc,
+			issue.arg,
+			issue.free_line,
+			allocator = into.allocator,
+		)
+		append(into, make_violation(file, issue.line, message, into.allocator))
+	}
+}
+
 // README.md's Network access claim (issue #58): all network code lives in
 // one file, and the name appears nowhere else under `src/`, in any case.
 // Case-insensitive because the Win32 headers' own capitalisation --
@@ -250,8 +278,9 @@ violations_destroy :: proc(violations: [dynamic]Violation, allocator: mem.Alloca
 }
 
 // Every verdict this program computes about one file's facts, appended in the
-// order CLAUDE.md states the rules: section 0, rule F1, rule F2, rule M2, and
-// then the #97/#105 ban that rides the same read.
+// order CLAUDE.md states the rules: section 0, rule F1, rule F2, rule M2,
+// then the #97/#105 ban, then issue #219's defer-order class -- all riding
+// the same read.
 collect_violations :: proc(
 	file: string,
 	facts: Source_Facts,
@@ -266,4 +295,5 @@ collect_violations :: proc(
 	collect_result_violations(file, facts, into)
 	collect_vet_tag_violations(file, facts, required_tags, into)
 	collect_remove_all_violations(file, facts, into)
+	collect_defer_order_violations(file, facts, into)
 }
