@@ -173,6 +173,15 @@ borrowed_message :: proc(err: Error, source: string, allocator: mem.Allocator) -
 // raw NUL cuts it off and a byte that is not UTF-8 converts the whole of it to
 // nil -- and NTFS permits an unpaired surrogate in a filename. Free the answer
 // with `delete` and this allocator.
+//
+// The `.Probe_Not_Started, .Extraction_Not_Started` arm below calls
+// `child.error_message(err.child, allocator)` unconditionally, relying on
+// `err.child.fault != .None` for both: `child.run_bounded` has exactly one
+// return site for `.Not_Started` (src/child/run.odin), so every
+// `.Probe_Not_Started`/`.Extraction_Not_Started` this package can produce
+// already carries a real child fault. Pinned, guard-side, by
+// src/child/run_test.odin's a_child_that_will_not_start_is_reported_rather_than_asserted
+// (issue #208), not reproved here as a second assert (issue #223).
 @(require_results)
 error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> string {
 	assert(err.fault != .None, "there is no message for a Recording that came through")
