@@ -18,14 +18,31 @@ LOG_FILE_NAME :: "transcibr.log"
 // (or a future #16 GUI) open the same file at all -- issue #76 review round 2
 // measured a `FILE_SHARE_READ`-only open here refuse a second opener outright
 // with a sharing violation, leaving that second process's crash unlogged.
+//
+// `rotate_if_over` runs first, before this file's own handle exists at all
+// (ADR-0039 D2): whichever file the `CreateFileW` call below opens is the one
+// `install`'s later call into `register` points every crash hook at for the
+// rest of the process's life. `rotation_refused` reports the one case its
+// caller has to act on -- a second live transcibr already holding the log
+// open blocked the rename -- so `install` can log it once `register` has
+// made `note` callable.
 @(require_results)
-open_log :: proc(dir: string, allocator: mem.Allocator) -> (h: Log_Handle, ok: bool) {
+open_log :: proc(
+	dir: string,
+	allocator: mem.Allocator,
+) -> (
+	h: Log_Handle,
+	rotation_refused: bool,
+	ok: bool,
+) {
 	assert(len(dir) > 0, "a crash log needs somewhere to be opened")
 	assert(allocator.procedure != nil, "opening the crash log needs an allocator for its path")
 
 	if os.make_directory_all(dir) != nil {
-		return {}, false
+		return {}, false, false
 	}
+
+	rotation_refused = rotate_if_over(dir, allocator)
 
 	path := fmt.aprintf("%s\\%s", dir, LOG_FILE_NAME, allocator = allocator)
 	defer delete(path, allocator)
@@ -33,7 +50,7 @@ open_log :: proc(dir: string, allocator: mem.Allocator) -> (h: Log_Handle, ok: b
 	wide := win32.utf8_to_utf16(path, allocator)
 	defer delete(wide, allocator)
 	if wide == nil {
-		return {}, false
+		return {}, rotation_refused, false
 	}
 
 	handle := win32.CreateFileW(
@@ -46,7 +63,7 @@ open_log :: proc(dir: string, allocator: mem.Allocator) -> (h: Log_Handle, ok: b
 		nil,
 	)
 	if handle == win32.INVALID_HANDLE_VALUE {
-		return {}, false
+		return {}, rotation_refused, false
 	}
-	return Log_Handle{file = handle}, true
+	return Log_Handle{file = handle}, rotation_refused, true
 }
