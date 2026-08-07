@@ -412,7 +412,7 @@ a_stray_test_file_directly_under_a_package_root_is_reported_not_asserted :: proc
 	}
 
 	testing.expect_value(t, os.make_directory(base), os.Error(nil))
-	defer os.remove(base)
+	defer testing.expect_value(t, os.remove(base), os.Error(nil))
 
 	stray_file := fmt.aprintf("%s/stray_test.odin", base, allocator = context.allocator)
 	defer delete(stray_file, context.allocator)
@@ -457,7 +457,7 @@ tools_packages_are_accounted_for_beside_src_packages :: proc(t: ^testing.T) {
 		return
 	}
 	plant_accounting_fixture(t, base)
-	defer remove_accounting_fixture(base)
+	defer testing.expect_value(t, remove_accounting_fixture(base), os.Error(nil))
 
 	violations := make([dynamic]Violation, 0, context.allocator)
 	defer delete(violations)
@@ -546,7 +546,8 @@ plant_accounting_fixture :: proc(t: ^testing.T, base: string) {
 	testing.expect_value(t, os.write_entire_file(justfile, transmute([]byte)recipe), os.Error(nil))
 }
 
-remove_accounting_fixture :: proc(base: string) {
+@(require_results)
+remove_accounting_fixture :: proc(base: string) -> os.Error {
 	assert(len(base) > 0, "asked to remove a fixture at no path at all")
 
 	justfile := fixture_path(base, "justfile", context.allocator)
@@ -563,7 +564,7 @@ remove_accounting_fixture :: proc(base: string) {
 		defer delete(path, context.allocator)
 		os.remove(path)
 	}
-	os.remove(base)
+	return os.remove(base)
 }
 
 // The exact pid-collision failure mode the #109 review measured: the OLD
