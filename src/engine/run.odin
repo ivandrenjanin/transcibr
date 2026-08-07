@@ -24,6 +24,9 @@ Ending :: struct {
 	duration_ms: i64,
 	elapsed_ms:  i64,
 	child:       child.Error,
+	// Only meaningful for `.Finished`: the code the Engine itself chose to
+	// exit with, learned through `child.Run_Callbacks.on_exit` (issue #186).
+	exit_code:   u32,
 }
 
 // Issue #132: `job.container_ms > 0` below is internal, not a check on
@@ -121,6 +124,9 @@ refused :: proc(ending: Ending) -> Error {
 		}
 		return Error{fault = .Did_Not_Finish}
 	case .Finished:
+		if ending.exit_code != 0 {
+			return Error{fault = .Refused, exit_code = ending.exit_code}
+		}
 	}
 	return Error{}
 }
@@ -243,6 +249,10 @@ Watch_State :: struct {
 	watch:      process.Watch,
 	painted:    process.Progress,
 	elapsed_ms: i64,
+	// Set only by `watched_exit`, on the one path `child.Run_Callbacks.on_exit`
+	// is ever called: a run that reaches `.Finished` (issue #186).
+	exit_code:  u32,
+	exited:     bool,
 }
 
 // Called for every read that produced bytes, whether or not any of them read
@@ -278,6 +288,18 @@ watched_end :: proc(elapsed_ns: i64, user: rawptr) {
 		process.tracker_said(&watch_state.tracker, process.read_engine_line(line), elapsed_ns)
 	}
 	watch_state.elapsed_ms = elapsed_ns / 1_000_000
+}
+
+// The one documented way this package learns the Engine's own exit code
+// (issue #109's pattern, `child.Run_Callbacks.on_exit`'s doc comment):
+// called once, and only on the path that reaches `.Finished`.
+@(private)
+watched_exit :: proc(code: u32, user: rawptr) {
+	assert(user != nil, "there is no Recording here to track")
+
+	watch_state := (^Watch_State)(user)
+	watch_state.exit_code = code
+	watch_state.exited = true
 }
 
 // Only on a change: this is called four times a second, so a three-hour
@@ -343,6 +365,7 @@ run_engine :: proc(
 			on_chunk = watched_chunk,
 			on_end = watched_end,
 			on_poll = watched_poll,
+			on_exit = watched_exit,
 		},
 	)
 	return ending_for(run, reason, watch_state, refusal)
@@ -379,10 +402,12 @@ ending_for :: proc(
 		}
 	case .Finished:
 	}
+	assert(watch_state.exited, "a finished Engine run reported no exit status at all")
 	return Ending {
 		run = .Finished,
 		duration_ms = watch_state.tracker.duration_ms,
 		elapsed_ms = watch_state.elapsed_ms,
+		exit_code = watch_state.exit_code,
 	}
 }
 

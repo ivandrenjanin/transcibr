@@ -67,12 +67,17 @@ Fault :: enum u8 {
 	Not_Stopped,
 	No_Output,
 	Output_Empty,
+	// The Engine ran to completion and exited nonzero: issue #186, the #109
+	// collapse applied to this package's own child.
+	Refused,
 }
 
 Error :: struct {
-	fault: Fault,
+	fault:     Fault,
 	// Only for `.Not_Started`.
-	child: child.Error,
+	child:     child.Error,
+	// Only for `.Refused`: the code the Engine itself chose to exit with.
+	exit_code: u32,
 }
 
 @(private)
@@ -92,9 +97,11 @@ fault_says :: proc(fault: Fault) -> string {
 	case .Not_Stopped:
 		return "the Engine would not finish and would not stop"
 	case .No_Output:
-		return "the Engine left no output at all, whatever it exited with"
+		return "the Engine exited cleanly and left no output at all"
 	case .Output_Empty:
 		return "the Engine left an empty output file"
+	case .Refused:
+		return "the Engine finished and refused the Recording"
 	case .None:
 	}
 	return ""
@@ -116,14 +123,27 @@ error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> s
 	if err.fault == .Not_Started {
 		assert(err.child.fault != .None, "an Engine that would not start named no reason")
 	}
+	if err.fault == .Refused {
+		assert(err.exit_code != 0, "a refused Recording named the exit code that is success")
+	}
 
 	message: string
-	if err.fault == .Not_Started {
+	switch err.fault {
+	case .Not_Started:
 		reason := child.error_message(err.child, allocator)
 		defer delete(reason, allocator)
 		message = fmt.aprintf("%q: %s (%s)", source, says, reason, allocator = allocator)
-	} else {
+	case .Refused:
+		message = fmt.aprintf(
+			"%q: %s (exit code %d)",
+			source,
+			says,
+			err.exit_code,
+			allocator = allocator,
+		)
+	case .Path_Not_Ascii, .Did_Not_Finish, .Went_Silent, .Not_Stopped, .No_Output, .Output_Empty:
 		message = fmt.aprintf("%q: %s", source, says, allocator = allocator)
+	case .None:
 	}
 	assert(len(message) > 0, "a refusal rendered as nothing at all")
 	return message
