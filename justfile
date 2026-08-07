@@ -152,12 +152,20 @@ test:
 # tests green after an edit to record.odin that was never rebuilt (#176-A
 # review deposit on issue #175); a stale `build\odin-test\policy-cli.exe`
 # reports the policy exit-code tests green the same way (#184 review deposit
-# on issue #175); and a `#+build`-tagged `*_test.odin` file reports 0 tests
-# collected as a pass here rather than the hollow-file violation issue #174
-# closed for the untagged case (#174 review deposit on issue #175). `just
-# test` rebuilds both binaries as its own first lines, so `just ci` is honest
-# about all three; only a bare `just test-one` after an edit, without a
-# preceding `just test`, meets any of them.
+# on issue #175). `just test` rebuilds both binaries as its own first lines,
+# so `just ci` is honest about those two; only a bare `just test-one` after an
+# edit, without a preceding `just test`, meets either of them.
+#
+# A third, unrelated member of the same family is NOT covered by anything in
+# `just ci`: a `#+build`-tagged `*_test.odin` file reports 0 tests collected
+# as a pass through `odin test` itself -- the exact line `just test` runs for
+# that package -- rather than the hollow-file violation issue #174 closed for
+# the untagged case (#174 review deposit on issue #175). Rebuilding binaries
+# does not touch this risk; it is a source-level build tag, and no recipe in
+# `ci` reads for it. `just test-one` on that package's real test name DOES
+# catch it -- the bogus-name guard above fires "0 tests collected" -- so this
+# residual is met by `just ci` and missed by a bare `just test-one`, the
+# inverse of the other two.
 test-one pkg name:
 	if not exist build\odin-test mkdir build\odin-test
 	{{ odin }} test {{ if pkg == "policy" { "tools/policy" } else { "src/" + pkg } }} {{ collection }} -out:build/odin-test/focus.exe -define:ODIN_TEST_NAMES={{ pkg }}.{{ name }} {{ memory }} {{ vet }} > build\odin-test\focus.out 2>&1 && (type build\odin-test\focus.out & findstr /b /c:"No tests to run." build\odin-test\focus.out >nul && (echo TEST-ONE: "{{ pkg }}.{{ name }}" matched no test procedure -- 0 tests collected & exit /b 1) || exit /b 0) || (type build\odin-test\focus.out & exit /b 1)
