@@ -93,10 +93,16 @@ test:
 # does not cover this: it proves the test recipe names every tested package,
 # not that one focused run inside a package actually found its target, so
 # the guard has to sit where the runner's own words land -- here, not there.
-# Output is captured to a file and replayed with `type` so the guard can
-# inspect it without losing what a developer would otherwise see live; the
-# odin test exit code itself is left untouched for a real pass or a real
-# test failure, and only the exit-0-but-nothing-collected case is escalated.
+# Output is NOT live: it is redirected into build\odin-test\focus.out and only
+# `type`-d back to the console after the odin test process has already exited.
+# A run that hangs (the #22 runner hang this file's own notes document) or is
+# interrupted with Ctrl+C prints nothing at all while it is running and shows
+# nothing after the interrupt either -- the `type` replay only runs on the
+# success/failure branches below, never on an interrupted invocation, so
+# whatever bytes had already landed in focus.out stay on disk, unread on the
+# console, until someone opens the file by hand. The odin test exit code
+# itself is left untouched for a real pass or a real test failure, and only
+# the exit-0-but-nothing-collected case is escalated.
 #
 # Deliberately grepped for "No tests to run.", not the ticket's suggested
 # "Finished 0 tests" -- the zero-collected path in core/testing/runner.odin
