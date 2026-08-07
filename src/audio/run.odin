@@ -276,6 +276,19 @@ probe :: proc(
 // without racing every other test in this package that calls `probe`
 // concurrently (issue #125's round-1 review, finding 1; the runner
 // parameter is round-4's finding 2).
+//
+// The `.Unstoppable` arm below never calls `remove`: an ffprobe process this
+// run could not stop may still be running and may still hold `answer` open,
+// exactly as the member comment on `child.Run.Unstoppable`
+// (`src\child\run.odin`) states -- so the answer file is leaked deliberately
+// there, the same way `child.read_bounded`'s own doc comment
+// (`src\child\read.odin`) states its worker leaks for the identical reason.
+// Nothing drove `probe_using` onto that branch before
+// issue #150's sweep, so a mutation adding an unconditional `remove(answer)`
+// to it left the whole suite green (the #125 recipe applied to the one arm
+// its own round-4 review left uncovered);
+// `a_probe_whose_ffprobe_run_is_unstoppable_never_calls_the_remover` in
+// `run_test.odin` is what now catches that mutation.
 @(private)
 @(require_results)
 probe_using :: proc(
