@@ -53,6 +53,45 @@ read_plan_options_leaves_the_follow_flag_unset_when_none_is_given :: proc(t: ^te
 }
 
 @(test)
+read_plan_options_reads_an_explicit_follow_value_of_no_as_false :: proc(t: ^testing.T) {
+	o, ok, _ := read_plan_options(
+		[]string {
+			PLAN,
+			"recordings",
+			"--model-file",
+			"model.bin",
+			"--engine-exe",
+			"engine.exe",
+			"--follow-reparse-points",
+			"no",
+		},
+	)
+
+	testing.expect(t, ok, "a command line with --follow-reparse-points no was refused")
+	testing.expect_value(t, o.follow, false)
+}
+
+@(test)
+read_plan_options_refuses_an_empty_option_name :: proc(t: ^testing.T) {
+	ok, refusal := plan_options_refusal(
+		[]string {
+			PLAN,
+			"recordings",
+			"--model-file",
+			"model.bin",
+			"--engine-exe",
+			"engine.exe",
+			"",
+			"value",
+		},
+	)
+
+	testing.expect(t, !ok, "an empty option name was accepted")
+	testing.expect_value(t, refusal.complaint, "unknown option %q.")
+	testing.expect_value(t, refusal.args[0], Refusal_Arg(""))
+}
+
+@(test)
 read_plan_options_refuses_a_trailing_name_with_no_value_after_it :: proc(t: ^testing.T) {
 	ok, refusal := plan_options_refusal([]string{PLAN, "recordings", "--model-file"})
 

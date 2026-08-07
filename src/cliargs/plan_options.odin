@@ -11,6 +11,12 @@
 // other name outside this grammar's vocabulary, pinned in
 // plan_options_test.odin -- exactly the way src/cli/plan.odin's own
 // read_plan_option refused them before this migration.
+//
+// read_plan_option must NOT assert that name is non-empty. src/cli/plan.odin's
+// deleted reader carried exactly that assert, and an empty argv token is
+// external input (A8) -- refuse it through the UNKNOWN_OPTION_COMPLAINT return
+// like any other unrecognized name, never crash the process on it. Pinned by
+// plan_options_test.odin's read_plan_options_refuses_an_empty_option_name.
 package cliargs
 
 import "transcibr:transcript"
