@@ -160,6 +160,78 @@ a_sidecar_naming_no_engine_is_unknown_rather_than_read_with_an_empty_one :: proc
 	testing.expect(t, len(read.model) == 0, "a refused Sidecar was half read")
 }
 
+// The same hole as the Engine's, one key over: `assert_filled_in` requires
+// `len(made.engine_version) > 0`, but nothing at the read boundary checked
+// it before this fix -- an `engine_sha256: ""` line read back fine and
+// crashed downstream in `complete` instead of being refused here (A8).
+@(test)
+a_sidecar_naming_no_engine_digest_is_unknown_rather_than_read_with_an_empty_one :: proc(
+	t: ^testing.T,
+) {
+	golden := GOLDEN_SIDECAR
+	corrupted := strings.concatenate(
+		{
+			golden[:strings.index(golden, "engine_sha256: \"")],
+			"engine_sha256: \"\"\n",
+			golden[strings.index(golden, "model: \""):],
+		},
+		context.temp_allocator,
+	)
+
+	read, ok := read_sidecar(corrupted, context.allocator)
+	defer destroy_sidecar(read, context.allocator)
+
+	testing.expect(t, !ok, "a Sidecar naming no Engine digest was read rather than refused")
+	testing.expect(t, len(read.model) == 0, "a refused Sidecar was half read")
+}
+
+// `assert_filled_in` requires `len(made.model) > 0`; a `model: ""` line read
+// back fine and crashed `model_display_name`'s `assert(len(path) > 0, ...)`
+// in `re_rendered_and_placed` instead of being refused here (A8).
+@(test)
+a_sidecar_naming_no_model_is_unknown_rather_than_read_with_an_empty_one :: proc(t: ^testing.T) {
+	golden := GOLDEN_SIDECAR
+	corrupted := strings.concatenate(
+		{
+			golden[:strings.index(golden, "model: \"")],
+			"model: \"\"\n",
+			golden[strings.index(golden, "model_sha256"):],
+		},
+		context.temp_allocator,
+	)
+
+	read, ok := read_sidecar(corrupted, context.allocator)
+	defer destroy_sidecar(read, context.allocator)
+
+	testing.expect(t, !ok, "a Sidecar naming no Model was read rather than refused")
+	testing.expect(t, len(read.model) == 0, "a refused Sidecar was half read")
+}
+
+// `assert_filled_in` requires `len(made.model_digest) == DIGEST_CHARS`; a
+// four-character `model_sha256` read back fine -- exactly the probe evidence
+// the ticket measured -- and would crash `complete`'s own assert instead of
+// being refused here (A8).
+@(test)
+a_sidecar_naming_a_partial_model_digest_is_unknown_rather_than_read_with_it :: proc(
+	t: ^testing.T,
+) {
+	golden := GOLDEN_SIDECAR
+	corrupted := strings.concatenate(
+		{
+			golden[:strings.index(golden, "model_sha256: \"")],
+			"model_sha256: \"abcd\"\n",
+			golden[strings.index(golden, "model_bytes"):],
+		},
+		context.temp_allocator,
+	)
+
+	read, ok := read_sidecar(corrupted, context.allocator)
+	defer destroy_sidecar(read, context.allocator)
+
+	testing.expect(t, !ok, "a Sidecar naming a partial Model digest was read rather than refused")
+	testing.expect(t, len(read.model) == 0, "a refused Sidecar was half read")
+}
+
 @(test)
 a_sidecar_whose_numbers_are_not_numbers_is_unknown :: proc(t: ^testing.T) {
 	golden := GOLDEN_SIDECAR
