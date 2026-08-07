@@ -101,21 +101,24 @@ The grammar returns its verdict — an `Options` struct and an `ok`, or a refusa
 `src/cliargs` never writes to `os.stderr` itself; `src/cli` still does, via the same non-allocating
 path it uses today.
 
-**The refusal is data, not a built string — 19 of `src/cli`'s 22 `refuse` call sites interpolate a
-runtime value, and this record picks the shape that keeps that data unallocated.** A refusal carries
-the same complaint FORMAT STRING `refuse` already owns as a constant (`"%s takes a whole number from
-1 to %d, not %q."` and the rest), plus the concrete arguments that format string needs — measured on
-the tree, at most three per site (an option name, an offending value, and a ceiling; `%s takes a
-whole number from 1 to %d, not %q.` is the widest one, and no site needs more). Those arguments ride
-in typed fields on the refusal value itself, not behind a `..any` slice — a fixed struct needs no
-backing allocation to populate, where a slice does. `src/cliargs` never calls `fmt.eprintf`,
-`fmt.aprintf`, or anything else that allocates, so it never needs the `#+vet explicit-allocators`
-file tag (M2/ADR-0010) or an `allocator: mem.Allocator` threaded through a single grammar entry
-point — there is nothing in the package for that tag to police. `src/cli`'s `refuse` interpolates the
-returned format string against the returned arguments with the same `fmt.eprintf(complaint, ..args)`
-call it makes today, now fed by a value instead of building one itself; the non-allocating property
-this section already claims for `refuse`/`write_usage` (lines 83-85) holds on both sides of the move,
-not only in `src/cli`.
+**The refusal is data, not a built string, and it keeps `refuse`'s own arity — 19 of `src/cli`'s 22
+`refuse` call sites interpolate a runtime value, arity 0-3, three being the widest
+(`read_batch_worker_option`, `batch.odin:346`).** A `Refusal` value carries the complaint FORMAT
+STRING (`"%s takes a whole number from 1 to %d, not %q."` and the rest) plus the concrete arguments
+that format string needs, in the same shape `refuse` itself already takes them
+(`complaint: string, args: ..any`): a fixed three-slot backing array, `args: [3]any`, addressed by a
+count, `arg_count: int`, both fields on the `Refusal` value — never a `make`d `[]any`. `src/cli`'s
+`refuse` becomes `refuse(r.complaint, ..r.args[:r.arg_count])`, slicing the fixed array down to the
+arguments this particular refusal actually carries, so a one-argument refusal does not hand
+`fmt.eprintf` two unused `any` values it would print as trailing `%!(EXTRA ...)` bytes. Nothing here
+allocates: slicing a fixed array embedded in the returned value calls no allocator, where `make`ing a
+`[]any` would. `src/cliargs` never calls `fmt.eprintf`, `fmt.aprintf`, or anything else that
+allocates, so it never needs the `#+vet explicit-allocators` file tag (M2/ADR-0010) or an
+`allocator: mem.Allocator` threaded through a single grammar entry point — there is nothing in the
+package for that tag to police. `src/cli`'s `refuse` still makes the one `fmt.eprintf` call it makes
+today, now fed by a returned `Refusal` instead of a literal format string and inline arguments; the
+non-allocating property this section already claims for `refuse`/`write_usage` (lines 89-91) holds on
+both sides of the move, not only in `src/cli`.
 
 **Import closure: `transcibr:transcript` and `transcibr:process` only.** Neither imports
 `transcibr:child`, `transcibr:audio`, or `transcibr:pipeline` (verified on the current tree: `process`
@@ -131,30 +134,43 @@ this package:
   place `defaulted_batch`/`read_transcribe_options`/`read_doctor_options` already call it today —
   after the read loop, never before, so `--ffmpeg ""` still overwrites the default rather than being
   overwritten by it.
-- **The worker-count ceiling as a parameter, not an import — and the lookup has to move with it.**
-  `read_worker_count` already takes `ceiling: int` rather than reaching into
-  `pipeline.MAX_QUEUE_DEPTH` or `pipeline.MAX_EXTRACT_WORKERS` directly (`batch.odin:246-252`,
-  closing issue #94's finding: an over-ceiling value on one option no longer sails past a refusal
-  keyed to the other option's ceiling). But `read_worker_count` is not where `pipeline` is reached
-  for today: `read_batch_worker_option` (`batch.odin:335-348`) — one of the `read_*_option`
-  procedures this ADR schedules to move — is the one that calls `pipeline.worker_option_ceiling(name)`
-  to find the ceiling and formats the pinned refusal `"%s takes a whole number from 1 to %d, not
-  %q."` with it. Moving that procedure verbatim would pull `pipeline`, and behind it `transcibr:child`,
-  into `src/cliargs`'s closure, which the ruling rules out. The shape that keeps the fence closed:
-  `src/cliargs` keeps a worker-option reader shaped like `read_worker_count` itself — it takes
-  `ceiling: int` and the already-formatted refusal text as parameters, never looks up a ceiling by
-  option name, and never imports `pipeline`. The lookup (`pipeline.worker_option_ceiling`) and the
-  refusal-message formatting stay in `src/cli`, called immediately before the grammar's per-option
-  dispatch, the same way `src/cli` already resolves `--ffmpeg`/`--ffprobe` into an `audio.Tools`
-  after the read loop rather than inside it. This is `read_natural`'s own `max_digits` precedent
-  (`process/engine.odin:199`, `artifact/sidecar.odin`'s `MAX_SIDECAR_DIGITS`) applied a second time:
-  the CONSUMER supplies the ceiling, the reader only checks it — except here the consumer is
-  `src/cli`, not the grammar package, because only `src/cli` may know `pipeline` at all.
-  **Defaults are a separate, already-closed case, not a second breach.** `defaulted_batch`
+- **The worker-count ceiling as a parameter, not an import — but the BOUND CHECK is a second,
+  narrower breach the ceiling-as-parameter shape does not close by itself.** `read_worker_count`
+  takes `ceiling: int` rather than reaching into `pipeline.MAX_QUEUE_DEPTH` or
+  `pipeline.MAX_EXTRACT_WORKERS` directly, which closes issue #94's finding (an over-ceiling value on
+  one option no longer sails past a refusal keyed to the other option's ceiling) — but its body still
+  calls `pipeline.worker_count_within_ceiling(int(parsed), ceiling)` to apply that ceiling
+  (`batch.odin:248`), and that call is itself a `pipeline` import, which pulls in `transcibr:child`
+  behind it (`pipeline`'s own `recording.odin:17` and `run.odin:14`). Taking `ceiling` as a parameter
+  closes the LOOKUP breach (which option's ceiling) without touching this one (comparing a count
+  against whichever ceiling it was handed), because the comparison itself is still made by calling
+  into `pipeline`. **The shape that closes it: `worker_count_within_ceiling` relocates to
+  `src/process`, not `src/pipeline`.** Its own comment already says why it can — it takes `ceiling` as
+  a parameter rather than reading `MAX_EXTRACT_WORKERS`/`MAX_QUEUE_DEPTH` by name, so nothing in its
+  body is pipeline-specific; `WORKER_OPTION_CEILINGS` and the two `MAX_*` constants stay in
+  `pipeline`, which still owns the LOOKUP (`pipeline.worker_option_ceiling`) and still walks the table
+  in `worker_option_ceilings_pair_each_option_with_its_own_max`
+  (`defaults_test.odin:109-131`) — only the bound check itself, and its pinned test
+  (`worker_count_within_ceiling_checks_its_own_ceiling_and_not_the_others`, `defaults_test.odin:63-99`),
+  move with it. This is `read_natural`'s own `max_digits` precedent (`process/engine.odin:199`,
+  `artifact/sidecar.odin`'s `MAX_SIDECAR_DIGITS`) applied a second time, this time literally rather
+  than by analogy: a bound check that takes its ceiling as a parameter belongs beside the reader that
+  takes its digit cap as a parameter, in the one package both `src/cli` and `src/cliargs` may import.
+  With the predicate relocated, `src/cliargs` keeps a worker-option reader shaped like
+  `read_worker_count` itself: it takes `ceiling: int`, parses with `process.read_natural`, and checks
+  the result with `process.worker_count_within_ceiling` — never imports `pipeline`. On refusal it
+  builds a `Refusal` (the shape above: its own owned complaint format string plus `name`, `ceiling`,
+  `value` in `args[:3]`) itself, because it is the only side of the fence that has read the offending
+  value; nothing is pre-formatted by `src/cli` before dispatch, and no complaint string crosses the
+  fence built. The LOOKUP (`pipeline.worker_option_ceiling`) stays in `src/cli`, called immediately
+  before the grammar's per-option dispatch to resolve `ceiling` for the two worker-option names, the
+  same way `src/cli` already resolves `--ffmpeg`/`--ffprobe` into an `audio.Tools` after the read loop
+  rather than inside it.
+  **Defaults are a separate, already-closed case, not a third breach.** `defaulted_batch`
   (`batch.odin:355-370`) reads `pipeline.DEFAULT_EXTRACT_WORKERS` and `pipeline.DEFAULT_QUEUE_DEPTH`,
   but it runs after the read loop returns, on the `Options` struct the grammar handed back — the same
   place it calls `audio.defaulted_tools` today. It never moves to `src/cliargs`; it is exactly the
-  "pipeline wiring" this ADR already lists as staying in `src/cli` (line 91-92), and its import of
+  "pipeline wiring" this ADR already lists as staying in `src/cli` (line 97-98), and its import of
   `pipeline` was never part of the grammar's closure to begin with.
 
 **`Common_Options` embeds via `using` in `Batch_Options` and `Transcribe_Options` only.**
