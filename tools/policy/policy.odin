@@ -35,7 +35,6 @@ import "core:odin/tokenizer"
 // reports nothing about.
 Fault :: enum u8 {
 	None = 0,
-	Unreadable,
 	Nested_Too_Deep,
 	Not_Odin,
 }
@@ -199,8 +198,6 @@ fault_says :: proc(fault: Fault) -> string {
 	switch fault {
 	case .None:
 		return ""
-	case .Unreadable:
-		return "cannot be read at all"
 	case .Nested_Too_Deep:
 		return "nests brackets deeper than the parser this reads with survives"
 	case .Not_Odin:
