@@ -9,6 +9,25 @@ import "transcibr:testkit"
 // A directory this account may not list, and one it may not write into. Neither
 // state can be reached from `core:os`, and both are what the two criteria about
 // access are actually about -- so the ACL is set with the tool Windows ships.
+//
+// Issue #179: a run that dies between `denied` and `undenied` -- a killed
+// process, a hung runner (issue #22), not a test failure, which `defer`
+// already survives -- leaves the deny rule on disk. `testkit.remove_tree`
+// cannot enumerate what it cannot read, so it skips the recursion and the
+// trailing `os.remove` fails on a directory it believes is empty: the
+// directory is now permanently stranded, and not even an admin
+// `Remove-Item -Recurse -Force` can take it, because that still walks the
+// tree it cannot list. One sat under %TEMP% since 2026-08-05 this way. The
+// two tests below narrow the deny window to the single operation each is
+// actually testing (deny, run the operation, restore, then assert on the
+// captured result) precisely so a dead run has as little to catch as
+// possible -- but the window cannot be closed to zero, so a strand is
+// still an operating possibility, not a bug to keep chasing. Recovery is
+// manual and always the same two steps, run against the exact stranded
+// path and never a wildcard: `icacls <path> /reset /t` first, which is
+// what actually clears the deny (a bare delete against a reset-less
+// directory still fails the same way), then `Remove-Item -Recurse -Force
+// <path>`.
 @(private)
 ICACLS :: "icacls.exe"
 
@@ -71,7 +90,16 @@ a_sub_directory_that_cannot_be_enumerated_is_an_operating_error :: proc(t: ^test
 	defer undenied(t, shut)
 
 	inventory := discover([]string{tree}, Walk{}, context.allocator)
+	undenied(t, shut)
 	defer destroy_inventory(inventory, context.allocator)
+
+	relisted, unreadable := os.read_all_directory_by_path(shut, context.allocator)
+	defer os.file_info_slice_delete(relisted, context.allocator)
+	testing.expect(
+		t,
+		unreadable == nil,
+		"shut was still denied after the operation under test finished -- the restore did not happen as early as it could",
+	)
 
 	path, said := noted(inventory, .Directory_Unreadable)
 	if !testing.expect(t, said, "a directory that would not list was treated as empty") {
@@ -105,7 +133,14 @@ a_directory_nothing_may_be_written_to_is_refused_before_any_gpu_time :: proc(t: 
 	defer undenied(t, locked)
 
 	inventory := discover([]string{tree}, Walk{}, context.allocator)
+	undenied(t, locked)
 	defer destroy_inventory(inventory, context.allocator)
+
+	testing.expect(
+		t,
+		directory_writable(locked, context.allocator),
+		"locked was still denied after the operation under test finished -- the restore did not happen as early as it could",
+	)
 
 	found, took := found_at(inventory, inside)
 	if !testing.expect(t, took, "a Recording in a locked directory was not found at all") {
