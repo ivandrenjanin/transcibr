@@ -84,6 +84,7 @@ test:
 	{{ odin }} test src/artifact {{ collection }} -out:build/odin-test/artifact.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/audio {{ collection }} -out:build/odin-test/audio.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/child {{ collection }} -out:build/odin-test/child.exe {{ memory }} {{ vet }}
+	{{ odin }} test src/cliargs {{ collection }} -out:build/odin-test/cliargs.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/crashlog {{ collection }} -out:build/odin-test/crashlog.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/doctor {{ collection }} -out:build/odin-test/doctor.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/engine {{ collection }} -out:build/odin-test/engine.exe {{ memory }} {{ vet }}
