@@ -18,6 +18,9 @@ Cache_Fault :: enum u8 {
 	Unusable,
 	Not_A_Directory,
 	Parent_Missing,
+	// A non-empty directory transcibr did not create and cannot prove it
+	// already owns: ADR-0023's #256 addendum.
+	Foreign_Directory,
 }
 
 @(private)
@@ -34,6 +37,10 @@ cache_fault_says :: proc(fault: Cache_Fault) -> string {
 		return "the scratch cache path names an existing file, not a directory"
 	case .Parent_Missing:
 		return "the scratch cache's parent directory does not exist"
+	case .Foreign_Directory:
+		return(
+			"the scratch cache directory is not empty and holds files transcibr did not write -- point --cache at an empty directory, or one transcibr already owns, before a sweep or an extraction can reach it" \
+		)
 	case .None:
 	}
 	return ""

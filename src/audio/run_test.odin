@@ -4,6 +4,7 @@ package audio
 import "core:fmt"
 import "core:mem"
 import "core:os"
+import "core:strings"
 import win32 "core:sys/windows"
 import "core:testing"
 import "core:time"
@@ -102,11 +103,19 @@ a_sweep_leaves_a_directory_in_the_cache_alone :: proc(t: ^testing.T) {
 	audio := aged_file(t, cache, "audio.wav", 512, time.Minute)
 	defer delete(audio, context.allocator)
 
+	marker := fmt.aprintf("%s\\%s", cache, CACHE_MARKER_NAME, allocator = context.allocator)
+	defer delete(marker, context.allocator)
+
 	taken, fault := sweep_cache(cache, everything, context.allocator)
 	testing.expect_value(t, fault, Cache_Fault.None)
 	testing.expect_value(t, taken, 1)
 	testing.expect(t, !os.exists(audio), "the sweep left a file over both ceilings behind")
 	testing.expect(t, os.exists(inner), "the sweep took a directory out of the cache")
+	testing.expect(
+		t,
+		os.exists(marker),
+		"an aggressive sweep took the ownership marker along with everything else",
+	)
 }
 
 @(test)
@@ -243,6 +252,334 @@ a_cache_whose_parent_directory_is_also_missing_is_refused_rather_than_invented :
 		!os.exists(root),
 		"open_cache invented an implausible tree instead of refusing it",
 	)
+}
+
+// Issue #256, item 1: `open_cache` used to accept ANY existing directory,
+// which is what let a `--cache` pointed at a real media folder lose its
+// contents to the age/size sweep. Realistic names, not `foo.bin`: a
+// directory `sweep_cache` would previously have swept whole.
+@(test)
+a_cache_directory_holding_files_transcibr_never_wrote_is_refused_rather_than_adopted :: proc(
+	t: ^testing.T,
+) {
+	cache := testkit.made_scratch_cache(t, "audio", "foreign", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	clip := testkit.fixture_file(t, cache, "family-reunion.mp4", "not audio", context.allocator)
+	defer delete(clip, context.allocator)
+	notes := testkit.fixture_file(t, cache, "notes.txt", "call grandma back", context.allocator)
+	defer delete(notes, context.allocator)
+
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.Foreign_Directory)
+	testing.expect(t, os.exists(clip), "a refused cache open still lost the user's own file")
+	testing.expect(t, os.exists(notes), "a refused cache open still lost the user's own file")
+
+	marker := fmt.aprintf("%s\\%s", cache, CACHE_MARKER_NAME, allocator = context.allocator)
+	defer delete(marker, context.allocator)
+	testing.expect(t, !os.exists(marker), "a refused directory was marked owned anyway")
+}
+
+// #258's round-2 review, Important finding: shape-based adoption of a
+// non-empty, unmarked directory rescued no real pre-#256 cache (every
+// pre-#256 wav was unkeyed, so it was refused, not adopted) while still
+// carrying the whole data-loss surface for any other content that happened
+// to match the four written suffixes. The adoption branch was deleted
+// outright (Critical finding: `.json`/`.probe`/`.part`-only folders were
+// still adopted and swept whole under the old shape check). A directory
+// holding only the shapes this package and the Engine ever write is now
+// refused exactly like any other non-empty, unmarked directory -- ownership
+// is never inferred from content, only from the marker or from emptiness.
+@(test)
+a_cache_directory_holding_only_transcibr_shaped_files_is_refused_rather_than_adopted :: proc(
+	t: ^testing.T,
+) {
+	cache := testkit.made_scratch_cache(t, "audio", "adopt", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	old_wav := testkit.fixture_file(
+		t,
+		cache,
+		"lecture.0123456789abcdef.wav",
+		"already extracted",
+		context.allocator,
+	)
+	defer delete(old_wav, context.allocator)
+	old_json := testkit.fixture_file(t, cache, "lecture.json", "{}", context.allocator)
+	defer delete(old_json, context.allocator)
+
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.Foreign_Directory)
+	testing.expect(t, os.exists(old_wav), "a refused cache open still lost the user's own file")
+	testing.expect(t, os.exists(old_json), "a refused cache open still lost the user's own file")
+
+	marker := fmt.aprintf("%s\\%s", cache, CACHE_MARKER_NAME, allocator = context.allocator)
+	defer delete(marker, context.allocator)
+	testing.expect(t, !os.exists(marker), "a refused directory was marked owned anyway")
+}
+
+// #258's round-2 review, Critical finding (a): a JSON-export folder --
+// `invoices-2019.json`, `invoices-2020.json`, nothing else -- matched the
+// old suffix-only `.json` shape and was adopted, then swept whole. There is
+// no adoption branch left to match it against; a non-empty, unmarked
+// directory refuses regardless of what its entries are named.
+@(test)
+a_cache_directory_holding_only_json_files_is_refused_rather_than_adopted :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "audio", "json-export", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	first := testkit.fixture_file(t, cache, "invoices-2019.json", "{}", context.allocator)
+	defer delete(first, context.allocator)
+	second := testkit.fixture_file(t, cache, "invoices-2020.json", "{}", context.allocator)
+	defer delete(second, context.allocator)
+
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.Foreign_Directory)
+	testing.expect(t, os.exists(first), "a refused cache open still lost the user's own file")
+	testing.expect(t, os.exists(second), "a refused cache open still lost the user's own file")
+
+	marker := fmt.aprintf("%s\\%s", cache, CACHE_MARKER_NAME, allocator = context.allocator)
+	defer delete(marker, context.allocator)
+	testing.expect(t, !os.exists(marker), "a refused directory was marked owned anyway")
+}
+
+// #258's round-2 review, Critical finding (b): a browser/yt-dlp
+// download-in-progress folder is `.part`-only. It matched the old
+// suffix-only `.part` shape and was adopted, then swept whole. Same fix,
+// same reason: there is no shape to match any more.
+@(test)
+a_cache_directory_holding_only_a_part_file_is_refused_rather_than_adopted :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "audio", "download", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	partial := testkit.fixture_file(
+		t,
+		cache,
+		"lecture-series.mp4.part",
+		"still downloading",
+		context.allocator,
+	)
+	defer delete(partial, context.allocator)
+
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.Foreign_Directory)
+	testing.expect(t, os.exists(partial), "a refused cache open still lost the user's own file")
+
+	marker := fmt.aprintf("%s\\%s", cache, CACHE_MARKER_NAME, allocator = context.allocator)
+	defer delete(marker, context.allocator)
+	testing.expect(t, !os.exists(marker), "a refused directory was marked owned anyway")
+}
+
+// #258's round-2 review, Critical finding (c): the sticky, escalating
+// failure -- a lone `.json` adopts and marks, then a video lands and is
+// still trusted through the marker's short-circuit. With the adoption
+// branch gone, a lone `.json` is refused on first contact, so there is no
+// marker for a later video to escalate through.
+@(test)
+a_json_only_directory_stays_refused_after_a_video_lands :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "audio", "escalate", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	export := testkit.fixture_file(t, cache, "export.json", "{}", context.allocator)
+	defer delete(export, context.allocator)
+
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.Foreign_Directory)
+
+	clip := testkit.fixture_file(t, cache, "wedding-2011.mp4", "not audio", context.allocator)
+	defer delete(clip, context.allocator)
+
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.Foreign_Directory)
+
+	marker := fmt.aprintf("%s\\%s", cache, CACHE_MARKER_NAME, allocator = context.allocator)
+	defer delete(marker, context.allocator)
+	testing.expect(
+		t,
+		!os.exists(marker),
+		"a directory refused for foreign content was marked owned anyway",
+	)
+}
+
+// #256's round-1 review, finding 1: a bare `<stem>.wav` (no source key) is
+// indistinguishable BY SUFFIX from a user's own raw recording -- a folder of
+// voice memos (`memo-2019-holiday.wav`, `memo-2020-grandma.wav`) matched the
+// old, suffix-only shape check and was adopted, then swept, destroying both.
+// #258's round-2 review deleted the shape-adoption branch outright, so this
+// is now refused for the same reason every non-empty, unmarked directory is:
+// ownership is never inferred from content.
+@(test)
+a_cache_directory_holding_unkeyed_wav_files_is_refused_rather_than_adopted :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "audio", "memos", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	first := testkit.fixture_file(
+		t,
+		cache,
+		"memo-2019-holiday.wav",
+		"a voice memo, not a transcibr cache entry",
+		context.allocator,
+	)
+	defer delete(first, context.allocator)
+	second := testkit.fixture_file(
+		t,
+		cache,
+		"memo-2020-grandma.wav",
+		"another voice memo",
+		context.allocator,
+	)
+	defer delete(second, context.allocator)
+
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.Foreign_Directory)
+	testing.expect(t, os.exists(first), "a refused cache open still lost the user's own file")
+	testing.expect(t, os.exists(second), "a refused cache open still lost the user's own file")
+
+	marker := fmt.aprintf("%s\\%s", cache, CACHE_MARKER_NAME, allocator = context.allocator)
+	defer delete(marker, context.allocator)
+	testing.expect(t, !os.exists(marker), "a refused directory was marked owned anyway")
+}
+
+// #256's round-1 review, finding 1(b): an unkeyed wav paired with its own
+// `.json` -- a podcast/DAW export folder -- is the same shape as a real
+// transcibr cache by suffix alone. Refused for the same reason as above:
+// there is no shape-adoption branch left to match it against.
+@(test)
+a_cache_directory_pairing_an_unkeyed_wav_with_a_json_is_refused_rather_than_adopted :: proc(
+	t: ^testing.T,
+) {
+	cache := testkit.made_scratch_cache(t, "audio", "export", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	wav := testkit.fixture_file(
+		t,
+		cache,
+		"podcast-ep12.wav",
+		"not a transcibr wav",
+		context.allocator,
+	)
+	defer delete(wav, context.allocator)
+	json := testkit.fixture_file(t, cache, "podcast-ep12.json", "{}", context.allocator)
+	defer delete(json, context.allocator)
+
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.Foreign_Directory)
+	testing.expect(t, os.exists(wav), "a refused cache open still lost the user's own file")
+	testing.expect(t, os.exists(json), "a refused cache open still lost the user's own file")
+}
+
+// #256's round-1 review, finding 1(c): because an unkeyed-wav-only folder is
+// refused on FIRST contact rather than adopted, no marker is ever written
+// for it -- the sticky, escalating failure the review measured (a directory
+// refused once, then silently accepted forever after a marker landed) has
+// no directory left to escalate from. Adding a video after the first
+// refusal is refused again, identically.
+@(test)
+a_directory_refused_for_unkeyed_wav_stays_refused_after_more_files_land :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "audio", "poison", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	memo := testkit.fixture_file(t, cache, "memo.wav", "a voice memo", context.allocator)
+	defer delete(memo, context.allocator)
+
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.Foreign_Directory)
+
+	clip := testkit.fixture_file(t, cache, "clip.mp4", "not audio", context.allocator)
+	defer delete(clip, context.allocator)
+
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.Foreign_Directory)
+
+	marker := fmt.aprintf("%s\\%s", cache, CACHE_MARKER_NAME, allocator = context.allocator)
+	defer delete(marker, context.allocator)
+	testing.expect(
+		t,
+		!os.exists(marker),
+		"a directory refused for unkeyed wav content was marked owned anyway",
+	)
+}
+
+// `sweep_cache` gates through `open_cache` unconditionally, on every call --
+// so a caller that reaches it directly, skipping whatever gate the Batch
+// itself already ran, is still refused before anything is listed for
+// removal. Defense in depth for the sweep side: no separate ownership check
+// was added to `sweep_cache` itself, because none was needed.
+@(test)
+a_sweep_of_a_foreign_directory_is_refused_and_removes_nothing :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "audio", "foreign-sweep", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	photo := testkit.fixture_file(t, cache, "vacation.jpg", "not audio either", context.allocator)
+	defer delete(photo, context.allocator)
+
+	everything := Sweep_Limits {
+		max_bytes    = 0,
+		max_age_ns   = 1,
+		spare_age_ns = 0,
+	}
+	taken, fault := sweep_cache(cache, everything, context.allocator)
+	testing.expect_value(t, fault, Cache_Fault.Foreign_Directory)
+	testing.expect_value(t, taken, 0)
+	testing.expect(t, os.exists(photo), "a refused sweep still removed the user's own file")
+}
+
+// Issue #256, item 3: `job.name` is the artifact stem alone (ADR-0008), and
+// two Recordings sharing a stem from different subfolders of one Batch root
+// are a real, legitimate shape -- not a mistake either recording made. Both
+// used to key the same flat `<cache>\<stem>.wav`.
+@(test)
+two_recordings_sharing_a_stem_key_to_different_wav_paths :: proc(t: ^testing.T) {
+	first := Job {
+		source = "C:\\talks\\june\\interview.mp4",
+		cache  = "C:\\cache",
+		name   = "interview",
+	}
+	second := Job {
+		source = "C:\\talks\\july\\interview.mp4",
+		cache  = "C:\\cache",
+		name   = "interview",
+	}
+
+	first_path := wav_cache_path(first, context.allocator)
+	defer delete(first_path, context.allocator)
+	second_path := wav_cache_path(second, context.allocator)
+	defer delete(second_path, context.allocator)
+
+	testing.expectf(
+		t,
+		first_path != second_path,
+		"two Recordings sharing a stem still keyed to the same wav path: %s",
+		first_path,
+	)
+	testing.expect(
+		t,
+		strings.has_prefix(first_path, "C:\\cache\\interview."),
+		"the wav key dropped the artifact stem a human reads the cache by",
+	)
+	testing.expect(
+		t,
+		strings.has_suffix(first_path, ".wav"),
+		"the wav key stopped being a .wav path",
+	)
+}
+
+// The wav key has to be the same path twice in a row, or a retry of the same
+// Recording would scatter its audio across the cache under a new name every
+// time it is asked for.
+@(test)
+the_same_source_keys_to_the_same_wav_path_every_time :: proc(t: ^testing.T) {
+	job := Job {
+		source = "C:\\talks\\june\\interview.mp4",
+		cache  = "C:\\cache",
+		name   = "interview",
+	}
+
+	once := wav_cache_path(job, context.allocator)
+	defer delete(once, context.allocator)
+	again := wav_cache_path(job, context.allocator)
+	defer delete(again, context.allocator)
+
+	testing.expect_value(t, once, again)
 }
 
 @(test)

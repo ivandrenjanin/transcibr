@@ -81,13 +81,22 @@ run_transcribe_drill :: proc(
 // for.
 @(test)
 a_transcribe_refuses_an_unreadable_engine_naming_itself_and_not_the_batch :: proc(t: ^testing.T) {
+	fixtures := testkit.made_scratch_cache(
+		t,
+		"pipeline",
+		"engine-refusal-cli-fixtures",
+		context.allocator,
+	)
+	defer delete(fixtures, context.allocator)
+	defer testkit.remove_cache(fixtures, context.allocator)
+
 	directory := testkit.made_scratch_cache(t, "pipeline", "engine-refusal-cli", context.allocator)
 	defer delete(directory, context.allocator)
 	defer testkit.remove_cache(directory, context.allocator)
 
 	model_path := testkit.fixture_file(
 		t,
-		directory,
+		fixtures,
 		"ggml-model.bin",
 		"a model fixture, readable but not a real Model",
 		context.allocator,
@@ -95,7 +104,7 @@ a_transcribe_refuses_an_unreadable_engine_naming_itself_and_not_the_batch :: pro
 	defer delete(model_path, context.allocator)
 	missing_engine := testkit.fixture_file(
 		t,
-		directory,
+		fixtures,
 		"whisper-cli.exe",
 		"present so it can be removed",
 		context.allocator,
@@ -103,7 +112,7 @@ a_transcribe_refuses_an_unreadable_engine_naming_itself_and_not_the_batch :: pro
 	os.remove(missing_engine)
 	recording_path := testkit.fixture_file(
 		t,
-		directory,
+		fixtures,
 		"clip.mp4",
 		"never read: the drill refuses at the Engine before it is ever opened",
 		context.allocator,
@@ -203,13 +212,22 @@ a_transcribe_refuses_an_unusable_cache_naming_itself_and_not_the_batch :: proc(t
 // already cover.
 @(test)
 a_transcribe_refuses_an_unreadable_model_naming_itself_and_not_the_batch :: proc(t: ^testing.T) {
+	fixtures := testkit.made_scratch_cache(
+		t,
+		"pipeline",
+		"model-refusal-cli-fixtures",
+		context.allocator,
+	)
+	defer delete(fixtures, context.allocator)
+	defer testkit.remove_cache(fixtures, context.allocator)
+
 	directory := testkit.made_scratch_cache(t, "pipeline", "model-refusal-cli", context.allocator)
 	defer delete(directory, context.allocator)
 	defer testkit.remove_cache(directory, context.allocator)
 
 	missing_model := testkit.fixture_file(
 		t,
-		directory,
+		fixtures,
 		"ggml-model.bin",
 		"present so it can be removed",
 		context.allocator,
@@ -217,7 +235,7 @@ a_transcribe_refuses_an_unreadable_model_naming_itself_and_not_the_batch :: proc
 	os.remove(missing_model)
 	recording_path := testkit.fixture_file(
 		t,
-		directory,
+		fixtures,
 		"clip.mp4",
 		"never read: the drill refuses at the Model before it is ever opened",
 		context.allocator,

@@ -326,3 +326,113 @@ otherwise have transcribed. `discard_recording_wav` carries no pid, freshness, o
 against this. Issue #251 measured that this sweep has no ownership guard and records the gap here
 rather than inventing one: an ownership check is a real feature, not a fix, and is left to the
 maintainer alongside the reuse question above.
+
+## Addendum: the cache is owned, not merely opened, and its wav key stops colliding (issue #256)
+
+Issue #251's own closing gap — "an ownership check is a real feature… left to the maintainer" — is
+this ticket. It was filed alongside two siblings, both measured against the same `open_cache`: a
+sweep with no owned-name filter at all (`sweep_cache` removes any `.Regular`/`.Undetermined` entry
+by age or size, so `--cache` pointed at a real media directory loses the user's files at Batch
+start), and `produce` renaming its `.part` over `<cache>\<stem>.wav` with no existence check, so a
+`.wav` source under `--cache <its own folder>` is replaced by its own downmix. `open_cache` refused
+a regular file at the cache path and a missing parent; nothing refused a directory full of
+somebody's Recordings.
+
+### The ownership boundary
+
+`open_cache` now settles one further question before it hands a cache back to a caller: does
+transcibr own this directory. A zero-byte marker file, `.transcibr-cache`
+(`CACHE_MARKER_NAME`, `src/audio/run.odin`), records the answer once it is settled, so the same
+directory does not have to be re-derived on every later Batch:
+
+- **The marker is already there.** Trusted outright; nothing is listed.
+- **The directory is empty.** Trivially transcibr's to take; the marker is written.
+- **Anything else** — the directory holds any entry at all — refuses with the new
+  `Cache_Fault.Foreign_Directory`, naming the remedy ("point `--cache` at an empty directory, or
+  one transcibr already owns") through the same `cache_error_message` channel every other
+  `Cache_Fault` already renders through. No `src/cli` edit was needed: `--transcribe`'s and
+  `--batch`'s existing calls to `audio.cache_error_message` already render whatever `Cache_Fault`
+  `open_cache` hands back.
+
+**#258's round-2 review deleted content-shape adoption outright; ownership is never inferred from
+what a directory holds, only from the marker or from emptiness.** Two earlier cuts of this
+addendum tried to make adoption of a non-empty, unmarked directory safe — first by suffix alone,
+then (#256's round-1 review) by requiring a `.wav` to also carry its own source key
+(`wav_name_key_shaped`) — and both were proved unsafe in turn. The round-1 tightening closed the
+`.wav` entrance (a folder of the user's own voice memos, or a podcast/DAW export's
+`<name>.wav`/`<name>.json` pair) but left `.json`, `.probe` and `.part` as bare suffix matches, so
+a JSON-export folder (`invoices-2019.json`, `invoices-2020.json`) or a browser/yt-dlp
+download-in-progress folder (`lecture-series.mp4.part`) still matched the shape check, was still
+adopted, and was still swept whole — and once a marker landed for either shape, a later file
+dropped into the same directory (a video, say) was still silently trusted through the marker's
+short-circuit. The round-2 review also established that shape adoption, even working exactly as
+designed, never rescued a real pre-#256 cache in the first place: every wav `produce` wrote before
+this ticket was keyed on `job.name` alone (`<cache>\<stem>.wav`), which is precisely the unkeyed
+shape the round-1 tightening refuses — so the adoption branch's entire remaining effect, after
+round 1, was the data-loss surface named above, with no migration value left to weigh against it.
+Deleting `cache_directory_is_transcibr_shaped`, `entry_name_transcibr_written`,
+`wav_name_key_shaped` and `is_source_key_shaped` and refusing every non-empty, unmarked directory
+closes the class rather than the three or five shapes a given review round happened to probe: a
+pre-#256 cache is refused once, exactly as a JSON-export or download-in-progress or voice-memo
+folder now is, and the refusal names its own remedy (an empty or already-owned `--cache`) — the
+scratch cache is disposable; the directories the old rule destroyed were not.
+
+**Defense in depth, stated exactly as far as it goes.** `sweep_cache` gates through `open_cache` on
+every call, unconditionally — so a caller that reaches it directly is refused before anything is
+listed for removal; `a_sweep_of_a_foreign_directory_is_refused_and_removes_nothing`
+(`src/audio/run_test.odin`) pins this. `produce` and `extract` do not independently re-verify
+ownership per Recording — this is unchanged from `extract`'s own doc comment, already true before
+this ticket: "a cache that will not open is not a fact about this Recording… a Batch calls
+`open_cache` once, before the first extraction." Adding a second ownership check inside `produce`
+would mean every Recording paying for a check the Batch already paid once, against the same
+architecture this package already committed to. The gate is `open_cache`, called once; nothing
+downstream of it re-derives the answer.
+
+The marker itself is excluded from `cache_entries` (`src/audio/run.odin`), and so from the age/size
+sweep, and this is now load-bearing rather than an optimization: since ownership is never
+re-derived from a directory's contents (round-2 addendum above), a marker the sweep took out from
+under a live, non-empty cache would leave the next `open_cache` seeing a non-empty, unmarked
+directory and refusing it with `Cache_Fault.Foreign_Directory` — a working cache stranded by its
+own housekeeping. Excluding the marker by name keeps that from ever being reachable.
+
+### The wav key stops colliding on a shared stem
+
+Item 3 is transcibr-vs-transcibr and needed its own answer regardless of the ownership decision:
+`<cache>\<stem>.wav` was keyed on `job.name` alone — the artifact stem, ADR-0008 — and two
+Recordings sharing a stem from two different subfolders of one Batch root is a real, legitimate
+shape (ADR-0008's own injectivity proof is scoped to one directory; the flat scratch cache is not).
+`wav_cache_path` (`src/audio/run.odin`) now keys the wav on `<stem>.<key>.wav`, where `key` is the
+first eight bytes of a SHA-256 over the Recording's own `source` path, rendered as sixteen hex
+characters (`source_key`) — not a hash of the audio's bytes, which `produce` has not read yet and
+`extract` never reads as a whole. Two Recordings sharing a stem now key to two different paths;
+the same Recording keys to the same path every time, which retrying it depends on.
+
+**Consequence, stated plainly: this renames every wav this codebase will ever write, so every wav
+already sitting in a cache from before this ticket stops matching.** Nothing reads a cached wav by
+its old name ever again; issue #251 already measured that no caller reuses an extracted wav by any
+name, so this costs nothing beyond what #251 already priced in. An old-named wav becomes ordinary
+stale cache content, cleared by the existing age sweep like any other file that outlives its own
+Recording's run — up to seven days, the existing `max_age_ns`.
+
+**What this addendum does not do.** The Engine's own output naming (`<cache>\<name>.json`, built in
+`src/engine/run.odin` and rebuilt in `src/pipeline/recording.odin`'s `discard_engine_output`) is
+untouched: it stays keyed on `job.name` alone, and a stem collision there is a real, narrower
+residual this ticket does not fix, left exactly where "The two intermediates carry the process id;
+the finished audio does not" above already leaves it — the Batch's own guarantee that no two
+workers take the same stem, unenforced in this package. `discard_recording_wav`
+(`src/pipeline/recording.odin`, issue #251) takes `extracted.extracted.audio` exactly as
+`audio.extract` handed it back rather than rebuilding a prefix, so it inherits the new key with no
+edit of its own — the one path-construction seam (`wav_cache_path`) is the only place a wav's name
+is ever built, and everything downstream of `produce` already consumed the string it returned
+rather than reconstructing it.
+
+### What this builds toward
+
+Issue #17 (the GUI era's first-run cache selection) will ask a user to pick a `--cache` directory
+through a picker rather than a hand-typed flag, which makes "the user pointed it at the wrong
+folder" a mis-click rather than a typo -- the exact failure mode this addendum's ownership boundary
+exists to make survivable rather than catastrophic. A GUI picker can also surface `.None` versus
+`.Foreign_Directory` versus a freshly-adopted directory as three different confirmations at
+selection time, before a Batch ever starts, rather than as a refusal after the fact; that UI is
+#17's to design, not this ticket's, but the boundary it would sit on top of is the one recorded
+here.
