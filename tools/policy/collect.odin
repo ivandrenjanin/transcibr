@@ -120,6 +120,7 @@ note_declared :: proc(state: ^Walk_State, declaration: ^ast.Value_Decl) {
 				returns = hands_back(literal),
 				annotated = requires_results(declaration),
 				attributable = !declaration.is_mutable,
+				is_test = has_attribute(declaration, TEST_ATTRIBUTE),
 			},
 		)
 	}
@@ -199,11 +200,24 @@ hands_back :: proc(literal: ^ast.Proc_Lit) -> bool {
 @(require_results)
 requires_results :: proc(declaration: ^ast.Value_Decl) -> bool {
 	assert(declaration != nil, "asked about the attributes of no declaration at all")
+	return has_attribute(declaration, REQUIRE_RESULTS)
+}
+
+// Whether `name` sits among a declaration's own `@(...)` attributes, however
+// many share the list and whatever else rides beside it: `@(test)`,
+// `@(private, test)` and a `test` stacked on a line of its own above the
+// declaration are the same fact to a reader that answers this, exactly the
+// way `requires_results` already answered the same question for one fixed
+// name before this generalised it (issue #174).
+@(require_results)
+has_attribute :: proc(declaration: ^ast.Value_Decl, name: string) -> bool {
+	assert(declaration != nil, "asked about the attributes of no declaration at all")
+	assert(len(name) > 0, "asked whether a declaration carries no attribute name at all")
 
 	for attribute in declaration.attributes {
 		assert(attribute != nil, "an attribute list holding a hole is a parser defect")
 		for element in attribute.elems {
-			if attribute_name(element) == REQUIRE_RESULTS {
+			if attribute_name(element) == name {
 				return true
 			}
 		}
