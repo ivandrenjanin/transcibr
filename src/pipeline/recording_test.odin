@@ -7,6 +7,7 @@ import "core:strings"
 import "core:testing"
 import "transcibr:artifact"
 import "transcibr:audio"
+import "transcibr:child"
 import "transcibr:engine"
 import "transcibr:planning"
 import "transcibr:testkit"
@@ -423,4 +424,148 @@ review_a_real_engine_duration_reading_must_not_abort_a_healthy_batch :: proc(t: 
 	testing.expect_value(t, checked, true)
 	testing.expect_value(t, abort, false)
 	testing.expect_value(t, unhealthy, false)
+}
+
+// Issue #211's real-child half. A stand-in Engine that walks its own
+// arguments for `-of` rather than being handed the path, spelled the same
+// way `engine_test.odin`'s own `stand_in` is -- that copy is `@(private)` to
+// package engine and cannot be imported back here.
+@(private)
+@(require_results)
+refusal_stand_in :: proc(t: ^testing.T, cache: string, tag: string, body: string) -> string {
+	assert(len(body) > 0, "a stand-in Engine that does nothing at all says nothing")
+
+	path := fmt.aprintf("%s\\stand-in-%s.cmd", cache, tag, allocator = context.allocator)
+	script := fmt.aprintf(
+		"@echo off\r\nsetlocal\r\nset \"PREFIX=\"\r\n:next\r\nif \"%%~1\"==\"\" goto ready\r\nif /i \"%%~1\"==\"-of\" set \"PREFIX=%%~2\"\r\nshift\r\ngoto next\r\n:ready\r\n%s\r\n",
+		body,
+		allocator = context.allocator,
+	)
+	defer delete(script, context.allocator)
+
+	testing.expect(
+		t,
+		os.write_entire_file(path, transmute([]u8)script) == nil,
+		"could not write the stand-in Engine",
+	)
+	return path
+}
+
+@(private)
+@(require_results)
+opened_group :: proc(t: ^testing.T) -> (group: child.Job_Object, ok: bool) {
+	opened, err := child.job_object_open()
+	if !testing.expectf(t, err.fault == .None, "no job object: %v", err.fault) {
+		return {}, false
+	}
+	return opened, true
+}
+
+// The ticket's own proof: a Recording whose Engine run finishes and refuses
+// it (a real, non-empty output written, then a nonzero exit -- the #186
+// review's shape) must leave zero new entries in the scratch cache once
+// `transcribe_and_place` has settled it. Before this ticket's fix,
+// `cache\refused-sweep.json` -- the very file the stand-in writes -- was
+// still sitting there afterward.
+@(test)
+a_refused_recording_leaves_no_engine_output_behind_in_the_scratch_cache :: proc(t: ^testing.T) {
+	group, ok := opened_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	cache := testkit.made_scratch_cache(t, "Pipeline", "refused-sweep", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	executable := refusal_stand_in(
+		t,
+		cache,
+		"refused-sweep",
+		">\"%PREFIX%.json\" echo {}\r\nexit /b 3",
+	)
+	defer delete(executable, context.allocator)
+
+	job := new_recording_job(
+		"C:\\clips\\talk.mp4",
+		"refused-sweep",
+		&group,
+		Tools{engine = engine.Tools{engine = executable}},
+		cache,
+		artifact.Model{path = "C:\\nowhere\\model.bin"},
+		"",
+		"whisper.cpp 1.9.9",
+		transcript.DEFAULT_PROFILE,
+		engine.Report{},
+		Health_Watch{},
+	)
+	extracted := Recording_Extracted {
+		job = job,
+		extracted = audio.Extracted{audio = "C:\\nowhere\\talk.wav", container_ms = 2_000},
+	}
+
+	placed := transcribe_and_place(extracted)
+
+	testing.expect_value(t, placed, false)
+
+	expected := fmt.aprintf("%s\\refused-sweep.json", cache, allocator = context.allocator)
+	defer delete(expected, context.allocator)
+	testing.expect(
+		t,
+		!os.exists(expected),
+		"a refused Recording left its Engine output behind in the scratch cache",
+	)
+}
+
+// The `.Output_Empty` precedent the ticket names converging to the same
+// shape: the Engine exits 0 but writes an empty file, `landed_bounded`
+// reports `.Output_Empty`, and the empty file must be swept exactly like a
+// `.Refused` one is.
+@(test)
+an_output_empty_recording_leaves_no_engine_output_behind_in_the_scratch_cache :: proc(
+	t: ^testing.T,
+) {
+	group, ok := opened_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	cache := testkit.made_scratch_cache(t, "Pipeline", "empty-sweep", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	executable := refusal_stand_in(t, cache, "empty-sweep", "type nul > \"%PREFIX%.json\"")
+	defer delete(executable, context.allocator)
+
+	job := new_recording_job(
+		"C:\\clips\\talk.mp4",
+		"empty-sweep",
+		&group,
+		Tools{engine = engine.Tools{engine = executable}},
+		cache,
+		artifact.Model{path = "C:\\nowhere\\model.bin"},
+		"",
+		"whisper.cpp 1.9.9",
+		transcript.DEFAULT_PROFILE,
+		engine.Report{},
+		Health_Watch{},
+	)
+	extracted := Recording_Extracted {
+		job = job,
+		extracted = audio.Extracted{audio = "C:\\nowhere\\talk.wav", container_ms = 2_000},
+	}
+
+	placed := transcribe_and_place(extracted)
+
+	testing.expect_value(t, placed, false)
+
+	expected := fmt.aprintf("%s\\empty-sweep.json", cache, allocator = context.allocator)
+	defer delete(expected, context.allocator)
+	testing.expect(
+		t,
+		!os.exists(expected),
+		"an Output_Empty Recording left its empty Engine output behind in the scratch cache",
+	)
 }
