@@ -574,11 +574,14 @@ Defer_Order_State :: struct {
 	text:  mem.Allocator,
 }
 
-// One node of the defer-order walk: only a block's own direct statements
-// are ever gathered as a scope, so a Block_Stmt is the only node this reads
-// for anything -- descent into a nested block still happens (returning the
-// visitor carries it on), and that nested block is read as its own scope
-// when the walk reaches it as its own node.
+// One node of the defer-order walk: a Block_Stmt's own direct statements
+// are gathered as a scope, and so is a Case_Clause's -- `switch`/`case` and
+// type-switch `case` bodies hold their statements directly in `body:
+// []^Stmt` (core/odin/ast/ast.odin's Case_Clause) with no intervening
+// Block_Stmt, so a case clause has to be read as its own scope the same way
+// a block is. Descent into a nested block or clause still happens
+// (returning the visitor carries it on), and that nested scope is read on
+// its own when the walk reaches it as its own node.
 @(require_results)
 note_defer_order_node :: proc(walker: ^ast.Visitor, node: ^ast.Node) -> ^ast.Visitor {
 	if node == nil {
@@ -590,20 +593,22 @@ note_defer_order_node :: proc(walker: ^ast.Visitor, node: ^ast.Node) -> ^ast.Vis
 	state := (^Defer_Order_State)(walker.data)
 	#partial switch found in node.derived {
 	case ^ast.Block_Stmt:
-		note_block_defers(state, found)
+		note_stmt_list_defers(state, found.stmts)
+	case ^ast.Case_Clause:
+		note_stmt_list_defers(state, found.body)
 	}
 	return walker
 }
 
-// One block's own defer-call pairs: every `defer` among its direct
-// statements that names a container, checked pairwise for a walk registered
-// ahead of a later free on the same identifier.
-note_block_defers :: proc(state: ^Defer_Order_State, block: ^ast.Block_Stmt) {
-	assert(state != nil, "asked to record a block's defers into no state at all")
-	assert(block != nil, "asked to record the defers of no block at all")
+// One scope's own defer-call pairs -- a block's `.stmts` or a case
+// clause's `.body`, both `[]^ast.Stmt` -- every `defer` among its direct
+// statements that names a container, checked pairwise for a walk
+// registered ahead of a later free on the same identifier.
+note_stmt_list_defers :: proc(state: ^Defer_Order_State, stmts: []^ast.Stmt) {
+	assert(state != nil, "asked to record a scope's defers into no state at all")
 
 	calls := make([dynamic]Defer_Call, 0, 0, state.tree)
-	for stmt in block.stmts {
+	for stmt in stmts {
 		call, is_named := named_defer_call(stmt)
 		if is_named {
 			append(&calls, call)

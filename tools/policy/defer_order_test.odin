@@ -69,3 +69,27 @@ a_walk_defer_written_in_the_discard_form_is_still_a_violation :: proc(t: ^testin
 		testing.expect_value(t, facts.defer_order[0].arg, "violations")
 	}
 }
+
+// A `switch` case clause holds its statements directly in `body: []^Stmt`
+// (core/odin/ast/ast.odin's Case_Clause), with no intervening Block_Stmt --
+// so a walk/free pair registered directly under a case clause, never inside
+// a nested block of its own, must still be read as a scope.
+@(test)
+a_walk_defer_registered_before_a_free_defer_inside_a_switch_case_is_a_violation :: proc(
+	t: ^testing.T,
+) {
+	facts := facts_of(
+		t,
+		PROBE +
+		"held :: proc(n: int) {\n\tviolations := check()\n\tswitch n {\n\tcase 1:\n\t\tdefer violations_destroy(violations, context.allocator)\n\t\tdefer delete(violations)\n\t}\n}\n",
+	)
+	defer facts_destroy(facts, context.allocator)
+
+	testing.expect_value(t, len(facts.defer_order), 1)
+	if len(facts.defer_order) == 1 {
+		testing.expect_value(t, facts.defer_order[0].line, 7)
+		testing.expect_value(t, facts.defer_order[0].walk_proc, "violations_destroy")
+		testing.expect_value(t, facts.defer_order[0].free_proc, "delete")
+		testing.expect_value(t, facts.defer_order[0].arg, "violations")
+	}
+}
