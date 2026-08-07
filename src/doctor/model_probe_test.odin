@@ -36,6 +36,39 @@ an_overflowed_probe_is_refused_by_the_model_verdict_rather_than_judged_on_its_ca
 	)
 }
 
+// Issue #145: `model_load_verdict`'s `probe.exit_code != 0` branch was the
+// only route to `model_refused`, which re-asserted the identical condition
+// on a value that originates in a child process -- a legitimate A4 pair, but
+// nothing exercised it, and it was the one assert in the package standing
+// between external data and a fault report. Drives the child-originated
+// exit code through `model_load_verdict` directly, the seam a real doctor
+// run reaches this through, and pins the rendered wording rather than only
+// `check.ok`, so a mutation that renders the wrong sentence for a refused
+// engine still turns this red.
+@(test)
+a_refused_engine_probe_names_its_exit_status_without_asserting :: proc(t: ^testing.T) {
+	probe := Probe {
+		run       = .Finished,
+		exited    = true,
+		exit_code = 1,
+		captured  = "",
+	}
+	check := model_load_verdict(probe, "model.bin", context.allocator)
+	defer destroy_check(check, context.allocator)
+
+	testing.expect_value(t, check.ok, false)
+	testing.expect(
+		t,
+		strings.contains(check.reason, "engine exit status 0x1"),
+		"a refused probe's message did not name the engine's own exit status",
+	)
+	testing.expect(
+		t,
+		strings.contains(check.reason, "truncated or corrupt"),
+		"a refused probe's message did not carry the download-corruption wording",
+	)
+}
+
 // Named per member rather than recomputed from the same formula
 // `model_probe_wav_settled` itself uses -- the shape `child\read_test.odin`'s
 // own fault tests use, so this cannot agree with a wrong implementation of
