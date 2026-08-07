@@ -4,6 +4,18 @@ package cliargs
 import "core:strings"
 import "core:testing"
 
+// ADR-0038 derives 3 from the measured widest call site,
+// `read_batch_worker_option` (batch_options.odin), which lands with this
+// stage: `%s takes a whole number from 1 to %d, not %q.` interpolates the
+// option name, the ceiling and the offending value, all three. Pinned so
+// raising MAX_REFUSAL_ARGS to 4 does not leave the whole suite green with
+// nothing that actually needs the fourth slot (stage-2 review deposit 4, PR
+// #194).
+@(test)
+max_refusal_args_is_three_the_width_read_batch_worker_option_needs :: proc(t: ^testing.T) {
+	testing.expect_value(t, MAX_REFUSAL_ARGS, 3)
+}
+
 @(test)
 make_refusal_holds_its_complaint_and_arguments_by_value :: proc(t: ^testing.T) {
 	r := make_refusal(

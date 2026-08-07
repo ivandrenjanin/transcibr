@@ -27,3 +27,9 @@ Common_Options :: struct {
 	prompt:  string,
 	profile: transcript.Merge_Profile,
 }
+
+// Command-agnostic -- every migrated command's reader falls through to this
+// same complaint on an option name it does not recognize -- so it belongs
+// beside Common_Options rather than inside one command's own file (s3
+// deposit 4, PR #201 review).
+UNKNOWN_OPTION_COMPLAINT :: "unknown option %q."

@@ -47,27 +47,22 @@ MAX_QUEUE_DEPTH :: 2
 #assert(MAX_EXTRACT_WORKERS <= 2)
 #assert(MAX_QUEUE_DEPTH <= 2)
 
-// The one check `--extract-workers` and `--queue-depth` each run against
-// their own ceiling (src/cli/batch.odin's `read_worker_count`), pulled out
-// here so a test can walk both ceilings without reaching into `src/cli`,
-// which ADR-0009 keeps test-less. Taking `ceiling` as a parameter rather than
-// reading `MAX_EXTRACT_WORKERS` or `MAX_QUEUE_DEPTH` directly is what issue
-// #94 is about: a shared check that reached for one constant by name is
-// exactly how `--extract-workers` used to get refused against
-// `MAX_QUEUE_DEPTH` instead of its own ceiling.
-@(require_results)
-worker_count_within_ceiling :: proc(count: int, ceiling: int) -> bool {
-	assert(ceiling > 0, "a ceiling of zero admits no worker count at all")
-	return count > 0 && count <= ceiling
-}
+// `worker_count_within_ceiling` relocated to `transcibr:process` with
+// ADR-0038's batch migration (#75): `src/cliargs`'s own worker-count reader
+// needed the check and cannot import `pipeline` (its import closure is
+// `transcript`/`process` only), and the check's own body was never
+// pipeline-specific to begin with -- it takes `ceiling` as a parameter
+// rather than reading `MAX_EXTRACT_WORKERS`/`MAX_QUEUE_DEPTH` by name. Its
+// relocated test is `src/process/worker_ceiling_test.odin`.
 
 // The pairing itself, owned here rather than spelled out again at each
-// `src/cli/batch.odin` call site: which option name refuses against which
-// ceiling. `read_batch_option` looks an option's ceiling up in this table
-// instead of naming `MAX_EXTRACT_WORKERS` or `MAX_QUEUE_DEPTH` by hand at the
-// call site, so a mispairing can only live here, where
-// `worker_option_ceilings_pair_each_option_with_its_own_max`
-// (defaults_test.odin) walks the table and can catch it.
+// call site: which option name refuses against which ceiling. Kept for the
+// same table-not-a-switch reason issue #94 introduced it, even though
+// `src/cliargs`'s own enum-keyed `Worker_Ceilings` (ADR-0038 addendum) is
+// what actually closes the swap defect class for the grammar's own dispatch
+// now -- this table's own swap risk is still caught by the name-position
+// checks `worker_option_ceilings_pair_each_option_with_its_own_max`
+// (defaults_test.odin) holds.
 Worker_Option_Ceiling :: struct {
 	name:    string,
 	ceiling: int,

@@ -319,3 +319,86 @@ with the parsed result — is the point at which either this package's import cl
 this record justifies, or that command's grammar stays a `src/cli` reader by name instead. Until
 then: two imports, `transcript` and `process`, and nothing named here stands over a spec module of
 its own.
+
+## Addendum, 2026-08-07 (issue #75, Stage 4 — `--batch`'s migration): the ceiling-lookup placement, resolved
+
+The routing comment on #75 recorded a wrinkle in this ADR's own sketch (lines 262-266 above): it
+placed the ceiling LOOKUP in `src/cli`, "called immediately before the grammar's per-option
+dispatch" — but once the grammar's read loop moved into `src/cliargs`, the per-option dispatch moved
+with it, so `src/cli` can no longer sit immediately before it. The candidate the routing comment
+named — `src/cli` resolves both ceilings up front and hands them across the fence — risks
+reintroducing a name-to-ceiling pairing on the `src/cli` side, the exact defect class the enum-keyed
+table exists to close. This is what actually shipped, and why it does not reopen that risk.
+
+**`src/cliargs` owns the enum and the table's SHAPE, never the ceiling values.**
+`worker_options.odin` declares:
+
+```odin
+Worker_Option :: enum { Extract_Workers, Queue_Depth }
+Worker_Ceilings :: [Worker_Option]int
+```
+
+`Worker_Ceilings` is a TYPE, not a filled table — `src/cliargs` never states a ceiling value itself,
+holding to this record's own earlier ruling that neither `MAX_EXTRACT_WORKERS` nor
+`MAX_QUEUE_DEPTH` is this record's to move or restate. `Batch_Options`'s read entry point takes a
+`Worker_Ceilings` value as a parameter (`read_batch_options(arguments: []string, ceilings:
+Worker_Ceilings)`), and its own dispatch (`read_batch_option`) indexes into it by enum member —
+`pu.ceilings[.Extract_Workers]`, `pu.ceilings[.Queue_Depth]` — never by a second string search.
+
+**`src/cli/batch.odin` fills a `Worker_Ceilings` value once, as a package-level `::` CONSTANT, built
+directly from `pipeline.MAX_EXTRACT_WORKERS` and `pipeline.MAX_QUEUE_DEPTH`:**
+
+```odin
+BATCH_WORKER_CEILINGS :: cliargs.Worker_Ceilings {
+	.Extract_Workers = pipeline.MAX_EXTRACT_WORKERS,
+	.Queue_Depth     = pipeline.MAX_QUEUE_DEPTH,
+}
+```
+
+This needs no runtime `pipeline.worker_option_ceiling` lookup at all — both `MAX_EXTRACT_WORKERS`
+and `MAX_QUEUE_DEPTH` were already `::` constants (`pipeline.odin:37-38`), so the composite literal
+above is itself a compile-time value, closing the #192 deposit's own ask ("make the replacement
+immutable, an enumerated-array constant") for the table that actually governs the grammar's own
+dispatch. The literal's exhaustiveness closes exactly one thing: an OMISSION. A third
+`Worker_Option` member added and left out of it fails the build (`Unhandled enumerated array case`)
+rather than reaching `src/cliargs` with a silently absent ceiling. What review still has to see —
+this record said as much the first time (lines 244-245 above) — is a WRONG constant named at a
+correctly-labelled `.Extract_Workers =`/`.Queue_Depth =` line, and that class INCLUDES a swap of the
+two rows' values: in an enum-keyed literal the key is the label, so
+`.Extract_Workers = pipeline.MAX_QUEUE_DEPTH, .Queue_Depth = pipeline.MAX_EXTRACT_WORKERS` is a
+mis-copied value at two correctly-labelled keys, not a shape the exhaustiveness check reaches. That
+swap builds clean and passes the full suite (measured against issue #212's own review, fix round 1);
+with ADR-0006's two bounds diverged it reproduces issue #94's defect end to end in the shipped
+binary. The enum buys completeness, not correctness of the values written into each row — that stays
+review's job, unchanged from what this record said the first time.
+
+**`pipeline.WORKER_OPTION_CEILINGS` and `pipeline.worker_option_ceiling` are not deleted.** They stay
+exactly where they were — `src/pipeline` still owns the string-keyed lookup and its own pairing
+test — but `src/cli` no longer calls `worker_option_ceiling` after this migration; nothing else in
+the tree calls it either. They remain as `pipeline`'s own tested record of the pairing, in case a
+future caller inside `pipeline` itself wants a name-keyed lookup, not as a live link in `--batch`'s
+own dispatch path any more.
+
+**`worker_count_within_ceiling` relocated to `transcibr:process`** exactly as this record's own
+worker-ceiling section (lines 191-266 above) specified, with its pinned test split rather than moved
+whole (`src/process/worker_ceiling_test.odin`, walking literal ceilings `1, 2, 5, 9` in place of
+`MAX_EXTRACT_WORKERS`/`MAX_QUEUE_DEPTH`, keeping every assertion the original made). `src/cliargs`'s
+own `read_worker_count` (`batch_options.odin`) calls `process.read_natural` and
+`process.worker_count_within_ceiling` directly, never `pipeline`.
+
+**Routing item 3 (the bare literal 3):** `read_worker_count`'s digit ceiling is now
+`MAX_WORKER_COUNT_DIGITS :: 3` in `src/cliargs/batch_options.odin`, beside a `#assert
+(MAX_WORKER_COUNT_DIGITS < process.MAX_NATURAL_DIGITS)` recording the relationship to
+`process.read_natural`'s own precedent (`MAX_NATURAL_DIGITS`, `artifact.MAX_SIDECAR_DIGITS`) rather
+than repeating a bare `3` at the call site.
+
+**Routing item 4 (the #94 hand-pairing defect) is closed for `--batch`'s own dispatch**:
+`read_batch_option`'s `case "--extract-workers":`/`case "--queue-depth":` arms each name their own
+`Worker_Option` member explicitly and read their ceiling out of the enum-keyed table by that member,
+never by a second name search. A swap of the two `case` arms — whether the whole arm body or just
+its `pu.ceilings[...]` index — is caught by
+`read_batch_options_refuses_each_worker_option_against_its_own_ceiling_and_not_the_others`
+(`src/cliargs/batch_options_test.odin`): both mutations red that test under the full vet set. What
+stays review-only is the VALUE swap inside `BATCH_WORKER_CEILINGS`'s own composite literal, described
+just above — a MISSING or DUPLICATED ceiling for a `Worker_Option` member cannot reach `--batch` at
+all, since that fails the build at the literal itself.
