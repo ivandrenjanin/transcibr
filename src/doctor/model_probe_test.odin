@@ -107,18 +107,19 @@ a_refused_engine_probe_names_its_exit_status_without_asserting :: proc(t: ^testi
 }
 
 // Issue #209: `model_refused`'s marker-branch selection
-// (`strings.contains(probe.captured, MODEL_LOAD_FAILURE_MARKER)`) had no unit
-// coverage in this package -- only a real-engine review test
-// (`review_a_200_mib_head_truncation_above_the_floor_must_not_pass_the_model_check`)
-// reds on an inverted `contains()`, and the ordinary suite does not run that
-// test. This drives a synthetic marker-carrying `captured` string through
-// `model_load_verdict` directly and pins the marker branch's own wording.
-// Paired with `a_refused_engine_probe_names_its_exit_status_without_asserting`
-// above, which already pins the marker-FREE branch (`captured = ""`) onto
-// "was refused by the engine" -- together the two tests turn red on either
-// direction of an inverted `contains()`: this one because a marker-carrying
-// probe would then render the marker-free wording instead of naming the
-// marker-load-failure sentence.
+// (`strings.contains(probe.captured, MODEL_LOAD_FAILURE_MARKER)`) had no
+// SYNTHETIC unit coverage of its marker-CARRYING branch specifically.
+// `a_refused_engine_probe_names_its_exit_status_without_asserting` above
+// already pins the marker-FREE branch (`captured = ""`) onto "was refused by
+// the engine", and the real-engine review test
+// (`review_a_200_mib_head_truncation_above_the_floor_must_not_pass_the_model_check`,
+// which the ordinary suite does run -- it self-skips only when the reference
+// engine/model are absent) already reds on the marker-carrying branch too.
+// This test drives a synthetic marker-carrying `captured` string through
+// `model_load_verdict` directly, so the marker-carrying branch has a unit pin
+// that runs unconditionally rather than only when the reference assets are
+// present. Together with the marker-free test above, the two turn red on
+// either direction of an inverted `contains()`.
 @(test)
 a_marker_carrying_probe_is_refused_by_the_model_verdict_with_the_load_failure_wording :: proc(
 	t: ^testing.T,

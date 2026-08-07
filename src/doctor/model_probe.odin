@@ -221,9 +221,10 @@ model_load_check_using :: proc(
 // builds, because `tool.odin`'s own `if run == .Finished { assert(state.exited,
 // ...) }` (tool.odin:136-137) already guarantees a `.Finished` run always
 // exited. `probe_executable` is this package's only production `Probe`
-// constructor -- `model_load_check` is the only caller of this procedure
-// outside this package's own tests, and it always routes through
-// `probe_executable` -- so every `.Finished, exited = false` Probe is a
+// constructor -- `model_load_check_using` is the only caller of this
+// procedure outside this package's own tests, always through
+// `probe_executable`, and `model_load_check` is `model_load_check_using`'s
+// only caller in turn -- so every `.Finished, exited = false` Probe is a
 // caller-constructed test stub, never a production path. The guarantee is
 // the constructor's assert, not a second check here, so the dead tolerance
 // is removed rather than kept redundant with it; nothing here re-asserts the
