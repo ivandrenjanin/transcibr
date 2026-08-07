@@ -55,35 +55,6 @@ MAX_QUEUE_DEPTH :: 2
 // rather than reading `MAX_EXTRACT_WORKERS`/`MAX_QUEUE_DEPTH` by name. Its
 // relocated test is `src/process/worker_ceiling_test.odin`.
 
-// The pairing itself, owned here rather than spelled out again at each
-// call site: which option name refuses against which ceiling. Kept for the
-// same table-not-a-switch reason issue #94 introduced it, even though
-// `src/cliargs`'s own enum-keyed `Worker_Ceilings` (ADR-0038 addendum) is
-// what actually closes the swap defect class for the grammar's own dispatch
-// now -- this table's own swap risk is still caught by the name-position
-// checks `worker_option_ceilings_pair_each_option_with_its_own_max`
-// (defaults_test.odin) holds.
-Worker_Option_Ceiling :: struct {
-	name:    string,
-	ceiling: int,
-}
-
-WORKER_OPTION_CEILINGS := [?]Worker_Option_Ceiling {
-	{name = "--extract-workers", ceiling = MAX_EXTRACT_WORKERS},
-	{name = "--queue-depth", ceiling = MAX_QUEUE_DEPTH},
-}
-
-@(require_results)
-worker_option_ceiling :: proc(name: string) -> (ceiling: int, ok: bool) {
-	assert(len(name) > 0, "there is no option name here to look a ceiling up for")
-	for entry in WORKER_OPTION_CEILINGS {
-		if entry.name == name {
-			return entry.ceiling, true
-		}
-	}
-	return 0, false
-}
-
 // One or two extraction workers feeding exactly one transcription worker
 // through a bounded channel of depth one or two (ADR-0006) -- the shipped
 // defaults `--batch` puts back when its own command line left either unset,
