@@ -79,7 +79,6 @@ Recording_Job :: struct {
 	cache:          string,
 	model:          artifact.Model,
 	prompt:         string,
-	engine_exe:     string,
 	engine_version: string,
 	profile:        transcript.Merge_Profile,
 	report:         engine.Report,
@@ -330,7 +329,7 @@ placed_from_engine_output :: proc(
 		transcript.Render_Context {
 			now = time.now(),
 			source_display = job.source,
-			engine_version = artifact.engine_display_name(job.engine_exe),
+			engine_version = artifact.engine_display_name(job.tools.engine.engine),
 			model = artifact.model_display_name(job.model.path),
 			profile = job.profile,
 		},
@@ -353,10 +352,10 @@ placed_from_engine_output :: proc(
 @(require_results)
 recording_sidecar :: proc(job: Recording_Job, extracted: Recording_Extracted) -> artifact.Sidecar {
 	assert(len(job.engine_version) > 0, "a Sidecar was built with no Engine version settled")
-	assert(len(job.engine_exe) > 0, "a Sidecar was built with no Engine path settled")
+	assert(len(job.tools.engine.engine) > 0, "a Sidecar was built with no Engine path settled")
 
 	return artifact.sidecar_of(
-		job.engine_exe,
+		job.tools.engine.engine,
 		job.engine_version,
 		job.model,
 		artifact.ENGINE_DEFAULT_BEAM,
@@ -391,7 +390,6 @@ Batch_Options :: struct {
 	cache:          string,
 	model:          artifact.Model,
 	prompt:         string,
-	engine_exe:     string,
 	engine_version: string,
 	profile:        transcript.Merge_Profile,
 	config:         Config,
@@ -412,7 +410,6 @@ new_recording_job :: proc(
 	cache: string,
 	model: artifact.Model,
 	prompt: string,
-	engine_exe: string,
 	engine_version: string,
 	profile: transcript.Merge_Profile,
 	report: engine.Report,
@@ -420,6 +417,7 @@ new_recording_job :: proc(
 ) -> Recording_Job {
 	assert(len(source) > 0, "there is no Recording here to build a Job for")
 	assert(len(name) > 0, "a Recording with no artifact stem has nowhere to put its output")
+	assert(len(tools.engine.engine) > 0, "a Recording Job was built with no Engine to spawn")
 
 	arena := new(mem.Dynamic_Arena, runtime.heap_allocator())
 	mem.dynamic_arena_init(
@@ -436,7 +434,6 @@ new_recording_job :: proc(
 		cache          = cache,
 		model          = model,
 		prompt         = prompt,
-		engine_exe     = engine_exe,
 		engine_version = engine_version,
 		profile        = profile,
 		report         = report,
@@ -460,7 +457,6 @@ recording_job_of :: proc(entry: planning.Entry, o: Batch_Options) -> Recording_J
 		o.cache,
 		o.model,
 		o.prompt,
-		o.engine_exe,
 		o.engine_version,
 		o.profile,
 		engine.Report{},

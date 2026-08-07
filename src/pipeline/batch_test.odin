@@ -18,6 +18,7 @@ import "core:strings"
 import "core:testing"
 import "transcibr:artifact"
 import "transcibr:audio"
+import "transcibr:engine"
 import "transcibr:planning"
 import "transcibr:testkit"
 import "transcibr:transcript"
@@ -117,7 +118,7 @@ resume_options :: proc(tree: string, settings: planning.Settings) -> Batch_Optio
 	return Batch_Options {
 		cache = tree,
 		model = settings.model,
-		engine_exe = settings.engine_path,
+		tools = Tools{engine = engine.Tools{engine = settings.engine_path}},
 		engine_version = string(settings.engine_version),
 		profile = transcript.DEFAULT_PROFILE,
 		config = Config{extract_workers = 1, queue_depth = 1, join_bound_ms = JOIN_BOUND_MS},

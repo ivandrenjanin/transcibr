@@ -194,7 +194,6 @@ run_the_batch :: proc(
 			cache = o.cache,
 			model = identified,
 			prompt = o.prompt,
-			engine_exe = o.engine,
 			engine_version = string(engine_digest),
 			profile = o.profile,
 			config = pipeline.Config {
