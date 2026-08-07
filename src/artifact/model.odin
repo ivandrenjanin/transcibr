@@ -257,7 +257,7 @@ digest_finished :: proc(
 // hashing, a leaf concern of this package's own domain, depend on `net`'s
 // whole download-integrity footprint (the network client, transfer, resume)
 // for one hash-finishing helper artifact does not otherwise need. A leaf package
-// for this ~30-line procedure buys net line growth and justfile/vet/test
+// for this ~12-line procedure buys net line growth and justfile/vet/test
 // ceremony for no shared consumer either way.
 #assert(DIGEST_CHARS == 2 * sha2.DIGEST_SIZE_256)
 
