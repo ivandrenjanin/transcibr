@@ -4,6 +4,7 @@ package planning
 import "core:fmt"
 import "core:os"
 import "core:testing"
+import "transcibr:testkit"
 
 // A directory this account may not list, and one it may not write into. Neither
 // state can be reached from `core:os`, and both are what the two criteria about
@@ -53,15 +54,29 @@ undenied :: proc(t: ^testing.T, path: string) {
 // discovery failure a user cannot detect.
 @(test)
 a_sub_directory_that_cannot_be_enumerated_is_an_operating_error :: proc(t: ^testing.T) {
-	tree := scratch_tree(t, "unlistable")
+	tree := testkit.made_scratch_cache(t, "planning", "unlistable", context.allocator)
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree)
 
-	open := in_tree(t, tree, "open.mp4", "video")
+	open := testkit.fixture_file(
+		t,
+		tree,
+		"open.mp4",
+		transmute([]u8)string("video"),
+		nil,
+		context.allocator,
+	)
 	defer delete(open, context.allocator)
 	shut := a_directory(t, tree, "shut")
 	defer delete(shut, context.allocator)
-	hidden := in_tree(t, tree, "shut\\hidden.mp4", "video")
+	hidden := testkit.fixture_file(
+		t,
+		tree,
+		"shut\\hidden.mp4",
+		transmute([]u8)string("video"),
+		nil,
+		context.allocator,
+	)
 	defer delete(hidden, context.allocator)
 
 	if !denied(t, shut, "(RD)") {
@@ -89,13 +104,20 @@ a_sub_directory_that_cannot_be_enumerated_is_an_operating_error :: proc(t: ^test
 // publish before it has spent anything finding out.
 @(test)
 a_directory_nothing_may_be_written_to_is_refused_before_any_gpu_time :: proc(t: ^testing.T) {
-	tree := scratch_tree(t, "unwritable")
+	tree := testkit.made_scratch_cache(t, "planning", "unwritable", context.allocator)
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree)
 
 	locked := a_directory(t, tree, "locked")
 	defer delete(locked, context.allocator)
-	inside := in_tree(t, tree, "locked\\talk.mp4", "video")
+	inside := testkit.fixture_file(
+		t,
+		tree,
+		"locked\\talk.mp4",
+		transmute([]u8)string("video"),
+		nil,
+		context.allocator,
+	)
 	defer delete(inside, context.allocator)
 
 	if !denied(t, locked, "(WD)") {
@@ -123,11 +145,18 @@ a_directory_nothing_may_be_written_to_is_refused_before_any_gpu_time :: proc(t: 
 // directory a Batch was ever pointed at.
 @(test)
 the_probe_that_asks_whether_a_directory_is_writable_leaves_nothing_behind :: proc(t: ^testing.T) {
-	tree := scratch_tree(t, "probe")
+	tree := testkit.made_scratch_cache(t, "planning", "probe", context.allocator)
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree)
 
-	talk := in_tree(t, tree, "talk.mp4", "video")
+	talk := testkit.fixture_file(
+		t,
+		tree,
+		"talk.mp4",
+		transmute([]u8)string("video"),
+		nil,
+		context.allocator,
+	)
 	defer delete(talk, context.allocator)
 
 	testing.expect(
@@ -144,9 +173,9 @@ the_probe_that_asks_whether_a_directory_is_writable_leaves_nothing_behind :: pro
 
 @(test)
 a_directory_that_is_not_there_is_never_called_writable :: proc(t: ^testing.T) {
-	tree := scratch_tree(t, "nodir")
+	tree := testkit.made_scratch_cache(t, "planning", "nodir", context.allocator)
 	defer delete(tree, context.allocator)
-	defer remove_tree(tree)
+	defer testkit.remove_tree(tree)
 
 	gone := fmt.aprintf("%s\\never-made", tree, allocator = context.allocator)
 	defer delete(gone, context.allocator)
