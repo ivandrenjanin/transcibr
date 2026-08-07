@@ -173,18 +173,48 @@ read_transcribe_options_refuses_a_missing_cache_fourth :: proc(t: ^testing.T) {
 // The four single-field tests above each omit exactly one required field, so
 // none of them can go red on a reordering of required_fields_present's row
 // list -- omitting two or more is the only shape that can (fix round 1, PR
-// #201 finding 2). Omitting every field pins the row order end to end:
-// source is refused first only because it is the FIRST row, not because it
-// is the only one missing.
+// #201 finding 2). Omitting every field pins only the first row: swapping
+// rows 2/3 or 3/4 still refuses "--transcribe" first and leaves that single
+// case green (fix round 2, PR #201 finding). Walking one case per adjacent
+// pair -- each supplying every field UP TO but not including the one under
+// test -- pins all four rows against every adjacent swap: the case that
+// supplies source alone can only name --model-file if row 2 is still
+// "--model-file", regardless of what rows 3/4 hold.
 @(test)
-read_transcribe_options_refuses_the_earliest_missing_field_when_several_are_missing :: proc(
+read_transcribe_options_refuses_the_earliest_missing_field_for_every_prefix_of_supplied_fields :: proc(
 	t: ^testing.T,
 ) {
-	ok, refusal := transcribe_options_refusal([]string{})
+	Case :: struct {
+		arguments:    []string,
+		expected_arg: string,
+	}
+	cases := []Case {
+		{arguments = []string{}, expected_arg = "--transcribe"},
+		{arguments = []string{TRANSCRIBE, "recording.mp4"}, expected_arg = "--model-file"},
+		{
+			arguments = []string{TRANSCRIBE, "recording.mp4", "--model-file", "model.bin"},
+			expected_arg = "--engine-exe",
+		},
+		{
+			arguments = []string {
+				TRANSCRIBE,
+				"recording.mp4",
+				"--model-file",
+				"model.bin",
+				"--engine-exe",
+				"engine.exe",
+			},
+			expected_arg = "--cache",
+		},
+	}
 
-	testing.expect(t, !ok, "a command line naming nothing at all was accepted")
-	testing.expect_value(t, refusal.complaint, "%s names nothing.")
-	testing.expect_value(t, refusal.args[0], Refusal_Arg("--transcribe"))
+	for c in cases {
+		ok, refusal := transcribe_options_refusal(c.arguments)
+
+		testing.expect(t, !ok, "a command line missing a required field was accepted")
+		testing.expect_value(t, refusal.complaint, "%s names nothing.")
+		testing.expect_value(t, refusal.args[0], Refusal_Arg(c.expected_arg))
+	}
 }
 
 @(private)
