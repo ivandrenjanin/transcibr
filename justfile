@@ -95,7 +95,7 @@ test:
 # the guard has to sit where the runner's own words land -- here, not there.
 # Output is NOT live: it is redirected into build\odin-test\focus.out and only
 # `type`-d back to the console after the odin test process has already exited.
-# A run that hangs (the #22 runner hang this file's own notes document) or is
+# A run that hangs (the #22 runner hang CLAUDE.md's Odin notes document) or is
 # interrupted with Ctrl+C prints nothing at all while it is running and shows
 # nothing after the interrupt either -- the `type` replay only runs on the
 # success/failure branches below, never on an interrupted invocation, so
