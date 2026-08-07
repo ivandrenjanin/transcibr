@@ -156,7 +156,7 @@ main :: proc() {
 	if args[1] == BATCH {
 		os.exit(run_batch_command(args[1:]))
 	}
-	if args[1] == DOCTOR {
+	if args[1] == cliargs.DOCTOR {
 		os.exit(run_doctor(args[2:]))
 	}
 	if args[1] == CRASH_DRILL {
