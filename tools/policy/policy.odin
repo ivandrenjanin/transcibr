@@ -84,13 +84,22 @@ Body_Comment :: struct {
 // Everything the build asks about one file, or the fault that stopped it being
 // asked. A file with a fault carries no facts at all: a partial answer read as a
 // complete one is the silence this whole program exists to end.
+// `excluded_by_platform` is issue #239's own field: whether the file's own
+// `#+build` tags, read the same way the compiler reads them
+// (`parser.parse_file_tags`/`parser.match_build_tags`), exclude the platform
+// this program is running on. A `*_test.odin` file excluded this way never
+// has its body compiled in by `odin test` on this platform either -- any
+// `@(test)` procedure inside it is dead here, and #174's presence-only
+// procedure count must not credit it as a live test (packages.odin's
+// `file_declares_test_procedure`).
 Source_Facts :: struct {
-	procedures:       []Procedure,
-	comments:         []Body_Comment,
-	vet_tags:         []string,
-	remove_all_lines: []int,
-	defer_order:      []Defer_Order_Issue,
-	fault:            Fault,
+	procedures:           []Procedure,
+	comments:             []Body_Comment,
+	vet_tags:             []string,
+	remove_all_lines:     []int,
+	defer_order:          []Defer_Order_Issue,
+	excluded_by_platform: bool,
+	fault:                Fault,
 }
 
 // The attribute rule F2 is about, spelled as the compiler's own sources spell it.
@@ -326,6 +335,7 @@ read_source :: proc(name: string, src: string, allocator: mem.Allocator) -> (fac
 
 	found := collect_procedures(&file, tree, allocator)
 	return Source_Facts {
+		excluded_by_platform = platform_excludes_file(&file, tree),
 		procedures = found,
 		comments = collect_body_comments(&file, found, tree, allocator),
 		vet_tags = collect_vet_tags(&file, tree, allocator),
