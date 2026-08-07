@@ -18,7 +18,7 @@ record_note_line_writes_the_exact_pinned_bytes :: proc(t: ^testing.T) {
 	defer delete(dir, context.allocator)
 	defer testkit.remove_cache(dir, context.allocator)
 
-	h, ok := open_log(dir, context.allocator)
+	h, _, ok := open_log(dir, context.allocator)
 	testing.expect(t, ok, "open_log refused a directory it should have been able to create")
 
 	record_note_line(h.file, "2026-08-07T12:34:56Z", .Warn, "doctor", "ffmpeg not found")
@@ -35,7 +35,7 @@ record_note_line_omits_the_colon_and_detail_when_detail_is_empty :: proc(t: ^tes
 	defer delete(dir, context.allocator)
 	defer testkit.remove_cache(dir, context.allocator)
 
-	h, ok := open_log(dir, context.allocator)
+	h, _, ok := open_log(dir, context.allocator)
 	testing.expect(t, ok, "open_log refused a directory it should have been able to create")
 
 	record_note_line(h.file, "2026-08-07T12:34:56Z", .Info, "process start", "")
@@ -57,7 +57,7 @@ note_writes_a_line_through_the_open_handle :: proc(t: ^testing.T) {
 	defer delete(dir, context.allocator)
 	defer testkit.remove_cache(dir, context.allocator)
 
-	h, ok := open_log(dir, context.allocator)
+	h, _, ok := open_log(dir, context.allocator)
 	testing.expect(t, ok, "open_log refused a directory it should have been able to create")
 
 	previous := g_log
