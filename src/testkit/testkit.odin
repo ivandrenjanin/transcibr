@@ -1,22 +1,24 @@
 #+vet explicit-allocators
-// Package testkit builds and tears down the fixtures a child-driving suite in
-// this repository needs: a scratch cache under TEMP, a `waitfor` signal name
-// no other suite can collide on, and the flood file two of those suites write
-// to force a diagnostic pipe past what one poll can drain in one pass.
+// Package testkit builds and tears down the fixtures a suite in this
+// repository needs: a scratch cache under TEMP (flat, `remove_cache`) or a
+// tree (nested, `remove_tree`), a fixture file written into either one with
+// `fixture_file`, a `waitfor` signal name no other suite can collide on, and
+// the flood file two of those suites write to force a diagnostic pipe past
+// what one poll can drain in one pass.
 //
 // It carries no dependency on transcibr:child on purpose, but the constraint
 // is one-way and not three-way: src/child/child_test.odin is part of package
 // child, and a testkit that imported child could not be imported back by
-// child's own tests without a cycle. src/audio and src/engine's test files are
-// not package child and import transcibr:child directly already, so nothing
-// stops a helper that needs it -- such as `open_group` -- from living in a
-// second, child-importing package shared between just those two. It stays out
-// of THIS package because child_test.odin also imports testkit (for
-// `lonely_signal`), and importing child here would put that one file back in
-// the cycle it is the actual reason for. `open_group` is kept local at each of
-// its three call sites for that reason, spelled the same way at all three so
-// the copies do not drift the way `scratch_cache` once did between audio and
-// engine.
+// child's own tests without a cycle. src/audio, src/doctor and src/engine's
+// test files are not package child and import transcibr:child directly
+// already, so nothing stops a helper that needs it -- such as `open_group` --
+// from living in a second, child-importing package shared between just those
+// three. It stays out of THIS package because child_test.odin also imports
+// testkit (for `lonely_signal`), and importing child here would put that one
+// file back in the cycle it is the actual reason for. `open_group` is kept
+// local at each of its four call sites for that reason, spelled the same way
+// at all four so the copies do not drift the way `scratch_cache` once did
+// between audio and engine.
 //
 // What each procedure here does is checked directly, in testkit_test.odin,
 // rather than only through the suites that call it: the drift this package
@@ -83,7 +85,9 @@ made_scratch_cache :: proc(
 }
 
 // Best effort: a case that failed half-way should not fail a second time on
-// the way out.
+// the way out. One level deep -- a cache holds files, never directories of
+// its own, so a stray nested directory here is a fixture that outgrew this
+// procedure and wants remove_tree instead.
 remove_cache :: proc(cache: string, allocator: mem.Allocator) {
 	assert(len(cache) > 0, "there is no scratch cache here to remove")
 	assert(allocator.procedure != nil, "a listing needs an allocator to be read into")
@@ -96,6 +100,75 @@ remove_cache :: proc(cache: string, allocator: mem.Allocator) {
 		}
 	}
 	os.remove(cache)
+}
+
+// As remove_cache, and recursive: a caller whose fixtures nest directories of
+// their own -- a walk over a tree, rather than a flat cache -- needs every
+// level taken, deepest first, or the top-level os.remove below is left
+// removing a directory that is not actually empty. Best effort for the same
+// reason remove_cache is: a case that failed half-way should not fail a
+// second time on the way out. Uses `context.allocator` for the recursive
+// listings rather than taking one -- the recursion depth is a tree this
+// package's own callers built, not external input, so the allocator this
+// procedure itself runs under is the correct one at every level.
+remove_tree :: proc(path: string) {
+	assert(len(path) > 0, "there is no tree here to remove")
+
+	listing, unreadable := os.read_all_directory_by_path(path, context.allocator)
+	if unreadable == nil {
+		defer os.file_info_slice_delete(listing, context.allocator)
+		for info in listing {
+			if info.type == .Directory {
+				remove_tree(info.fullpath)
+				continue
+			}
+			os.remove(info.fullpath)
+		}
+	}
+	os.remove(path)
+}
+
+// Writes `content` to `directory` joined with `relative`, making whatever
+// directory `relative` names along the way -- a caller writing a flat name
+// makes only `directory` itself, already there from made_scratch_cache, and
+// a caller writing a nested `relative` like "june\\deeper\\interview.m4a"
+// gets the subdirectories that name needs, the twist a tree-walking suite
+// wants and a flat cache does not. `age`, when it carries a value, back-dates
+// the file's access and modified times by that duration -- the twist a sweep
+// suite wants to prove a fixture old enough or fresh enough for its ceilings,
+// and set once, never waited for. The caller frees the returned path.
+@(require_results)
+fixture_file :: proc(
+	t: ^testing.T,
+	directory: string,
+	relative: string,
+	content: []u8,
+	age: Maybe(time.Duration),
+	allocator: mem.Allocator,
+) -> string {
+	assert(t != nil, "there is no test here to report a refusal through")
+	assert(len(directory) > 0, "a fixture with no directory to sit in cannot be written")
+	assert(len(relative) > 0, "a fixture with no name of its own cannot be written")
+	assert(allocator.procedure != nil, "the path outlives this procedure and needs an allocator")
+
+	path := fmt.aprintf("%s\\%s", directory, relative, allocator = allocator)
+
+	at := strings.last_index_byte(path, '\\')
+	if at > 0 {
+		testing.expectf(
+			t,
+			os.make_directory_all(path[:at]) == nil,
+			"could not make the directory holding %s",
+			path,
+		)
+	}
+	testing.expectf(t, os.write_entire_file(path, content) == nil, "could not write %s", path)
+
+	if duration, aged := age.?; aged {
+		dated := time.time_add(time.now(), -duration)
+		testing.expectf(t, os.change_times(path, dated, dated) == nil, "could not age %s", path)
+	}
+	return path
 }
 
 // `waitfor` registers its signal name machine-wide, and a second instance
