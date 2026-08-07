@@ -181,6 +181,7 @@ test-one pkg name:
 # test.
 test-one-selftest:
 	if not exist build\odin-test mkdir build\odin-test
+	if exist build\odin-test\selftest-name.txt del /q build\odin-test\selftest-name.txt
 	(for /f "tokens=1" %W in ('findstr /c:":: proc(t: ^testing.T)" tools\policy\discover_test.odin') do (> build\odin-test\selftest-name.txt echo %W & exit /b 0)) & if not exist build\odin-test\selftest-name.txt (echo TEST-ONE-SELFTEST: could not derive a real test name from tools\policy\discover_test.odin & exit /b 1)
 	{{ just_executable() }} test-one policy test-one-selftest-bogus-name-does-not-exist-175 > build\odin-test\selftest-bogus.out 2>&1 & if not errorlevel 1 (echo TEST-ONE-SELFTEST: "policy.test-one-selftest-bogus-name-does-not-exist-175" exited 0 -- the bogus-name guard is disarmed & type build\odin-test\selftest-bogus.out & exit /b 1) & exit /b 0
 	findstr /b /c:"TEST-ONE: " build\odin-test\selftest-bogus.out >nul || (echo TEST-ONE-SELFTEST: the bogus-name case failed but not with the guard's own message & type build\odin-test\selftest-bogus.out & exit /b 1)
