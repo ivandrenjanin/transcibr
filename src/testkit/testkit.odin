@@ -142,9 +142,9 @@ fixture_file :: proc(
 	t: ^testing.T,
 	directory: string,
 	relative: string,
-	content: []u8,
-	age: Maybe(time.Duration),
+	content: string,
 	allocator: mem.Allocator,
+	age: Maybe(time.Duration) = nil,
 ) -> string {
 	assert(t != nil, "there is no test here to report a refusal through")
 	assert(len(directory) > 0, "a fixture with no directory to sit in cannot be written")
@@ -162,7 +162,12 @@ fixture_file :: proc(
 			path,
 		)
 	}
-	testing.expectf(t, os.write_entire_file(path, content) == nil, "could not write %s", path)
+	testing.expectf(
+		t,
+		os.write_entire_file(path, transmute([]u8)content) == nil,
+		"could not write %s",
+		path,
+	)
 
 	if duration, aged := age.?; aged {
 		dated := time.time_add(time.now(), -duration)

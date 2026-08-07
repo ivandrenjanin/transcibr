@@ -45,7 +45,7 @@ aged_file :: proc(
 ) -> string {
 	content := make([]u8, bytes, context.allocator)
 	defer delete(content, context.allocator)
-	return testkit.fixture_file(t, cache, name, content, age, context.allocator)
+	return testkit.fixture_file(t, cache, name, string(content), context.allocator, age)
 }
 
 // Spelled the same way at all four call sites (transcibr:testkit's own

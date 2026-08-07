@@ -21,14 +21,7 @@ a_models_identity_is_the_content_of_the_file_and_not_its_name :: proc(t: ^testin
 	defer delete(directory, context.allocator)
 	defer testkit.remove_cache(directory, context.allocator)
 
-	path := testkit.fixture_file(
-		t,
-		directory,
-		"ggml-large-v3.bin",
-		transmute([]u8)string("abc"),
-		nil,
-		context.allocator,
-	)
+	path := testkit.fixture_file(t, directory, "ggml-large-v3.bin", "abc", context.allocator)
 	defer delete(path, context.allocator)
 
 	identified, fault := identify_model(path, context.allocator)
@@ -50,14 +43,7 @@ an_empty_model_file_is_still_identified_rather_than_treated_as_absent :: proc(t:
 	defer delete(directory, context.allocator)
 	defer testkit.remove_cache(directory, context.allocator)
 
-	path := testkit.fixture_file(
-		t,
-		directory,
-		"empty.bin",
-		transmute([]u8)string(""),
-		nil,
-		context.allocator,
-	)
+	path := testkit.fixture_file(t, directory, "empty.bin", "", context.allocator)
 	defer delete(path, context.allocator)
 
 	identified, fault := identify_model(path, context.allocator)
@@ -85,14 +71,7 @@ a_model_bigger_than_one_read_hashes_the_same_as_the_whole_of_it_at_once :: proc(
 	}
 	content := strings.to_string(written)
 
-	path := testkit.fixture_file(
-		t,
-		directory,
-		"big.bin",
-		transmute([]u8)content,
-		nil,
-		context.allocator,
-	)
+	path := testkit.fixture_file(t, directory, "big.bin", content, context.allocator)
 	defer delete(path, context.allocator)
 
 	at_once := hash.hash_bytes(.SHA256, transmute([]u8)content, context.allocator)
@@ -114,14 +93,7 @@ a_model_under_a_path_the_engine_cannot_open_is_refused_and_never_read :: proc(t:
 	defer delete(directory, context.allocator)
 	defer testkit.remove_cache(directory, context.allocator)
 
-	path := testkit.fixture_file(
-		t,
-		directory,
-		"ggml-large-v3.bin",
-		transmute([]u8)string("abc"),
-		nil,
-		context.allocator,
-	)
+	path := testkit.fixture_file(t, directory, "ggml-large-v3.bin", "abc", context.allocator)
 	defer delete(path, context.allocator)
 	testing.expect(t, os.exists(path), "the case could not put a Model where it meant to")
 
@@ -139,14 +111,7 @@ a_model_path_that_resolves_to_ascii_is_accepted_however_it_was_spelled :: proc(t
 	defer delete(directory, context.allocator)
 	defer testkit.remove_cache(directory, context.allocator)
 
-	path := testkit.fixture_file(
-		t,
-		directory,
-		"ggml-large-v3.bin",
-		transmute([]u8)string("abc"),
-		nil,
-		context.allocator,
-	)
+	path := testkit.fixture_file(t, directory, "ggml-large-v3.bin", "abc", context.allocator)
 	defer delete(path, context.allocator)
 
 	spelled := fmt.aprintf(

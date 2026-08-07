@@ -211,39 +211,23 @@ a_tree_is_walked_into_an_inventory_of_every_recording_under_it :: proc(t: ^testi
 	defer delete(tree, context.allocator)
 	defer testkit.remove_tree(tree)
 
-	top := testkit.fixture_file(
-		t,
-		tree,
-		"keynote.mp4",
-		transmute([]u8)string("video"),
-		nil,
-		context.allocator,
-	)
+	top := testkit.fixture_file(t, tree, "keynote.mp4", "video", context.allocator)
 	defer delete(top, context.allocator)
 	nested := testkit.fixture_file(
 		t,
 		tree,
 		"june\\deeper\\interview.m4a",
-		transmute([]u8)string("audio"),
-		nil,
+		"audio",
 		context.allocator,
 	)
 	defer delete(nested, context.allocator)
-	notes := testkit.fixture_file(
-		t,
-		tree,
-		"june\\notes.txt",
-		transmute([]u8)string("not a Recording"),
-		nil,
-		context.allocator,
-	)
+	notes := testkit.fixture_file(t, tree, "june\\notes.txt", "not a Recording", context.allocator)
 	defer delete(notes, context.allocator)
 	stale := testkit.fixture_file(
 		t,
 		tree,
 		"june\\interview.json.bad",
-		transmute([]u8)string("quarantined"),
-		nil,
+		"quarantined",
 		context.allocator,
 	)
 	defer delete(stale, context.allocator)
@@ -270,30 +254,15 @@ a_markdown_file_transcibr_did_not_write_is_left_alone_and_reported :: proc(t: ^t
 	defer delete(tree, context.allocator)
 	defer testkit.remove_tree(tree)
 
-	mine := testkit.fixture_file(
-		t,
-		tree,
-		"talk.mp4",
-		transmute([]u8)string("video"),
-		nil,
-		context.allocator,
-	)
+	mine := testkit.fixture_file(t, tree, "talk.mp4", "video", context.allocator)
 	defer delete(mine, context.allocator)
-	theirs := testkit.fixture_file(
-		t,
-		tree,
-		"notes.mp4",
-		transmute([]u8)string("video"),
-		nil,
-		context.allocator,
-	)
+	theirs := testkit.fixture_file(t, tree, "notes.mp4", "video", context.allocator)
 	defer delete(theirs, context.allocator)
 	written := testkit.fixture_file(
 		t,
 		tree,
 		"talk.md",
-		transmute([]u8)string("---\ngenerator: \"transcibr 0.1.0\"\n---\n"),
-		nil,
+		"---\ngenerator: \"transcibr 0.1.0\"\n---\n",
 		context.allocator,
 	)
 	defer delete(written, context.allocator)
@@ -301,8 +270,7 @@ a_markdown_file_transcibr_did_not_write_is_left_alone_and_reported :: proc(t: ^t
 		t,
 		tree,
 		"notes.md",
-		transmute([]u8)string("# Notes on the interview\n"),
-		nil,
+		"# Notes on the interview\n",
 		context.allocator,
 	)
 	defer delete(authored, context.allocator)
@@ -344,21 +312,13 @@ a_transcript_locked_by_another_process_reads_as_unreadable_not_absent :: proc(t:
 	defer delete(tree, context.allocator)
 	defer testkit.remove_tree(tree)
 
-	recording := testkit.fixture_file(
-		t,
-		tree,
-		"talk.mp4",
-		transmute([]u8)string("video"),
-		nil,
-		context.allocator,
-	)
+	recording := testkit.fixture_file(t, tree, "talk.mp4", "video", context.allocator)
 	defer delete(recording, context.allocator)
 	written := testkit.fixture_file(
 		t,
 		tree,
 		"talk.md",
-		transmute([]u8)string("---\ngenerator: \"transcibr 0.1.0\"\n---\n"),
-		nil,
+		"---\ngenerator: \"transcibr 0.1.0\"\n---\n",
 		context.allocator,
 	)
 	defer delete(written, context.allocator)
@@ -406,23 +366,9 @@ a_zero_byte_transcript_reads_as_foreign_and_not_unreadable :: proc(t: ^testing.T
 	defer delete(tree, context.allocator)
 	defer testkit.remove_tree(tree)
 
-	recording := testkit.fixture_file(
-		t,
-		tree,
-		"talk.mp4",
-		transmute([]u8)string("video"),
-		nil,
-		context.allocator,
-	)
+	recording := testkit.fixture_file(t, tree, "talk.mp4", "video", context.allocator)
 	defer delete(recording, context.allocator)
-	empty := testkit.fixture_file(
-		t,
-		tree,
-		"talk.md",
-		transmute([]u8)string(""),
-		nil,
-		context.allocator,
-	)
+	empty := testkit.fixture_file(t, tree, "talk.md", "", context.allocator)
 	defer delete(empty, context.allocator)
 
 	inventory := discover([]string{tree}, Walk{}, context.allocator)
@@ -446,14 +392,7 @@ a_transcript_path_that_names_a_directory_reads_as_unreadable :: proc(t: ^testing
 	defer delete(tree, context.allocator)
 	defer testkit.remove_tree(tree)
 
-	recording := testkit.fixture_file(
-		t,
-		tree,
-		"talk.mp4",
-		transmute([]u8)string("video"),
-		nil,
-		context.allocator,
-	)
+	recording := testkit.fixture_file(t, tree, "talk.mp4", "video", context.allocator)
 	defer delete(recording, context.allocator)
 	as_directory := a_directory(t, tree, "talk.md")
 	defer delete(as_directory, context.allocator)
@@ -497,14 +436,7 @@ a_root_that_is_a_file_rather_than_a_directory_is_an_operating_error :: proc(t: ^
 	defer delete(tree, context.allocator)
 	defer testkit.remove_tree(tree)
 
-	file := testkit.fixture_file(
-		t,
-		tree,
-		"talk.mp4",
-		transmute([]u8)string("video"),
-		nil,
-		context.allocator,
-	)
+	file := testkit.fixture_file(t, tree, "talk.mp4", "video", context.allocator)
 	defer delete(file, context.allocator)
 
 	inventory := discover([]string{file}, Walk{}, context.allocator)
@@ -573,14 +505,7 @@ a_spread_tree :: proc(t: ^testing.T, tag: string) -> string {
 		defer if allocated {
 			delete(spelled, context.allocator)
 		}
-		path := testkit.fixture_file(
-			t,
-			tree,
-			spelled,
-			transmute([]u8)string("video"),
-			nil,
-			context.allocator,
-		)
+		path := testkit.fixture_file(t, tree, spelled, "video", context.allocator)
 		delete(path, context.allocator)
 	}
 	return tree
@@ -651,14 +576,7 @@ a_tree_deeper_than_the_walk_will_go_says_so_rather_than_stopping_quietly :: proc
 	}
 	strings.write_string(&out, "talk.mp4")
 
-	buried := testkit.fixture_file(
-		t,
-		tree,
-		strings.to_string(out),
-		transmute([]u8)string("video"),
-		nil,
-		context.allocator,
-	)
+	buried := testkit.fixture_file(t, tree, strings.to_string(out), "video", context.allocator)
 	defer delete(buried, context.allocator)
 
 	inventory := discover([]string{tree}, Walk{}, context.allocator)
@@ -744,14 +662,7 @@ a_reparse_point_is_not_followed_by_default_and_is_reported :: proc(t: ^testing.T
 
 	real := a_directory(t, tree, "real")
 	defer delete(real, context.allocator)
-	behind := testkit.fixture_file(
-		t,
-		tree,
-		"real\\behind.mp4",
-		transmute([]u8)string("video"),
-		nil,
-		context.allocator,
-	)
+	behind := testkit.fixture_file(t, tree, "real\\behind.mp4", "video", context.allocator)
 	defer delete(behind, context.allocator)
 
 	link := fmt.aprintf("%s\\link", tree, allocator = context.allocator)
@@ -796,14 +707,7 @@ a_root_that_is_a_reparse_point_is_not_walked_either :: proc(t: ^testing.T) {
 
 	real := a_directory(t, tree, "real")
 	defer delete(real, context.allocator)
-	behind := testkit.fixture_file(
-		t,
-		tree,
-		"real\\behind.mp4",
-		transmute([]u8)string("video"),
-		nil,
-		context.allocator,
-	)
+	behind := testkit.fixture_file(t, tree, "real\\behind.mp4", "video", context.allocator)
 	defer delete(behind, context.allocator)
 
 	link := fmt.aprintf("%s\\link", tree, allocator = context.allocator)
@@ -832,14 +736,7 @@ a_walk_told_to_follow_reparse_points_walks_through_one :: proc(t: ^testing.T) {
 
 	real := a_directory(t, tree, "real")
 	defer delete(real, context.allocator)
-	behind := testkit.fixture_file(
-		t,
-		tree,
-		"real\\behind.mp4",
-		transmute([]u8)string("video"),
-		nil,
-		context.allocator,
-	)
+	behind := testkit.fixture_file(t, tree, "real\\behind.mp4", "video", context.allocator)
 	defer delete(behind, context.allocator)
 
 	link := fmt.aprintf("%s\\link", tree, allocator = context.allocator)
@@ -869,14 +766,7 @@ a_junction_inside_the_tree_is_walked_through_when_following_is_turned_on :: proc
 
 	real := a_directory(t, tree, "real")
 	defer delete(real, context.allocator)
-	behind := testkit.fixture_file(
-		t,
-		tree,
-		"real\\behind.mp4",
-		transmute([]u8)string("video"),
-		nil,
-		context.allocator,
-	)
+	behind := testkit.fixture_file(t, tree, "real\\behind.mp4", "video", context.allocator)
 	defer delete(behind, context.allocator)
 	under := a_directory(t, tree, "sub")
 	defer delete(under, context.allocator)
@@ -916,14 +806,7 @@ a_recording_that_is_itself_a_reparse_point_is_planned_and_never_skipped :: proc(
 	defer delete(tree, context.allocator)
 	defer testkit.remove_tree(tree)
 
-	real := testkit.fixture_file(
-		t,
-		tree,
-		"real.mp4",
-		transmute([]u8)string("video"),
-		nil,
-		context.allocator,
-	)
+	real := testkit.fixture_file(t, tree, "real.mp4", "video", context.allocator)
 	defer delete(real, context.allocator)
 
 	link := fmt.aprintf("%s\\link.mp4", tree, allocator = context.allocator)
@@ -963,14 +846,7 @@ a_directory_listing_that_cannot_finish_within_its_bound_is_reported_rather_than_
 
 	for i in 0 ..< DIRECTORY_BOUND_TEST_ENTRIES {
 		name := fmt.aprintf("f%d.txt", i, allocator = context.allocator)
-		path := testkit.fixture_file(
-			t,
-			tree,
-			name,
-			transmute([]u8)string(""),
-			nil,
-			context.allocator,
-		)
+		path := testkit.fixture_file(t, tree, name, "", context.allocator)
 		delete(path, context.allocator)
 		delete(name, context.allocator)
 	}
@@ -1015,9 +891,9 @@ a_directory_listing_within_its_bound_returns_every_entry :: proc(t: ^testing.T) 
 	defer delete(tree, context.allocator)
 	defer testkit.remove_tree(tree)
 
-	a := testkit.fixture_file(t, tree, "a.mp4", transmute([]u8)string("a"), nil, context.allocator)
+	a := testkit.fixture_file(t, tree, "a.mp4", "a", context.allocator)
 	defer delete(a, context.allocator)
-	b := testkit.fixture_file(t, tree, "b.mp4", transmute([]u8)string("b"), nil, context.allocator)
+	b := testkit.fixture_file(t, tree, "b.mp4", "b", context.allocator)
 	defer delete(b, context.allocator)
 
 	state := Walking {

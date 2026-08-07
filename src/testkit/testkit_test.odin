@@ -102,16 +102,9 @@ write_flood_writes_at_least_the_bytes_it_was_asked_for :: proc(t: ^testing.T) {
 fixture_file_writes_content_into_a_subdirectory_it_creates :: proc(t: ^testing.T) {
 	cache := made_scratch_cache(t, "testkit", "fixture-subdir", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_cache(cache, context.allocator)
+	defer remove_tree(cache)
 
-	path := fixture_file(
-		t,
-		cache,
-		"nested\\deeper\\talk.mp4",
-		transmute([]u8)string("video"),
-		nil,
-		context.allocator,
-	)
+	path := fixture_file(t, cache, "nested\\deeper\\talk.mp4", "video", context.allocator)
 	defer delete(path, context.allocator)
 
 	written, unreadable := os.read_entire_file(path, context.allocator)
@@ -136,7 +129,14 @@ fixture_file_with_an_age_backdates_the_files_modified_time :: proc(t: ^testing.T
 	content := make([]u8, 1024, context.allocator)
 	defer delete(content, context.allocator)
 
-	path := fixture_file(t, cache, "stale.wav", content, 30 * 24 * time.Hour, context.allocator)
+	path := fixture_file(
+		t,
+		cache,
+		"stale.wav",
+		string(content),
+		context.allocator,
+		30 * 24 * time.Hour,
+	)
 	defer delete(path, context.allocator)
 
 	info, unreadable := os.stat(path, context.allocator)
@@ -156,14 +156,7 @@ remove_tree_takes_a_tree_and_every_directory_nested_in_it :: proc(t: ^testing.T)
 	cache := made_scratch_cache(t, "testkit", "remove-tree", context.allocator)
 	defer delete(cache, context.allocator)
 
-	nested := fixture_file(
-		t,
-		cache,
-		"june\\deeper\\interview.m4a",
-		transmute([]u8)string("audio"),
-		nil,
-		context.allocator,
-	)
+	nested := fixture_file(t, cache, "june\\deeper\\interview.m4a", "audio", context.allocator)
 	defer delete(nested, context.allocator)
 
 	remove_tree(cache)

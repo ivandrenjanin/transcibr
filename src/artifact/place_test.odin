@@ -77,14 +77,7 @@ set_out :: proc(t: ^testing.T, tag: string, left := ENGINE_JSON) -> (b: Bench) {
 		defer delete(named, context.allocator)
 		directory^ = testkit.made_scratch_cache(t, "artifact", named, context.allocator)
 	}
-	b.output = testkit.fixture_file(
-		t,
-		b.cache,
-		"talk.json",
-		transmute([]u8)left,
-		nil,
-		context.allocator,
-	)
+	b.output = testkit.fixture_file(t, b.cache, "talk.json", left, context.allocator)
 	b.source = fmt.aprintf("%s\\talk.mkv", b.beside, allocator = context.allocator)
 
 	namable: bool
@@ -159,8 +152,7 @@ publishing_over_an_artifact_that_is_already_there_replaces_it :: proc(t: ^testin
 		t,
 		b.beside,
 		"talk.md",
-		transmute([]u8)string("the transcript from an older run\n"),
-		nil,
+		"the transcript from an older run\n",
 		context.allocator,
 	)
 	defer delete(older, context.allocator)
@@ -325,8 +317,7 @@ a_second_run_over_output_that_will_not_parse_replaces_the_quarantined_file :: pr
 			t,
 			b.cache,
 			"talk.json",
-			transmute([]u8)ENGINE_JSON[:len(ENGINE_JSON) / 2],
-			nil,
+			ENGINE_JSON[:len(ENGINE_JSON) / 2],
 			context.allocator,
 		)
 		defer delete(rewritten, context.allocator)

@@ -58,25 +58,11 @@ a_sub_directory_that_cannot_be_enumerated_is_an_operating_error :: proc(t: ^test
 	defer delete(tree, context.allocator)
 	defer testkit.remove_tree(tree)
 
-	open := testkit.fixture_file(
-		t,
-		tree,
-		"open.mp4",
-		transmute([]u8)string("video"),
-		nil,
-		context.allocator,
-	)
+	open := testkit.fixture_file(t, tree, "open.mp4", "video", context.allocator)
 	defer delete(open, context.allocator)
 	shut := a_directory(t, tree, "shut")
 	defer delete(shut, context.allocator)
-	hidden := testkit.fixture_file(
-		t,
-		tree,
-		"shut\\hidden.mp4",
-		transmute([]u8)string("video"),
-		nil,
-		context.allocator,
-	)
+	hidden := testkit.fixture_file(t, tree, "shut\\hidden.mp4", "video", context.allocator)
 	defer delete(hidden, context.allocator)
 
 	if !denied(t, shut, "(RD)") {
@@ -110,14 +96,7 @@ a_directory_nothing_may_be_written_to_is_refused_before_any_gpu_time :: proc(t: 
 
 	locked := a_directory(t, tree, "locked")
 	defer delete(locked, context.allocator)
-	inside := testkit.fixture_file(
-		t,
-		tree,
-		"locked\\talk.mp4",
-		transmute([]u8)string("video"),
-		nil,
-		context.allocator,
-	)
+	inside := testkit.fixture_file(t, tree, "locked\\talk.mp4", "video", context.allocator)
 	defer delete(inside, context.allocator)
 
 	if !denied(t, locked, "(WD)") {
@@ -149,14 +128,7 @@ the_probe_that_asks_whether_a_directory_is_writable_leaves_nothing_behind :: pro
 	defer delete(tree, context.allocator)
 	defer testkit.remove_tree(tree)
 
-	talk := testkit.fixture_file(
-		t,
-		tree,
-		"talk.mp4",
-		transmute([]u8)string("video"),
-		nil,
-		context.allocator,
-	)
+	talk := testkit.fixture_file(t, tree, "talk.mp4", "video", context.allocator)
 	defer delete(talk, context.allocator)
 
 	testing.expect(
