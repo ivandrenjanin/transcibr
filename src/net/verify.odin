@@ -161,6 +161,11 @@ head_matches :: proc(read: []u8, magic: []u8) -> bool {
 	return true
 }
 
+// `DIGEST_HEX_CHARS`/`hex_digest` (below) twin `artifact.model.hex_digest`,
+// reached through `artifact.digest_of_bounded` (src/artifact/model.odin) --
+// recorded duplication per #188: this package must not import artifact's
+// world, and a leaf package for this ~30-line procedure was refuted at the
+// 2026-08-06 review.
 #assert(DIGEST_HEX_CHARS == 2 * sha2.DIGEST_SIZE_256)
 
 @(private)
