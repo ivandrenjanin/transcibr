@@ -110,6 +110,16 @@ disposition_of :: proc(fault: Build_Fault) -> Disposition {
 // Free the result with `delete` and the same allocator: the line outlives this
 // procedure and may be written by a worker other than the one that reads it
 // (ADR-0010).
+//
+// The `assert(err.fault != .None, ...)` below relies on every refusal a
+// caller can hand in here still carrying the fault it was built with:
+// `check_inputs` is the only constructor of a refusal in this file, and
+// `build_command_line:195-198` is the only place that forwards its result
+// rather than rebuilding it, so that guarantee holds for whatever
+// `build_command_line` returns. Pinned, guard-side, by
+// command_line_test.odin's
+// every_refusal_out_of_build_command_line_carries_its_own_fault (issue #255,
+// the #208/#223 family's intra-package edition).
 @(require_results)
 error_message :: proc(err: Build_Error, allocator: mem.Allocator) -> string {
 	assert(err.fault != .None, "there is no message for a build that did not fail")
