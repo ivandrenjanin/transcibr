@@ -45,6 +45,14 @@ transcribe_one :: proc(arguments: []string) -> int {
 		audio_tools = audio.Tools{ffmpeg = parsed.tools.ffmpeg, ffprobe = parsed.tools.ffprobe},
 	}
 	audio.defaulted_tools(&o.audio_tools)
+	assert(
+		len(o.audio_tools.ffmpeg) > 0,
+		"accepted a command line that unset ffmpeg's own default",
+	)
+	assert(
+		len(o.audio_tools.ffprobe) > 0,
+		"accepted a command line that unset ffprobe's own default",
+	)
 
 	group, opened := job_object_opened()
 	defer child.job_object_close(&group)
