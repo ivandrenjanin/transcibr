@@ -4,6 +4,7 @@ package audio
 import "core:fmt"
 import "core:mem"
 import "core:os"
+import "core:strings"
 import win32 "core:sys/windows"
 import "core:testing"
 import "core:time"
@@ -102,11 +103,19 @@ a_sweep_leaves_a_directory_in_the_cache_alone :: proc(t: ^testing.T) {
 	audio := aged_file(t, cache, "audio.wav", 512, time.Minute)
 	defer delete(audio, context.allocator)
 
+	marker := fmt.aprintf("%s\\%s", cache, CACHE_MARKER_NAME, allocator = context.allocator)
+	defer delete(marker, context.allocator)
+
 	taken, fault := sweep_cache(cache, everything, context.allocator)
 	testing.expect_value(t, fault, Cache_Fault.None)
 	testing.expect_value(t, taken, 1)
 	testing.expect(t, !os.exists(audio), "the sweep left a file over both ceilings behind")
 	testing.expect(t, os.exists(inner), "the sweep took a directory out of the cache")
+	testing.expect(
+		t,
+		os.exists(marker),
+		"an aggressive sweep took the ownership marker along with everything else",
+	)
 }
 
 @(test)
@@ -243,6 +252,146 @@ a_cache_whose_parent_directory_is_also_missing_is_refused_rather_than_invented :
 		!os.exists(root),
 		"open_cache invented an implausible tree instead of refusing it",
 	)
+}
+
+// Issue #256, item 1: `open_cache` used to accept ANY existing directory,
+// which is what let a `--cache` pointed at a real media folder lose its
+// contents to the age/size sweep. Realistic names, not `foo.bin`: a
+// directory `sweep_cache` would previously have swept whole.
+@(test)
+a_cache_directory_holding_files_transcibr_never_wrote_is_refused_rather_than_adopted :: proc(
+	t: ^testing.T,
+) {
+	cache := testkit.made_scratch_cache(t, "audio", "foreign", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	clip := testkit.fixture_file(t, cache, "family-reunion.mp4", "not audio", context.allocator)
+	defer delete(clip, context.allocator)
+	notes := testkit.fixture_file(t, cache, "notes.txt", "call grandma back", context.allocator)
+	defer delete(notes, context.allocator)
+
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.Foreign_Directory)
+	testing.expect(t, os.exists(clip), "a refused cache open still lost the user's own file")
+	testing.expect(t, os.exists(notes), "a refused cache open still lost the user's own file")
+
+	marker := fmt.aprintf("%s\\%s", cache, CACHE_MARKER_NAME, allocator = context.allocator)
+	defer delete(marker, context.allocator)
+	testing.expect(t, !os.exists(marker), "a refused directory was marked owned anyway")
+}
+
+// The migration story: a directory nothing marked, holding only the shapes
+// this package itself ever writes (`.wav`, `.json`, `.probe`, `.part`),
+// reads as transcibr's own -- yesterday's cache, from before this ticket --
+// and is adopted rather than refused.
+@(test)
+a_cache_directory_holding_only_transcibr_shaped_files_is_adopted_in_place :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "audio", "adopt", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	old_wav := testkit.fixture_file(
+		t,
+		cache,
+		"lecture.wav",
+		"already extracted",
+		context.allocator,
+	)
+	defer delete(old_wav, context.allocator)
+	old_json := testkit.fixture_file(t, cache, "lecture.json", "{}", context.allocator)
+	defer delete(old_json, context.allocator)
+
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
+	testing.expect(t, os.exists(old_wav), "adoption touched a file it should have only counted")
+	testing.expect(t, os.exists(old_json), "adoption touched a file it should have only counted")
+
+	marker := fmt.aprintf("%s\\%s", cache, CACHE_MARKER_NAME, allocator = context.allocator)
+	defer delete(marker, context.allocator)
+	testing.expect(t, os.exists(marker), "an adopted directory was not marked owned")
+}
+
+// `sweep_cache` gates through `open_cache` unconditionally, on every call --
+// so a caller that reaches it directly, skipping whatever gate the Batch
+// itself already ran, is still refused before anything is listed for
+// removal. Defense in depth for the sweep side: no separate ownership check
+// was added to `sweep_cache` itself, because none was needed.
+@(test)
+a_sweep_of_a_foreign_directory_is_refused_and_removes_nothing :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "audio", "foreign-sweep", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	photo := testkit.fixture_file(t, cache, "vacation.jpg", "not audio either", context.allocator)
+	defer delete(photo, context.allocator)
+
+	everything := Sweep_Limits {
+		max_bytes    = 0,
+		max_age_ns   = 1,
+		spare_age_ns = 0,
+	}
+	taken, fault := sweep_cache(cache, everything, context.allocator)
+	testing.expect_value(t, fault, Cache_Fault.Foreign_Directory)
+	testing.expect_value(t, taken, 0)
+	testing.expect(t, os.exists(photo), "a refused sweep still removed the user's own file")
+}
+
+// Issue #256, item 3: `job.name` is the artifact stem alone (ADR-0008), and
+// two Recordings sharing a stem from different subfolders of one Batch root
+// are a real, legitimate shape -- not a mistake either recording made. Both
+// used to key the same flat `<cache>\<stem>.wav`.
+@(test)
+two_recordings_sharing_a_stem_key_to_different_wav_paths :: proc(t: ^testing.T) {
+	first := Job {
+		source = "C:\\talks\\june\\interview.mp4",
+		cache  = "C:\\cache",
+		name   = "interview",
+	}
+	second := Job {
+		source = "C:\\talks\\july\\interview.mp4",
+		cache  = "C:\\cache",
+		name   = "interview",
+	}
+
+	first_path := wav_cache_path(first, context.allocator)
+	defer delete(first_path, context.allocator)
+	second_path := wav_cache_path(second, context.allocator)
+	defer delete(second_path, context.allocator)
+
+	testing.expectf(
+		t,
+		first_path != second_path,
+		"two Recordings sharing a stem still keyed to the same wav path: %s",
+		first_path,
+	)
+	testing.expect(
+		t,
+		strings.has_prefix(first_path, "C:\\cache\\interview."),
+		"the wav key dropped the artifact stem a human reads the cache by",
+	)
+	testing.expect(
+		t,
+		strings.has_suffix(first_path, ".wav"),
+		"the wav key stopped being a .wav path",
+	)
+}
+
+// The wav key has to be the same path twice in a row, or a retry of the same
+// Recording would scatter its audio across the cache under a new name every
+// time it is asked for.
+@(test)
+the_same_source_keys_to_the_same_wav_path_every_time :: proc(t: ^testing.T) {
+	job := Job {
+		source = "C:\\talks\\june\\interview.mp4",
+		cache  = "C:\\cache",
+		name   = "interview",
+	}
+
+	once := wav_cache_path(job, context.allocator)
+	defer delete(once, context.allocator)
+	again := wav_cache_path(job, context.allocator)
+	defer delete(again, context.allocator)
+
+	testing.expect_value(t, once, again)
 }
 
 @(test)

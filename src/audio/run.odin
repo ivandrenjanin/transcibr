@@ -1,6 +1,8 @@
 #+vet explicit-allocators
 package audio
 
+import "core:crypto/sha2"
+import "core:encoding/hex"
 import "core:fmt"
 import "core:mem"
 import "core:os"
@@ -552,8 +554,9 @@ head_finished :: proc(
 	return
 }
 
-// Why the two intermediates carry the process id and `<name>.wav` does not, and
-// what the process id does not separate: ADR-0023.
+// Why the two intermediates carry the process id and `<name>.wav` does not,
+// what the process id does not separate, and why the wav's own name also
+// carries a key derived from `source`: ADR-0023.
 Job :: struct {
 	source:  string,
 	cache:   string,
@@ -602,6 +605,58 @@ extract :: proc(
 	return produce(group, tools, job, probed.duration_ms, tolerance, allocator)
 }
 
+// Long enough that two different Recordings' sources collide on a wav key by
+// chance only far below any Batch this program will ever run against (a
+// birthday bound over 2^64 keys), short enough that the filename stays
+// legible next to the artifact stem it still carries. Issue #256, item 3.
+SOURCE_KEY_BYTES :: 8
+SOURCE_KEY_CHARS :: 2 * SOURCE_KEY_BYTES
+
+#assert(SOURCE_KEY_BYTES <= sha2.DIGEST_SIZE_256)
+
+// A short, deterministic key over a Recording's own source path -- not its
+// bytes, which `produce` has not read yet and `extract` never will read as a
+// whole. Two Recordings sharing an artifact stem from different subfolders
+// of one Batch root are a real, legitimate shape (ADR-0008's own injectivity
+// note is scoped to one directory), and `job.name` alone cannot tell them
+// apart in the flat scratch cache.
+@(private)
+@(require_results)
+source_key :: proc(source: string, allocator: mem.Allocator) -> string {
+	assert(len(source) > 0, "there is no Recording source here to key")
+	assert(allocator.procedure != nil, "a key outliving this procedure needs an allocator")
+
+	context_256: sha2.Context_256
+	sha2.init_256(&context_256)
+	sha2.update(&context_256, transmute([]u8)source)
+	sum: [sha2.DIGEST_SIZE_256]u8
+	sha2.final(&context_256, sum[:])
+
+	encoded, _ := hex.encode(sum[:SOURCE_KEY_BYTES], allocator)
+	key := string(encoded)
+	assert(len(key) == SOURCE_KEY_CHARS, "a source key rendered to the wrong number of characters")
+	return key
+}
+
+// `produce`'s own wav path, pulled out so a test can prove two Recordings
+// sharing a stem key to two different paths without spawning ffmpeg at all --
+// the collision issue #256's item 3 measured is in this string, not in
+// anything ffmpeg does. The caller frees the answer with `delete` and the
+// same allocator.
+@(private)
+@(require_results)
+wav_cache_path :: proc(job: Job, allocator: mem.Allocator) -> string {
+	assert(len(job.cache) > 0, "there is no cache here to place audio into")
+	assert(len(job.name) > 0, "a Recording with no artifact stem has nowhere to put its audio")
+	assert(len(job.source) > 0, "there is no Recording source here to key its audio to")
+
+	key := source_key(job.source, allocator)
+	defer delete(key, allocator)
+	path := fmt.aprintf("%s\\%s.%s.wav", job.cache, job.name, key, allocator = allocator)
+	assert(len(path) > len(job.cache), "a wav cache path was not built at all")
+	return path
+}
+
 // Issue #112: `container_ms > 0` below is internal, not a check on external
 // input. `extract` is the only caller, and it passes `probed.duration_ms`
 // straight through -- `probed` only reaches here when `probe`'s call to
@@ -626,7 +681,7 @@ produce :: proc(
 	assert(container_ms > 0, "a container with no duration was never accepted by the probe")
 	assert(len(job.name) > 0, "a Recording with no artifact stem has nowhere to put its audio")
 
-	audio := fmt.aprintf("%s\\%s.wav", job.cache, job.name, allocator = allocator)
+	audio := wav_cache_path(job, allocator)
 	part := fmt.aprintf("%s.%d.part", audio, os.get_pid(), allocator = allocator)
 	defer delete(part, allocator)
 	defer if err.fault != .None {
@@ -771,7 +826,97 @@ open_cache :: proc(cache: string, allocator: mem.Allocator) -> Cache_Fault {
 	if !child.make_directory_bounded(cache, child.READ_BOUND_MS) {
 		return .Unusable
 	}
+	return verify_cache_ownership(cache, allocator)
+}
+
+// Written into a cache directory transcibr created or has already verified it
+// owns, so the NEXT `open_cache` against the same directory does not have to
+// re-walk its contents to answer the same question again. Its own name is
+// not one of the four shapes `entry_name_transcibr_written` below
+// recognizes, so it is never itself read as evidence of ownership.
+CACHE_MARKER_NAME :: ".transcibr-cache"
+
+// The ownership boundary: transcibr may write into a cache directory it
+// created, one already carrying its own marker, or a directory holding
+// nothing but the four shapes this package itself ever writes there --
+// yesterday's cache, from before this ticket, adopted rather than stranded.
+// Anything else is a directory this program did not make and cannot prove it
+// owns, and `sweep_cache`'s age/size sweep or `produce`'s unconditional
+// rename over `<cache>\<name>...wav` is what a wrong answer here would hand
+// to it. Issue #256: `sweep_cache` gates through `open_cache` on every call,
+// so this is the one seam that has to hold; `produce` and `extract` do not
+// re-verify ownership per Recording, exactly as `extract`'s own doc comment
+// already states for cache validity in general -- a Batch calls this once.
+@(private)
+@(require_results)
+verify_cache_ownership :: proc(cache: string, allocator: mem.Allocator) -> Cache_Fault {
+	assert(len(cache) > 0, "there is no scratch cache here to check ownership of")
+	assert(allocator.procedure != nil, "an ownership check needs an allocator for its listing")
+
+	marker := fmt.aprintf("%s\\%s", cache, CACHE_MARKER_NAME, allocator = allocator)
+	defer delete(marker, allocator)
+	if os.exists(marker) {
+		return .None
+	}
+
+	listing, readable := child.list_directory_bounded(cache, child.READ_BOUND_MS, allocator)
+	if !readable {
+		return .Unusable
+	}
+	defer os.file_info_slice_delete(listing, allocator)
+
+	if !cache_directory_is_transcibr_shaped(listing) {
+		return .Foreign_Directory
+	}
+	if !write_cache_marker(marker) {
+		return .Unusable
+	}
 	return .None
+}
+
+// A directory nothing has marked reads as transcibr's own only when every
+// entry is a plain file (never a subdirectory transcibr never creates) whose
+// name is one of the four shapes `produce`, `probe` and the Engine's own
+// output ever write into a scratch cache -- an empty directory satisfies this
+// trivially, since there is nothing in it to fail the check.
+@(private)
+@(require_results)
+cache_directory_is_transcibr_shaped :: proc(listing: []os.File_Info) -> bool {
+	for info in listing {
+		if info.type != .Regular && info.type != .Undetermined {
+			return false
+		}
+		if !entry_name_transcibr_written(info.name) {
+			return false
+		}
+	}
+	return true
+}
+
+// The four suffixes this package (`.wav`, `.probe`, `.part`) and the Engine
+// (`.json`, `process.ENGINE_OUTPUT_SUFFIX`) ever write into a scratch cache.
+// Narrow on purpose: a directory of a user's own recordings is realistically
+// video (`.mp4`, `.mov`, `.mkv`) rather than any of these four, with one
+// accepted exception recorded in ADR-0023's #256 addendum -- a folder of
+// nothing but raw `.wav` voice memos reads as transcibr's own too, and is
+// adopted the same way a real leftover cache is.
+@(private)
+@(require_results)
+entry_name_transcibr_written :: proc(name: string) -> bool {
+	assert(len(name) > 0, "there is no cache entry name here to classify")
+	return(
+		strings.has_suffix(name, ".wav") ||
+		strings.has_suffix(name, ".json") ||
+		strings.has_suffix(name, ".probe") ||
+		strings.has_suffix(name, ".part") \
+	)
+}
+
+@(private)
+@(require_results)
+write_cache_marker :: proc(marker: string) -> bool {
+	assert(len(marker) > 0, "there is no marker path here to write")
+	return os.write_entire_file(marker, []u8{}) == nil
 }
 
 // Best effort by construction: Windows refuses to delete a file another process
@@ -818,7 +963,13 @@ sweep_cache :: proc(
 	return taken, .None
 }
 
-// Why the listing counts entries `core:os` cannot classify: ADR-0023.
+// Why the listing counts entries `core:os` cannot classify: ADR-0023. The
+// ownership marker is excluded on top of that (issue #256): it is metadata
+// about the cache, not content a Recording ever produced, and letting the
+// age/size sweep take it would let one aggressive sweep call strand the very
+// directory it just finished clearing -- the next `open_cache` would find no
+// marker, list only a leftover subdirectory the sweep itself never touches,
+// and refuse a directory transcibr had already proven it owned.
 @(private)
 @(require_results)
 cache_entries :: proc(listing: []os.File_Info, allocator: mem.Allocator) -> []Cache_Entry {
@@ -828,6 +979,9 @@ cache_entries :: proc(listing: []os.File_Info, allocator: mem.Allocator) -> []Ca
 	entries := make([dynamic]Cache_Entry, 0, len(listing), allocator)
 	for info in listing {
 		if info.type != .Regular && info.type != .Undetermined {
+			continue
+		}
+		if info.name == CACHE_MARKER_NAME {
 			continue
 		}
 		append(
