@@ -60,8 +60,11 @@ Run_Callbacks :: struct {
 	// a run that never started has no child at all. A caller that never sets
 	// this pays nothing, which is why the status arrives here rather than in
 	// `run_bounded`'s own results -- `.Finished` is what almost every caller
-	// asks, and the code behind it is a question only the doctor's probes have
-	// (issue #13); generalizing it to every caller is its own ticket.
+	// asks. This is the one documented way any caller learns the exit code
+	// (issue #109): the doctor's probes were the first consumer (issue #13),
+	// and audio's ffmpeg/ffprobe paths are the second, each recording it into
+	// a small per-call observer struct rather than reaching for a package
+	// variable no concurrent call could share safely.
 	on_exit:  proc(code: u32, user: rawptr),
 }
 
