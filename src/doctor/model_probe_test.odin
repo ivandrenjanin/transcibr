@@ -36,6 +36,36 @@ an_overflowed_probe_is_refused_by_the_model_verdict_rather_than_judged_on_its_ca
 	)
 }
 
+// Issue #208: `model_load_verdict`'s `.Not_Started` branch used to call
+// `child.error_message` unconditionally, reaching its own
+// `assert(err.fault != .None, ...)` (child.odin:79) whenever a `.Not_Started`
+// probe's child carried no fault -- reachable only because nothing in this
+// package checked the fault first before calling it. `run_bounded` never
+// actually returns `.Not_Started` with `err.fault == .None`
+// (`child/run_test.odin` pins that guarantee), but the doctor branch relied
+// on it without checking -- an unrecorded cross-package pairing. This drives
+// a fault-free `.Not_Started` Probe directly through `model_load_verdict`,
+// the shape a caller-constructed stub Probe reaches without a real child,
+// and proves the branch renders a fallback message rather than reaching
+// that assert at all.
+@(test)
+a_fault_free_not_started_probe_is_refused_by_the_model_verdict_without_asserting :: proc(
+	t: ^testing.T,
+) {
+	probe := Probe {
+		run = .Not_Started,
+	}
+	check := model_load_verdict(probe, "model.bin", context.allocator)
+	defer destroy_check(check, context.allocator)
+
+	testing.expect_value(t, check.ok, false)
+	testing.expect(
+		t,
+		strings.contains(check.reason, "could not be loaded by the engine"),
+		"a fault-free Not_Started probe's message did not name the load failure",
+	)
+}
+
 // Issue #145: `model_load_verdict`'s `probe.exit_code != 0` branch was the
 // only route to `model_refused`, which re-asserted the identical condition
 // on a value that originates in a child process -- a legitimate A4 pair, but

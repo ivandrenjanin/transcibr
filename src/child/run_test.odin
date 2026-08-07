@@ -68,6 +68,15 @@ a_child_that_outlives_its_bound_is_stopped_rather_than_waited_for :: proc(t: ^te
 	testing.expect_value(t, reason, Stop_Reason.Bound_Expired)
 }
 
+// Issue #208: `run_bounded` has exactly one return site for `.Not_Started`
+// (the `refusal.fault != .None` branch above), so this is also the
+// guard-side half of the cross-package A4 pairing `src/doctor`'s
+// `model_load_verdict` relies on: `child.error_message` asserts
+// `err.fault != .None` (child.odin:79), and every `.Not_Started` a doctor
+// probe can observe traces back to this exact call. The general
+// `err.fault != .None` check below states that guarantee as the implication
+// it is, rather than only the one concrete fault the value-equality check
+// beside it already pins.
 @(test)
 a_child_that_will_not_start_is_reported_rather_than_asserted :: proc(t: ^testing.T) {
 	group, ok := open_group(t)
@@ -86,6 +95,13 @@ a_child_that_will_not_start_is_reported_rather_than_asserted :: proc(t: ^testing
 	testing.expect_value(t, ending, Run.Not_Started)
 	testing.expect_value(t, reason, Stop_Reason.None)
 	testing.expect_value(t, err.fault, Fault.Not_Started)
+	if ending == .Not_Started {
+		testing.expect(
+			t,
+			err.fault != .None,
+			"a Not_Started run carried no fault, which child.error_message's callers rely on",
+		)
+	}
 }
 
 @(private)

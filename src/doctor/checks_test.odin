@@ -33,6 +33,33 @@ an_overflowed_probe_is_refused_by_name_rather_than_judged_on_its_capture :: proc
 	)
 }
 
+// Issue #208 round 1: `extraction_tool_verdict`'s `.Not_Started` branch
+// called `child.error_message(probe.child, allocator)` unconditionally,
+// reaching that procedure's own `assert(err.fault != .None, ...)`
+// (child.odin:79) for any fault-free `.Not_Started` Probe -- the same
+// reachable-assert defect `model_load_verdict` had, byte-identical in
+// shape. Drives a fault-free `.Not_Started` Probe directly through
+// `extraction_tool_verdict`, the seam a caller-constructed stub Probe
+// reaches without a real child, and proves the branch renders a fallback
+// message rather than reaching that assert at all.
+@(test)
+a_fault_free_not_started_probe_is_refused_by_the_extraction_tool_verdict_without_asserting :: proc(
+	t: ^testing.T,
+) {
+	probe := Probe {
+		run = .Not_Started,
+	}
+	check := extraction_tool_verdict(probe, "ffmpeg", `C:\tools\ffmpeg.exe`, context.allocator)
+	defer destroy_check(check, context.allocator)
+
+	testing.expect_value(t, check.ok, false)
+	testing.expect(
+		t,
+		strings.contains(check.reason, "could not be started"),
+		"a fault-free Not_Started probe's message did not name the start failure",
+	)
+}
+
 @(test)
 an_extraction_tool_that_reports_its_version_passes :: proc(t: ^testing.T) {
 	group, ok := open_group(t)

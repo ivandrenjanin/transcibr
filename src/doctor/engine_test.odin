@@ -232,6 +232,36 @@ an_overflowed_probe_is_refused_by_the_engine_verdict_rather_than_judged_on_its_c
 	testing.expect_value(t, check.fault, Engine_Fault.Capture_Overflowed)
 }
 
+// Issue #208 round 1: `engine_error_message`'s `.Not_Started` branch called
+// `child.error_message(check.child, allocator)` unconditionally, reaching
+// that procedure's own `assert(err.fault != .None, ...)` (child.odin:79)
+// for any fault-free `.Not_Started` check -- the same reachable-assert
+// defect `model_load_verdict` had, and this one is reached through a public
+// procedure. Drives a fault-free `.Not_Started` Engine_Check (the shape
+// `engine_probe_verdict` returns for a caller-constructed Probe whose child
+// field is left at its zero value) directly through `engine_error_message`,
+// and proves it renders a fallback message rather than reaching that
+// assert at all.
+@(test)
+a_fault_free_not_started_probe_is_refused_by_the_engine_verdict_without_asserting :: proc(
+	t: ^testing.T,
+) {
+	probe := Probe {
+		run = .Not_Started,
+	}
+	check := engine_probe_verdict(probe)
+	testing.expect_value(t, check.fault, Engine_Fault.Not_Started)
+
+	message := engine_error_message(check, `C:\engines\whisper-cli.exe`, context.allocator)
+	defer delete(message, context.allocator)
+
+	testing.expect(
+		t,
+		strings.contains(message, "could not be started"),
+		"a fault-free Not_Started check's message did not name the start failure",
+	)
+}
+
 @(test)
 an_engine_fault_message_names_the_capture_ceiling_when_overflowed :: proc(t: ^testing.T) {
 	check := Engine_Check {

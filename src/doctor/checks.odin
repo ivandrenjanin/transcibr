@@ -64,6 +64,14 @@ extraction_tool_check :: proc(
 // Split out of `extraction_tool_check` so the overflow refusal -- and every
 // other branch here -- takes a caller-constructed `Probe` and can be proved
 // without spawning a real flooding child (`checks_test.odin`).
+//
+// Issue #208 round 1: the `.Not_Started` case below used to call
+// `child.error_message(probe.child, allocator)` unconditionally, reaching
+// that procedure's own `assert(err.fault != .None, ...)` (child.odin:79)
+// for any fault-free `.Not_Started` Probe -- the same reachable-assert
+// defect fixed for `model_load_verdict` (src/doctor/model_probe.odin). The
+// fault check below means this branch never reaches that assert regardless
+// of what any future caller-constructed Probe carries.
 @(private)
 @(require_results)
 extraction_tool_verdict :: proc(
@@ -80,8 +88,13 @@ extraction_tool_verdict :: proc(
 	}
 	switch probe.run {
 	case .Not_Started:
-		reason := child.error_message(probe.child, allocator)
-		defer delete(reason, allocator)
+		reason: string
+		if probe.child.fault != .None {
+			reason = child.error_message(probe.child, allocator)
+		}
+		defer if len(reason) > 0 {
+			delete(reason, allocator)
+		}
 		message := combined_message(executable, "could not be started", reason, allocator)
 		return failed(name, message)
 	case .Stopped, .Unstoppable:

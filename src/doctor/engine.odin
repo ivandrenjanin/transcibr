@@ -154,6 +154,14 @@ engine_fault_says :: proc(fault: Engine_Fault) -> string {
 	return ""
 }
 
+// Issue #208 round 1: the `.Not_Started` branch below used to call
+// `child.error_message(check.child, allocator)` unconditionally, reaching
+// that procedure's own `assert(err.fault != .None, ...)` (child.odin:79)
+// for any fault-free `.Not_Started` check -- the same reachable-assert
+// defect fixed for `model_load_verdict` (src/doctor/model_probe.odin), and
+// reachable here through a public procedure. The fault check below means
+// this branch never reaches that assert regardless of what any future
+// caller-constructed Engine_Check carries.
 @(require_results)
 engine_error_message :: proc(
 	check: Engine_Check,
@@ -170,8 +178,13 @@ engine_error_message :: proc(
 	says := engine_fault_says(check.fault)
 
 	if check.fault == .Not_Started {
-		reason := child.error_message(check.child, allocator)
-		defer delete(reason, allocator)
+		reason: string
+		if check.child.fault != .None {
+			reason = child.error_message(check.child, allocator)
+		}
+		defer if len(reason) > 0 {
+			delete(reason, allocator)
+		}
 		return combined_message(executable, says, reason, allocator)
 	}
 	return combined_message(executable, says, "", allocator)
