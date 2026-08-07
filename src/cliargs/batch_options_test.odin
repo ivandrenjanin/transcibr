@@ -221,6 +221,55 @@ read_batch_options_refuses_a_missing_root_first :: proc(t: ^testing.T) {
 	testing.expect_value(t, refusal.args[0], Refusal_Arg(BATCH))
 }
 
+// required_fields_present refuses the FIRST empty field in the list
+// read_batch_options builds -- so a single-field-omission test only ever
+// pins whichever row happens to sit first; every other row's ORDER is
+// unpinned by it and a reordering of required_fields_present's own row
+// list leaves such a test green (fix round 3, PR #212 finding 1, mirroring
+// transcribe_options_test.odin's own
+// read_transcribe_options_refuses_the_earliest_missing_field_for_every_prefix_of_supplied_fields).
+// Omitting every field after the walked prefix is what pins each row
+// against an adjacent swap: each case below supplies everything through
+// one field short of the next, so the missing field named in the refusal
+// is exactly the row's own position, not merely "first among an
+// otherwise-complete line."
+@(test)
+read_batch_options_refuses_the_earliest_missing_field_for_every_prefix_of_supplied_fields :: proc(
+	t: ^testing.T,
+) {
+	Case :: struct {
+		arguments:    []string,
+		expected_arg: string,
+	}
+	cases := []Case {
+		{arguments = []string{}, expected_arg = BATCH},
+		{arguments = []string{BATCH, "recordings"}, expected_arg = "--model-file"},
+		{
+			arguments = []string{BATCH, "recordings", "--model-file", "model.bin"},
+			expected_arg = "--engine-exe",
+		},
+		{
+			arguments = []string {
+				BATCH,
+				"recordings",
+				"--model-file",
+				"model.bin",
+				"--engine-exe",
+				"engine.exe",
+			},
+			expected_arg = "--cache",
+		},
+	}
+
+	for c in cases {
+		ok, refusal := batch_options_refusal(c.arguments)
+
+		testing.expect(t, !ok, "a command line missing a required field was accepted")
+		testing.expect_value(t, refusal.complaint, "%s names nothing.")
+		testing.expect_value(t, refusal.args[0], Refusal_Arg(c.expected_arg))
+	}
+}
+
 @(private)
 @(require_results)
 batch_options_refusal :: proc(arguments: []string) -> (ok: bool, refusal: Refusal) {

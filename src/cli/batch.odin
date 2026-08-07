@@ -210,6 +210,10 @@ run_the_batch :: proc(
 	engine_digest: artifact.Digest,
 	plan: planning.Plan,
 ) -> int {
+	assert(group != nil, "a child started outside a job object outlives transcibr")
+	assert(o.extract_workers > 0, "run_recordings' own ceiling assert is unpaired without this")
+	assert(o.queue_depth > 0, "run_recordings' own ceiling assert is unpaired without this")
+
 	sync.atomic_store(&cancel_requested, false)
 	sync.atomic_store(&gpu_health_checked, false)
 	sync.atomic_store(&gpu_health_unhealthy, false)
