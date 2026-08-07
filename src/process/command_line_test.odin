@@ -323,19 +323,28 @@ NUL_SENTENCE :: "contains a NUL, which ends the command line where Windows reads
 @(test)
 a_refusal_renders_as_one_line_naming_its_input :: proc(t: ^testing.T) {
 	_, nul_err := build_command_line("C:\\a\x00b\\ffmpeg.exe", {"-i"}, context.allocator)
-	in_executable := error_message(nul_err, context.allocator)
-	defer delete(in_executable, context.allocator)
-	testing.expect_value(t, in_executable, `"C:\\a\x00b\\ffmpeg.exe": ` + NUL_SENTENCE)
+	testing.expect_value(t, nul_err.fault, Build_Fault.Nul_In_Executable)
+	if nul_err.fault != .None {
+		in_executable := error_message(nul_err, context.allocator)
+		defer delete(in_executable, context.allocator)
+		testing.expect_value(t, in_executable, `"C:\\a\x00b\\ffmpeg.exe": ` + NUL_SENTENCE)
+	}
 
 	_, argument_err := build_command_line(EXE, {"-i", "a\x00b.mkv"}, context.allocator)
-	named := error_message(argument_err, context.allocator)
-	defer delete(named, context.allocator)
-	testing.expect_value(t, named, `argument 2 ("a\x00b.mkv"): ` + NUL_SENTENCE)
+	testing.expect_value(t, argument_err.fault, Build_Fault.Nul_In_Argument)
+	if argument_err.fault != .None {
+		named := error_message(argument_err, context.allocator)
+		defer delete(named, context.allocator)
+		testing.expect_value(t, named, `argument 2 ("a\x00b.mkv"): ` + NUL_SENTENCE)
+	}
 
 	_, empty_err := build_command_line("", {"-i"}, context.allocator)
-	nothing := error_message(empty_err, context.allocator)
-	defer delete(nothing, context.allocator)
-	testing.expect_value(t, nothing, "there is no executable to run")
+	testing.expect_value(t, empty_err.fault, Build_Fault.Empty_Executable)
+	if empty_err.fault != .None {
+		nothing := error_message(empty_err, context.allocator)
+		defer delete(nothing, context.allocator)
+		testing.expect_value(t, nothing, "there is no executable to run")
+	}
 }
 
 // Takes the culprit's escaping from the same %q the renderer uses: checking that
