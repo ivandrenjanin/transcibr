@@ -178,10 +178,6 @@ digest_worker :: proc(data: rawptr) {
 	job.digest, job.bytes, job.fault = digest_of(job.path, child.job_allocator())
 }
 
-// `digest_of_bounded`'s hash-finishing step twins `net.hex_digest`
-// (src/net/verify.odin) -- recorded duplication per #188: `net` must not
-// import artifact's world, and a leaf package for this ~30-line procedure
-// was refuted at the 2026-08-06 review.
 @(private)
 @(require_results)
 digest_of_bounded :: proc(
@@ -253,6 +249,10 @@ digest_finished :: proc(
 	return
 }
 
+// `hex_digest` (below) twins `net.hex_digest` (src/net/verify.odin) --
+// recorded duplication per #188's maintainer ruling: `net` must not import
+// artifact's world, and a leaf package for this ~30-line procedure buys net
+// line growth and justfile/vet/test ceremony for no shared consumer.
 #assert(DIGEST_CHARS == 2 * sha2.DIGEST_SIZE_256)
 
 @(private)
