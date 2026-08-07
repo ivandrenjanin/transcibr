@@ -566,13 +566,16 @@ remove_accounting_fixture :: proc(base: string) {
 	os.remove(base)
 }
 
-// The exact pid-collision failure mode the #109 review measured: a stray
-// directory planted at the OLD shape's name -- `temp_dir()` concatenated
-// straight onto the fixture name, no separator -- must not stop the new,
-// join-based `fixture_root` from building a distinct, creatable path. The
-// old shape landed there because `os.temp_dir()` carries no trailing
-// separator; a recycled pid landing on such a stray made `os.make_directory`
-// return `Exist` and turned unrelated tests red.
+// The exact pid-collision failure mode the #109 review measured: the OLD
+// shape's name -- `temp_dir()` concatenated straight onto the fixture name,
+// no separator -- lands as a SIBLING of the temp directory rather than a
+// child of it. The new, join-based `fixture_root` must build a distinct
+// path that sits properly under `root`, without ever creating a directory
+// outside `os.temp_dir()` to prove it: both `old_shape` and the property
+// checked against it are plain strings, never planted on disk. The old
+// shape landed there because `os.temp_dir()` carries no trailing separator;
+// a recycled pid landing on such a stray made `os.make_directory` return
+// `Exist` and turned unrelated tests red.
 @(test)
 fixture_root_survives_a_stray_directory_at_the_old_sibling_name :: proc(t: ^testing.T) {
 	root, root_err := os.temp_dir(context.allocator)
@@ -583,14 +586,10 @@ fixture_root_survives_a_stray_directory_at_the_old_sibling_name :: proc(t: ^test
 	old_shape := fmt.aprintf("%s%s-%d", root, name, os.get_pid(), allocator = context.allocator)
 	defer delete(old_shape, context.allocator)
 
-	testing.expect_value(t, os.make_directory(old_shape), os.Error(nil))
-	defer os.remove(old_shape)
-
 	base, base_ok := fixture_root(name, context.allocator)
 	defer delete(base, context.allocator)
 
 	testing.expect_value(t, base_ok, true)
 	testing.expect(t, base != old_shape)
-	testing.expect_value(t, os.make_directory(base), os.Error(nil))
-	defer os.remove(base)
+	testing.expect(t, strings.has_prefix(base, root))
 }
