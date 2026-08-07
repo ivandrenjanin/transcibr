@@ -1,6 +1,7 @@
 #+vet explicit-allocators
 package cliargs
 
+import "core:reflect"
 import "core:testing"
 import "transcibr:transcript"
 
@@ -42,4 +43,18 @@ tools_is_a_plain_two_string_struct_and_not_audio_dot_tools :: proc(t: ^testing.T
 
 	testing.expect_value(t, tools.ffmpeg, "ffmpeg.exe")
 	testing.expect_value(t, tools.ffprobe, "ffprobe.exe")
+}
+
+// Firable against addition, where the two tests above are not: a seventh
+// field or a third Tools member leaves both of those green, because neither
+// walks the type -- only this one goes red the moment a field is added or
+// removed (stage-2 review deposit 1, PR #194).
+@(test)
+common_options_holds_exactly_six_fields :: proc(t: ^testing.T) {
+	testing.expect_value(t, reflect.struct_field_count(Common_Options), 6)
+}
+
+@(test)
+tools_holds_exactly_two_fields :: proc(t: ^testing.T) {
+	testing.expect_value(t, reflect.struct_field_count(Tools), 2)
 }
