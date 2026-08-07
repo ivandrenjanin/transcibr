@@ -683,13 +683,25 @@ an_unsettled_probe_answer_is_left_on_disk :: proc(t: ^testing.T) {
 	)
 }
 
-// A real, fast-exiting stand-in for ffprobe: `probe`'s own call site never
-// inspects what its child prints, only whether it exited, so any short-lived
-// process reachable off PATH stands in for it without a committed fixture.
-// Measured at ~13 ms against garbage `probe_arguments`, comfortably inside
-// `PROBE_BOUND_MS`.
+// A real, fast-exiting stand-in for ffprobe that always exits zero: `cmd.exe`
+// given `probe_arguments`'s ffprobe-shaped flags neither understands nor
+// misreads them as an interactive session, because `child.start` wires its
+// standard input to the null device -- `cmd.exe` reads that as an immediate
+// end of file and exits 0 (measured ~55 ms), the same way a real ffprobe run
+// that succeeds does. Any short-lived process reachable off PATH stands in
+// for a probe whose own call site never inspects what its child prints, only
+// whether it exited and how, without a committed fixture.
 @(private)
-FFPROBE_STAND_IN :: "where.exe"
+FFPROBE_STAND_IN :: "cmd.exe"
+
+// A real, fast-exiting stand-in for ffprobe that always refuses: `where.exe`
+// treats `probe_arguments`'s ffprobe-shaped flags as search patterns nothing
+// on PATH matches, prints "INFO: Could not find files..." to its own
+// standard output, and exits 1 (measured ~13 ms) -- deterministic against
+// real `probe_arguments`, unlike a mocked exit code this suite would have to
+// wire through a stub run instead of proving at `probe`'s real call site.
+@(private)
+FFPROBE_REFUSING_STAND_IN :: "where.exe"
 
 // Drives `probe` itself onto its guarded-removal branch, rather than only
 // `remove_answer_if_settled` directly: a real answer file, read to
@@ -887,6 +899,7 @@ stub_stopped_probe_run :: proc(
 	arguments: []string,
 	bound_ms: i64,
 	allocator: mem.Allocator,
+	callbacks: child.Run_Callbacks,
 ) -> (
 	ending: child.Run,
 	reason: child.Stop_Reason,
@@ -924,4 +937,118 @@ a_probe_whose_ffprobe_run_stops_calls_the_remover_exactly_once :: proc(t: ^testi
 		"probe called its remover %d time(s) for a stopped ffprobe run, wanted 1",
 		calls,
 	)
+}
+
+// Issue #109: a finished ffprobe that exited nonzero was read for a probe
+// answer it never wrote, arriving at `.Probe_Unreadable` -- the same fault a
+// malformed answer from a probe that genuinely succeeded reports. A caller
+// could not tell "ffprobe refused this Recording" from "ffprobe answered with
+// something this program cannot parse" apart. Driven through `probe` itself,
+// the real call site, rather than a stub: `FFPROBE_REFUSING_STAND_IN` is a
+// real process that really exits 1, so this proves the refusal at the same
+// seam a genuinely broken ffprobe would reach.
+@(test)
+a_probe_whose_ffprobe_exits_nonzero_is_refused_with_its_exit_code :: proc(t: ^testing.T) {
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	tools := Tools {
+		ffprobe = FFPROBE_REFUSING_STAND_IN,
+	}
+	_, err := probe(&group, tools, "source.mp4", "answer.json", context.allocator)
+	testing.expect_value(t, err.fault, Fault.Probe_Refused)
+	testing.expect(t, err.exit_code != 0, "a refused probe carried a zero exit code")
+}
+
+// Issue #109 fix round 1: a refused probe has provably exited (the assert
+// just above this branch in `probe_using` already establishes that), so the
+// answer file it left is provably safe to remove -- unlike the `.Stopped`
+// branch, which removes unconditionally even though ffprobe may still hold
+// the file. Driven through `probe_using` with a real pre-written answer file
+// and a spy remover, the same way
+// `a_probe_whose_ffprobe_run_stops_calls_the_remover_exactly_once` proves the
+// `.Stopped` branch's removal.
+@(test)
+a_probe_whose_ffprobe_exits_nonzero_calls_the_remover_exactly_once :: proc(t: ^testing.T) {
+	cache := testkit.scratch_cache(t, "audio", "probe-refused-spy", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
+
+	answer := fmt.aprintf("%s\\answer.json", cache, allocator = context.allocator)
+	defer delete(answer, context.allocator)
+	testing.expect(
+		t,
+		os.write_entire_file(answer, []u8{'{', '}'}) == nil,
+		"could not write the fixture",
+	)
+
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	calls := 0
+	context.user_ptr = &calls
+	tools := Tools {
+		ffprobe = FFPROBE_REFUSING_STAND_IN,
+	}
+	_, err := probe_using(
+		&group,
+		tools,
+		"source.mp4",
+		answer,
+		context.allocator,
+		spy_answer_remove,
+		run_probe_child,
+	)
+	testing.expect_value(t, err.fault, Fault.Probe_Refused)
+	testing.expectf(
+		t,
+		calls == 1,
+		"a refused probe called its remover %d time(s); the answer file it left is never removed",
+		calls,
+	)
+}
+
+// The same stand-in `probe`'s own tests use, aimed at `produce`: `where.exe`
+// given `extract_arguments`'s ffmpeg-shaped flags treats them as search
+// patterns nothing on PATH matches and exits 1.
+@(private)
+FFMPEG_REFUSING_STAND_IN :: "where.exe"
+
+// Issue #109: a finished ffmpeg that exited nonzero left no `.wav` behind,
+// and `check_audio` read whatever a stale or half-written `part` happened to
+// hold rather than the fault ffmpeg itself already reported. Driven through
+// `produce` at the point extraction actually spawns a child, before
+// `check_audio` ever runs, so a caller can tell "ffmpeg refused this
+// Recording" from "the audio ffmpeg wrote does not check out".
+@(test)
+an_extraction_whose_ffmpeg_exits_nonzero_is_refused_with_its_exit_code :: proc(t: ^testing.T) {
+	cache := testkit.scratch_cache(t, "audio", "extraction-refused", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.None)
+
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	tools := Tools {
+		ffmpeg = FFMPEG_REFUSING_STAND_IN,
+	}
+	job := Job {
+		source = "source.mp4",
+		cache  = cache,
+		name   = "recording",
+	}
+	_, err := produce(&group, tools, job, 1000, DEFAULT_TOLERANCE, context.allocator)
+	testing.expect_value(t, err.fault, Fault.Extraction_Refused)
+	testing.expect(t, err.exit_code != 0, "a refused extraction carried a zero exit code")
 }
