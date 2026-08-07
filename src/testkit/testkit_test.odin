@@ -129,14 +129,16 @@ remove_cache_survives_a_file_still_locked_when_removal_first_runs :: proc(t: ^te
 	)
 }
 
-// Issue #229: three consecutive `just ci` runs, instrumented, measured the
-// existing budget (5 attempts * 20ms = 80ms of sleep before the last try)
-// losing to a real lock-release window of 117-130ms under the disk load a
-// full `just ci` produces -- src/planning's own locked-dead-run-tree case
-// hit exactly this, consistently, all three runs. RELEASE_DELAY here sits
-// above every one of those measured elapsed times, so this case fails
-// against the pre-#229 budget for the same reason a real `just ci` run
-// does, and only passes once the budget is widened to cover it.
+// A controlled complement to remove_cache_survives_a_file_still_locked_...
+// above: that case releases the lock almost immediately (well inside the
+// pre-#229 80ms budget), so it cannot tell the old and new budgets apart.
+// This one holds the lock for RELEASE_DELAY -- chosen above the pre-#229
+// budget (80ms) and below the widened one (270ms) -- so it fails against
+// 5 * 20ms and passes against 10 * 30ms for the same structural reason: a
+// wider retry budget survives a longer-held lock. It is not a claim that
+// RELEASE_DELAY reproduces any specific real-world lock-release duration;
+// see the REMOVE_SETTLE_DELAY doc comment in testkit.odin for what issue
+// #229's own instrumentation could and could not establish about that.
 @(test)
 remove_cache_survives_a_lock_released_past_the_pre_229_budget :: proc(t: ^testing.T) {
 	cache := made_scratch_cache(t, "testkit", "locked-file-229", context.allocator)
@@ -184,7 +186,7 @@ remove_cache_survives_a_lock_released_past_the_pre_229_budget :: proc(t: ^testin
 	testing.expectf(
 		t,
 		!os.exists(cache),
-		"remove_cache gave up on %s before a lock released past the measured just-ci window",
+		"remove_cache gave up on %s before a lock held for RELEASE_DELAY released",
 		cache,
 	)
 }

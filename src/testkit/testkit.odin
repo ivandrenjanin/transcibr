@@ -46,14 +46,22 @@ import "core:time"
 //
 // The original 5 * 20ms (80ms of sleep before the last try) was sized on
 // isolated `odin test src/pipeline` runs (issue #178) and held there. Issue
-// #229 instrumented three consecutive full `just ci` runs -- disk load from
-// the whole sweep building and testing every package back to back, not one
-// package alone -- and measured src/planning's own locked-dead-run-tree
-// case (dead_run_sweep_test.odin) losing that race consistently, all three
-// runs, with the failing attempt landing 117-130ms in. 10 * 30ms carries
-// more than double that measured worst case while keeping the same
-// bounded-not-infinite shape: a caller whose directory is genuinely stuck
-// still fails in test time rather than hanging the suite.
+// #229 instrumented three consecutive full `just ci` runs and found four
+// give-up cases whose paths could never succeed regardless of budget (an
+// already-removed target, or a handle this repository's own fixture does
+// not release until after the call returns) -- their reported elapsed time
+// is bounded by ATTEMPTS * DELAY plus scheduler overhead BY CONSTRUCTION,
+// not an independent measurement of an external lock-release window; the
+// same instrument re-run against this wider budget reports a proportionally
+// wider number, which cannot be what justifies the number. AC1's
+// "confirm or refute the settle-window mechanism before changing anything"
+// was not established by that instrument, and three `just ci` runs each on
+// origin/main and on this branch did not reproduce #217's leak on the
+// machine this was measured on either way. 10 * 30ms is kept as a
+// conservative, strictly-more-lenient margin over the old budget -- a
+// caller whose directory is genuinely stuck still fails in bounded test
+// time rather than hanging the suite -- without claiming it is proven
+// necessary or sufficient by the evidence gathered so far.
 REMOVE_SETTLE_ATTEMPTS :: 10
 REMOVE_SETTLE_DELAY :: 30 * time.Millisecond
 #assert(REMOVE_SETTLE_ATTEMPTS > 1)
