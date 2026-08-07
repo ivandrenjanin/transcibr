@@ -282,8 +282,8 @@ planned_resume :: proc(
 @(test)
 a_folder_processed_once_is_skipped_on_the_next_pass :: proc(t: ^testing.T) {
 	tree := testkit.made_scratch_cache(t, "pipeline", "resume", context.allocator)
-	defer testkit.remove_cache(tree, context.allocator)
 	defer delete(tree, context.allocator)
+	defer testkit.remove_cache(tree, context.allocator)
 
 	one := resume_recording(t, tree, "one")
 	defer delete(one, context.allocator)
@@ -410,8 +410,8 @@ placed_from_engine_output_refuses_a_final_cue_offset_of_zero :: proc(t: ^testing
 	testing.expect_value(t, direct_err.fault, transcript.Parse_Fault.Final_Offset_Is_Zero)
 
 	tree := testkit.made_scratch_cache(t, "pipeline", "zero-offset", context.allocator)
-	defer testkit.remove_cache(tree, context.allocator)
 	defer delete(tree, context.allocator)
+	defer testkit.remove_cache(tree, context.allocator)
 
 	one := resume_recording(t, tree, "one")
 	defer delete(one, context.allocator)
@@ -433,8 +433,8 @@ placed_from_engine_output_refuses_a_final_cue_offset_of_zero :: proc(t: ^testing
 @(test)
 placed_from_engine_output_places_a_final_cue_offset_that_advances :: proc(t: ^testing.T) {
 	tree := testkit.made_scratch_cache(t, "pipeline", "nonzero-offset", context.allocator)
-	defer testkit.remove_cache(tree, context.allocator)
 	defer delete(tree, context.allocator)
+	defer testkit.remove_cache(tree, context.allocator)
 
 	one := resume_recording(t, tree, "one")
 	defer delete(one, context.allocator)
@@ -464,8 +464,8 @@ placed_from_engine_output_places_a_final_cue_offset_that_advances :: proc(t: ^te
 @(test)
 a_batch_whose_engine_digest_changed_since_re_transcribes_rather_than_skips :: proc(t: ^testing.T) {
 	tree := testkit.made_scratch_cache(t, "pipeline", "engine-replaced", context.allocator)
-	defer testkit.remove_cache(tree, context.allocator)
 	defer delete(tree, context.allocator)
+	defer testkit.remove_cache(tree, context.allocator)
 
 	one := resume_recording(t, tree, "one")
 	defer delete(one, context.allocator)
@@ -529,8 +529,8 @@ a_batch_whose_engine_digest_changed_since_re_transcribes_rather_than_skips :: pr
 @(test)
 a_merge_profile_change_alone_drives_the_real_re_render_and_placement :: proc(t: ^testing.T) {
 	tree := testkit.made_scratch_cache(t, "pipeline", "re-render", context.allocator)
-	defer testkit.remove_cache(tree, context.allocator)
 	defer delete(tree, context.allocator)
+	defer testkit.remove_cache(tree, context.allocator)
 
 	one := resume_recording(t, tree, "one")
 	defer delete(one, context.allocator)
@@ -636,8 +636,8 @@ a_recorded_sidecar_with_an_empty_engine_field_is_redone_rather_than_crashing :: 
 	t: ^testing.T,
 ) {
 	tree := testkit.made_scratch_cache(t, "pipeline", "empty-engine", context.allocator)
-	defer testkit.remove_cache(tree, context.allocator)
 	defer delete(tree, context.allocator)
+	defer testkit.remove_cache(tree, context.allocator)
 
 	one := resume_recording(t, tree, "one")
 	defer delete(one, context.allocator)
