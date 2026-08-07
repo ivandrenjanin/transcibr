@@ -131,7 +131,9 @@ an_extraction_tool_that_cannot_be_started_is_reported_rather_than_asserted :: pr
 // end so the probe argument is proved against a genuine ffmpeg/ffprobe
 // build rather than only against cmd.exe, which writes to a different
 // stream than either real tool does. Skipped, not failed, wherever that
-// install is absent -- CI carries no such directory.
+// install is absent -- CI carries no such directory. Issue #230: the skip
+// is named in the test itself and logged, so a green run still says what
+// it did not measure.
 @(private)
 REFERENCE_FFMPEG :: `C:\tools\ffmpeg\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe`
 
@@ -139,8 +141,10 @@ REFERENCE_FFMPEG :: `C:\tools\ffmpeg\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.e
 REFERENCE_FFPROBE :: `C:\tools\ffmpeg\ffmpeg-master-latest-win64-gpl\bin\ffprobe.exe`
 
 @(test)
-review_a_real_healthy_ffmpeg_passes_the_extraction_check :: proc(t: ^testing.T) {
-	if !os.exists(REFERENCE_FFMPEG) {
+review_a_real_healthy_ffmpeg_passes_the_extraction_check_when_reference_assets_exist :: proc(
+	t: ^testing.T,
+) {
+	if reference_asset_missing(t, "reference ffmpeg", REFERENCE_FFMPEG) {
 		return
 	}
 	group, ok := open_group(t)
@@ -166,8 +170,10 @@ review_a_real_healthy_ffmpeg_passes_the_extraction_check :: proc(t: ^testing.T) 
 }
 
 @(test)
-review_a_real_healthy_ffprobe_passes_the_extraction_check :: proc(t: ^testing.T) {
-	if !os.exists(REFERENCE_FFPROBE) {
+review_a_real_healthy_ffprobe_passes_the_extraction_check_when_reference_assets_exist :: proc(
+	t: ^testing.T,
+) {
+	if reference_asset_missing(t, "reference ffprobe", REFERENCE_FFPROBE) {
 		return
 	}
 	group, ok := open_group(t)
@@ -236,16 +242,20 @@ a_fixture_that_only_clears_the_cheap_screen_still_fails_the_load_probe :: proc(t
 // and a real, complete Model: a genuine Model still passes the load probe,
 // so the screen above is refusing this fixture for being fake, not merely
 // for being different. Skipped, not failed, wherever the reference install
-// or the reference Model is absent -- CI carries neither.
+// or the reference Model is absent -- CI carries neither. Issue #230: the
+// skip is named in the test itself and logged, so a green run still says
+// what it did not measure.
 @(private)
 REFERENCE_MODEL :: `C:\Users\drenj\models\ggml-large-v3-turbo.bin`
 
 @(test)
-review_a_real_healthy_model_passes_the_full_check_including_the_load_probe :: proc(t: ^testing.T) {
-	if !os.exists(REFERENCE_ENGINE) {
+review_a_real_healthy_model_passes_the_full_check_including_the_load_probe_when_reference_assets_exist :: proc(
+	t: ^testing.T,
+) {
+	if reference_asset_missing(t, "reference engine", REFERENCE_ENGINE) {
 		return
 	}
-	if !os.exists(REFERENCE_MODEL) {
+	if reference_asset_missing(t, "reference model", REFERENCE_MODEL) {
 		return
 	}
 	group, ok := open_group(t)
@@ -269,15 +279,17 @@ review_a_real_healthy_model_passes_the_full_check_including_the_load_probe :: pr
 // ggml-large-v3-turbo.bin, well above the 70 MiB floor and carrying the
 // genuine magic bytes, which the cheap screen alone passed while the real
 // Engine refused the same file in well under a second. Skipped, not
-// failed, wherever the reference install or Model is absent.
+// failed, wherever the reference install or Model is absent. Issue #230:
+// the skip is named in the test itself and logged, so a green run still
+// says what it did not measure.
 @(test)
-review_a_200_mib_head_truncation_above_the_floor_must_not_pass_the_model_check :: proc(
+review_a_200_mib_head_truncation_above_the_floor_must_not_pass_the_model_check_when_reference_assets_exist :: proc(
 	t: ^testing.T,
 ) {
-	if !os.exists(REFERENCE_ENGINE) {
+	if reference_asset_missing(t, "reference engine", REFERENCE_ENGINE) {
 		return
 	}
-	if !os.exists(REFERENCE_MODEL) {
+	if reference_asset_missing(t, "reference model", REFERENCE_MODEL) {
 		return
 	}
 	dir := testkit.made_scratch_cache(t, "Doctor", "headtruncation200mib", context.allocator)
@@ -511,12 +523,14 @@ the_gpu_diagnostic_reports_what_windows_can_see_without_ever_blocking_a_run :: p
 // the magic screen, which hard-aborts the real Engine in 0.92 s -- GGML_ASSERT,
 // exit 0xC0000409, and the marker line never printed. A probe that reads the
 // marker alone calls that PASS; only the exit status refuses it. Skipped, not
-// failed, wherever the reference install is absent.
+// failed, wherever the reference install is absent. Issue #230: the skip is
+// named in the test itself and logged, so a green run still says what it
+// did not measure.
 @(test)
-review_a_garbage_model_that_aborts_the_engine_must_not_pass_the_model_check :: proc(
+review_a_garbage_model_that_aborts_the_engine_must_not_pass_the_model_check_when_reference_assets_exist :: proc(
 	t: ^testing.T,
 ) {
-	if !os.exists(REFERENCE_ENGINE) {
+	if reference_asset_missing(t, "reference engine", REFERENCE_ENGINE) {
 		return
 	}
 	dir := testkit.made_scratch_cache(t, "Doctor", "garbagemodel", context.allocator)
