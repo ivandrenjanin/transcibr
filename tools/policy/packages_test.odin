@@ -244,7 +244,11 @@ every_tested_package_is_missing_when_the_test_recipe_cannot_be_found :: proc(t: 
 // A small fixture on disk: two packages under one throwaway root, one holding
 // a `_test.odin` file and one holding only production source, torn down by
 // hand -- CLAUDE.md forbids `os.remove_all` anywhere in this tree, this test
-// included.
+// included. Issue #202 fix round 1: base's own creation used to be bare, so a
+// leftover already at this name (a prior crashed run at the recycled pid)
+// turned this test red with `got Exist` before it ever created anything --
+// the first `os.make_directory(base)` below now simulates that leftover
+// directly, and the second call, through `ensure_fixture_root`, survives it.
 @(test)
 tested_packages_finds_only_directories_holding_a_test_file :: proc(t: ^testing.T) {
 	base, base_ok := fixture_root(t, "transcibr-policy-fixture", context.allocator)
@@ -259,6 +263,7 @@ tested_packages_finds_only_directories_holding_a_test_file :: proc(t: ^testing.T
 	defer delete(plain_dir, context.allocator)
 
 	testing.expect_value(t, os.make_directory(base), os.Error(nil))
+	testing.expect_value(t, ensure_fixture_root(base), os.Error(nil))
 	testing.expect_value(t, os.make_directory(tested_dir), os.Error(nil))
 	testing.expect_value(t, os.make_directory(plain_dir), os.Error(nil))
 	defer testing.expect_value(t, os.remove(base), os.Error(nil))
@@ -375,7 +380,12 @@ a_tested_package_is_not_reported_as_untested :: proc(t: ^testing.T) {
 // `*_test.odin` file still holds a real `@(test)` procedure and one whose
 // `*_test.odin` file holds none at all -- issue #174's own mutation, planted
 // rather than merely asserted about. `packages_with_test_procedures` must
-// name only the first.
+// name only the first. Issue #202 fix round 1: base's own creation used to
+// be bare, so a leftover already at this name (a prior crashed run at the
+// recycled pid) turned this test red with `got Exist` before it ever
+// created anything -- the first `os.make_directory(base)` below now
+// simulates that leftover directly, and the second call, through
+// `ensure_fixture_root`, survives it.
 @(test)
 packages_with_test_procedures_finds_only_files_holding_a_test_attribute :: proc(t: ^testing.T) {
 	base, base_ok := fixture_root(t, "transcibr-policy-test-proc-fixture", context.allocator)
@@ -390,6 +400,7 @@ packages_with_test_procedures_finds_only_files_holding_a_test_attribute :: proc(
 	defer delete(hollow_dir, context.allocator)
 
 	testing.expect_value(t, os.make_directory(base), os.Error(nil))
+	testing.expect_value(t, ensure_fixture_root(base), os.Error(nil))
 	testing.expect_value(t, os.make_directory(live_dir), os.Error(nil))
 	testing.expect_value(t, os.make_directory(hollow_dir), os.Error(nil))
 	defer testing.expect_value(t, os.remove(base), os.Error(nil))
@@ -429,7 +440,12 @@ packages_with_test_procedures_finds_only_files_holding_a_test_attribute :: proc(
 
 // A small fixture on disk: one package holding only production source, no
 // test file at all -- `all_packages` must still find it, since it is the
-// whole point of the deny-by-default half of this check.
+// whole point of the deny-by-default half of this check. Issue #202 fix
+// round 1: base's own creation used to be bare, so a leftover already at
+// this name (a prior crashed run at the recycled pid) turned this test red
+// with `got Exist` before it ever created anything -- the first
+// `os.make_directory(base)` below now simulates that leftover directly, and
+// the second call, through `ensure_fixture_root`, survives it.
 @(test)
 all_packages_finds_a_package_with_no_test_file :: proc(t: ^testing.T) {
 	base, base_ok := fixture_root(t, "transcibr-policy-untested-fixture", context.allocator)
@@ -442,6 +458,7 @@ all_packages_finds_a_package_with_no_test_file :: proc(t: ^testing.T) {
 	defer delete(plain_dir, context.allocator)
 
 	testing.expect_value(t, os.make_directory(base), os.Error(nil))
+	testing.expect_value(t, ensure_fixture_root(base), os.Error(nil))
 	testing.expect_value(t, os.make_directory(plain_dir), os.Error(nil))
 	defer testing.expect_value(t, os.remove(base), os.Error(nil))
 	defer os.remove(plain_dir)
@@ -467,6 +484,11 @@ all_packages_finds_a_package_with_no_test_file :: proc(t: ^testing.T) {
 // `strays`, never folded into `names` under an empty name: that empty name
 // used to reach `is_test_less_package`'s `assert(len(name) > 0, ...)` and
 // crash the whole `just check` run instead of reporting a violation (A8).
+// Issue #202 fix round 1: base's own creation used to be bare, so a leftover
+// already at this name (a prior crashed run at the recycled pid) turned this
+// test red with `got Exist` before it ever created anything -- the first
+// `os.make_directory(base)` below now simulates that leftover directly, and
+// the second call, through `ensure_fixture_root`, survives it.
 @(test)
 a_stray_test_file_directly_under_a_package_root_is_reported_not_asserted :: proc(t: ^testing.T) {
 	base, base_ok := fixture_root(t, "transcibr-policy-stray-fixture", context.allocator)
@@ -477,6 +499,7 @@ a_stray_test_file_directly_under_a_package_root_is_reported_not_asserted :: proc
 	}
 
 	testing.expect_value(t, os.make_directory(base), os.Error(nil))
+	testing.expect_value(t, ensure_fixture_root(base), os.Error(nil))
 	defer testing.expect_value(t, os.remove(base), os.Error(nil))
 
 	stray_file := fmt.aprintf("%s/stray_test.odin", base, allocator = context.allocator)
@@ -599,7 +622,12 @@ violations_mention :: proc(violations: [dynamic]Violation, needle: string) -> bo
 // The tolerance above, proven against a real leftover: an empty directory
 // planted at `base` before `ensure_fixture_root` runs must not be reported
 // as `Exist` -- it must be silently removed and recreated, leaving `base`
-// present and empty either way.
+// present and empty either way. Issue #202 fix round 1: the arm step below
+// used to be a bare `os.make_directory`, so a genuine leftover already
+// sitting at this name (an even earlier crashed run, recycled pid) turned
+// this test red with `got Exist` before `ensure_fixture_root` ever ran --
+// the first call now simulates that leftover directly, and the second, now
+// routed through `ensure_fixture_root`, survives it.
 @(test)
 ensure_fixture_root_tolerates_an_existing_empty_leftover_directory :: proc(t: ^testing.T) {
 	base, base_ok := fixture_root(t, "transcibr-policy-leftover-fixture", context.allocator)
@@ -610,6 +638,7 @@ ensure_fixture_root_tolerates_an_existing_empty_leftover_directory :: proc(t: ^t
 	}
 
 	testing.expect_value(t, os.make_directory(base), os.Error(nil))
+	testing.expect_value(t, ensure_fixture_root(base), os.Error(nil))
 
 	testing.expect_value(t, ensure_fixture_root(base), os.Error(nil))
 	defer testing.expect_value(t, os.remove(base), os.Error(nil))
@@ -619,7 +648,12 @@ ensure_fixture_root_tolerates_an_existing_empty_leftover_directory :: proc(t: ^t
 
 // The negative space (CLAUDE.md rule A3): a NON-empty leftover is a real
 // collision, not a stale one, and must still be refused rather than
-// silently swallowed.
+// silently swallowed. Issue #202 fix round 1: same leftover-before-the-arm
+// hazard as the tolerant test above -- the arm step below used to be bare,
+// so a genuine leftover already at this name turned it red with `got Exist`
+// before it ever reached the refusal it exists to prove; the first call now
+// simulates that leftover directly, and the second, through
+// `ensure_fixture_root`, survives it.
 @(test)
 ensure_fixture_root_refuses_a_nonempty_existing_directory :: proc(t: ^testing.T) {
 	base, base_ok := fixture_root(t, "transcibr-policy-dirty-leftover-fixture", context.allocator)
@@ -630,6 +664,7 @@ ensure_fixture_root_refuses_a_nonempty_existing_directory :: proc(t: ^testing.T)
 	}
 
 	testing.expect_value(t, os.make_directory(base), os.Error(nil))
+	testing.expect_value(t, ensure_fixture_root(base), os.Error(nil))
 	stray := fixture_path(base, "stray.txt", context.allocator)
 	defer delete(stray, context.allocator)
 	testing.expect_value(t, os.write_entire_file(stray, []byte{}), os.Error(nil))
@@ -655,7 +690,16 @@ ensure_fixture_root_refuses_a_nonempty_existing_directory :: proc(t: ^testing.T)
 // stray sitting right where the old bug would have put it. The old shape
 // landed there because the bare env value carries no trailing separator; a
 // recycled pid landing on such a stray made `os.make_directory` return
-// `Exist` and turned unrelated tests red.
+// `Exist` and turned unrelated tests red. Issue #202 fix round 1: the plant
+// below used to be bare, with no tolerance of its own, at the one fixture
+// path that sits outside %TEMP% and outside anything the suite sweeps -- a
+// genuine leftover here (the ticket's own comment records ten such siblings
+// in one review session) turned this test red with `got Exist`, and a crash
+// mid-test would have left the directory permanently. The first call now
+// simulates that leftover directly, and the second, routed through
+// `ensure_fixture_root`, survives it -- a real, non-empty collision there
+// still fails loudly instead of being silently absorbed or removed out from
+// under whatever left it.
 @(test)
 fixture_root_survives_a_stray_directory_at_the_old_sibling_name :: proc(t: ^testing.T) {
 	root := os.get_env("TEMP", context.allocator)
@@ -667,6 +711,7 @@ fixture_root_survives_a_stray_directory_at_the_old_sibling_name :: proc(t: ^test
 	defer delete(old_shape, context.allocator)
 
 	testing.expect_value(t, os.make_directory(old_shape), os.Error(nil))
+	testing.expect_value(t, ensure_fixture_root(old_shape), os.Error(nil))
 	defer testing.expect_value(t, os.remove(old_shape), os.Error(nil))
 
 	base, base_ok := fixture_root(t, name, context.allocator)
