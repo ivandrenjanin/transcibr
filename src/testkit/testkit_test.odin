@@ -129,6 +129,66 @@ remove_cache_survives_a_file_still_locked_when_removal_first_runs :: proc(t: ^te
 	)
 }
 
+// Issue #229: three consecutive `just ci` runs, instrumented, measured the
+// existing budget (5 attempts * 20ms = 80ms of sleep before the last try)
+// losing to a real lock-release window of 117-130ms under the disk load a
+// full `just ci` produces -- src/planning's own locked-dead-run-tree case
+// hit exactly this, consistently, all three runs. RELEASE_DELAY here sits
+// above every one of those measured elapsed times, so this case fails
+// against the pre-#229 budget for the same reason a real `just ci` run
+// does, and only passes once the budget is widened to cover it.
+@(test)
+remove_cache_survives_a_lock_released_past_the_pre_229_budget :: proc(t: ^testing.T) {
+	cache := made_scratch_cache(t, "testkit", "locked-file-229", context.allocator)
+	defer delete(cache, context.allocator)
+
+	held := fmt.aprintf("%s\\held.bin", cache, allocator = context.allocator)
+	defer delete(held, context.allocator)
+	if !testing.expect(
+		t,
+		os.write_entire_file(held, []u8{0}) == nil,
+		"could not write the file this case holds open",
+	) {
+		return
+	}
+
+	wide := win32.utf8_to_wstring(held, context.allocator)
+	defer delete(wide, context.allocator)
+	handle := win32.CreateFileW(
+		wide,
+		win32.GENERIC_READ,
+		win32.FILE_SHARE_READ,
+		nil,
+		win32.OPEN_EXISTING,
+		win32.FILE_ATTRIBUTE_NORMAL,
+		nil,
+	)
+	if !testing.expect(t, handle != win32.INVALID_HANDLE_VALUE, "could not open the held handle") {
+		return
+	}
+
+	RELEASE_DELAY :: 150 * time.Millisecond
+	job := Held_File_Job {
+		handle  = handle,
+		release = RELEASE_DELAY,
+	}
+	th := thread.create_and_start_with_data(&job, release_held_file)
+	if !testing.expect(t, th != nil, "a thread this case needed to start would not start") {
+		win32.CloseHandle(handle)
+		return
+	}
+
+	remove_cache(cache, context.allocator)
+	thread.destroy(th)
+
+	testing.expectf(
+		t,
+		!os.exists(cache),
+		"remove_cache gave up on %s before a lock released past the measured just-ci window",
+		cache,
+	)
+}
+
 @(test)
 lonely_signal_names_differ_by_scope_and_by_tag :: proc(t: ^testing.T) {
 	first := lonely_signal("Audio", "one", context.allocator)

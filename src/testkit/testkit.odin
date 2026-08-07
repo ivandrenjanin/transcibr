@@ -42,13 +42,20 @@ import "core:time"
 // window is the fix; retrying forever is not, so both figures are bounded
 // and named rather than tuned per call site. REMOVE_SETTLE_DELAY is chosen
 // above Windows' own timer quantization (about 15.6 ms) so a single retry
-// is not spent on a sleep that rounds up to nothing, and REMOVE_SETTLE_-
-// ATTEMPTS keeps the worst case (every attempt but the last failing) under
-// a fifth of a second -- long enough to outlast the window this package has
-// measured, short enough that a caller whose directory is genuinely stuck
+// is not spent on a sleep that rounds up to nothing.
+//
+// The original 5 * 20ms (80ms of sleep before the last try) was sized on
+// isolated `odin test src/pipeline` runs (issue #178) and held there. Issue
+// #229 instrumented three consecutive full `just ci` runs -- disk load from
+// the whole sweep building and testing every package back to back, not one
+// package alone -- and measured src/planning's own locked-dead-run-tree
+// case (dead_run_sweep_test.odin) losing that race consistently, all three
+// runs, with the failing attempt landing 117-130ms in. 10 * 30ms carries
+// more than double that measured worst case while keeping the same
+// bounded-not-infinite shape: a caller whose directory is genuinely stuck
 // still fails in test time rather than hanging the suite.
-REMOVE_SETTLE_ATTEMPTS :: 5
-REMOVE_SETTLE_DELAY :: 20 * time.Millisecond
+REMOVE_SETTLE_ATTEMPTS :: 10
+REMOVE_SETTLE_DELAY :: 30 * time.Millisecond
 #assert(REMOVE_SETTLE_ATTEMPTS > 1)
 
 // Removes `path`, retrying up to REMOVE_SETTLE_ATTEMPTS times against the
