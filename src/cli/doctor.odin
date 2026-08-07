@@ -33,16 +33,33 @@ package main
 // `--transcribe` still route through its unparametrized `engine_identified`
 // and keep the Batch's framing until their own fenced files migrate (#75
 // deposit comment, PR body).
+//
+// Issue #75 Stage 5b: --doctor's grammar (Doctor_Options, read_doctor_options,
+// read_doctor_option) moved to transcibr:cliargs, the fifth and last of the
+// ruled-in migration sites (ADR-0038's ruling comment on #75). `DOCTOR` is
+// now `cliargs.DOCTOR`, declared once, so main.odin's dispatch and this
+// file's own command wiring cannot drift the way #75's stage-5 deposit
+// measured for `BATCH` (main.odin no longer holds a second `--doctor`
+// spelling of its own to drift against cliargs' copy). `using parsed:
+// cliargs.Doctor_Options` promotes model, engine and the two-string tools
+// struct straight through; `audio_tools` is the defaulted audio.Tools this
+// package builds from `parsed.tools`' two bare strings after the grammar
+// returns, the same shape `batch.odin`'s and `transcribe.odin`'s own
+// Options structs already carry.
 
 import "transcibr:artifact"
 import "transcibr:audio"
 import "transcibr:child"
+import "transcibr:cliargs"
 import "transcibr:doctor"
 import "transcibr:pipeline"
 
-DOCTOR :: "--doctor"
-
 DOCTOR_ENGINE_REFUSAL_FRAMING :: "--doctor cannot verify this Engine"
+
+Doctor_Options :: struct {
+	using parsed: cliargs.Doctor_Options,
+	audio_tools:  audio.Tools,
+}
 
 // The same shape as `main.odin`'s `engine_identified`, with one deliberate
 // difference: the framing passed to `artifact.engine_error_message`. See the
@@ -76,10 +93,25 @@ doctor_engine_identified :: proc(path: string) -> (identified: artifact.Digest, 
 // nothing at position zero standing in for a value it does not have.
 @(require_results)
 run_doctor :: proc(arguments: []string) -> int {
-	o, ok := read_doctor_options(arguments)
-	if !ok {
+	parsed, parsed_ok, refusal := cliargs.read_doctor_options(arguments)
+	if !parsed_ok {
+		_ = refuse_cliargs(refusal)
 		return USAGE_ERROR
 	}
+
+	o := Doctor_Options {
+		parsed = parsed,
+		audio_tools = audio.Tools{ffmpeg = parsed.tools.ffmpeg, ffprobe = parsed.tools.ffprobe},
+	}
+	audio.defaulted_tools(&o.audio_tools)
+	assert(
+		len(o.audio_tools.ffmpeg) > 0,
+		"accepted a command line that unset ffmpeg's own default",
+	)
+	assert(
+		len(o.audio_tools.ffprobe) > 0,
+		"accepted a command line that unset ffprobe's own default",
+	)
 
 	group, opened := job_object_opened()
 	defer child.job_object_close(&group)
@@ -90,8 +122,8 @@ run_doctor :: proc(arguments: []string) -> int {
 	checks := doctor.run_preflight(
 		&group,
 		doctor.Options {
-			ffmpeg = o.tools.ffmpeg,
-			ffprobe = o.tools.ffprobe,
+			ffmpeg = o.audio_tools.ffmpeg,
+			ffprobe = o.audio_tools.ffprobe,
 			engine = o.engine,
 			model = o.model,
 		},
@@ -117,64 +149,4 @@ run_doctor :: proc(arguments: []string) -> int {
 		return OPERATING_ERROR
 	}
 	return 0
-}
-
-Doctor_Options :: struct {
-	model:  string,
-	engine: string,
-	tools:  audio.Tools,
-}
-
-@(private)
-@(require_results)
-read_doctor_options :: proc(arguments: []string) -> (o: Doctor_Options, ok: bool) {
-	defer if ok {
-		assert(len(o.model) > 0, "accepted a command line naming no Model")
-		assert(len(o.engine) > 0, "accepted a command line naming no Engine")
-		assert(len(o.tools.ffmpeg) > 0, "accepted a command line that unset ffmpeg's own default")
-		assert(
-			len(o.tools.ffprobe) > 0,
-			"accepted a command line that unset ffprobe's own default",
-		)
-	} else {
-		assert(len(o.model) == 0, "refused a command line and kept what it asked for")
-	}
-
-	for at := 0; at < len(arguments); at += 2 {
-		name := arguments[at]
-		if at + 1 >= len(arguments) {
-			return {}, refuse("%q stands at the end of the command line with no value after it.", name)
-		}
-		if !read_doctor_option(&o, name, arguments[at + 1]) {
-			return {}, false
-		}
-	}
-
-	audio.defaulted_tools(&o.tools)
-	for missing in ([?][2]string{{o.model, "--model-file"}, {o.engine, "--engine-exe"}}) {
-		if len(missing[0]) == 0 {
-			return {}, refuse("%s names nothing.", missing[1])
-		}
-	}
-	return o, true
-}
-
-@(private)
-@(require_results)
-read_doctor_option :: proc(o: ^Doctor_Options, name, value: string) -> (ok: bool) {
-	assert(o != nil, "there is nothing here to read an option into")
-
-	switch name {
-	case "--model-file":
-		o.model = value
-	case "--engine-exe":
-		o.engine = value
-	case "--ffmpeg":
-		o.tools.ffmpeg = value
-	case "--ffprobe":
-		o.tools.ffprobe = value
-	case:
-		return refuse("unknown option %q.", name)
-	}
-	return true
 }
