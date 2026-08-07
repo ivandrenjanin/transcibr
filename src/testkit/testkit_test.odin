@@ -293,6 +293,38 @@ remove_tree_survives_a_nested_file_still_locked_when_removal_first_runs :: proc(
 	)
 }
 
+// Issue #252's consolidation: src/engine and src/pipeline each carried their
+// own copy of this exact script template before this test existed to check
+// it once, here, the way every other helper in this package is checked.
+@(test)
+engine_stand_in_writes_a_cmd_that_walks_its_own_arguments_for_of :: proc(t: ^testing.T) {
+	cache := made_scratch_cache(t, "testkit", "stand-in", context.allocator)
+	defer delete(cache, context.allocator)
+	defer remove_cache(cache, context.allocator)
+
+	path := engine_stand_in(t, cache, "walks", ">\"%PREFIX%.json\" echo {}", context.allocator)
+	defer delete(path, context.allocator)
+
+	testing.expect(
+		t,
+		strings.contains(path, "stand-in-walks.cmd"),
+		"engine_stand_in did not name its own script the way its consumers expect",
+	)
+
+	written, unreadable := os.read_entire_file(path, context.allocator)
+	defer delete(written, context.allocator)
+	if !testing.expect(t, unreadable == nil, "engine_stand_in did not write its own script") {
+		return
+	}
+	script := string(written)
+	testing.expect(t, strings.contains(script, "-of"), "the stand-in does not walk -of at all")
+	testing.expect(
+		t,
+		strings.contains(script, ">\"%PREFIX%.json\" echo {}"),
+		"the stand-in did not carry the body its caller gave it",
+	)
+}
+
 @(test)
 flood_type_command_names_the_file_the_wait_and_the_signal :: proc(t: ^testing.T) {
 	command := flood_type_command("C:\\cache\\flood.txt", 25, "NoSignal", context.allocator)
