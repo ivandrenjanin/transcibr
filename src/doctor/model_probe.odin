@@ -204,6 +204,16 @@ model_load_check_using :: proc(
 	return model_load_verdict(probe, model_path, allocator)
 }
 
+// Issue #208: the `.Not_Started` branch below used to call
+// `child.error_message(probe.child, allocator)` unconditionally, reaching
+// that procedure's own `assert(err.fault != .None, ...)` (child.odin:79) for
+// any fault-free `.Not_Started` Probe -- an assert reachable from this
+// doctor fault-report path, guarded only by `run_bounded`'s unrecorded
+// guarantee that a `.Not_Started` run always carries a fault
+// (`src/child/run.odin:102-104`, pinned by a guard-side test in
+// `src/child/run_test.odin`). The fault check below means this branch never
+// reaches that assert regardless of what any future caller-constructed
+// Probe carries.
 @(private)
 @(require_results)
 model_load_verdict :: proc(probe: Probe, model_path: string, allocator: mem.Allocator) -> Check {
@@ -214,8 +224,13 @@ model_load_verdict :: proc(probe: Probe, model_path: string, allocator: mem.Allo
 	}
 	switch probe.run {
 	case .Not_Started:
-		reason := child.error_message(probe.child, allocator)
-		defer delete(reason, allocator)
+		reason: string
+		if probe.child.fault != .None {
+			reason = child.error_message(probe.child, allocator)
+		}
+		defer if len(reason) > 0 {
+			delete(reason, allocator)
+		}
 		message := combined_message(
 			model_path,
 			"could not be loaded by the engine",
