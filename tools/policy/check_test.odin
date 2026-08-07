@@ -144,6 +144,23 @@ a_remove_all_call_is_a_violation :: proc(t: ^testing.T) {
 }
 
 @(test)
+a_defer_order_issue_is_a_violation :: proc(t: ^testing.T) {
+	source :=
+		PROBE +
+		"held :: proc() {\n\tviolations := check()\n\tdefer violations_destroy(violations, context.allocator)\n\tdefer delete(violations)\n}\n"
+	facts := facts_of(t, source)
+	defer facts_destroy(facts, context.allocator)
+
+	violations := make([dynamic]Violation, 0, context.allocator)
+	defer delete(violations)
+	defer violations_destroy(violations, context.allocator)
+	collect_defer_order_violations("probe.odin", facts, &violations)
+
+	testing.expect_value(t, len(violations), 1)
+	testing.expect_value(t, violations[0].line, 5)
+}
+
+@(test)
 network_code_outside_the_one_allowed_file_is_a_violation :: proc(t: ^testing.T) {
 	violations := make([dynamic]Violation, 0, context.allocator)
 	defer delete(violations)
