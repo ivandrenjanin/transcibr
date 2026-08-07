@@ -84,16 +84,23 @@ write_body_reports_progress_after_every_chunk_received :: proc(t: ^testing.T) {
 	testing.expect_value(t, collector.ticks[0].bytes_received, i64(VERIFY_READ_BYTES_NETWORK))
 	testing.expect_value(t, collector.ticks[1].bytes_received, i64(2 * VERIFY_READ_BYTES_NETWORK))
 	testing.expect_value(t, collector.ticks[2].bytes_received, i64(PROGRESS_FIXTURE_BYTES))
-	for i := 1; i < len(collector.ticks); i += 1 {
-		testing.expect(
+	for i := 0; i < len(collector.ticks); i += 1 {
+		testing.expectf(
 			t,
-			collector.ticks[i].bytes_received > collector.ticks[i - 1].bytes_received,
-			"progress must increase monotonically, one tick per chunk",
+			collector.ticks[i].total_bytes == i64(PROGRESS_FIXTURE_BYTES),
+			"tick %d reported a total of %d, want the expected size %d",
+			i,
+			collector.ticks[i].total_bytes,
+			i64(PROGRESS_FIXTURE_BYTES),
 		)
+		if i > 0 {
+			testing.expect(
+				t,
+				collector.ticks[i].bytes_received > collector.ticks[i - 1].bytes_received,
+				"progress must increase monotonically, one tick per chunk",
+			)
+		}
 	}
-	last := collector.ticks[len(collector.ticks) - 1]
-	testing.expect_value(t, last.bytes_received, i64(PROGRESS_FIXTURE_BYTES))
-	testing.expect_value(t, last.total_bytes, i64(PROGRESS_FIXTURE_BYTES))
 }
 
 @(test)
@@ -125,6 +132,49 @@ a_resumed_206_response_appends_onto_the_existing_part_file :: proc(t: ^testing.T
 	testing.expect_value(t, len(written), 5)
 	testing.expect_value(t, written[0], u8(1))
 	testing.expect_value(t, written[4], u8(5))
+}
+
+// write_body counts a body against `spec.expected_bytes` from the offset the
+// part file already holds, and the resume path is the only one where that
+// offset is not zero. Every other resume fixture here lands exactly at the
+// expected size and so can never overrun, which left the `existing` half of
+// the bound unpinned (round 6 review mutation X): counted from zero instead,
+// five more bytes appended onto a four-byte part file pass the guard and read
+// back as a complete five-byte artifact that is nine bytes long.
+@(test)
+a_resumed_body_overrunning_what_is_left_is_refused_before_any_byte_is_appended :: proc(
+	t: ^testing.T,
+) {
+	cache := testkit.made_scratch_cache(t, "net", "transfer-resume-overrun", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	part := fmt.aprintf("%s\\overrun.part", cache, allocator = context.allocator)
+	defer delete(part, context.allocator)
+	testing.expect(
+		t,
+		os.write_entire_file(part, []u8{1, 2, 3, 4}) == nil,
+		"could not write the fixture",
+	)
+
+	body := Fixture_Body {
+		data = []u8{5, 6, 7, 8, 9},
+	}
+	source := Body_Source {
+		read = fixture_read,
+		user = &body,
+	}
+	spec := Download_Spec {
+		expected_bytes = 5,
+	}
+	result := receive_and_write(206, 4, spec, part, source, nil, nil)
+
+	testing.expect_value(t, result.fault, Download_Fault.Write_Failed)
+	written, unreadable := os.read_entire_file(part, context.allocator)
+	defer delete(written, context.allocator)
+	testing.expect(t, unreadable == nil, "could not read the part file back")
+	testing.expect_value(t, len(written), 4)
+	testing.expect_value(t, written[3], u8(4))
 }
 
 @(test)
