@@ -44,26 +44,25 @@ import "core:time"
 // above Windows' own timer quantization (about 15.6 ms) so a single retry
 // is not spent on a sleep that rounds up to nothing.
 //
-// The original 5 * 20ms (80ms of sleep before the last try) was sized on
-// isolated `odin test src/pipeline` runs (issue #178) and held there. Issue
-// #229 instrumented three consecutive full `just ci` runs and found four
-// give-up cases whose paths could never succeed regardless of budget (an
-// already-removed target, or a handle this repository's own fixture does
-// not release until after the call returns) -- their reported elapsed time
-// is bounded by ATTEMPTS * DELAY plus scheduler overhead BY CONSTRUCTION,
-// not an independent measurement of an external lock-release window; the
-// same instrument re-run against this wider budget reports a proportionally
-// wider number, which cannot be what justifies the number. AC1's
-// "confirm or refute the settle-window mechanism before changing anything"
-// was not established by that instrument, and three `just ci` runs each on
-// origin/main and on this branch did not reproduce #217's leak on the
-// machine this was measured on either way. 10 * 30ms is kept as a
-// conservative, strictly-more-lenient margin over the old budget -- a
-// caller whose directory is genuinely stuck still fails in bounded test
-// time rather than hanging the suite -- without claiming it is proven
-// necessary or sufficient by the evidence gathered so far.
-REMOVE_SETTLE_ATTEMPTS :: 10
-REMOVE_SETTLE_DELAY :: 30 * time.Millisecond
+// 5 * 20ms (80ms of sleep before the last try) was sized on isolated
+// `odin test src/pipeline` runs (issue #178) and held there through #229's
+// first two fix rounds at a widened 10 * 30ms (270ms). Round 3 of the #238
+// review reverted the widening: it proved the widening's only covering test
+// was tautological (RELEASE_DELAY sat by construction between the old and
+// new budgets, so it could only ever report old-fails/new-passes); that the
+// wider budget cost a measured ~33% more wall time on src/planning's suite,
+// spent entirely on give-up cases whose targets can never succeed at any
+// budget; and, decisively, that a fresh, empty testkit-managed scratch
+// directory still leaked under a real `just ci` run with the widened budget
+// already in place -- direct proof 270ms does not close the race #229
+// describes either. A bounded retry against a genuine pending-delete window
+// is still correct (see remove_settled below), but no evidence gathered
+// across three rounds showed that widening this pair of constants is what
+// closes that window; reverting removes an unproven, measurably costly
+// change rather than keeping it on the theory that "wider can't hurt." A
+// real fix for #229 needs a different mechanism than a bigger sleep budget.
+REMOVE_SETTLE_ATTEMPTS :: 5
+REMOVE_SETTLE_DELAY :: 20 * time.Millisecond
 #assert(REMOVE_SETTLE_ATTEMPTS > 1)
 
 // Removes `path`, retrying up to REMOVE_SETTLE_ATTEMPTS times against the

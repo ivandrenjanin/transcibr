@@ -129,68 +129,6 @@ remove_cache_survives_a_file_still_locked_when_removal_first_runs :: proc(t: ^te
 	)
 }
 
-// A controlled complement to remove_cache_survives_a_file_still_locked_...
-// above: that case releases the lock almost immediately (well inside the
-// pre-#229 80ms budget), so it cannot tell the old and new budgets apart.
-// This one holds the lock for RELEASE_DELAY -- chosen above the pre-#229
-// budget (80ms) and below the widened one (270ms) -- so it fails against
-// 5 * 20ms and passes against 10 * 30ms for the same structural reason: a
-// wider retry budget survives a longer-held lock. It is not a claim that
-// RELEASE_DELAY reproduces any specific real-world lock-release duration;
-// see the REMOVE_SETTLE_DELAY doc comment in testkit.odin for what issue
-// #229's own instrumentation could and could not establish about that.
-@(test)
-remove_cache_survives_a_lock_released_past_the_pre_229_budget :: proc(t: ^testing.T) {
-	cache := made_scratch_cache(t, "testkit", "locked-file-229", context.allocator)
-	defer delete(cache, context.allocator)
-
-	held := fmt.aprintf("%s\\held.bin", cache, allocator = context.allocator)
-	defer delete(held, context.allocator)
-	if !testing.expect(
-		t,
-		os.write_entire_file(held, []u8{0}) == nil,
-		"could not write the file this case holds open",
-	) {
-		return
-	}
-
-	wide := win32.utf8_to_wstring(held, context.allocator)
-	defer delete(wide, context.allocator)
-	handle := win32.CreateFileW(
-		wide,
-		win32.GENERIC_READ,
-		win32.FILE_SHARE_READ,
-		nil,
-		win32.OPEN_EXISTING,
-		win32.FILE_ATTRIBUTE_NORMAL,
-		nil,
-	)
-	if !testing.expect(t, handle != win32.INVALID_HANDLE_VALUE, "could not open the held handle") {
-		return
-	}
-
-	RELEASE_DELAY :: 150 * time.Millisecond
-	job := Held_File_Job {
-		handle  = handle,
-		release = RELEASE_DELAY,
-	}
-	th := thread.create_and_start_with_data(&job, release_held_file)
-	if !testing.expect(t, th != nil, "a thread this case needed to start would not start") {
-		win32.CloseHandle(handle)
-		return
-	}
-
-	remove_cache(cache, context.allocator)
-	thread.destroy(th)
-
-	testing.expectf(
-		t,
-		!os.exists(cache),
-		"remove_cache gave up on %s before a lock held for RELEASE_DELAY released",
-		cache,
-	)
-}
-
 @(test)
 lonely_signal_names_differ_by_scope_and_by_tag :: proc(t: ^testing.T) {
 	first := lonely_signal("Audio", "one", context.allocator)
