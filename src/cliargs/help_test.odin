@@ -5,7 +5,7 @@ import "core:testing"
 
 @(test)
 asks_for_help_finds_help_at_the_first_name_position :: proc(t: ^testing.T) {
-	testing.expect(t, asks_for_help([]string{HELP}), "--help alone was not recognized")
+	testing.expect(t, asks_for_help([]string{"--help"}), "--help alone was not recognized")
 }
 
 @(test)
