@@ -40,11 +40,18 @@ cache_fault_says :: proc(fault: Cache_Fault) -> string {
 }
 
 // Free the answer with `delete` and this allocator.
+//
+// Issue #216, item 2: `framing` used to be absent entirely, so this always
+// reported `process.batch_setup_message`'s own "the Batch cannot start" --
+// the identical defect `engine_error_message` carried until #237. Defaulted
+// to `process.BATCH_CANNOT_START` so every call site that does not pass one
+// keeps today's exact bytes.
 @(require_results)
 cache_error_message :: proc(
 	fault: Cache_Fault,
 	cache: string,
 	allocator: mem.Allocator,
+	framing: string = process.BATCH_CANNOT_START,
 ) -> string {
 	assert(fault != .None, "there is no message for a scratch cache that opened")
 	assert(
@@ -55,7 +62,7 @@ cache_error_message :: proc(
 	says := cache_fault_says(fault)
 	assert(len(says) > 0, "a fault was added to Cache_Fault without a sentence")
 
-	return process.batch_setup_message(cache, says, allocator)
+	return process.batch_setup_message(cache, says, allocator, framing)
 }
 
 Fault :: enum u8 {

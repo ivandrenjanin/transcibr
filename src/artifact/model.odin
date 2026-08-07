@@ -298,11 +298,18 @@ model_fault_says :: proc(fault: Model_Fault) -> string {
 // %q because a refusal reaches a user through a UTF-16 Win32 call: a raw NUL
 // cuts the line off, and a byte that is not UTF-8 converts the whole line to
 // nil. Free the answer with `delete` and the allocator handed in.
+//
+// Issue #216, item 2: `framing` used to be absent entirely, so this always
+// reported `process.batch_setup_message`'s own "the Batch cannot start" --
+// the identical defect `engine_error_message` carried until #237. Defaulted
+// to `process.BATCH_CANNOT_START` so every call site that does not pass one
+// keeps today's exact bytes.
 @(require_results)
 model_error_message :: proc(
 	fault: Model_Fault,
 	model: string,
 	allocator: mem.Allocator,
+	framing: string = process.BATCH_CANNOT_START,
 ) -> string {
 	assert(fault != .None, "there is no message for a Model that was identified")
 	assert(len(model) > 0, "a refusal must name the Model it is reported against")
@@ -314,5 +321,5 @@ model_error_message :: proc(
 	says := model_fault_says(fault)
 	assert(len(says) > 0, "a fault was added to Model_Fault without a sentence")
 
-	return process.batch_setup_message(model, says, allocator)
+	return process.batch_setup_message(model, says, allocator, framing)
 }

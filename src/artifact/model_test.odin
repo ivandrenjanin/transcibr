@@ -37,6 +37,37 @@ a_models_identity_is_the_content_of_the_file_and_not_its_name :: proc(t: ^testin
 	)
 }
 
+// Issue #216, item 2: `model_error_message` hard-coded
+// `process.batch_setup_message`'s own "the Batch cannot start" ending
+// unconditionally, the identical defect `engine_error_message` carried until
+// #237. `framing` threads a caller's own consequence clause down to
+// `batch_setup_message` in its place, defaulted so every un-migrated call
+// site (`--plan`, `--transcribe`, `--batch` through `main.odin`) keeps
+// today's exact bytes without passing anything new.
+@(test)
+a_model_refusal_can_end_on_a_callers_own_framing_instead_of_the_batch :: proc(t: ^testing.T) {
+	message := model_error_message(
+		.Unreadable,
+		"D:\\weights\\ggml-large-v3.bin",
+		context.allocator,
+		"--doctor cannot verify this Model",
+	)
+	defer delete(message, context.allocator)
+
+	testing.expectf(
+		t,
+		strings.contains(message, "--doctor cannot verify this Model"),
+		"a Model refusal ignored its caller-supplied framing: <%s>",
+		message,
+	)
+	testing.expectf(
+		t,
+		!strings.contains(message, "the Batch cannot start"),
+		"a caller-supplied framing still carries the Batch's own framing: <%s>",
+		message,
+	)
+}
+
 @(test)
 an_empty_model_file_is_still_identified_rather_than_treated_as_absent :: proc(t: ^testing.T) {
 	directory := testkit.made_scratch_cache(t, "artifact", "model-empty", context.allocator)

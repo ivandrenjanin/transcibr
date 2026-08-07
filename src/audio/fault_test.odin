@@ -129,6 +129,37 @@ a_cache_refusal_names_the_cache_directory :: proc(t: ^testing.T) {
 	)
 }
 
+// Issue #216, item 2: `cache_error_message` hard-coded
+// `process.batch_setup_message`'s own "the Batch cannot start" ending
+// unconditionally, the identical defect `engine_error_message` carried until
+// #237. `framing` threads a caller's own consequence clause down to
+// `batch_setup_message` in its place, defaulted so every un-migrated call
+// site (`--plan`, `--transcribe`, `--batch` through `main.odin`) keeps
+// today's exact bytes without passing anything new.
+@(test)
+a_cache_refusal_can_end_on_a_callers_own_framing_instead_of_the_batch :: proc(t: ^testing.T) {
+	message := cache_error_message(
+		.Unusable,
+		"D:\\scratch-42\\cache",
+		context.allocator,
+		"--doctor cannot verify this cache",
+	)
+	defer delete(message, context.allocator)
+
+	testing.expectf(
+		t,
+		strings.contains(message, "--doctor cannot verify this cache"),
+		"a cache refusal ignored its caller-supplied framing: <%s>",
+		message,
+	)
+	testing.expectf(
+		t,
+		!strings.contains(message, "the Batch cannot start"),
+		"a caller-supplied framing still carries the Batch's own framing: <%s>",
+		message,
+	)
+}
+
 @(test)
 every_cache_fault_renders_a_line_a_batch_can_refuse_to_start_with :: proc(t: ^testing.T) {
 	for fault in Cache_Fault {
