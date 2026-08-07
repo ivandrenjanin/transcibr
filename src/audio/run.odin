@@ -587,13 +587,7 @@ extract :: proc(
 		return {}, unsettled
 	}
 
-	answer := fmt.aprintf(
-		"%s\\%s.%d.probe",
-		job.cache,
-		job.name,
-		os.get_pid(),
-		allocator = allocator,
-	)
+	answer := probe_cache_path(job, allocator)
 	defer delete(answer, allocator)
 	probed, unprobed := probe(group, tools, job.source, answer, allocator)
 	if unprobed.fault != .None {
@@ -638,6 +632,25 @@ source_key :: proc(source: string, allocator: mem.Allocator) -> string {
 	return key
 }
 
+// The single seam both cache paths below key against: `<cache>\<stem>.<key>`,
+// with no suffix. `wav_cache_path` and `probe_cache_path` each just append
+// their own extension to this -- the key is spelled once, here, so neither
+// can drift from the other the way issue #268 measured the probe path had.
+// The caller frees the answer with `delete` and the same allocator.
+@(private)
+@(require_results)
+cache_key_prefix :: proc(job: Job, allocator: mem.Allocator) -> string {
+	assert(len(job.cache) > 0, "there is no cache here to place audio into")
+	assert(len(job.name) > 0, "a Recording with no artifact stem has nowhere to put its audio")
+	assert(len(job.source) > 0, "there is no Recording source here to key its audio to")
+
+	key := source_key(job.source, allocator)
+	defer delete(key, allocator)
+	prefix := fmt.aprintf("%s\\%s.%s", job.cache, job.name, key, allocator = allocator)
+	assert(len(prefix) > len(job.cache), "a cache key prefix was not built at all")
+	return prefix
+}
+
 // `produce`'s own wav path, pulled out so a test can prove two Recordings
 // sharing a stem key to two different paths without spawning ffmpeg at all --
 // the collision issue #256's item 3 measured is in this string, not in
@@ -646,14 +659,24 @@ source_key :: proc(source: string, allocator: mem.Allocator) -> string {
 @(private)
 @(require_results)
 wav_cache_path :: proc(job: Job, allocator: mem.Allocator) -> string {
-	assert(len(job.cache) > 0, "there is no cache here to place audio into")
-	assert(len(job.name) > 0, "a Recording with no artifact stem has nowhere to put its audio")
-	assert(len(job.source) > 0, "there is no Recording source here to key its audio to")
+	prefix := cache_key_prefix(job, allocator)
+	defer delete(prefix, allocator)
+	path := fmt.aprintf("%s.wav", prefix, allocator = allocator)
+	return path
+}
 
-	key := source_key(job.source, allocator)
-	defer delete(key, allocator)
-	path := fmt.aprintf("%s\\%s.%s.wav", job.cache, job.name, key, allocator = allocator)
-	assert(len(path) > len(job.cache), "a wav cache path was not built at all")
+// `extract`'s probe answer path, keyed through the same `cache_key_prefix`
+// seam `wav_cache_path` uses. Issue #268: two Recordings sharing a stem,
+// probed concurrently by the extract workers inside one process (one pid),
+// used to race the same `<cache>\<stem>.<pid>.probe` path before this key
+// separated them. The caller frees the answer with `delete` and the same
+// allocator.
+@(private)
+@(require_results)
+probe_cache_path :: proc(job: Job, allocator: mem.Allocator) -> string {
+	prefix := cache_key_prefix(job, allocator)
+	defer delete(prefix, allocator)
+	path := fmt.aprintf("%s.%d.probe", prefix, os.get_pid(), allocator = allocator)
 	return path
 }
 
