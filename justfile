@@ -113,12 +113,14 @@ test:
 # coverage. `ci: fmt-check check build release test test-single smoke` never
 # invokes test-one, and .github/workflows/ci.yml runs only `just ci`, so no
 # CI gate ever exercises this line. The findstr pattern is a literal,
-# case-sensitive match on one line of toolchain text; if a future Odin
-# release changes that wording, the guard degrades silently back to exit 0
-# rather than failing loudly about its own staleness -- the same
-# accepted-toolchain-text risk class ADR-0035 already carries for `smoke`'s
-# banner-format grep. Nothing re-proves this guard still matches short of a
-# human running `just test-one <pkg> <bogus-name>` by hand.
+# case-sensitive match on one line of text owned by the Odin toolchain, not
+# by this repository; if a future Odin release changes that wording, the
+# guard degrades silently back to exit 0 rather than failing loudly about its
+# own staleness, and nothing in this repository pins that string -- the
+# nearest real precedent is ADR-0035's third accepted risk (no doc-test-name
+# pins), which is the same kind of repository text going stale unpinned.
+# Nothing re-proves this guard still matches short of a human running
+# `just test-one <pkg> <bogus-name>` by hand.
 test-one pkg name:
 	if not exist build\odin-test mkdir build\odin-test
 	{{ odin }} test {{ if pkg == "policy" { "tools/policy" } else { "src/" + pkg } }} {{ collection }} -out:build/odin-test/focus.exe -define:ODIN_TEST_NAMES={{ pkg }}.{{ name }} {{ memory }} {{ vet }} > build\odin-test\focus.out 2>&1 && (type build\odin-test\focus.out & findstr /c:"No tests to run." build\odin-test\focus.out >nul && (echo TEST-ONE: "{{ pkg }}.{{ name }}" matched no test procedure -- 0 tests collected & exit /b 1) || exit /b 0) || (type build\odin-test\focus.out & exit /b 1)
