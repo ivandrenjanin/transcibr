@@ -56,7 +56,7 @@ undenied :: proc(t: ^testing.T, path: string) {
 a_sub_directory_that_cannot_be_enumerated_is_an_operating_error :: proc(t: ^testing.T) {
 	tree := testkit.made_scratch_cache(t, "planning", "unlistable", context.allocator)
 	defer delete(tree, context.allocator)
-	defer testkit.remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
 	open := testkit.fixture_file(t, tree, "open.mp4", "video", context.allocator)
 	defer delete(open, context.allocator)
@@ -92,7 +92,7 @@ a_sub_directory_that_cannot_be_enumerated_is_an_operating_error :: proc(t: ^test
 a_directory_nothing_may_be_written_to_is_refused_before_any_gpu_time :: proc(t: ^testing.T) {
 	tree := testkit.made_scratch_cache(t, "planning", "unwritable", context.allocator)
 	defer delete(tree, context.allocator)
-	defer testkit.remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
 	locked := a_directory(t, tree, "locked")
 	defer delete(locked, context.allocator)
@@ -126,7 +126,7 @@ a_directory_nothing_may_be_written_to_is_refused_before_any_gpu_time :: proc(t: 
 the_probe_that_asks_whether_a_directory_is_writable_leaves_nothing_behind :: proc(t: ^testing.T) {
 	tree := testkit.made_scratch_cache(t, "planning", "probe", context.allocator)
 	defer delete(tree, context.allocator)
-	defer testkit.remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
 	talk := testkit.fixture_file(t, tree, "talk.mp4", "video", context.allocator)
 	defer delete(talk, context.allocator)
@@ -147,7 +147,7 @@ the_probe_that_asks_whether_a_directory_is_writable_leaves_nothing_behind :: pro
 a_directory_that_is_not_there_is_never_called_writable :: proc(t: ^testing.T) {
 	tree := testkit.made_scratch_cache(t, "planning", "nodir", context.allocator)
 	defer delete(tree, context.allocator)
-	defer testkit.remove_tree(tree)
+	defer testkit.remove_tree(tree, context.allocator)
 
 	gone := fmt.aprintf("%s\\never-made", tree, allocator = context.allocator)
 	defer delete(gone, context.allocator)

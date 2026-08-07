@@ -102,7 +102,7 @@ write_flood_writes_at_least_the_bytes_it_was_asked_for :: proc(t: ^testing.T) {
 fixture_file_writes_content_into_a_subdirectory_it_creates :: proc(t: ^testing.T) {
 	cache := made_scratch_cache(t, "testkit", "fixture-subdir", context.allocator)
 	defer delete(cache, context.allocator)
-	defer remove_tree(cache)
+	defer remove_tree(cache, context.allocator)
 
 	path := fixture_file(t, cache, "nested\\deeper\\talk.mp4", "video", context.allocator)
 	defer delete(path, context.allocator)
@@ -159,7 +159,7 @@ remove_tree_takes_a_tree_and_every_directory_nested_in_it :: proc(t: ^testing.T)
 	nested := fixture_file(t, cache, "june\\deeper\\interview.m4a", "audio", context.allocator)
 	defer delete(nested, context.allocator)
 
-	remove_tree(cache)
+	remove_tree(cache, context.allocator)
 
 	testing.expect(t, !os.exists(cache), "remove_tree left the tree it was given behind")
 }

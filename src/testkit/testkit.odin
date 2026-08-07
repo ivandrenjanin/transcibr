@@ -107,19 +107,17 @@ remove_cache :: proc(cache: string, allocator: mem.Allocator) {
 // level taken, deepest first, or the top-level os.remove below is left
 // removing a directory that is not actually empty. Best effort for the same
 // reason remove_cache is: a case that failed half-way should not fail a
-// second time on the way out. Uses `context.allocator` for the recursive
-// listings rather than taking one -- the recursion depth is a tree this
-// package's own callers built, not external input, so the allocator this
-// procedure itself runs under is the correct one at every level.
-remove_tree :: proc(path: string) {
+// second time on the way out.
+remove_tree :: proc(path: string, allocator: mem.Allocator) {
 	assert(len(path) > 0, "there is no tree here to remove")
+	assert(allocator.procedure != nil, "a listing needs an allocator to be read into")
 
-	listing, unreadable := os.read_all_directory_by_path(path, context.allocator)
+	listing, unreadable := os.read_all_directory_by_path(path, allocator)
 	if unreadable == nil {
-		defer os.file_info_slice_delete(listing, context.allocator)
+		defer os.file_info_slice_delete(listing, allocator)
 		for info in listing {
 			if info.type == .Directory {
-				remove_tree(info.fullpath)
+				remove_tree(info.fullpath, allocator)
 				continue
 			}
 			os.remove(info.fullpath)
