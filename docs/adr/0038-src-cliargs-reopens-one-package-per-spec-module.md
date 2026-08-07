@@ -27,12 +27,23 @@ the wrong place:
   an option name with its destination field by hand
   (`case "--extract-workers": read_batch_worker_option(&o.extract_workers, name, value)`); swapping
   two fields there is undetectable under ADR-0009, and no pipeline test observes it. **The maintainer's
-  #94 deposit on this issue names the fix for that specific defect, and this record adopts it: the
-  enum-keyed table shape #124 already introduced for the worker ceilings
-  (`pipeline.Worker_Option_Ceiling`/`worker_option_ceiling`, `pipeline.odin:57-75`, walked by
-  `worker_option_ceilings_pair_each_option_with_its_own_max` in `defaults_test.odin:109-132`) closes
-  the hand-pairing defect too once the grammar moves — a mispairing can then only live in one
-  table, where a test walks it and catches a swap the same way it already catches a swapped ceiling.**
+  #94 deposit on this issue names the fix for that specific defect, and this record adopts it, in the
+  form the grammar package can actually take.** #124 built the precedent, and that precedent is a
+  table keyed by STRINGS, not by an enum: the pairing is declared ONCE, as data, in
+  `WORKER_OPTION_CEILINGS` — a `[?]Worker_Option_Ceiling` array of `{name: string, ceiling: int}`
+  rows, searched linearly by `worker_option_ceiling` (`pipeline.odin:57-75`) — one row per option
+  name, adjacent and reviewable, walked by one test
+  (`worker_option_ceilings_pair_each_option_with_its_own_max`, `defaults_test.odin:109-132`).
+  **`src/cliargs` UPGRADES that precedent to a genuinely enum-keyed `[Worker_Option]int` table**,
+  the natural shape once the grammar package owns the option vocabulary as an enum rather than as
+  bare strings — no enum for worker options exists anywhere in `src/pipeline` or `src/cli` today,
+  which is why #124 could not have written one. The upgrade is what buys compiler-enforced
+  exhaustiveness: an enumerated array that leaves a key unfilled does not build (`Unhandled
+  enumerated array case`, the CLAUDE.md enumerated-array note), where #124's string-keyed array with
+  a row deleted builds clean under the full vet set and runs. That is what closes the hand-pairing
+  defect structurally once the grammar moves — the pairing is explicit adjacent data and every
+  option must appear. It does not make a WRONG ceiling in a correctly named row compiler-detected;
+  review sees that one.
 - **#76's deposit** (PR #166, merged 97e6dca) — the round-5 CRITICAL in that loop
   (`context.assertion_failure_proc` assigned inside an `if`, so the shipping binary carried no
   assertion capture at all) survived five review rounds specifically because nothing automated
@@ -160,7 +171,7 @@ file itself allocates, and `src/cliargs` carries the tag above its `package` cla
 file in the tree — `just check` refuses a file without it regardless of what the file does. `src/cli`'s
 `refuse` still makes the one `fmt.eprintf` call it makes today, now fed by a returned `Refusal`'s
 union slice instead of a literal format string and inline `any` arguments; the non-allocating property
-this section already claims for `refuse`/`write_usage` (lines 89-91) holds on both sides of the move,
+this section already claims for `refuse`/`write_usage` (lines 100-102) holds on both sides of the move,
 not only in `src/cli`.
 
 **Import closure: `transcibr:transcript` and `transcibr:process` only.** Neither imports
@@ -221,12 +232,17 @@ this package:
   — so making them distinct sentinel values would widen a bound another decision record owns, and
   would do it silently: nothing in `src/pipeline` refuses a third worker or a third queue slot today.
   `src/cliargs` changes neither. What closes the option-name-to-ceiling swap for the grammar is the
-  shape this record already adopts from the #94 deposit above: the pairing is declared as DATA in one
-  enum-keyed table, one row per key, adjacent and reviewable, and the compiler refuses a table that
-  leaves a key unfilled (`Unhandled enumerated array case`). That is a different and stronger
-  guarantee than making a runtime comparison firable — it closes the swap DEFECT CLASS by
-  construction, leaving a mispairing one place to live, in a row a reader sees beside its neighbour,
-  where a value comparison catches only those swaps whose two values happen to differ. The
+  shape this record adopts at its #94 bullet above: the pairing declared as DATA in one table, one
+  row per option, adjacent and reviewable — #124's own string-keyed `WORKER_OPTION_CEILINGS`
+  precedent, upgraded in `src/cliargs` to a genuinely enum-keyed `[Worker_Option]int` table once the
+  grammar owns the option vocabulary as an enum. The exhaustiveness belongs to the upgrade and not to
+  #124: an enumerated array that leaves a key unfilled does not build (`Unhandled enumerated array
+  case`), where #124's string-keyed array with a row deleted builds clean and runs. That is a
+  different and stronger guarantee than making a runtime comparison firable — it closes the swap
+  DEFECT CLASS by construction, leaving a mispairing one place to live, in a row a reader sees beside
+  its neighbour, where a value comparison catches only those swaps whose two values happen to differ.
+  It still does not make a wrong ceiling in a correctly named row compiler-detected; review sees that
+  one. The
   pipeline-side pairing test's unfirability on today's equal constants is a defect in the live tree,
   outside this record's scope, ticketed separately. Together the two tests cover what issue #94 was
   about across the import fence: the pairing test still walks the table and still proves each worker
@@ -252,7 +268,7 @@ this package:
   (`batch.odin:355-370`) reads `pipeline.DEFAULT_EXTRACT_WORKERS` and `pipeline.DEFAULT_QUEUE_DEPTH`,
   but it runs after the read loop returns, on the `Options` struct the grammar handed back — the same
   place it calls `audio.defaulted_tools` today. It never moves to `src/cliargs`; it is exactly the
-  "pipeline wiring" this ADR already lists as staying in `src/cli` (line 101-102), and its import of
+  "pipeline wiring" this ADR already lists as staying in `src/cli` (lines 112-113), and its import of
   `pipeline` was never part of the grammar's closure to begin with.
 
 **`Common_Options` embeds via `using` in `Batch_Options` and `Transcribe_Options` only.**
