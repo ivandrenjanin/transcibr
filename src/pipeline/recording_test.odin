@@ -9,6 +9,7 @@ import "core:testing"
 import "transcibr:artifact"
 import "transcibr:audio"
 import "transcibr:child"
+import "transcibr:doctor"
 import "transcibr:engine"
 import "transcibr:planning"
 import "transcibr:process"
@@ -428,35 +429,15 @@ review_a_real_engine_duration_reading_must_not_abort_a_healthy_batch :: proc(t: 
 	testing.expect_value(t, unhealthy, false)
 }
 
-// Issue #211's real-child half. A stand-in Engine that walks its own
-// arguments for `-of` rather than being handed the path, spelled the same
-// way `engine_test.odin`'s own `stand_in` is -- that copy is `@(private)` to
-// package engine and cannot be imported back here. `directory` is a place
+// Issue #211's real-child half, issue #252's consolidation: the stand-in
+// Engine template used to be a second, hand-copied instance of
+// `engine_test.odin`'s own `stand_in` -- that copy was `@(private)` to
+// package engine and could not be imported back here, so the two drifted
+// apart until testkit.engine_stand_in absorbed both. `directory` is a place
 // OUTSIDE the Recording's own cache (round-1 adversarial review): the two
 // tests below count the cache's own entries afterward, and a stand-in
 // written inside the cache would sit in that count as an entry the sweep
 // was never supposed to touch either way.
-@(private)
-@(require_results)
-refusal_stand_in :: proc(t: ^testing.T, directory: string, tag: string, body: string) -> string {
-	assert(len(body) > 0, "a stand-in Engine that does nothing at all says nothing")
-
-	path := fmt.aprintf("%s\\stand-in-%s.cmd", directory, tag, allocator = context.allocator)
-	script := fmt.aprintf(
-		"@echo off\r\nsetlocal\r\nset \"PREFIX=\"\r\n:next\r\nif \"%%~1\"==\"\" goto ready\r\nif /i \"%%~1\"==\"-of\" set \"PREFIX=%%~2\"\r\nshift\r\ngoto next\r\n:ready\r\n%s\r\n",
-		body,
-		allocator = context.allocator,
-	)
-	defer delete(script, context.allocator)
-
-	testing.expect(
-		t,
-		os.write_entire_file(path, transmute([]u8)script) == nil,
-		"could not write the stand-in Engine",
-	)
-	return path
-}
-
 @(private)
 @(require_results)
 opened_group :: proc(t: ^testing.T) -> (group: child.Job_Object, ok: bool) {
@@ -583,7 +564,7 @@ sweep_leaves_only_the_witness :: proc(t: ^testing.T, tag: string, body: string) 
 	defer delete(neighbor, context.allocator)
 	must_write_probe(t, neighbor, "neighbor audio file")
 
-	executable := refusal_stand_in(t, tools_dir, tag, body)
+	executable := testkit.engine_stand_in(t, tools_dir, tag, body, context.allocator)
 	defer delete(executable, context.allocator)
 
 	job := new_recording_job(
@@ -739,19 +720,199 @@ every_engine_fault_but_not_stopped_or_did_not_finish_sweeps_its_own_recording_wa
 	}
 }
 
-// Issue #251's success-side pin, the other direction of the ticket's own
-// acceptance criteria: an Engine run that comes through clean must leave its
-// Recording's extracted wav untouched, byte for byte. Reuses
-// `sweep_leaves_only_the_witness`'s own stand-in and sentinel technique
-// (`refusal_stand_in`, a real child spawned through the same `Job_Object`)
-// rather than calling `discard_recording_wav` directly, because the fact
-// this pins is upstream of that proc entirely -- that `transcribe_and_place`
-// never REACHES the sweep call at all when `unfinished.fault == .None`. #252
-// records that `transcribe_and_place`'s own success path -- what
-// `placed_and_reported` does with a real Engine output afterward -- carries
-// no test coverage yet; this test does not close that gap; it stops at
-// proving the wav survives regardless of what `placed_and_reported` goes on
-// to do with the placement itself, which is #252's fixture to build.
+// The committed 2335-byte Engine output fixture -- src/transcript's own
+// format reference, reused rather than duplicated, same as
+// src/artifact/place_test.odin:14 and src/pipeline/batch_test.odin:27 --
+// copied to the stand-in's resolved `-of` prefix so `transcribe_and_place`
+// is driven through a real, parseable, exit-0 Engine rather than a bare
+// `{}`.
+@(private)
+SUCCESS_ENGINE_JSON :: #load("../transcript/fixtures/engine-output.json", string)
+
+// Three directories a real success-path case needs and never shares with
+// another case's own: `cache` is the Recording Job's own scratch cache (the
+// Engine's raw output and the extracted wav land here), `beside` is where the
+// Recording's own source file sits (the Transcript and Sidecar publish
+// beside IT, never beside the cache -- naming.odin's own rule), and
+// `tools_dir` holds the stand-in Engine and the fixture it copies from,
+// OUTSIDE the cache so the cache's own entry count means only what
+// `transcribe_and_place` did to it. Factored out of both success tests below
+// to keep each under CLAUDE.md rule F1's 70-line limit.
+@(private)
+Success_Fixture :: struct {
+	cache:     string,
+	beside:    string,
+	tools_dir: string,
+	source:    string,
+	sentinel:  string,
+}
+
+@(private)
+@(require_results)
+built_success_fixture :: proc(t: ^testing.T, tag: string) -> Success_Fixture {
+	cache := testkit.made_scratch_cache(t, "Pipeline", tag, context.allocator)
+	beside_tag := fmt.aprintf("%s-beside", tag, allocator = context.allocator)
+	defer delete(beside_tag, context.allocator)
+	beside := testkit.made_scratch_cache(t, "Pipeline", beside_tag, context.allocator)
+	tools_tag := fmt.aprintf("%s-tools", tag, allocator = context.allocator)
+	defer delete(tools_tag, context.allocator)
+	tools_dir := testkit.made_scratch_cache(t, "Pipeline", tools_tag, context.allocator)
+
+	source := fmt.aprintf("%s\\%s.mp4", beside, tag, allocator = context.allocator)
+	must_write_probe(t, source, "Recording source file")
+	sentinel := fmt.aprintf("%s\\%s.wav", cache, tag, allocator = context.allocator)
+	must_write_probe(t, sentinel, "sentinel audio file")
+
+	return Success_Fixture {
+		cache = cache,
+		beside = beside,
+		tools_dir = tools_dir,
+		source = source,
+		sentinel = sentinel,
+	}
+}
+
+@(private)
+destroy_success_fixture :: proc(f: Success_Fixture) {
+	testkit.remove_cache(f.cache, context.allocator)
+	testkit.remove_cache(f.beside, context.allocator)
+	testkit.remove_cache(f.tools_dir, context.allocator)
+	delete(f.cache, context.allocator)
+	delete(f.beside, context.allocator)
+	delete(f.tools_dir, context.allocator)
+	delete(f.source, context.allocator)
+	delete(f.sentinel, context.allocator)
+}
+
+// Copies SUCCESS_ENGINE_JSON to the stand-in's own resolved `-of` prefix and
+// exits 0 -- a real, parseable Engine run, not a bare `{}`. The caller frees
+// the returned path.
+@(private)
+@(require_results)
+success_engine_executable :: proc(t: ^testing.T, f: Success_Fixture, tag: string) -> string {
+	fixture := testkit.fixture_file(
+		t,
+		f.tools_dir,
+		"engine-output.json",
+		SUCCESS_ENGINE_JSON,
+		context.allocator,
+	)
+	defer delete(fixture, context.allocator)
+
+	body := fmt.tprintf("copy /y \"%s\" \"%%PREFIX%%.json\" >nul", fixture)
+	return testkit.engine_stand_in(t, f.tools_dir, tag, body, context.allocator)
+}
+
+// The Transcript and Sidecar landed beside the Recording's own source, and
+// the healthy Recording's own cache entries (the Engine's raw output, the
+// extracted wav) were left in place -- a `.None` unfinished-fault never
+// reaches either sweep. Factored out of the test below purely to keep it
+// under CLAUDE.md rule F1's 70-line limit.
+@(private)
+assert_success_landed :: proc(t: ^testing.T, f: Success_Fixture, tag: string) {
+	names, namable := artifact.names_of(f.source, context.allocator)
+	defer artifact.destroy_names(names, context.allocator)
+	if !testing.expect(t, namable, "the Recording's own source names no artifacts") {
+		return
+	}
+	testing.expect(
+		t,
+		os.exists(names[.Transcript]),
+		"the Transcript never landed beside the Recording",
+	)
+	testing.expect(t, os.exists(names[.Sidecar]), "the Sidecar was never written")
+
+	names_after := cache_entry_names(t, f.cache, context.allocator)
+	defer {
+		for name in names_after {
+			delete(name, context.allocator)
+		}
+		delete(names_after, context.allocator)
+	}
+	testing.expectf(
+		t,
+		names_contain(names_after, fmt.tprintf("%s.wav", tag)) &&
+		names_contain(names_after, fmt.tprintf("%s.json", tag)),
+		"a healthy Recording's own cache entries did not survive: %v",
+		names_after,
+	)
+}
+
+// Issue #252: the ticket's own measurement, taken before #251 landed, was
+// that `transcribe_and_place`'s success path was reached by zero tests -- an
+// `fmt.eprintln` planted immediately before `checked_first_recording_health`
+// produced zero hits across the whole src/pipeline sweep. #251's own
+// `a_successful_recording_leaves_its_extracted_wav_byte_identical` already
+// reaches that probe once; this test adds a second, dedicated success-path
+// case rather than relying on that one alone. It drives a real stand-in
+// Engine, through a real Job_Object, all the way through
+// `transcribe_and_place` itself: the Transcript and Sidecar both land beside
+// the Recording, the health gate is actually consulted -- `checked` flips
+// true, the real effect the eprintln probe stood in for, not a print -- and
+// (`assert_success_landed`) the healthy Recording's own cache entries
+// survive. `container_ms` is held at doctor.MIN_HEALTH_CHECK_CONTAINER_MS so
+// the speed half of the health check is not left inconclusive by a container
+// too short to judge.
+@(test)
+a_successful_recording_reaches_transcribe_and_place_and_the_health_gate :: proc(t: ^testing.T) {
+	group, ok := opened_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	tag := "success-path"
+	f := built_success_fixture(t, tag)
+	defer destroy_success_fixture(f)
+
+	executable := success_engine_executable(t, f, tag)
+	defer delete(executable, context.allocator)
+
+	digest := a_digest('h')
+	defer delete(string(digest), context.allocator)
+	checked, abort, unhealthy: bool
+	job := new_recording_job(
+		f.source,
+		tag,
+		&group,
+		Tools{engine = engine.Tools{engine = executable}},
+		f.cache,
+		artifact.Model{path = "C:\\nowhere\\model.bin", digest = digest, bytes = 1},
+		"",
+		"whisper.cpp 1.9.9",
+		transcript.DEFAULT_PROFILE,
+		engine.Report{},
+		Health_Watch{checked = &checked, abort = &abort, unhealthy = &unhealthy},
+	)
+	extracted := Recording_Extracted {
+		job = job,
+		extracted = audio.Extracted {
+			audio = f.sentinel,
+			container_ms = doctor.MIN_HEALTH_CHECK_CONTAINER_MS,
+		},
+	}
+
+	placed := transcribe_and_place(extracted)
+
+	if !testing.expect(t, placed, "a real, parseable Engine run did not place its Transcript") {
+		return
+	}
+	testing.expect_value(t, checked, true)
+	testing.expect_value(t, abort, false)
+	testing.expect_value(t, unhealthy, false)
+
+	assert_success_landed(t, f, tag)
+}
+
+// Issue #251's success-side pin, now genuinely successful (issue #252's own
+// deposit on this ticket): the #254-era sentinel technique here ran a
+// Recording that was NOT successful -- placement quarantined on a bare `{}`,
+// and `transcribe_and_place` returned false -- so this could only pin that
+// the wav survives regardless of what a FAILED placement goes on to do,
+// never the success case its own name claims. `built_success_fixture` and
+// `success_engine_executable` now give a real, parseable, exit-0 Engine run
+// to place from, so this rides that machinery and asserts `placed` itself
+// rather than discarding it.
 @(test)
 a_successful_recording_leaves_its_extracted_wav_byte_identical :: proc(t: ^testing.T) {
 	group, ok := opened_group(t)
@@ -760,37 +921,28 @@ a_successful_recording_leaves_its_extracted_wav_byte_identical :: proc(t: ^testi
 		return
 	}
 
-	tag := "success-survives"
-	cache := testkit.made_scratch_cache(t, "Pipeline", tag, context.allocator)
-	defer delete(cache, context.allocator)
-	defer testkit.remove_cache(cache, context.allocator)
+	tag := "wav-survives"
+	f := built_success_fixture(t, tag)
+	defer destroy_success_fixture(f)
 
-	tools_tag := fmt.aprintf("%s-tools", tag, allocator = context.allocator)
-	defer delete(tools_tag, context.allocator)
-	tools_dir := testkit.made_scratch_cache(t, "Pipeline", tools_tag, context.allocator)
-	defer delete(tools_dir, context.allocator)
-	defer testkit.remove_cache(tools_dir, context.allocator)
-
-	sentinel := fmt.aprintf("%s\\%s.wav", cache, tag, allocator = context.allocator)
-	defer delete(sentinel, context.allocator)
 	original := []u8{1, 2, 3, 4, 5}
 	testing.expect(
 		t,
-		os.write_entire_file(sentinel, original) == nil,
+		os.write_entire_file(f.sentinel, original) == nil,
 		"could not write the sentinel audio file",
 	)
 
-	executable := refusal_stand_in(t, tools_dir, tag, ">\"%PREFIX%.json\" echo {}")
+	executable := success_engine_executable(t, f, tag)
 	defer delete(executable, context.allocator)
 
-	digest := a_digest('s')
+	digest := a_digest('w')
 	defer delete(string(digest), context.allocator)
 	job := new_recording_job(
-		"C:\\clips\\talk.mp4",
+		f.source,
 		tag,
 		&group,
 		Tools{engine = engine.Tools{engine = executable}},
-		cache,
+		f.cache,
 		artifact.Model{path = "C:\\nowhere\\model.bin", digest = digest, bytes = 1},
 		"",
 		"whisper.cpp 1.9.9",
@@ -800,12 +952,13 @@ a_successful_recording_leaves_its_extracted_wav_byte_identical :: proc(t: ^testi
 	)
 	extracted := Recording_Extracted {
 		job = job,
-		extracted = audio.Extracted{audio = sentinel, container_ms = 2_000},
+		extracted = audio.Extracted{audio = f.sentinel, container_ms = 2_000},
 	}
 
-	_ = transcribe_and_place(extracted)
+	placed := transcribe_and_place(extracted)
+	testing.expect(t, placed, "a real, parseable Engine run did not place its Transcript")
 
-	after, unreadable := os.read_entire_file_from_path(sentinel, context.allocator)
+	after, unreadable := os.read_entire_file_from_path(f.sentinel, context.allocator)
 	testing.expectf(
 		t,
 		unreadable == nil,

@@ -235,6 +235,43 @@ fixture_file :: proc(
 	return path
 }
 
+// The Engine stand-in src/engine and src/pipeline each drive through a real
+// child (issue #252): a `.cmd` that walks its own arguments for `-of` rather
+// than being handed the path, so the file a caller reads back afterward is
+// the one the Engine was actually told to write, not one this helper
+// assumes. Consolidated here from two copies that had begun to drift --
+// `stand_in` in src/engine/engine_test.odin and `refusal_stand_in` in
+// src/pipeline/recording_test.odin, spelled identically apart from their
+// names. The caller frees the returned path.
+@(require_results)
+engine_stand_in :: proc(
+	t: ^testing.T,
+	directory: string,
+	tag: string,
+	body: string,
+	allocator: mem.Allocator,
+) -> string {
+	assert(t != nil, "there is no test here to report a refusal through")
+	assert(len(directory) > 0, "a stand-in Engine with nowhere to live cannot be written")
+	assert(len(tag) > 0, "a stand-in Engine shared by two cases collides on its own path")
+	assert(len(body) > 0, "a stand-in Engine that does nothing at all says nothing")
+
+	path := fmt.aprintf("%s\\stand-in-%s.cmd", directory, tag, allocator = allocator)
+	script := fmt.aprintf(
+		"@echo off\r\nsetlocal\r\nset \"PREFIX=\"\r\n:next\r\nif \"%%~1\"==\"\" goto ready\r\nif /i \"%%~1\"==\"-of\" set \"PREFIX=%%~2\"\r\nshift\r\ngoto next\r\n:ready\r\n%s\r\n",
+		body,
+		allocator = allocator,
+	)
+	defer delete(script, allocator)
+
+	testing.expect(
+		t,
+		os.write_entire_file(path, transmute([]u8)script) == nil,
+		"could not write the stand-in Engine",
+	)
+	return path
+}
+
 // `waitfor` registers its signal name machine-wide, and a second instance
 // asking for a name already registered fails at once -- so cases that share
 // one name make a different one red on each run. The process id keeps two

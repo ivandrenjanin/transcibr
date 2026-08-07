@@ -55,30 +55,6 @@ EXPIRING_LIMITS :: Limits {
 @(private)
 LONGER_SECONDS :: 25
 
-// It walks its own arguments for `-of` rather than being handed the path, so the
-// file transcibr goes back to afterwards must be the one the Engine was told to
-// write.
-@(private)
-@(require_results)
-stand_in :: proc(t: ^testing.T, cache: string, tag: string, body: string) -> string {
-	assert(len(body) > 0, "a stand-in Engine that does nothing at all says nothing")
-
-	path := fmt.aprintf("%s\\stand-in-%s.cmd", cache, tag, allocator = context.allocator)
-	script := fmt.aprintf(
-		"@echo off\r\nsetlocal\r\nset \"PREFIX=\"\r\n:next\r\nif \"%%~1\"==\"\" goto ready\r\nif /i \"%%~1\"==\"-of\" set \"PREFIX=%%~2\"\r\nshift\r\ngoto next\r\n:ready\r\n%s\r\n",
-		body,
-		allocator = context.allocator,
-	)
-	defer delete(script, context.allocator)
-
-	testing.expect(
-		t,
-		os.write_entire_file(path, transmute([]u8)script) == nil,
-		"could not write the stand-in Engine",
-	)
-	return path
-}
-
 // The caller frees the path; remove_cache takes the file.
 @(private)
 @(require_results)
@@ -161,13 +137,14 @@ a_stand_in_engine_that_reports_progress_drives_the_display :: proc(t: ^testing.T
 	defer delete(cache, context.allocator)
 	defer testkit.remove_cache(cache, context.allocator)
 
-	executable := stand_in(
+	executable := testkit.engine_stand_in(
 		t,
 		cache,
 		"reports",
 		">&2 echo whisper_print_progress_callback: progress =  42%%\r\n" +
 		">&2 echo whisper_print_progress_callback: progress = 100%%\r\n" +
 		">\"%PREFIX%.json\" echo {}",
+		context.allocator,
 	)
 	defer delete(executable, context.allocator)
 
@@ -211,11 +188,12 @@ an_engine_that_exits_zero_and_produces_nothing_is_a_failure :: proc(t: ^testing.
 	defer delete(cache, context.allocator)
 	defer testkit.remove_cache(cache, context.allocator)
 
-	executable := stand_in(
+	executable := testkit.engine_stand_in(
 		t,
 		cache,
 		"nothing",
 		">&2 echo error: failed to read audio\r\nexit /b 0",
+		context.allocator,
 	)
 	defer delete(executable, context.allocator)
 
@@ -251,11 +229,12 @@ an_engine_that_exits_nonzero_and_produces_nothing_is_a_refusal :: proc(t: ^testi
 	defer delete(cache, context.allocator)
 	defer testkit.remove_cache(cache, context.allocator)
 
-	executable := stand_in(
+	executable := testkit.engine_stand_in(
 		t,
 		cache,
 		"nothing-nonzero",
 		">&2 echo error: failed to read audio\r\nexit /b 5",
+		context.allocator,
 	)
 	defer delete(executable, context.allocator)
 
@@ -279,7 +258,13 @@ an_engine_that_produced_an_empty_file_is_a_failure :: proc(t: ^testing.T) {
 	defer delete(cache, context.allocator)
 	defer testkit.remove_cache(cache, context.allocator)
 
-	executable := stand_in(t, cache, "empty", "type nul > \"%PREFIX%.json\"")
+	executable := testkit.engine_stand_in(
+		t,
+		cache,
+		"empty",
+		"type nul > \"%PREFIX%.json\"",
+		context.allocator,
+	)
 	defer delete(executable, context.allocator)
 
 	tools, job := job_in(cache, executable)
@@ -314,7 +299,13 @@ an_engine_that_writes_output_and_then_exits_nonzero_is_a_refusal :: proc(t: ^tes
 	defer delete(cache, context.allocator)
 	defer testkit.remove_cache(cache, context.allocator)
 
-	executable := stand_in(t, cache, "nonzero-exit", ">\"%PREFIX%.json\" echo {}\r\nexit /b 3")
+	executable := testkit.engine_stand_in(
+		t,
+		cache,
+		"nonzero-exit",
+		">\"%PREFIX%.json\" echo {}\r\nexit /b 3",
+		context.allocator,
+	)
 	defer delete(executable, context.allocator)
 
 	tools, job := job_in(cache, executable)
@@ -425,11 +416,12 @@ an_engine_that_says_nothing_at_all_is_stopped_before_its_bound_runs_out :: proc(
 
 	name := testkit.lonely_signal("Engine", "silent", context.allocator)
 	defer delete(name, context.allocator)
-	executable := stand_in(
+	executable := testkit.engine_stand_in(
 		t,
 		cache,
 		"silent",
 		fmt.tprintf("waitfor /t %d %s", LONGER_SECONDS, name),
+		context.allocator,
 	)
 	defer delete(executable, context.allocator)
 
@@ -467,7 +459,7 @@ an_engine_whose_progress_format_this_reader_cannot_read_still_drives_the_display
 
 	name := testkit.lonely_signal("Engine", "estimate", context.allocator)
 	defer delete(name, context.allocator)
-	executable := stand_in(
+	executable := testkit.engine_stand_in(
 		t,
 		cache,
 		"estimate",
@@ -480,6 +472,7 @@ an_engine_whose_progress_format_this_reader_cannot_read_still_drives_the_display
 			name,
 			name,
 		),
+		context.allocator,
 	)
 	defer delete(executable, context.allocator)
 
@@ -531,11 +524,12 @@ an_engine_that_outlives_its_bound_is_stopped_and_told_apart_from_a_silent_one ::
 
 	name := testkit.lonely_signal("Engine", "bound", context.allocator)
 	defer delete(name, context.allocator)
-	executable := stand_in(
+	executable := testkit.engine_stand_in(
 		t,
 		cache,
 		"bound",
 		fmt.tprintf("waitfor /t %d %s", LONGER_SECONDS, name),
+		context.allocator,
 	)
 	defer delete(executable, context.allocator)
 
@@ -568,11 +562,12 @@ an_engine_that_floods_its_diagnostic_stream_is_still_stopped_at_its_bound :: pro
 	defer delete(flood, context.allocator)
 	name := testkit.lonely_signal("Engine", "flood", context.allocator)
 	defer delete(name, context.allocator)
-	executable := stand_in(
+	executable := testkit.engine_stand_in(
 		t,
 		cache,
 		"flood",
 		fmt.tprintf(">&2 type \"%s\"\r\nwaitfor /t %d %s", flood, LONGER_SECONDS, name),
+		context.allocator,
 	)
 	defer delete(executable, context.allocator)
 
@@ -615,7 +610,7 @@ an_engine_that_exits_mid_line_still_hands_over_its_last_reading :: proc(t: ^test
 		return
 	}
 
-	executable := stand_in(
+	executable := testkit.engine_stand_in(
 		t,
 		cache,
 		"midline",
@@ -625,6 +620,7 @@ an_engine_that_exits_mid_line_still_hands_over_its_last_reading :: proc(t: ^test
 			"type \"%s\" 1>&2",
 			trailer,
 		),
+		context.allocator,
 	)
 	defer delete(executable, context.allocator)
 
@@ -819,11 +815,12 @@ a_recording_whose_scratch_paths_the_engine_cannot_open_never_starts_one :: proc(
 
 	marker := marker_in(cache)
 	defer delete(marker, context.allocator)
-	executable := stand_in(
+	executable := testkit.engine_stand_in(
 		t,
 		cache,
 		"not-ascii",
 		fmt.tprintf(">\"%s\" echo yes\r\n>\"%%PREFIX%%.json\" echo {{}}", marker),
+		context.allocator,
 	)
 	defer delete(executable, context.allocator)
 
@@ -851,11 +848,12 @@ every_path_one_invocation_is_handed_is_checked_and_not_just_the_prefix :: proc(t
 
 	marker := marker_in(cache)
 	defer delete(marker, context.allocator)
-	executable := stand_in(
+	executable := testkit.engine_stand_in(
 		t,
 		cache,
 		"each-path",
 		fmt.tprintf(">\"%s\" echo yes\r\n>\"%%PREFIX%%.json\" echo {{}}", marker),
+		context.allocator,
 	)
 	defer delete(executable, context.allocator)
 
