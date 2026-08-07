@@ -29,6 +29,46 @@ Transcribe_Options :: struct {
 	audio_tools:  audio.Tools,
 }
 
+// Issue #216, item 1: `--transcribe` used to identify the Engine through
+// `main.odin`'s shared `engine_identified`, which built its refusal by
+// calling `artifact.engine_error_message` with no framing of its own -- so
+// an unreadable Engine told a `--transcribe` user "the Batch cannot start"
+// when no Batch was ever asked for (measured byte-identical to merge-base at
+// the #237 review). `transcribe_engine_identified` below is the #237 doctor
+// shape's second call site: it calls the same `artifact.identify_engine`
+// hasher `engine_identified` does (ADR-0037's digest-agreement property is
+// about the hasher, not the cli wrapper), but supplies `--transcribe`'s own
+// framing rather than inheriting the Batch's. `main.odin` is fenced under
+// #75-s5b, so this is a second call site here rather than a parameter added
+// to the shared one.
+TRANSCRIBE_ENGINE_REFUSAL_FRAMING :: "--transcribe cannot verify this Engine"
+
+// The same shape as `main.odin`'s `engine_identified`, with one deliberate
+// difference: the framing passed to `artifact.engine_error_message`. See the
+// issue #216 note above for why this is a second call site and not a second
+// hasher.
+@(private)
+@(require_results)
+transcribe_engine_identified :: proc(path: string) -> (identified: artifact.Digest, ok: bool) {
+	assert(len(path) > 0, "there is no Engine here to identify")
+
+	unidentified: artifact.Engine_Fault
+	identified, unidentified = artifact.identify_engine(path, context.allocator)
+	if unidentified == .None {
+		return identified, true
+	}
+
+	message := artifact.engine_error_message(
+		unidentified,
+		path,
+		context.allocator,
+		TRANSCRIBE_ENGINE_REFUSAL_FRAMING,
+	)
+	assert(len(message) > 0, "an Engine was refused and nothing said why")
+	pipeline.report_fault(message, context.allocator)
+	return identified, false
+}
+
 @(require_results)
 transcribe_one :: proc(arguments: []string) -> int {
 	assert(len(arguments) > 0, "no arguments at all is the version banner, settled before this")
@@ -73,7 +113,7 @@ transcribe_one :: proc(arguments: []string) -> int {
 		return OPERATING_ERROR
 	}
 
-	engine_digest, engine_named := engine_identified(o.engine)
+	engine_digest, engine_named := transcribe_engine_identified(o.engine)
 	defer delete(string(engine_digest), context.allocator)
 	if !engine_named {
 		return OPERATING_ERROR
