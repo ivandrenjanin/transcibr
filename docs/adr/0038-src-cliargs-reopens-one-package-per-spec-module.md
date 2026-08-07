@@ -30,7 +30,7 @@ the wrong place:
   #94 deposit on this issue names the fix for that specific defect, and this record adopts it: the
   enum-keyed table shape #124 already introduced for the worker ceilings
   (`pipeline.Worker_Option_Ceiling`/`worker_option_ceiling`, `pipeline.odin:57-75`, walked by
-  `worker_option_ceilings_pair_each_option_with_its_own_max` in `defaults_test.odin:109-131`) closes
+  `worker_option_ceilings_pair_each_option_with_its_own_max` in `defaults_test.odin:109-132`) closes
   the hand-pairing defect too once the grammar moves — a mispairing can then only live in one
   table, where a test walks it and catches a swap the same way it already catches a swapped ceiling.**
 - **#76's deposit** (PR #166, merged 97e6dca) — the round-5 CRITICAL in that loop
@@ -52,7 +52,7 @@ with (which predate #35 and #50, both of which touched `src/cli` since):
   under-measured — resolving whether `--doctor` migrates too is a call for the migration PRs, not
   this one.
 - **The required-option sweep is byte-identical in shape at three sites**: `batch.odin:289-298`,
-  `plan.odin:242-251`, `transcribe.odin:170-179`, each a `for missing in ([?][2]string{...})` loop
+  `plan.odin:242-250`, `transcribe.odin:170-179`, each a `for missing in ([?][2]string{...})` loop
   refusing the first empty required field. `doctor.odin:85-89` carries a smaller version of the same
   shape. `main.odin`'s `read_options` does not use it — it checks `--from-json`'s one required field
   by hand (`main.odin:300-302`).
@@ -97,7 +97,7 @@ The grammar — every `Options` struct, every `read_*_option(s)` procedure, the 
   `#+vet explicit-allocators` too, like every file in the tree — see the allocation-tag paragraph
   below);
 - **model and engine identification I/O** (`model_identified`, `engine_identified`,
-  `main.odin:344-381`) — both open a file and hash it;
+  `main.odin:345-381`) — both open a file and hash it;
 - **pipeline wiring** — `planned_and_run`, `run_the_batch`, `run_one`, `report_plan`, the calls into
   `transcibr:pipeline`, `transcibr:planning`, `transcibr:artifact`, `transcibr:doctor`.
 
@@ -107,8 +107,10 @@ path it uses today.
 
 **The refusal is data, not a built string, and it keeps `refuse`'s own arity — 19 of `src/cli`'s 22
 `refuse` call sites interpolate a runtime value, arity 0-3, three being the widest
-(`read_batch_worker_option`, `batch.odin:346`), and every interpolated value measured on the tree is a
-`string` or an `int` (the `%s`/`%q` and `%d` verbs `refuse`'s callers use).** A `Refusal` cannot carry
+(`read_batch_worker_option`, `batch.odin:345`), and every interpolated value measured on the tree is a
+`string` or an `int` (the `%s`/`%q` and `%d` verbs `refuse`'s callers use).** The other three
+interpolate nothing at all (`main.odin:301`, `crash_drill.odin:61`, `crash_drill.odin:78`), which is
+the arity-0 end of that same range. A `Refusal` cannot carry
 those arguments as `[3]any`: converting a value to `any` stores a POINTER to it
 (`Any :: struct {data: rawptr, id: typeid}`), and the values a grammar procedure converts are its own
 parameters and locals, so a `Refusal` returned BY VALUE would carry pointers into a stack frame that
@@ -128,9 +130,10 @@ union's bytes with it, so the value stays valid on whichever frame currently hol
 bytes that header POINTS AT are not copied with it. An `args[i] = local_buf_slice` built from a
 frame-local backing array (a `[N]byte` formatted in place, then sliced to a `string`) dangles exactly
 the way the `[3]any` shape did, one field narrower: the union's own bytes survive the copy, the text
-they point at does not. Every one of `src/cli`'s 22 `refuse` call sites interpolates a `string` that is
-either an argv slice (`name`, `value`, `mode`), a `[2]string` table element (`missing[1]`), or a
-compile-time constant (`FOLLOW_CHOICE`, `plan.odin:23`) — all of which outlive the `Refusal` they are
+they point at does not. Each of the 19 sites that interpolates anything interpolates at least one
+`string`, and every one of those strings is either an argv slice (`name`, `value`, `mode`), a
+`[2]string` table element (`missing[1]`), or a compile-time constant (`FOLLOW_CHOICE`,
+`plan.odin:23`) — all of which outlive the `Refusal` they are
 stored in by construction, so nothing on the current tree hits this — but the requirement is on the
 call site, not on the union: a `Refusal_Arg`'s `string` arm is safe exactly when its backing bytes
 outlive the `Refusal` value carrying it, which argv slices and string literals satisfy and a
@@ -187,7 +190,8 @@ this package:
   into `pipeline`. **The shape that closes it: `worker_count_within_ceiling` relocates to
   `src/process`, not `src/pipeline` — and its pinned test SPLITS rather than moving whole, because the
   test as written cannot compile in `src/process` at all.** It names
-  `MAX_EXTRACT_WORKERS`/`MAX_QUEUE_DEPTH` five times (`defaults_test.odin:64`, `:91`, `:96`);
+  `MAX_EXTRACT_WORKERS`/`MAX_QUEUE_DEPTH` six times, twice on each of three lines
+  (`defaults_test.odin:64`, `:91`, `:96`);
   `pipeline` already imports `transcibr:process`; and Odin compiles `_test.odin` files into the
   package under test, so a relocated copy that still names those two constants would make
   `src/process` import `pipeline` while `pipeline` imports `process` — a cyclic importation, a hard
@@ -203,25 +207,33 @@ this package:
   ceiling" boundary check at each walked value — while never importing `pipeline`.
   `WORKER_OPTION_CEILINGS` and the two `MAX_*` constants stay in `pipeline`, which still owns the
   LOOKUP (`pipeline.worker_option_ceiling`) and still walks the table in
-  `worker_option_ceilings_pair_each_option_with_its_own_max` (`defaults_test.odin:109-131`) — that
-  test is what continues to prove `MAX_EXTRACT_WORKERS`/`MAX_QUEUE_DEPTH` are the exact values paired
-  to each option name, unaffected by this split since it never calls `worker_count_within_ceiling` at
-  all — **but only once the pairing test's own assertions can fire.** On the current tree
-  `MAX_EXTRACT_WORKERS` and `MAX_QUEUE_DEPTH` are both `2` (`pipeline.odin:37-38`), and
+  `worker_option_ceilings_pair_each_option_with_its_own_max` (`defaults_test.odin:109-132`),
+  unaffected by this split since it never calls `worker_count_within_ceiling` at all — **but that
+  test's by-value assertions cannot fire against a mispairing on the tree as it stands.** On the
+  current tree `MAX_EXTRACT_WORKERS` and `MAX_QUEUE_DEPTH` are both `2` (`pipeline.odin:37-38`), and
   `worker_option_ceilings_pair_each_option_with_its_own_max` checks the pairing by value
   (`extract_ceiling == MAX_EXTRACT_WORKERS`, `queue_ceiling == MAX_QUEUE_DEPTH`); with the two
   constants equal, swapping the two `WORKER_OPTION_CEILINGS` entries changes nothing either
-  `expect_value` call reads, so the test passes whether the table is paired correctly or swapped —
-  an assertion no mispairing can violate. This record does not treat that as closed by naming the
-  test: the pairing test only proves what this section claims for it once its own assertions require
-  the two constants to differ — either the constants become genuinely distinct sentinel values, or
-  the test itself asserts `MAX_EXTRACT_WORKERS != MAX_QUEUE_DEPTH` as a precondition before comparing
-  the ceilings by value, so an accidental return to equal constants fails loudly instead of making
-  the pairing check silently unfirable again. Together the two tests still cover exactly what issue
-  #94 was about, once that precondition holds: the pairing test proves the table maps each option
-  name to the right constant, and the relocated predicate test proves the check honors whichever
-  ceiling it is given and not the other's — the same guarantee, held by two tests on either side of
-  the import fence instead of one test that cannot exist, unmodified, on either side alone. This is
+  `testing.expectf` call reads, so the test passes whether the table is paired correctly or swapped —
+  an assertion no mispairing can violate. **Neither constant is this record's to move, and the
+  grammar does not wait on that gap being closed.** `MAX_EXTRACT_WORKERS` and `MAX_QUEUE_DEPTH` are
+  ADR-0006's bounds — "one or two CPU workers ... connected by a bounded channel of depth one or two"
+  — so making them distinct sentinel values would widen a bound another decision record owns, and
+  would do it silently: nothing in `src/pipeline` refuses a third worker or a third queue slot today.
+  `src/cliargs` changes neither. What closes the option-name-to-ceiling swap for the grammar is the
+  shape this record already adopts from the #94 deposit above: the pairing is declared as DATA in one
+  enum-keyed table, one row per key, adjacent and reviewable, and the compiler refuses a table that
+  leaves a key unfilled (`Unhandled enumerated array case`). That is a different and stronger
+  guarantee than making a runtime comparison firable — it closes the swap DEFECT CLASS by
+  construction, leaving a mispairing one place to live, in a row a reader sees beside its neighbour,
+  where a value comparison catches only those swaps whose two values happen to differ. The
+  pipeline-side pairing test's unfirability on today's equal constants is a defect in the live tree,
+  outside this record's scope, ticketed separately. Together the two tests cover what issue #94 was
+  about across the import fence: the pairing test still walks the table and still proves each worker
+  option has a ceiling registered and an unregistered name finds none, and the relocated predicate
+  test proves the check honors whichever ceiling it is given and not the other's — held by two tests
+  on either side of the fence instead of one test that cannot exist, unmodified, on either side
+  alone. This is
   `read_natural`'s own `max_digits` precedent (`process/engine.odin:199`,
   `artifact/sidecar.odin`'s `MAX_SIDECAR_DIGITS`) applied a second time, this time literally rather
   than by analogy: a bound check that takes its ceiling as a parameter belongs beside the reader that
