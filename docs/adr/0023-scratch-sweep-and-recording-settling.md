@@ -222,3 +222,44 @@ behaviour.
 `.Undetermined` back towards "a file nothing could open", at which point the entry filter is worth
 re-reading — but not the decision to count them, which rests on the directory entry and not on the
 type.
+
+## Addendum: a refused Recording sweeps its own Engine output, immediately (issue #211)
+
+The sweep above is age- and size-bounded, and runs once at Batch start. It is not the only thing
+that removes a file from the scratch cache. Issue #211 measured a second, narrower gap: a
+`.Refused` Engine run (issue #186 — the Engine finished and exited nonzero) or an `.Output_Empty`
+one (the Engine exited cleanly and left an empty file) both leave their output file sitting in the
+cache with nothing to remove it until this Batch-start sweep next runs — one partial file per
+failed Recording, unbounded across a batch run against a persistently failing Engine.
+
+**Ruling (maintainer, delegated, 2026-08-07): remove it immediately, at the point the Recording's
+own run settles as a refusal, rather than waiting for the next Batch-start sweep.** The fault
+record and Sidecar already carry the diagnostic story for a refused Recording; an unbounded cache
+of partials across a failing batch is the worse trade, and `.Output_Empty` converges to the same
+shape its `.Refused` sibling gets — its file is removed too, which is a behavior change from the
+"leaves its file behind" precedent this document's own body describes for `.Output_Empty`'s audio
+counterpart.
+
+The shape is `src/audio/run.odin`'s own `discard_part`, restated for the Engine's output rather
+than ffmpeg's: every fault removes the file **except** `.Not_Stopped`, whose reason is the same one
+`engine.transcribe`'s own doc comment already gives — the Engine may still be running and may still
+hold the file open, so nothing here touches it, and it is left for this ADR's age-based sweep
+instead. Every other fault either leaves a real half-written or empty file
+(`.Did_Not_Finish`, `.Went_Silent`, `.Refused`, `.Output_Empty`) or leaves nothing to remove at all
+(`.Path_Not_Ascii`, `.Not_Started`, `.No_Output`) — an `os.remove` of a path that was never written
+is the same tolerated failure `discard_part` already accepts.
+
+Implemented in `src/pipeline/recording.odin`'s `discard_engine_output`, called from
+`transcribe_and_place` on any Engine fault, rather than in `src/engine` itself: the Engine package
+already hands the refusal's fault back with the exit code (issue #186), and `src/pipeline` already
+holds `job.cache` and `job.name` — the same two values `engine.transcribe` builds its own output
+prefix from — so no new field crosses the package boundary. An exact-path delete of the one file
+this Recording's own run could have written; no enumeration of the cache directory, no wildcard, no
+`os.remove_all` (CLAUDE.md's Odin notes, issue #97/#105).
+
+**What this addendum does not do.** It does not touch `src/audio`: `discard_part` already applies
+this exact discipline to extraction's own `.part` file on every one of its faults but
+`.Extraction_Not_Stopped` (`run.odin:672-685`), so measurement here found nothing to fix on that
+side of the pipeline. It does not add an operational log line naming what was kept or removed —
+the operational log 176-B describes does not exist yet, and this ticket does not invent one; the
+line lands with 176-D's event seam instead.
