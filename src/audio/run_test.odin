@@ -1052,3 +1052,66 @@ an_extraction_whose_ffmpeg_exits_nonzero_is_refused_with_its_exit_code :: proc(t
 	testing.expect_value(t, err.fault, Fault.Extraction_Refused)
 	testing.expect(t, err.exit_code != 0, "a refused extraction carried a zero exit code")
 }
+
+// `probe_using`'s own `.Unstoppable` arm returns before it ever reaches
+// `remove_answer_if_settled` -- an ffprobe run that could not be stopped may
+// still be running and may still hold `answer` open, exactly as `child.Run`'s
+// own doc comment (`src\child\run.odin`) states, so the answer file is
+// leaked deliberately, the same way `child.Read_Job`'s own doc comment
+// states its worker leaks for the identical reason. Nothing before this test
+// ever drove `probe_using` onto its own `.Unstoppable` branch, so a mutation
+// adding an unconditional `remove(answer)` there left the whole suite green
+// (issue #150, the #125 recipe applied to the one arm its own round-4 review
+// left uncovered). This stub supplies ffprobe's run OUTCOME directly
+// (`child.Run.Unstoppable`, with no real unstoppable ffprobe constructible
+// on Windows), while `probe_using` itself still supplies the DECISION -- the
+// same way `stub_stopped_probe_run` above does for `.Stopped`, and
+// `src\doctor\model_probe.odin`'s `stub_unstoppable_probe` does for its own
+// otherwise-unconstructible ending.
+@(private)
+@(require_results)
+stub_unstoppable_probe_run :: proc(
+	group: ^child.Job_Object,
+	executable: string,
+	arguments: []string,
+	bound_ms: i64,
+	allocator: mem.Allocator,
+	callbacks: child.Run_Callbacks,
+) -> (
+	ending: child.Run,
+	reason: child.Stop_Reason,
+	err: child.Error,
+) {
+	return .Unstoppable, .Bound_Expired, child.Error{}
+}
+
+@(test)
+a_probe_whose_ffprobe_run_is_unstoppable_never_calls_the_remover :: proc(t: ^testing.T) {
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	calls := 0
+	context.user_ptr = &calls
+	tools := Tools {
+		ffprobe = FFPROBE_STAND_IN,
+	}
+	_, err := probe_using(
+		&group,
+		tools,
+		"source.mp4",
+		"answer.json",
+		context.allocator,
+		spy_answer_remove,
+		stub_unstoppable_probe_run,
+	)
+	testing.expect_value(t, err.fault, Fault.Probe_Not_Stopped)
+	testing.expectf(
+		t,
+		calls == 0,
+		"probe called its remover %d time(s) for an unstoppable ffprobe run, wanted 0",
+		calls,
+	)
+}
