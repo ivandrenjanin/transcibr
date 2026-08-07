@@ -139,21 +139,51 @@ test:
 # returns before the "Finished %i test%s" line is ever reached, so that
 # string does not exist at this pin.
 #
-# Accepted risk, stated here and in the PR body: this guard has ZERO automated
-# coverage. `ci: fmt-check check build release test test-single smoke` never
-# invokes test-one, and .github/workflows/ci.yml runs only `just ci`, so no
-# CI gate ever exercises this line. The findstr pattern is a literal,
-# case-sensitive match on one line of text owned by the Odin toolchain, not
-# by this repository; if a future Odin release changes that wording, the
-# guard degrades silently back to exit 0 rather than failing loudly about its
-# own staleness, and nothing in this repository pins that string -- the
-# nearest real precedent is ADR-0035's third accepted risk (no doc-test-name
-# pins), which is the same kind of repository text going stale unpinned.
-# Nothing re-proves this guard still matches short of a human running
-# `just test-one <pkg> <bogus-name>` by hand.
+# Pinned by `test-one-selftest` below (issue #175), which `ci` now runs: a
+# future Odin release that rewords "No tests to run." fails that recipe
+# loudly, rather than letting this guard degrade silently back to exit 0. The
+# findstr pattern remains a literal, case-sensitive match on one line of text
+# owned by the Odin toolchain, not by this repository -- `test-one-selftest`
+# pins the wording, not the ownership.
+#
+# What `test-one-selftest` does NOT pin is the rest of this same staleness
+# family, each recorded here as its own still-accepted risk: a stale
+# `build\odin-test\transcibr-cli-drill.exe` reports the crashlog crash-drill
+# tests green after an edit to record.odin that was never rebuilt (#176-A
+# review deposit on issue #175); a stale `build\odin-test\policy-cli.exe`
+# reports the policy exit-code tests green the same way (#184 review deposit
+# on issue #175); and a `#+build`-tagged `*_test.odin` file reports 0 tests
+# collected as a pass here rather than the hollow-file violation issue #174
+# closed for the untagged case (#174 review deposit on issue #175). `just
+# test` rebuilds both binaries as its own first lines, so `just ci` is honest
+# about all three; only a bare `just test-one` after an edit, without a
+# preceding `just test`, meets any of them.
 test-one pkg name:
 	if not exist build\odin-test mkdir build\odin-test
 	{{ odin }} test {{ if pkg == "policy" { "tools/policy" } else { "src/" + pkg } }} {{ collection }} -out:build/odin-test/focus.exe -define:ODIN_TEST_NAMES={{ pkg }}.{{ name }} {{ memory }} {{ vet }} > build\odin-test\focus.out 2>&1 && (type build\odin-test\focus.out & findstr /b /c:"No tests to run." build\odin-test\focus.out >nul && (echo TEST-ONE: "{{ pkg }}.{{ name }}" matched no test procedure -- 0 tests collected & exit /b 1) || exit /b 0) || (type build\odin-test\focus.out & exit /b 1)
+
+# Proves `test-one`'s bogus-name guard both ways, by exit code (issue #175,
+# the #160/#154 exit-semantics discipline): a bogus name must exit nonzero
+# carrying the guard's own "TEST-ONE: " message, and a real, currently
+# existing test name must exit 0 through that same recipe. `pkg` is fixed to
+# `policy`, the one name CLAUDE.md's notes say `test-one` resolves
+# identically everywhere, including CI's environment.
+#
+# The real name is never hardcoded into this recipe. CLAUDE.md warns that
+# every `just test-one` example named in this repository's own docs is "a
+# claim worth re-running, not a pinned fact" now that issue #152 retired the
+# layer that used to pin one -- a hardcoded name here would be this exact
+# ticket's defect, one level up. Instead the name is derived fresh, each run,
+# from tools\policy\discover_test.odin: grepped for the `proc(t: ^testing.T)`
+# signature `core:testing` requires of every `@(test)` procedure, taking the
+# first match. That file carries no `#+build` tag (the #174 review deposit's
+# hollow-file shape), so what this recipe finds is always a real, collectible
+# test.
+test-one-selftest:
+	if not exist build\odin-test mkdir build\odin-test
+	(for /f "tokens=1" %W in ('findstr /c:":: proc(t: ^testing.T)" tools\policy\discover_test.odin') do (> build\odin-test\selftest-name.txt echo %W & exit /b 0)) & if not exist build\odin-test\selftest-name.txt (echo TEST-ONE-SELFTEST: could not derive a real test name from tools\policy\discover_test.odin & exit /b 1)
+	{{ just_executable() }} test-one policy test-one-selftest-bogus-name-does-not-exist-175 > build\odin-test\selftest-bogus.out 2>&1 & if not errorlevel 1 (echo TEST-ONE-SELFTEST: "policy.test-one-selftest-bogus-name-does-not-exist-175" exited 0 -- the bogus-name guard is disarmed & type build\odin-test\selftest-bogus.out & exit /b 1) & findstr /b /c:"TEST-ONE: " build\odin-test\selftest-bogus.out >nul & if errorlevel 1 (echo TEST-ONE-SELFTEST: the bogus-name case failed but not with the guard's own message & type build\odin-test\selftest-bogus.out & exit /b 1)
+	for /f "usebackq delims=" %N in ("build\odin-test\selftest-name.txt") do ({{ just_executable() }} test-one policy %N > build\odin-test\selftest-real.out 2>&1 & if errorlevel 1 (echo TEST-ONE-SELFTEST: the real name "%N", derived live from tools\policy\discover_test.odin, no longer resolves through test-one & type build\odin-test\selftest-real.out & exit /b 1))
 
 # The #97-class detector (issue #104): src/child under ODIN_TEST_THREADS=1,
 # the one setting that surfaces a defect the default 12-thread sweep cannot.
@@ -186,15 +216,17 @@ install-tools:
 
 # Everything CI runs, in the order a developer would want to know about a
 # failure: formatting first, source policy second, then the debug build, the
-# full test sweep, the single-threaded detector, the release build, and the
-# smoke test last. `build` and `release` both write to the same
-# `build/transcibr-cli.exe` path, and `smoke` is the only recipe that runs the
-# CLI as the shipping artifact, so `release` runs immediately before it to put
-# the `-o:speed` binary actually built and executed rather than left untested
-# (issue #76 review round 2). `test` no longer shares that path or its
-# ordering constraint: it builds its own debug binary for the crashlog
-# crash-drill tests at `build/odin-test/transcibr-cli-drill.exe`, as its own
-# first line (issue #76 review round 3), so `test` and `test-single` can run
-# in any order relative to `build`/`release` without one leaving the other a
-# binary it cannot use.
-ci: fmt-check check build test test-single release smoke
+# full test sweep, the single-threaded detector, the test-one selftest, the
+# release build, and the smoke test last. `build` and `release` both write to
+# the same `build/transcibr-cli.exe` path, and `smoke` is the only recipe
+# that runs the CLI as the shipping artifact, so `release` runs immediately
+# before it to put the `-o:speed` binary actually built and executed rather
+# than left untested (issue #76 review round 2). `test` no longer shares that
+# path or its ordering constraint: it builds its own debug binary for the
+# crashlog crash-drill tests at `build/odin-test/transcibr-cli-drill.exe`, as
+# its own first line (issue #76 review round 3), so `test` and `test-single`
+# can run in any order relative to `build`/`release` without one leaving the
+# other a binary it cannot use. `test-one-selftest` runs after both -- it
+# invokes `test-one` itself, which only needs the toolchain and the source
+# tree, so it carries no build-ordering constraint of its own (issue #175).
+ci: fmt-check check build test test-single test-one-selftest release smoke
