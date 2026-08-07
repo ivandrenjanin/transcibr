@@ -196,19 +196,14 @@ E2E_FIXTURE_JUSTFILE :: "test:\n\todin test src/kept {{vet}}\n"
 // then the three `tools/` violations.
 @(test)
 check_repository_reports_the_full_violation_set_over_a_planted_fixture :: proc(t: ^testing.T) {
-	root, root_err := os.temp_dir(context.allocator)
-	testing.expect_value(t, root_err, nil)
-	defer delete(root, context.allocator)
-
-	base := fmt.aprintf(
-		"%stranscibr-policy-e2e-fixture-%d",
-		root,
-		os.get_pid(),
-		allocator = context.allocator,
-	)
+	base, base_ok := fixture_root("transcibr-policy-e2e-fixture", context.allocator)
+	testing.expect_value(t, base_ok, true)
 	defer delete(base, context.allocator)
+	if !base_ok {
+		return
+	}
 	plant_e2e_fixture(t, base)
-	defer remove_e2e_fixture(base)
+	defer testing.expect_value(t, remove_e2e_fixture(base), os.Error(nil))
 
 	violations := check_repository(base, context.allocator)
 	defer delete(violations)
@@ -323,7 +318,8 @@ plant_e2e_fixture :: proc(t: ^testing.T, base: string) {
 // `collect_remove_all_violations` itself, so teardown here follows the same
 // hand-rolled shape `packages_test.odin`'s own fixtures already use -- files
 // first, then directories in reverse (child before parent), then the base.
-remove_e2e_fixture :: proc(base: string) {
+@(require_results)
+remove_e2e_fixture :: proc(base: string) -> os.Error {
 	assert(len(base) > 0, "asked to remove an e2e fixture at no path at all")
 
 	justfile := e2e_fixture_path(base, "justfile", context.allocator)
@@ -340,5 +336,5 @@ remove_e2e_fixture :: proc(base: string) {
 		defer delete(path, context.allocator)
 		os.remove(path)
 	}
-	os.remove(base)
+	return os.remove(base)
 }

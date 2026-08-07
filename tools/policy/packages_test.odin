@@ -4,6 +4,7 @@ package policy
 import "core:fmt"
 import "core:mem"
 import "core:os"
+import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 
@@ -248,17 +249,12 @@ every_tested_package_is_missing_when_the_test_recipe_cannot_be_found :: proc(t: 
 // included.
 @(test)
 tested_packages_finds_only_directories_holding_a_test_file :: proc(t: ^testing.T) {
-	root, root_err := os.temp_dir(context.allocator)
-	testing.expect_value(t, root_err, nil)
-	defer delete(root, context.allocator)
-
-	base := fmt.aprintf(
-		"%stranscibr-policy-fixture-%d",
-		root,
-		os.get_pid(),
-		allocator = context.allocator,
-	)
+	base, base_ok := fixture_root("transcibr-policy-fixture", context.allocator)
+	testing.expect_value(t, base_ok, true)
 	defer delete(base, context.allocator)
+	if !base_ok {
+		return
+	}
 	tested_dir := fmt.aprintf("%s/tested", base, allocator = context.allocator)
 	defer delete(tested_dir, context.allocator)
 	plain_dir := fmt.aprintf("%s/plain", base, allocator = context.allocator)
@@ -267,9 +263,9 @@ tested_packages_finds_only_directories_holding_a_test_file :: proc(t: ^testing.T
 	testing.expect_value(t, os.make_directory(base), os.Error(nil))
 	testing.expect_value(t, os.make_directory(tested_dir), os.Error(nil))
 	testing.expect_value(t, os.make_directory(plain_dir), os.Error(nil))
-	defer os.remove(plain_dir)
+	defer testing.expect_value(t, os.remove(base), os.Error(nil))
 	defer os.remove(tested_dir)
-	defer os.remove(base)
+	defer os.remove(plain_dir)
 
 	tested_file := fmt.aprintf("%s/run_test.odin", tested_dir, allocator = context.allocator)
 	defer delete(tested_file, context.allocator)
@@ -371,24 +367,19 @@ a_tested_package_is_not_reported_as_untested :: proc(t: ^testing.T) {
 // whole point of the deny-by-default half of this check.
 @(test)
 all_packages_finds_a_package_with_no_test_file :: proc(t: ^testing.T) {
-	root, root_err := os.temp_dir(context.allocator)
-	testing.expect_value(t, root_err, nil)
-	defer delete(root, context.allocator)
-
-	base := fmt.aprintf(
-		"%stranscibr-policy-untested-fixture-%d",
-		root,
-		os.get_pid(),
-		allocator = context.allocator,
-	)
+	base, base_ok := fixture_root("transcibr-policy-untested-fixture", context.allocator)
+	testing.expect_value(t, base_ok, true)
 	defer delete(base, context.allocator)
+	if !base_ok {
+		return
+	}
 	plain_dir := fmt.aprintf("%s/plain", base, allocator = context.allocator)
 	defer delete(plain_dir, context.allocator)
 
 	testing.expect_value(t, os.make_directory(base), os.Error(nil))
 	testing.expect_value(t, os.make_directory(plain_dir), os.Error(nil))
+	defer testing.expect_value(t, os.remove(base), os.Error(nil))
 	defer os.remove(plain_dir)
-	defer os.remove(base)
 
 	plain_file := fmt.aprintf("%s/run.odin", plain_dir, allocator = context.allocator)
 	defer delete(plain_file, context.allocator)
@@ -413,20 +404,15 @@ all_packages_finds_a_package_with_no_test_file :: proc(t: ^testing.T) {
 // crash the whole `just check` run instead of reporting a violation (A8).
 @(test)
 a_stray_test_file_directly_under_a_package_root_is_reported_not_asserted :: proc(t: ^testing.T) {
-	root, root_err := os.temp_dir(context.allocator)
-	testing.expect_value(t, root_err, nil)
-	defer delete(root, context.allocator)
-
-	base := fmt.aprintf(
-		"%stranscibr-policy-stray-fixture-%d",
-		root,
-		os.get_pid(),
-		allocator = context.allocator,
-	)
+	base, base_ok := fixture_root("transcibr-policy-stray-fixture", context.allocator)
+	testing.expect_value(t, base_ok, true)
 	defer delete(base, context.allocator)
+	if !base_ok {
+		return
+	}
 
 	testing.expect_value(t, os.make_directory(base), os.Error(nil))
-	defer os.remove(base)
+	defer testing.expect_value(t, os.remove(base), os.Error(nil))
 
 	stray_file := fmt.aprintf("%s/stray_test.odin", base, allocator = context.allocator)
 	defer delete(stray_file, context.allocator)
@@ -464,19 +450,14 @@ ACCOUNTING_FIXTURE_JUSTFILE :: "test:\n\todin test src/kept {{vet}}\n"
 
 @(test)
 tools_packages_are_accounted_for_beside_src_packages :: proc(t: ^testing.T) {
-	root, root_err := os.temp_dir(context.allocator)
-	testing.expect_value(t, root_err, nil)
-	defer delete(root, context.allocator)
-
-	base := fmt.aprintf(
-		"%stranscibr-policy-tools-fixture-%d",
-		root,
-		os.get_pid(),
-		allocator = context.allocator,
-	)
+	base, base_ok := fixture_root("transcibr-policy-tools-fixture", context.allocator)
+	testing.expect_value(t, base_ok, true)
 	defer delete(base, context.allocator)
+	if !base_ok {
+		return
+	}
 	plant_accounting_fixture(t, base)
-	defer remove_accounting_fixture(base)
+	defer testing.expect_value(t, remove_accounting_fixture(base), os.Error(nil))
 
 	violations := make([dynamic]Violation, 0, context.allocator)
 	defer delete(violations)
@@ -510,6 +491,37 @@ fixture_path :: proc(base: string, name: string, allocator: mem.Allocator) -> st
 	return fmt.aprintf("%s/%s", base, name, allocator = allocator)
 }
 
+// A fresh, pid-suffixed fixture root under `os.temp_dir()` -- joined with
+// `core:path/filepath`'s `join`, never built by concatenating `temp_dir()`'s
+// result straight onto a name. `os.temp_dir()` returns no trailing separator
+// (#185), so that concatenation lands the fixture as a SIBLING of the temp
+// directory rather than a child of it; `join` inserts the separator every
+// platform needs.
+@(require_results)
+fixture_root :: proc(name: string, allocator: mem.Allocator) -> (path: string, ok: bool) {
+	assert(len(name) > 0, "asked to build a fixture root with no name at all")
+	assert(
+		allocator.procedure != nil,
+		"the fixture root outlives this call and needs a chosen allocator",
+	)
+
+	root, root_err := os.temp_dir(allocator)
+	if root_err != nil {
+		delete(root, allocator)
+		return "", false
+	}
+	defer delete(root, allocator)
+
+	dir_name := fmt.aprintf("%s-%d", name, os.get_pid(), allocator = allocator)
+	defer delete(dir_name, allocator)
+
+	joined, join_err := filepath.join([]string{root, dir_name}, allocator)
+	if join_err != nil {
+		return "", false
+	}
+	return joined, true
+}
+
 plant_accounting_fixture :: proc(t: ^testing.T, base: string) {
 	assert(t != nil, "asked to plant a fixture for no test at all")
 	assert(len(base) > 0, "asked to plant a fixture at no path at all")
@@ -534,7 +546,8 @@ plant_accounting_fixture :: proc(t: ^testing.T, base: string) {
 	testing.expect_value(t, os.write_entire_file(justfile, transmute([]byte)recipe), os.Error(nil))
 }
 
-remove_accounting_fixture :: proc(base: string) {
+@(require_results)
+remove_accounting_fixture :: proc(base: string) -> os.Error {
 	assert(len(base) > 0, "asked to remove a fixture at no path at all")
 
 	justfile := fixture_path(base, "justfile", context.allocator)
@@ -551,5 +564,33 @@ remove_accounting_fixture :: proc(base: string) {
 		defer delete(path, context.allocator)
 		os.remove(path)
 	}
-	os.remove(base)
+	return os.remove(base)
+}
+
+// The exact pid-collision failure mode the #109 review measured: the OLD
+// shape's name -- `temp_dir()` concatenated straight onto the fixture name,
+// no separator -- lands as a SIBLING of the temp directory rather than a
+// child of it. The new, join-based `fixture_root` must build a distinct
+// path that sits properly under `root`, without ever creating a directory
+// outside `os.temp_dir()` to prove it: both `old_shape` and the property
+// checked against it are plain strings, never planted on disk. The old
+// shape landed there because `os.temp_dir()` carries no trailing separator;
+// a recycled pid landing on such a stray made `os.make_directory` return
+// `Exist` and turned unrelated tests red.
+@(test)
+fixture_root_survives_a_stray_directory_at_the_old_sibling_name :: proc(t: ^testing.T) {
+	root, root_err := os.temp_dir(context.allocator)
+	testing.expect_value(t, root_err, nil)
+	defer delete(root, context.allocator)
+
+	name := "transcibr-policy-mutation-fixture"
+	old_shape := fmt.aprintf("%s%s-%d", root, name, os.get_pid(), allocator = context.allocator)
+	defer delete(old_shape, context.allocator)
+
+	base, base_ok := fixture_root(name, context.allocator)
+	defer delete(base, context.allocator)
+
+	testing.expect_value(t, base_ok, true)
+	testing.expect(t, base != old_shape)
+	testing.expect(t, strings.has_prefix(base, root))
 }
