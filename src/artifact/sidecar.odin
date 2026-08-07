@@ -417,6 +417,11 @@ key_named :: proc(name: string) -> (key: Key, known: bool) {
 // empty quoted body, and nothing downstream re-checks the field before
 // `engine_display_name` and `complete`'s `assert_filled_in` both treat it as
 // present -- refusing it here, rather than there, is the A8 boundary.
+// `.Engine_Sha256`, `.Model` and `.Model_Sha256` close the same hole for the
+// other three fields `assert_filled_in` requires: an empty `engine_sha256`
+// or `model`, or a `model_sha256` that is not exactly `DIGEST_CHARS` long,
+// reads back fine without this check and reaches the same asserts as
+// corrupt input rather than a programmer error (#187).
 @(private)
 @(require_results)
 store :: proc(s: ^Sidecar, key: Key, value: string, allocator: mem.Allocator) -> (ok: bool) {
@@ -428,12 +433,15 @@ store :: proc(s: ^Sidecar, key: Key, value: string, allocator: mem.Allocator) ->
 		ok = ok && len(s.engine) > 0
 	case .Engine_Sha256:
 		s.engine_version, ok = unquoted(value, allocator)
+		ok = ok && len(s.engine_version) > 0
 	case .Model:
 		s.model, ok = unquoted(value, allocator)
+		ok = ok && len(s.model) > 0
 	case .Model_Sha256:
 		text: string
 		text, ok = unquoted(value, allocator)
 		s.model_digest = Digest(text)
+		ok = ok && len(s.model_digest) == DIGEST_CHARS
 	case .Merge_Profile:
 		s.merge_profile, ok = unquoted(value, allocator)
 	case .Prompt:
