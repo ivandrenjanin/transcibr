@@ -12,6 +12,31 @@ import "transcibr:transcript"
 // spending no GPU time at all. Every decision, every sentence and every refusal
 // is `transcibr:planning`'s; what is here is argument reading and a write.
 
+// Issue #216, item 1: `--plan` used to identify the Engine through
+// `main.odin`'s shared `engine_identified`, which built its refusal by
+// calling `artifact.engine_error_message` with no framing of its own -- so
+// an unreadable Engine told a `--plan` user "the Batch cannot start" when no
+// Batch was ever asked for (measured byte-identical to merge-base at the
+// #237 review). `plan_engine_identified` below is the #237 doctor shape's
+// second call site: it calls the same `artifact.identify_engine` hasher
+// `engine_identified` does (ADR-0037's digest-agreement property is about
+// the hasher, not the cli wrapper), but supplies `--plan`'s own framing
+// rather than inheriting the Batch's. `main.odin` is fenced under #75-s5b,
+// so this is a second call site here rather than a parameter added to the
+// shared one.
+PLAN_ENGINE_REFUSAL_FRAMING :: "--plan cannot verify this Engine"
+
+// Fix round 2 (PR #245's review): the Model refusal below used to call
+// `main.odin`'s shared, unparametrized `model_identified`, which always
+// reported "the Batch cannot start" -- issue #216's own headline defect,
+// live on `--plan`. Named the same way as the Engine framing above.
+PLAN_MODEL_REFUSAL_FRAMING :: "--plan cannot verify this Model"
+
+// Fix round 1 (PR #245's review, finding 3): the call site below used to
+// call a private `plan_engine_identified` here, byte-identical to
+// `transcribe.odin`'s own copy but for the framing constant it closed over.
+// `engine_identified_framed` (src/cli/engine_identify.odin) replaces both.
+
 // `--engine-exe` is mandatory, the same as `--model-file`: the Engine is
 // identified by its own SHA-256, exactly the way the Model is (ADR-0027's
 // reopening clause, closed by issue #50), so there is no absent case for
@@ -33,14 +58,14 @@ plan_batch :: proc(arguments: []string) -> int {
 	}
 
 	fmt.eprintfln("  identifying %s", o.model)
-	identified, named := model_identified(o.model)
+	identified, named := model_identified_framed(o.model, PLAN_MODEL_REFUSAL_FRAMING)
 	defer artifact.destroy_model(identified, context.allocator)
 	if !named {
 		return OPERATING_ERROR
 	}
 
 	fmt.eprintfln("  identifying %s", o.engine)
-	engine_digest, engine_named := engine_identified(o.engine)
+	engine_digest, engine_named := engine_identified_framed(o.engine, PLAN_ENGINE_REFUSAL_FRAMING)
 	defer delete(string(engine_digest), context.allocator)
 	if !engine_named {
 		return OPERATING_ERROR

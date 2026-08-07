@@ -29,6 +29,30 @@ Transcribe_Options :: struct {
 	audio_tools:  audio.Tools,
 }
 
+// Issue #216, item 1: `--transcribe` used to identify the Engine through
+// `main.odin`'s shared `engine_identified`, which built its refusal by
+// calling `artifact.engine_error_message` with no framing of its own -- so
+// an unreadable Engine told a `--transcribe` user "the Batch cannot start"
+// when no Batch was ever asked for (measured byte-identical to merge-base at
+// the #237 review). Below `engine_identified_framed` (src/cli/engine_identify.odin)
+// is called with `--transcribe`'s own framing rather than inheriting the
+// Batch's. `main.odin` is fenced under #75-s5b, so this reuses a second call
+// site rather than a parameter added to the shared one.
+TRANSCRIBE_ENGINE_REFUSAL_FRAMING :: "--transcribe cannot verify this Engine"
+
+// Fix round 1 (PR #245's review, finding 1): `transcribe_one` opens the
+// scratch cache before it ever touches the Engine, and that refusal told the
+// user "the Batch cannot start" too -- issue #216's headline defect, in this
+// same file, one line from `TRANSCRIBE_ENGINE_REFUSAL_FRAMING` above. Named
+// the same way: `--transcribe cannot <verb> this <noun>`.
+TRANSCRIBE_CACHE_REFUSAL_FRAMING :: "--transcribe cannot open this cache"
+
+// Fix round 2 (PR #245's review): the Model refusal below used to call
+// `main.odin`'s shared, unparametrized `model_identified`, which always
+// reported "the Batch cannot start" -- issue #216's own headline defect,
+// live on `--transcribe`. Named the same way as the framings above.
+TRANSCRIBE_MODEL_REFUSAL_FRAMING :: "--transcribe cannot verify this Model"
+
 @(require_results)
 transcribe_one :: proc(arguments: []string) -> int {
 	assert(len(arguments) > 0, "no arguments at all is the version banner, settled before this")
@@ -61,19 +85,27 @@ transcribe_one :: proc(arguments: []string) -> int {
 
 	if refused := audio.open_cache(o.cache, context.allocator); refused != .None {
 		pipeline.report_fault(
-			audio.cache_error_message(refused, o.cache, context.allocator),
+			audio.cache_error_message(
+				refused,
+				o.cache,
+				context.allocator,
+				TRANSCRIBE_CACHE_REFUSAL_FRAMING,
+			),
 			context.allocator,
 		)
 		return OPERATING_ERROR
 	}
 
-	identified, named := model_identified(o.model)
+	identified, named := model_identified_framed(o.model, TRANSCRIBE_MODEL_REFUSAL_FRAMING)
 	defer artifact.destroy_model(identified, context.allocator)
 	if !named {
 		return OPERATING_ERROR
 	}
 
-	engine_digest, engine_named := engine_identified(o.engine)
+	engine_digest, engine_named := engine_identified_framed(
+		o.engine,
+		TRANSCRIBE_ENGINE_REFUSAL_FRAMING,
+	)
 	defer delete(string(engine_digest), context.allocator)
 	if !engine_named {
 		return OPERATING_ERROR
