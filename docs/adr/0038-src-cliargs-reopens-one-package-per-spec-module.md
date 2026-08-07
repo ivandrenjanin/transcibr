@@ -103,22 +103,45 @@ path it uses today.
 
 **The refusal is data, not a built string, and it keeps `refuse`'s own arity — 19 of `src/cli`'s 22
 `refuse` call sites interpolate a runtime value, arity 0-3, three being the widest
-(`read_batch_worker_option`, `batch.odin:346`).** A `Refusal` value carries the complaint FORMAT
-STRING (`"%s takes a whole number from 1 to %d, not %q."` and the rest) plus the concrete arguments
-that format string needs, in the same shape `refuse` itself already takes them
-(`complaint: string, args: ..any`): a fixed three-slot backing array, `args: [3]any`, addressed by a
-count, `arg_count: int`, both fields on the `Refusal` value — never a `make`d `[]any`. `src/cli`'s
-`refuse` becomes `refuse(r.complaint, ..r.args[:r.arg_count])`, slicing the fixed array down to the
-arguments this particular refusal actually carries, so a one-argument refusal does not hand
-`fmt.eprintf` two unused `any` values it would print as trailing `%!(EXTRA ...)` bytes. Nothing here
-allocates: slicing a fixed array embedded in the returned value calls no allocator, where `make`ing a
-`[]any` would. `src/cliargs` never calls `fmt.eprintf`, `fmt.aprintf`, or anything else that
-allocates, so it never needs the `#+vet explicit-allocators` file tag (M2/ADR-0010) or an
-`allocator: mem.Allocator` threaded through a single grammar entry point — there is nothing in the
-package for that tag to police. `src/cli`'s `refuse` still makes the one `fmt.eprintf` call it makes
-today, now fed by a returned `Refusal` instead of a literal format string and inline arguments; the
-non-allocating property this section already claims for `refuse`/`write_usage` (lines 89-91) holds on
-both sides of the move, not only in `src/cli`.
+(`read_batch_worker_option`, `batch.odin:346`), and every interpolated value measured on the tree is a
+`string` or an `int` (the `%s`/`%q` and `%d` verbs `refuse`'s callers use).** A `Refusal` cannot carry
+those arguments as `[3]any`: converting a value to `any` stores a POINTER to it
+(`Any :: struct {data: rawptr, id: typeid}`), and the values a grammar procedure converts are its own
+parameters and locals, so a `Refusal` returned BY VALUE would carry pointers into a stack frame that
+no longer exists once the call returns — before `src/cli` ever reads them. That is not fixed by moving
+the `any` conversion later, either: a helper that type-switches over typed args and writes each `case`
+branch's loop-local variable into an `any` has the identical defect one function-call boundary later,
+because that loop-local dies at the end of its own scope and the returned `any` is left pointing at
+it. (Measured directly: a probe shaped exactly that way — a `build_args` helper returning `[3]any`
+built from a `switch v in a { case string: out[i] = v }` loop — printed
+`takes a whole number from 1 to 140696839124424, not ""` for the same inputs that print correctly
+below; probe discarded.) Instead, `Refusal` carries a fixed `args: [3]Refusal_Arg` backing array,
+addressed by `arg_count: int`, where `Refusal_Arg :: union {string, int}` holds the value ITSELF
+inside the union's own storage, not a pointer to somewhere else — copying a `Refusal` copies the
+union's bytes with it, so the value stays valid on whichever frame currently holds the `Refusal`, and
+`src/cli`'s `refuse(complaint: string, args: []Refusal_Arg) -> bool` takes the union slice directly
+rather than a pre-built `[]any` at all. Inside `refuse`, and only there, two small fixed backing
+arrays sized to the same arity — `strs: [3]string`, `ints: [3]int`, both local to `refuse`'s own
+frame — receive each argument's concrete value by a `switch v in a`, and the `any` handed to
+`fmt.eprintf` is built from THOSE locals (`built[i] = strs[i]` / `built[i] = ints[i]`), which live for
+the whole of `refuse`'s call and are never returned past it. This is the shape that actually holds:
+verified by probe — `refuse("--extract-workers", 2, "99")`'s `Refusal`, built one frame up, returned
+by value, and read through a second local copy after 64 ints of intervening stack traffic, printed the
+exact pinned string, `--extract-workers takes a whole number from 1 to 2, not "99".`, byte for byte;
+probe discarded. A one-argument refusal slices the arrays down to one element, so `fmt.eprintf` never
+receives an unused `any` it would print as trailing `%!(EXTRA ...)` bytes. Nothing here allocates: the
+fixed `[3]Refusal_Arg` embedded in the returned value and the fixed `strs`/`ints`/`built` arrays
+`refuse` fills on its own stack all call no allocator, where `make`ing a `[]any` would. `src/cliargs`
+never calls `fmt.eprintf`, `fmt.aprintf`, or anything else that allocates — but that does not exempt it
+from the `#+vet explicit-allocators` file tag (M2/ADR-0010): the tag's scope in
+`tools/policy/check.odin`'s `vet_tag_roster` is `.Every`, every `.odin` file `discover_odin_files`
+walks (the repository root minus `.git`, `build`, `.scratch`, `.tools`), unconditional on whether the
+file itself allocates, and `src/cliargs` carries the tag above its `package` clause like every other
+file in the tree — `just check` refuses a file without it regardless of what the file does. `src/cli`'s
+`refuse` still makes the one `fmt.eprintf` call it makes today, now fed by a returned `Refusal`'s
+union slice instead of a literal format string and inline `any` arguments; the non-allocating property
+this section already claims for `refuse`/`write_usage` (lines 89-91) holds on both sides of the move,
+not only in `src/cli`.
 
 **Import closure: `transcibr:transcript` and `transcibr:process` only.** Neither imports
 `transcibr:child`, `transcibr:audio`, or `transcibr:pipeline` (verified on the current tree: `process`
@@ -160,12 +183,12 @@ this package:
   `read_worker_count` itself: it takes `ceiling: int`, parses with `process.read_natural`, and checks
   the result with `process.worker_count_within_ceiling` — never imports `pipeline`. On refusal it
   builds a `Refusal` (the shape above: its own owned complaint format string plus `name`, `ceiling`,
-  `value` in `args[:3]`) itself, because it is the only side of the fence that has read the offending
-  value; nothing is pre-formatted by `src/cli` before dispatch, and no complaint string crosses the
-  fence built. The LOOKUP (`pipeline.worker_option_ceiling`) stays in `src/cli`, called immediately
-  before the grammar's per-option dispatch to resolve `ceiling` for the two worker-option names, the
-  same way `src/cli` already resolves `--ffmpeg`/`--ffprobe` into an `audio.Tools` after the read loop
-  rather than inside it.
+  `value` wrapped as `Refusal_Arg` values in `args[:3]`) itself, because it is the only side of the
+  fence that has read the offending value; nothing is pre-formatted by `src/cli` before dispatch, and
+  no complaint string crosses the fence built. The LOOKUP (`pipeline.worker_option_ceiling`) stays in
+  `src/cli`, called immediately before the grammar's per-option dispatch to resolve `ceiling` for the
+  two worker-option names, the same way `src/cli` already resolves `--ffmpeg`/`--ffprobe` into an
+  `audio.Tools` after the read loop rather than inside it.
   **Defaults are a separate, already-closed case, not a third breach.** `defaulted_batch`
   (`batch.odin:355-370`) reads `pipeline.DEFAULT_EXTRACT_WORKERS` and `pipeline.DEFAULT_QUEUE_DEPTH`,
   but it runs after the read loop returns, on the `Options` struct the grammar handed back — the same
