@@ -709,7 +709,9 @@ ensure_fixture_root_refuses_a_nonempty_existing_directory :: proc(t: ^testing.T)
 fixture_root_survives_a_stray_directory_at_the_old_sibling_name :: proc(t: ^testing.T) {
 	root := os.get_env("TEMP", context.allocator)
 	defer delete(root, context.allocator)
-	testing.expect(t, len(root) > 0, "TEMP names nowhere to plant the old-shape stray")
+	if !testing.expect(t, len(root) > 0, "TEMP names nowhere to plant the old-shape stray") {
+		return
+	}
 
 	name := "transcibr-policy-mutation-fixture"
 	old_shape := fmt.aprintf("%s%s-%d", root, name, os.get_pid(), allocator = context.allocator)
@@ -727,6 +729,9 @@ fixture_root_survives_a_stray_directory_at_the_old_sibling_name :: proc(t: ^test
 	defer delete(base, context.allocator)
 
 	testing.expect_value(t, base_ok, true)
+	if !base_ok {
+		return
+	}
 	testing.expect(t, base != old_shape)
 	testing.expect(t, strings.has_prefix(base, root))
 
