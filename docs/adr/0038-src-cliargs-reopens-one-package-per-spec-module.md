@@ -122,7 +122,20 @@ built from a `switch v in a { case string: out[i] = v }` loop — printed
 below; probe discarded.) Instead, `Refusal` carries a fixed `args: [3]Refusal_Arg` backing array,
 addressed by `arg_count: int`, where `Refusal_Arg :: union {string, int}` holds the value ITSELF
 inside the union's own storage, not a pointer to somewhere else — copying a `Refusal` copies the
-union's bytes with it, so the value stays valid on whichever frame currently holds the `Refusal`, and
+union's bytes with it, so the value stays valid on whichever frame currently holds the `Refusal`.
+**This closes the `any`-pointer defect but does not, by itself, make every `string` arm safe:** a
+`string` is itself a header — `{data: ^byte, len: int}` — copied by value into the union, but the
+bytes that header POINTS AT are not copied with it. An `args[i] = local_buf_slice` built from a
+frame-local backing array (a `[N]byte` formatted in place, then sliced to a `string`) dangles exactly
+the way the `[3]any` shape did, one field narrower: the union's own bytes survive the copy, the text
+they point at does not. Every one of `src/cli`'s 22 `refuse` call sites interpolates a `string` that is
+either an argv slice (`name`, `value`, `mode`), a `[2]string` table element (`missing[1]`), or a
+compile-time constant (`FOLLOW_CHOICE`, `plan.odin:23`) — all of which outlive the `Refusal` they are
+stored in by construction, so nothing on the current tree hits this — but the requirement is on the
+call site, not on the union: a `Refusal_Arg`'s `string` arm is safe exactly when its backing bytes
+outlive the `Refusal` value carrying it, which argv slices and string literals satisfy and a
+frame-local formatting buffer does not. `src/cliargs`'s readers, once written, must build every
+interpolated string from argv or a constant, never from a local buffer, for this shape to hold. And
 `src/cli`'s `refuse(complaint: string, args: []Refusal_Arg) -> bool` takes the union slice directly
 rather than a pre-built `[]any` at all. Inside `refuse`, and only there, two small fixed backing
 arrays sized to the same arity — `strs: [3]string`, `ints: [3]int`, both local to `refuse`'s own
@@ -193,11 +206,23 @@ this package:
   `worker_option_ceilings_pair_each_option_with_its_own_max` (`defaults_test.odin:109-131`) — that
   test is what continues to prove `MAX_EXTRACT_WORKERS`/`MAX_QUEUE_DEPTH` are the exact values paired
   to each option name, unaffected by this split since it never calls `worker_count_within_ceiling` at
-  all. Together the two tests still cover exactly what issue #94 was about: the pairing test proves
-  the table maps each option name to the right constant, and the relocated predicate test proves the
-  check honors whichever ceiling it is given and not the other's — the same guarantee, held by two
-  tests on either side of the import fence instead of one test that cannot exist, unmodified, on
-  either side alone. This is `read_natural`'s own `max_digits` precedent (`process/engine.odin:199`,
+  all — **but only once the pairing test's own assertions can fire.** On the current tree
+  `MAX_EXTRACT_WORKERS` and `MAX_QUEUE_DEPTH` are both `2` (`pipeline.odin:37-38`), and
+  `worker_option_ceilings_pair_each_option_with_its_own_max` checks the pairing by value
+  (`extract_ceiling == MAX_EXTRACT_WORKERS`, `queue_ceiling == MAX_QUEUE_DEPTH`); with the two
+  constants equal, swapping the two `WORKER_OPTION_CEILINGS` entries changes nothing either
+  `expect_value` call reads, so the test passes whether the table is paired correctly or swapped —
+  an assertion no mispairing can violate. This record does not treat that as closed by naming the
+  test: the pairing test only proves what this section claims for it once its own assertions require
+  the two constants to differ — either the constants become genuinely distinct sentinel values, or
+  the test itself asserts `MAX_EXTRACT_WORKERS != MAX_QUEUE_DEPTH` as a precondition before comparing
+  the ceilings by value, so an accidental return to equal constants fails loudly instead of making
+  the pairing check silently unfirable again. Together the two tests still cover exactly what issue
+  #94 was about, once that precondition holds: the pairing test proves the table maps each option
+  name to the right constant, and the relocated predicate test proves the check honors whichever
+  ceiling it is given and not the other's — the same guarantee, held by two tests on either side of
+  the import fence instead of one test that cannot exist, unmodified, on either side alone. This is
+  `read_natural`'s own `max_digits` precedent (`process/engine.odin:199`,
   `artifact/sidecar.odin`'s `MAX_SIDECAR_DIGITS`) applied a second time, this time literally rather
   than by analogy: a bound check that takes its ceiling as a parameter belongs beside the reader that
   takes its digit cap as a parameter, in the one package both `src/cli` and `src/cliargs` may import.
