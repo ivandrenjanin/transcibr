@@ -259,14 +259,19 @@ every_tested_packages_own_test_line_reddens_the_accounting_check_when_stripped :
 	defer delete(justfile_bytes, context.allocator)
 	justfile_text := string(justfile_bytes)
 
-	checked := assert_every_tested_package_reddens_when_its_line_is_stripped(
+	src_checked := assert_every_tested_package_reddens_when_its_line_is_stripped(
 		t,
 		root,
 		"src",
 		TEST_LESS_SRC_PACKAGES,
 		justfile_text,
 	)
-	checked += assert_every_tested_package_reddens_when_its_line_is_stripped(
+	testing.expectf(
+		t,
+		src_checked > 0,
+		"found no real tested, non-exempt package to strip a line from under src/ at all",
+	)
+	tools_checked := assert_every_tested_package_reddens_when_its_line_is_stripped(
 		t,
 		root,
 		"tools",
@@ -275,7 +280,7 @@ every_tested_packages_own_test_line_reddens_the_accounting_check_when_stripped :
 	)
 	testing.expectf(
 		t,
-		checked > 0,
-		"found no real tested, non-exempt package to strip a line from at all",
+		tools_checked > 0,
+		"found no real tested, non-exempt package to strip a line from under tools/ at all",
 	)
 }
