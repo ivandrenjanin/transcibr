@@ -721,9 +721,11 @@ every_engine_fault_but_not_stopped_or_did_not_finish_sweeps_its_own_recording_wa
 }
 
 // The committed 2335-byte Engine output fixture -- src/transcript's own
-// format reference, reused rather than duplicated (ADR-0026) -- copied to the
-// stand-in's resolved `-of` prefix so `transcribe_and_place` is driven
-// through a real, parseable, exit-0 Engine rather than a bare `{}`.
+// format reference, reused rather than duplicated, same as
+// src/artifact/place_test.odin:14 and src/pipeline/batch_test.odin:27 --
+// copied to the stand-in's resolved `-of` prefix so `transcribe_and_place`
+// is driven through a real, parseable, exit-0 Engine rather than a bare
+// `{}`.
 @(private)
 SUCCESS_ENGINE_JSON :: #load("../transcript/fixtures/engine-output.json", string)
 
@@ -836,11 +838,14 @@ assert_success_landed :: proc(t: ^testing.T, f: Success_Fixture, tag: string) {
 	)
 }
 
-// Issue #252: before this test, `transcribe_and_place`'s success path was
-// reached by zero tests -- an `fmt.eprintln` planted immediately before
-// `checked_first_recording_health` produced zero hits across the whole
-// src/pipeline sweep (the ticket's own measurement). This drives a real
-// stand-in Engine, through a real Job_Object, all the way through
+// Issue #252: the ticket's own measurement, taken before #251 landed, was
+// that `transcribe_and_place`'s success path was reached by zero tests -- an
+// `fmt.eprintln` planted immediately before `checked_first_recording_health`
+// produced zero hits across the whole src/pipeline sweep. #251's own
+// `a_successful_recording_leaves_its_extracted_wav_byte_identical` already
+// reaches that probe once; this test adds a second, dedicated success-path
+// case rather than relying on that one alone. It drives a real stand-in
+// Engine, through a real Job_Object, all the way through
 // `transcribe_and_place` itself: the Transcript and Sidecar both land beside
 // the Recording, the health gate is actually consulted -- `checked` flips
 // true, the real effect the eprintln probe stood in for, not a print -- and
