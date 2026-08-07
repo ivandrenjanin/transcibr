@@ -52,15 +52,25 @@ import "core:time"
 // new budgets, so it could only ever report old-fails/new-passes); that the
 // wider budget cost a measured ~33% more wall time on src/planning's suite,
 // spent entirely on give-up cases whose targets can never succeed at any
-// budget; and, decisively, that a fresh, empty testkit-managed scratch
-// directory still leaked under a real `just ci` run with the widened budget
-// already in place -- direct proof 270ms does not close the race #229
-// describes either. A bounded retry against a genuine pending-delete window
-// is still correct (see remove_settled below), but no evidence gathered
-// across three rounds showed that widening this pair of constants is what
-// closes that window; reverting removes an unproven, measurably costly
-// change rather than keeping it on the theory that "wider can't hurt." A
-// real fix for #229 needs a different mechanism than a bigger sleep budget.
+// budget; and that a fresh, empty testkit-managed scratch directory was
+// observed, once, still present with the widened budget in place right
+// after a real `just ci` run. That single observation is not replicated and
+// not decisive: a directory that later vanishes with nothing recorded as
+// having deleted it (round 4 of the #238 review reproduced exactly that
+// shape once, in eleven further attempts) is consistent with a
+// delete-pending directory entry that stayed visible past the run rather
+// than with a genuine, permanent leak, and the same round's own replication
+// attempt (eleven isolated package runs) produced zero further cases. A
+// bounded retry against a genuine pending-delete window is still correct
+// (see remove_settled below), but no evidence gathered across three rounds
+// showed that widening this pair of constants is what closes that window,
+// and no evidence gathered rules it out either; reverting removes an
+// unproven, measurably costly change rather than keeping it on the theory
+// that "wider can't hurt." Whether a real fix for #229 needs a different
+// mechanism than a bigger sleep budget, or no fix at all because the
+// window described is not reliably reproducible on this machine, remains
+// open -- see issue #229 and the #238 PR body for the current evidence
+// record.
 REMOVE_SETTLE_ATTEMPTS :: 5
 REMOVE_SETTLE_DELAY :: 20 * time.Millisecond
 #assert(REMOVE_SETTLE_ATTEMPTS > 1)
