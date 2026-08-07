@@ -2,6 +2,8 @@
 package doctor
 
 import "core:fmt"
+import "core:log"
+import "core:os"
 import "core:strings"
 import "core:testing"
 import "core:time"
@@ -19,6 +21,115 @@ open_group :: proc(t: ^testing.T) -> (group: child.Job_Object, ok: bool) {
 		return {}, false
 	}
 	return opened, true
+}
+
+// The single skip mechanism every reference-asset-gated test in this
+// package routes through (issue #230): a silent early return reported
+// PASS forever on a machine without the asset, and a green CI run and a
+// green dev-machine run were indistinguishable from each other. `label`
+// and `path` are logged through the test's own logger -- wired to
+// core:testing's per-test channel, which prints every queued message to
+// stderr whether the test passes or fails -- so a green run still says
+// what it skipped and why.
+@(private)
+@(require_results)
+reference_asset_missing :: proc(t: ^testing.T, label: string, path: string) -> bool {
+	assert(len(label) > 0, "a skip with no label names nothing")
+	assert(len(path) > 0, "a skip with no path names nothing")
+
+	if os.exists(path) {
+		return false
+	}
+	log.infof("skipped %s: not found at %s", label, path)
+	return true
+}
+
+@(private)
+Captured_Log :: struct {
+	lines: [dynamic]string,
+}
+
+@(private)
+capturing_logger_proc :: proc(
+	logger_data: rawptr,
+	level: log.Level,
+	text: string,
+	options: log.Options,
+	location := #caller_location,
+) {
+	captured := cast(^Captured_Log)logger_data
+	append(&captured.lines, strings.clone(text, context.allocator))
+}
+
+@(test)
+reference_asset_missing_logs_what_it_skipped_and_why :: proc(t: ^testing.T) {
+	captured := Captured_Log {
+		lines = make([dynamic]string, context.allocator),
+	}
+	defer {
+		for line in captured.lines {
+			delete(line, context.allocator)
+		}
+		delete(captured.lines)
+	}
+
+	previous_logger := context.logger
+	context.logger = log.Logger {
+		procedure    = capturing_logger_proc,
+		data         = &captured,
+		lowest_level = .Debug,
+		options      = {},
+	}
+
+	missing := reference_asset_missing(
+		t,
+		"reference ffmpeg",
+		`C:\there-is-no-such-reference-asset.exe`,
+	)
+
+	context.logger = previous_logger
+
+	testing.expect_value(t, missing, true)
+	testing.expect(t, len(captured.lines) == 1, "the skip must log exactly one line")
+	if len(captured.lines) == 1 {
+		testing.expect(
+			t,
+			strings.contains(captured.lines[0], "reference ffmpeg"),
+			"the skip line does not name what it skipped",
+		)
+		testing.expect(
+			t,
+			strings.contains(captured.lines[0], `C:\there-is-no-such-reference-asset.exe`),
+			"the skip line does not name why -- the path it looked for",
+		)
+	}
+}
+
+@(test)
+reference_asset_missing_stays_silent_when_the_asset_is_present :: proc(t: ^testing.T) {
+	present := testkit.made_scratch_cache(t, "Doctor", "referenceassetpresent", context.allocator)
+	defer delete(present, context.allocator)
+	defer testkit.remove_cache(present, context.allocator)
+
+	captured := Captured_Log {
+		lines = make([dynamic]string, context.allocator),
+	}
+	defer delete(captured.lines)
+
+	previous_logger := context.logger
+	context.logger = log.Logger {
+		procedure    = capturing_logger_proc,
+		data         = &captured,
+		lowest_level = .Debug,
+		options      = {},
+	}
+
+	missing := reference_asset_missing(t, "reference ffmpeg", present)
+
+	context.logger = previous_logger
+
+	testing.expect_value(t, missing, false)
+	testing.expect(t, len(captured.lines) == 0, "a present asset was skipped anyway")
 }
 
 @(test)
