@@ -525,6 +525,10 @@ longer a live link in any command's own dispatch path — `--batch`'s own dispat
 enum-keyed `Worker_Ceilings` table by member since the stage-4 addendum above, and nothing else in
 the tree calls either name.
 
+**Issue #260 retired both names outright** (`fix/260-retire-worker-option-ceilings`): the struct,
+the table, the lookup, and their pairing test are deleted from `src/pipeline` — the "dead-with-a-
+passing-test" tenancy this addendum records above ended there.
+
 **The #74-rubric audit, over what remains**: every procedure across `src/cli/main.odin`,
 `batch.odin`, `doctor.odin`, `transcribe.odin`, `plan.odin`, `crash_drill.odin` and
 `engine_identify.odin` was walked against the same rule #74's own audit used — "the moment a decision
