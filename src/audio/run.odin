@@ -195,6 +195,12 @@ remove_answer_if_settled :: proc(answer: string, settled: bool, remove: Answer_R
 // review, finding 2: nothing in the tree drove `probe` onto its own
 // `.Stopped` branch, so deleting that branch's `remove(answer)` left all
 // 588 tests green).
+//
+// `callbacks` is threaded straight through to `child.run_bounded` rather than
+// left off this signature: issue #109 generalizes `on_exit` (`run.odin`'s own
+// doc comment on `Run_Callbacks`) into the one way any caller here learns the
+// exit code, and a stub standing in for a real run has to be able to fake
+// that callback exactly like a real one fires it.
 @(private)
 Probe_Run :: #type proc(
 	group: ^child.Job_Object,
@@ -202,6 +208,7 @@ Probe_Run :: #type proc(
 	arguments: []string,
 	bound_ms: i64,
 	allocator: mem.Allocator,
+	callbacks: child.Run_Callbacks,
 ) -> (
 	ending: child.Run,
 	reason: child.Stop_Reason,
@@ -216,12 +223,33 @@ run_probe_child :: proc(
 	arguments: []string,
 	bound_ms: i64,
 	allocator: mem.Allocator,
+	callbacks: child.Run_Callbacks,
 ) -> (
 	ending: child.Run,
 	reason: child.Stop_Reason,
 	err: child.Error,
 ) {
-	return child.run_bounded(group, executable, arguments, bound_ms, allocator)
+	return child.run_bounded(group, executable, arguments, bound_ms, allocator, callbacks)
+}
+
+// What `probe_using` and `produce` below both read back after a `.Finished`
+// run: issue #109's generalization of `on_exit` into the one way a caller in
+// this package learns the exit code. A run that never reaches `.Finished`
+// leaves this at its zero value, which is exactly why neither caller reads
+// it before checking `ending` first.
+@(private)
+Exit_Observed :: struct {
+	code:   u32,
+	exited: bool,
+}
+
+@(private)
+observe_exit :: proc(code: u32, user: rawptr) {
+	assert(user != nil, "there is no exit observer here to record an exit status against")
+
+	state := (^Exit_Observed)(user)
+	state.code = code
+	state.exited = true
 }
 
 // The read of ffprobe's own answer file below is bounded the same way
@@ -269,7 +297,15 @@ probe_using :: proc(
 	arguments := process.probe_arguments(source, answer, allocator)
 	defer delete(arguments, allocator)
 
-	ending, _, refusal := run(group, tools.ffprobe, arguments, PROBE_BOUND_MS, allocator)
+	observed: Exit_Observed
+	ending, _, refusal := run(
+		group,
+		tools.ffprobe,
+		arguments,
+		PROBE_BOUND_MS,
+		allocator,
+		child.Run_Callbacks{user = &observed, on_exit = observe_exit},
+	)
 	switch ending {
 	case .Not_Started:
 		return {}, Error{fault = .Probe_Not_Started, child = refusal}
@@ -280,6 +316,10 @@ probe_using :: proc(
 	if ending == .Stopped {
 		remove_answer_if_settled(answer, true, remove)
 		return {}, Error{fault = .Probe_Did_Not_Finish}
+	}
+	assert(observed.exited, "a finished ffprobe run reported no exit status at all")
+	if observed.code != 0 {
+		return {}, Error{fault = .Probe_Refused, exit_code = observed.code}
 	}
 
 	said, unreadable := child.read_bounded(answer, child.READ_BOUND_MS, allocator)
@@ -582,12 +622,14 @@ produce :: proc(
 
 	arguments := process.extract_arguments(job.source, part, allocator)
 	defer delete(arguments, allocator)
+	observed: Exit_Observed
 	ending, _, refusal := child.run_bounded(
 		group,
 		tools.ffmpeg,
 		arguments,
 		EXTRACTION_BOUND_MS,
 		allocator,
+		child.Run_Callbacks{user = &observed, on_exit = observe_exit},
 	)
 	switch ending {
 	case .Not_Started:
@@ -597,6 +639,10 @@ produce :: proc(
 	case .Unstoppable:
 		return {}, Error{fault = .Extraction_Not_Stopped}
 	case .Finished:
+	}
+	assert(observed.exited, "a finished ffmpeg run reported no exit status at all")
+	if observed.code != 0 {
+		return {}, Error{fault = .Extraction_Refused, exit_code = observed.code}
 	}
 
 	measured, unusable := check_audio(part, container_ms, tolerance, allocator)

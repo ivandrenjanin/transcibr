@@ -68,6 +68,8 @@ Fault :: enum u8 {
 	Probe_Did_Not_Finish,
 	// Nothing deletes the probe's answer file: ffprobe may still hold it open.
 	Probe_Not_Stopped,
+	// ffprobe finished and exited nonzero, before its answer was ever read.
+	Probe_Refused,
 	Probe_Answer_Unreadable,
 	Probe_Unreadable,
 	No_Audio_Stream,
@@ -75,6 +77,8 @@ Fault :: enum u8 {
 	Extraction_Did_Not_Finish,
 	// The `.part` is left where it is: ffmpeg may still hold it open.
 	Extraction_Not_Stopped,
+	// ffmpeg finished and exited nonzero, before `check_audio` ever ran.
+	Extraction_Refused,
 	Audio_Unreadable,
 	Audio_Malformed,
 	Audio_Not_As_Asked_For,
@@ -83,15 +87,18 @@ Fault :: enum u8 {
 }
 
 Error :: struct {
-	fault: Fault,
+	fault:     Fault,
 	// Only for `.Probe_Unreadable` and `.Audio_Malformed`.
-	probe: process.Probe_Fault,
-	riff:  Riff_Fault,
+	probe:     process.Probe_Fault,
+	riff:      Riff_Fault,
 	// Only for the two `_Not_Started` faults.
-	child: child.Error,
+	child:     child.Error,
 	// Only for `.Durations_Disagree`.
-	said:  i64,
-	got:   i64,
+	said:      i64,
+	got:       i64,
+	// Only for `.Probe_Refused` and `.Extraction_Refused`: the code the child
+	// itself chose to exit with.
+	exit_code: u32,
 }
 
 // See CLAUDE.md, Odin notes: enumerated arrays and switches.
@@ -109,11 +116,13 @@ FAULT := [Fault]string {
 	.Probe_Not_Started         = "ffprobe could not be started",
 	.Probe_Did_Not_Finish      = "ffprobe was stopped before it finished",
 	.Probe_Not_Stopped         = "ffprobe would not finish and would not stop",
+	.Probe_Refused             = "ffprobe refused the Recording",
 	.Probe_Answer_Unreadable   = "ffprobe left nothing readable behind",
 	.No_Audio_Stream           = "the Recording carries no audio stream at all",
 	.Extraction_Not_Started    = "ffmpeg could not be started",
 	.Extraction_Did_Not_Finish = "ffmpeg was stopped before it finished",
 	.Extraction_Not_Stopped    = "ffmpeg would not finish and would not stop",
+	.Extraction_Refused        = "ffmpeg refused the Recording",
 	.Audio_Unreadable          = "the audio ffmpeg was asked for is not there to read",
 	.Audio_Not_As_Asked_For    = "the audio ffmpeg produced is not the mono 16 kHz it was asked for",
 	.Durations_Disagree        = "the audio is not the length the Recording's container says it is",
@@ -193,6 +202,14 @@ error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> s
 			source,
 			fault_says(err.fault),
 			reason,
+			allocator = allocator,
+		)
+	case .Probe_Refused, .Extraction_Refused:
+		message = fmt.aprintf(
+			"%q: %s (exit code %d)",
+			source,
+			fault_says(err.fault),
+			err.exit_code,
 			allocator = allocator,
 		)
 	case .None,
