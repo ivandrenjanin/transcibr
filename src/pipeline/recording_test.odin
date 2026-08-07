@@ -504,6 +504,15 @@ cache_entry_names :: proc(t: ^testing.T, cache: string, allocator: mem.Allocator
 // Whether `want` appears anywhere in `names` -- factored out of
 // `sweep_leaves_only_the_sentinel_audio` below purely to keep that procedure
 // under CLAUDE.md rule F1's 70-line limit once the witness check grew it.
+// Shared by `sweep_leaves_only_the_witness`'s sentinel and neighbor writes --
+// factored out purely to keep that procedure under CLAUDE.md rule F1's
+// 70-line limit once the neighbor probe grew it.
+@(private)
+must_write_probe :: proc(t: ^testing.T, path: string, label: string) {
+	assert(len(path) > 0, "a probe write reached with no path")
+	testing.expectf(t, os.write_entire_file(path, []u8{0}) == nil, "could not write the %s", label)
+}
+
 @(private)
 @(require_results)
 names_contain :: proc(names: []string, want: string) -> bool {
@@ -519,28 +528,35 @@ names_contain :: proc(names: []string, want: string) -> bool {
 // finishes and refuses it (a real, non-empty output written, then a nonzero
 // exit -- the #186 review's shape) must leave zero NEW entries in the
 // scratch cache AND its own extracted `.wav` gone once `transcribe_and_place`
-// has settled it. Three things a bare "the exact output path is gone" check
+// has settled it. Four things a bare "the exact output path is gone" check
 // cannot see (round-1 adversarial review, mutations 5 and 2; round-2
-// adversarial review, mutations F and G): a renamed leftover (the sweep
-// built the wrong path and removed nothing real), an overreaching sweep (the
-// sweep removed a file it had no business touching), and a sweep that swept
-// nothing because the Engine never wrote into the cache at all (a broken
-// `-of` arg walk in the stand-in itself, or a broken `-of` flag name in
-// `engine_arguments`) -- the last of which the first two rounds' entry-set
-// check could not see either, because an Engine that writes nothing leaves
-// the cache holding only the sentinel exactly the way a correct sweep does.
-// `sentinel` stands in for the extracted `.wav` `audio.extract` would have
-// already written at this exact prefix by the time a real Batch reaches
-// transcription -- issue #251 measured it outliving the refusal it belongs
-// to, so it must now be gone alongside the Engine's own output. `body` also
-// writes a witness file at its own resolved prefix, a name neither sweep
-// ever touches -- the witness surviving in the cache is the positive proof
-// that the Engine really resolved that prefix INSIDE the cache and wrote
-// there, closing the third gap above. The stand-in Engine itself is written
-// OUTSIDE the cache so the entry count in the cache means only what the
-// sweeps -- and the witness write -- did to it. Shared by both tests below
-// so each stays under CLAUDE.md rule F1's 70-line limit; `tag` keeps their
-// scratch caches apart and `body` is each one's own stand-in shape.
+// adversarial review, mutations F and G; round-1-of-#254's-fix-round
+// adversarial review): a renamed leftover (the sweep built the wrong path
+// and removed nothing real), an overreaching sweep (the sweep removed a file
+// it had no business touching), a sweep that swept nothing because the
+// Engine never wrote into the cache at all (a broken `-of` arg walk in the
+// stand-in itself, or a broken `-of` flag name in `engine_arguments`) -- the
+// last of which the first two rounds' entry-set check could not see either,
+// because an Engine that writes nothing leaves the cache holding only the
+// sentinel exactly the way a correct sweep does -- and an overreaching wav
+// sweep specifically (the #254 fix-round finding: a directory-walk removing
+// every `.wav` in the cache passed the whole suite because the only wav in
+// the cache WAS the sweep's own target). `sentinel` stands in for the
+// extracted `.wav` `audio.extract` would have already written at this exact
+// prefix by the time a real Batch reaches transcription -- issue #251
+// measured it outliving the refusal it belongs to, so it must now be gone
+// alongside the Engine's own output. `neighbor` stands in for a SECOND
+// Recording's extracted wav sharing this same cache -- it must survive, and
+// is the positive proof the sweep is an exact-path `os.remove` and not a
+// directory walk. `body` also writes a witness file at its own resolved
+// prefix, a name neither sweep ever touches -- the witness surviving in the
+// cache is the positive proof that the Engine really resolved that prefix
+// INSIDE the cache and wrote there, closing the third gap above. The
+// stand-in Engine itself is written OUTSIDE the cache so the entry count in
+// the cache means only what the sweeps -- and the witness and neighbor
+// writes -- did to it. Shared by both tests below so each stays under
+// CLAUDE.md rule F1's 70-line limit; `tag` keeps their scratch caches apart
+// and `body` is each one's own stand-in shape.
 @(private)
 sweep_leaves_only_the_witness :: proc(t: ^testing.T, tag: string, body: string) {
 	group, ok := opened_group(t)
@@ -561,11 +577,11 @@ sweep_leaves_only_the_witness :: proc(t: ^testing.T, tag: string, body: string) 
 
 	sentinel := fmt.aprintf("%s\\%s.wav", cache, tag, allocator = context.allocator)
 	defer delete(sentinel, context.allocator)
-	testing.expect(
-		t,
-		os.write_entire_file(sentinel, []u8{0}) == nil,
-		"could not write the sentinel audio file",
-	)
+	must_write_probe(t, sentinel, "sentinel audio file")
+
+	neighbor := fmt.aprintf("%s\\%s-neighbor.wav", cache, tag, allocator = context.allocator)
+	defer delete(neighbor, context.allocator)
+	must_write_probe(t, neighbor, "neighbor audio file")
 
 	executable := refusal_stand_in(t, tools_dir, tag, body)
 	defer delete(executable, context.allocator)
@@ -601,8 +617,10 @@ sweep_leaves_only_the_witness :: proc(t: ^testing.T, tag: string, body: string) 
 	}
 	testing.expectf(
 		t,
-		len(names) == 1 && names_contain(names, fmt.tprintf("%s.witness", tag)),
-		"the cache held %v after %s, wanted only the Engine's witness -- the wav swept too",
+		len(names) == 2 &&
+		names_contain(names, fmt.tprintf("%s.witness", tag)) &&
+		names_contain(names, fmt.tprintf("%s-neighbor.wav", tag)),
+		"the cache held %v after %s, wanted only the Engine's witness and the neighbor's wav -- either the wav swept too or the sweep overreached onto the neighbor",
 		names,
 		tag,
 	)

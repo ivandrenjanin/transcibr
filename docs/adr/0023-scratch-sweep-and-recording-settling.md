@@ -313,3 +313,16 @@ question to the maintainer in its own PR rather than resolving it here, and does
 rewrite the rationale above: the body's words stand as originally written, now qualified by this
 addendum's measurement that nothing implements them. It does not touch a successful Recording's
 wav at all — that file stays exactly where the age/size sweep already governs it, unchanged.
+
+**A new residual, alongside "The two intermediates carry the process id; the finished audio does
+not" above.** That section's safety argument for leaving `<name>.wav` plain — "two workers that
+both produced it produced the same bytes" — covers concurrent WRITES only. This sweep adds an
+unconditional `os.remove` of that same plain name on a fault, and the write-side argument says
+nothing about a delete: if two transcibr processes are pointed at the same `--cache` over the same
+Recording (the ADR's own stated scenario for why the two intermediates needed a pid at all), one
+process's `.Refused` can remove `<cache>\<name>.wav` in the window after the other has extracted it
+but before its own Engine run has opened it, producing a spurious fault on a Recording that would
+otherwise have transcribed. `discard_recording_wav` carries no pid, freshness, or handle check
+against this. Issue #251 measured that this sweep has no ownership guard and records the gap here
+rather than inventing one: an ownership check is a real feature, not a fix, and is left to the
+maintainer alongside the reuse question above.
