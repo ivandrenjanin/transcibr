@@ -21,6 +21,7 @@ every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testin
 		err := Error {
 			fault = fault,
 			probe = .Duration_Unknown,
+			riff = .Truncated,
 			child = child.Error{fault = .Not_Started},
 			said = 48_000,
 			got = 12_000,
@@ -48,6 +49,16 @@ every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testin
 				t,
 				strings.contains(message, process.probe_fault_says(err.probe)),
 				"%v rendered <%s>, which does not carry its borrowed Probe_Fault sentence",
+				fault,
+				message,
+			)
+		}
+
+		if fault == .Audio_Malformed {
+			testing.expectf(
+				t,
+				strings.contains(message, riff_fault_says(err.riff)),
+				"%v rendered <%s>, which does not carry its borrowed Riff_Fault sentence",
 				fault,
 				message,
 			)
