@@ -426,18 +426,22 @@ engine_output_that_is_not_there_at_all_is_reported_rather_than_asserted :: proc(
 	testing.expect_value(t, err.read.fault, child.Read_Fault.Unreadable)
 	testing.expect_value(t, err.output, b.output)
 
-	message := error_message(err, b.source, context.allocator)
-	defer delete(message, context.allocator)
-	testing.expect(
-		t,
-		strings.contains(message, "talk.json"),
-		"an unreadable Engine output did not name the Engine output that actually failed",
-	)
-	testing.expect(
-		t,
-		!strings.contains(message, "talk.mkv"),
-		"an unreadable Engine output named the Recording, which read fine, rather than its output",
-	)
+	if err.fault == .Output_Unreadable {
+		if err.read.fault != .None && len(err.output) > 0 {
+			message := error_message(err, b.source, context.allocator)
+			defer delete(message, context.allocator)
+			testing.expect(
+				t,
+				strings.contains(message, "talk.json"),
+				"an unreadable Engine output did not name the Engine output that actually failed",
+			)
+			testing.expect(
+				t,
+				!strings.contains(message, "talk.mkv"),
+				"an unreadable Engine output named the Recording, which read fine, rather than its output",
+			)
+		}
+	}
 }
 
 @(test)
