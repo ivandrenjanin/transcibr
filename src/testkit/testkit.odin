@@ -34,6 +34,40 @@ import "core:strings"
 import "core:testing"
 import "core:time"
 
+// A caller's own os.remove of a file can report success while a real-time
+// scanner or the just-completed delete itself keeps the file's directory
+// entry visible for a few milliseconds longer -- so a directory whose
+// contents were all just removed can still fail a bare os.remove as
+// "not empty" or "in use" the instant it is asked. Retrying against that
+// window is the fix; retrying forever is not, so both figures are bounded
+// and named rather than tuned per call site. REMOVE_SETTLE_DELAY is chosen
+// above Windows' own timer quantization (about 15.6 ms) so a single retry
+// is not spent on a sleep that rounds up to nothing, and REMOVE_SETTLE_-
+// ATTEMPTS keeps the worst case (every attempt but the last failing) under
+// a fifth of a second -- long enough to outlast the window this package has
+// measured, short enough that a caller whose directory is genuinely stuck
+// still fails in test time rather than hanging the suite.
+REMOVE_SETTLE_ATTEMPTS :: 5
+REMOVE_SETTLE_DELAY :: 20 * time.Millisecond
+#assert(REMOVE_SETTLE_ATTEMPTS > 1)
+
+// Removes `path`, retrying up to REMOVE_SETTLE_ATTEMPTS times against the
+// pending-delete window above. Best effort, like every caller of it in this
+// package: a path still unremovable after the budget is left for the next
+// run to find, not fought over indefinitely.
+remove_settled :: proc(path: string) {
+	assert(len(path) > 0, "there is no path here to remove")
+
+	for attempt := 0; attempt < REMOVE_SETTLE_ATTEMPTS; attempt += 1 {
+		if os.remove(path) == nil {
+			return
+		}
+		if attempt < REMOVE_SETTLE_ATTEMPTS - 1 {
+			time.sleep(REMOVE_SETTLE_DELAY)
+		}
+	}
+}
+
 // Names a place under TEMP and does not create it -- a caller testing
 // directory creation needs a path nothing has made yet. `scope` keeps two
 // packages' caches apart and `tag` keeps two cases in one package apart. The
@@ -87,7 +121,10 @@ made_scratch_cache :: proc(
 // Best effort: a case that failed half-way should not fail a second time on
 // the way out. One level deep -- a cache holds files, never directories of
 // its own, so a stray nested directory here is a fixture that outgrew this
-// procedure and wants remove_tree instead.
+// procedure and wants remove_tree instead. Every removal, files and the
+// cache directory alike, goes through remove_settled rather than a bare
+// os.remove (issue #178): a directory whose files were just removed can
+// still answer "not empty" for a few milliseconds afterward.
 remove_cache :: proc(cache: string, allocator: mem.Allocator) {
 	assert(len(cache) > 0, "there is no scratch cache here to remove")
 	assert(allocator.procedure != nil, "a listing needs an allocator to be read into")
@@ -96,15 +133,15 @@ remove_cache :: proc(cache: string, allocator: mem.Allocator) {
 	if unreadable == nil {
 		defer os.file_info_slice_delete(listing, allocator)
 		for info in listing {
-			os.remove(info.fullpath)
+			remove_settled(info.fullpath)
 		}
 	}
-	os.remove(cache)
+	remove_settled(cache)
 }
 
 // As remove_cache, and recursive: a caller whose fixtures nest directories of
 // their own -- a walk over a tree, rather than a flat cache -- needs every
-// level taken, deepest first, or the top-level os.remove below is left
+// level taken, deepest first, or the top-level remove_settled below is left
 // removing a directory that is not actually empty. Best effort for the same
 // reason remove_cache is: a case that failed half-way should not fail a
 // second time on the way out.
@@ -120,10 +157,10 @@ remove_tree :: proc(path: string, allocator: mem.Allocator) {
 				remove_tree(info.fullpath, allocator)
 				continue
 			}
-			os.remove(info.fullpath)
+			remove_settled(info.fullpath)
 		}
 	}
-	os.remove(path)
+	remove_settled(path)
 }
 
 // Writes `content` to `directory` joined with `relative`, making whatever
