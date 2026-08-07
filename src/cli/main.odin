@@ -124,6 +124,13 @@ OPERATING_ERROR :: 1
 // with no usable %LOCALAPPDATA% still has to transcribe recordings).
 // `--crash-drill` installs a second time, over the directory it was given --
 // the second call just overwrites where the exception filter points.
+//
+// ADR-0039 D4 names "process start" as its own written event, distinct from
+// every CLI refusal, so the `crashlog.note` call for it sits here, ahead of
+// the per-command dispatch below, rather than inside `print_version` -- the
+// argv-less invocation is the only one that ever reaches `print_version`,
+// and every other command line (`--transcribe`, `--batch`, `--plan`,
+// `--doctor`, `--from-json`) needs the same event on its way through.
 main :: proc() {
 	args, acquired := process.process_argv(context.allocator)
 	assert(acquired, "the operating system did not hand this process its own command line")
@@ -135,8 +142,11 @@ main :: proc() {
 	}
 	context.assertion_failure_proc = crashlog.assertion_hook
 
+	line := version.banner(PROGRAM, version.CURRENT, context.allocator)
+	crashlog.note(.Info, "process start", line)
+
 	if len(args) == 1 {
-		print_version()
+		print_version(line)
 		return
 	}
 	if cliargs.asks_for_help(args[1:]) {
@@ -162,9 +172,7 @@ main :: proc() {
 }
 
 
-print_version :: proc() {
-	line := version.banner(PROGRAM, version.CURRENT, context.allocator)
-
+print_version :: proc(line: string) {
 	assert(strings.has_prefix(line, PROGRAM), "banner does not name this program")
 	assert(len(line) > len(PROGRAM), "banner carries no version after the program name")
 	assert(line[len(PROGRAM)] == ' ', "banner does not separate the program name from the version")
@@ -373,6 +381,10 @@ refuse :: proc(refusal: cliargs.Refusal) -> (ok: bool) {
 			built[i] = ints[i]
 		}
 	}
+
+	rendered := fmt.aprintf(r.complaint, ..built[:r.arg_count], allocator = context.allocator)
+	defer delete(rendered, context.allocator)
+	crashlog.note(.Warn, "refused", rendered)
 
 	fmt.eprintf(r.complaint, ..built[:r.arg_count])
 	fmt.eprint("\n\n")

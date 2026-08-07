@@ -51,6 +51,7 @@ import "transcibr:artifact"
 import "transcibr:audio"
 import "transcibr:child"
 import "transcibr:cliargs"
+import "transcibr:crashlog"
 import "transcibr:doctor"
 import "transcibr:pipeline"
 
@@ -142,6 +143,7 @@ run_doctor :: proc(arguments: []string) -> int {
 	engine_digest, engine_named := doctor_engine_identified(o.engine)
 	defer delete(string(engine_digest), context.allocator)
 	if !engine_named {
+		crashlog.note(.Warn, "doctor", "the Engine could not be verified")
 		return OPERATING_ERROR
 	}
 	pipeline.report_line(
@@ -150,7 +152,9 @@ run_doctor :: proc(arguments: []string) -> int {
 	)
 
 	if !doctor.report_ok(checks) {
+		crashlog.note(.Warn, "doctor", "one or more checks failed")
 		return OPERATING_ERROR
 	}
+	crashlog.note(.Info, "doctor", "all checks passed")
 	return 0
 }
