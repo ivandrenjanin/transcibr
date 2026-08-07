@@ -895,21 +895,75 @@ cache_directory_is_transcibr_shaped :: proc(listing: []os.File_Info) -> bool {
 
 // The four suffixes this package (`.wav`, `.probe`, `.part`) and the Engine
 // (`.json`, `process.ENGINE_OUTPUT_SUFFIX`) ever write into a scratch cache.
-// Narrow on purpose: a directory of a user's own recordings is realistically
-// video (`.mp4`, `.mov`, `.mkv`) rather than any of these four, with one
-// accepted exception recorded in ADR-0023's #256 addendum -- a folder of
-// nothing but raw `.wav` voice memos reads as transcibr's own too, and is
-// adopted the same way a real leftover cache is.
+// A `.wav` is required to also carry its own source key
+// (`wav_name_key_shaped`, issue #256's round-1 review): a suffix check alone
+// cannot tell a real transcibr wav from a user's own `<name>.wav` voice
+// memo or a podcast/DAW export's `<name>.wav` + `<name>.json` pair -- both
+// measured, both destroyed by the sweep, under the suffix-only shape this
+// replaces. Every wav `wav_cache_path` writes carries the key; nothing else
+// plausibly does.
 @(private)
 @(require_results)
 entry_name_transcibr_written :: proc(name: string) -> bool {
 	assert(len(name) > 0, "there is no cache entry name here to classify")
+	if strings.has_suffix(name, ".wav") {
+		return wav_name_key_shaped(name)
+	}
 	return(
-		strings.has_suffix(name, ".wav") ||
 		strings.has_suffix(name, ".json") ||
 		strings.has_suffix(name, ".probe") ||
 		strings.has_suffix(name, ".part") \
 	)
+}
+
+// True only for `<stem>.<key>.wav`, where `<key>` is exactly
+// `SOURCE_KEY_CHARS` lowercase hex characters -- the exact shape
+// `wav_cache_path` builds and `hex.encode` renders. A bare `<stem>.wav`, the
+// shape every wav this package wrote before issue #256's key existed and the
+// shape a user's own raw recording or a podcast/DAW export both take, does
+// not match; the migration cost is that a scratch cache is disposable and a
+// refused one names its own remedy, while the directories this refuses
+// instead of adopting are not.
+@(private)
+@(require_results)
+wav_name_key_shaped :: proc(name: string) -> bool {
+	assert(
+		strings.has_suffix(name, ".wav"),
+		"only a .wav-suffixed name reaches the key shape check",
+	)
+
+	trimmed := name[:len(name) - len(".wav")]
+	dot := strings.last_index(trimmed, ".")
+	if dot < 0 {
+		return false
+	}
+	stem := trimmed[:dot]
+	key := trimmed[dot + 1:]
+	if len(stem) == 0 {
+		return false
+	}
+	return is_source_key_shaped(key)
+}
+
+// `key` is exactly `SOURCE_KEY_CHARS` characters, every one a lowercase hex
+// digit -- what `hex.encode` in `source_key` above always renders, and
+// nothing a hand-typed or externally produced filename plausibly matches by
+// chance at this length (the same birthday-bound reasoning `SOURCE_KEY_BYTES`
+// already carries for collision, applied here to accidental resemblance).
+@(private)
+@(require_results)
+is_source_key_shaped :: proc(key: string) -> bool {
+	if len(key) != SOURCE_KEY_CHARS {
+		return false
+	}
+	for r in key {
+		is_digit := r >= '0' && r <= '9'
+		is_lower_hex_letter := r >= 'a' && r <= 'f'
+		if !is_digit && !is_lower_hex_letter {
+			return false
+		}
+	}
+	return true
 }
 
 @(private)

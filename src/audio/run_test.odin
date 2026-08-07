@@ -281,9 +281,9 @@ a_cache_directory_holding_files_transcibr_never_wrote_is_refused_rather_than_ado
 }
 
 // The migration story: a directory nothing marked, holding only the shapes
-// this package itself ever writes (`.wav`, `.json`, `.probe`, `.part`),
-// reads as transcibr's own -- yesterday's cache, from before this ticket --
-// and is adopted rather than refused.
+// this package itself ever writes -- a wav keyed exactly the way
+// `wav_cache_path` keys one, plus the Engine's own `.json`, `.probe` and
+// `.part` -- reads as transcibr's own and is adopted rather than refused.
 @(test)
 a_cache_directory_holding_only_transcibr_shaped_files_is_adopted_in_place :: proc(t: ^testing.T) {
 	cache := testkit.made_scratch_cache(t, "audio", "adopt", context.allocator)
@@ -293,7 +293,7 @@ a_cache_directory_holding_only_transcibr_shaped_files_is_adopted_in_place :: pro
 	old_wav := testkit.fixture_file(
 		t,
 		cache,
-		"lecture.wav",
+		"lecture.0123456789abcdef.wav",
 		"already extracted",
 		context.allocator,
 	)
@@ -308,6 +308,104 @@ a_cache_directory_holding_only_transcibr_shaped_files_is_adopted_in_place :: pro
 	marker := fmt.aprintf("%s\\%s", cache, CACHE_MARKER_NAME, allocator = context.allocator)
 	defer delete(marker, context.allocator)
 	testing.expect(t, os.exists(marker), "an adopted directory was not marked owned")
+}
+
+// #256's round-1 review, finding 1: a bare `<stem>.wav` (no source key) is
+// indistinguishable BY SUFFIX from a user's own raw recording -- a folder of
+// voice memos (`memo-2019-holiday.wav`, `memo-2020-grandma.wav`) matched the
+// old, suffix-only shape check and was adopted, then swept, destroying both.
+// `wav_cache_path` now always keys a wav this package writes to
+// `<stem>.<16-hex-char key>.wav`; a `.wav` with no such key is refused rather
+// than adopted, since nothing this package ever writes lacks one.
+@(test)
+a_cache_directory_holding_unkeyed_wav_files_is_refused_rather_than_adopted :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "audio", "memos", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	first := testkit.fixture_file(
+		t,
+		cache,
+		"memo-2019-holiday.wav",
+		"a voice memo, not a transcibr cache entry",
+		context.allocator,
+	)
+	defer delete(first, context.allocator)
+	second := testkit.fixture_file(
+		t,
+		cache,
+		"memo-2020-grandma.wav",
+		"another voice memo",
+		context.allocator,
+	)
+	defer delete(second, context.allocator)
+
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.Foreign_Directory)
+	testing.expect(t, os.exists(first), "a refused cache open still lost the user's own file")
+	testing.expect(t, os.exists(second), "a refused cache open still lost the user's own file")
+
+	marker := fmt.aprintf("%s\\%s", cache, CACHE_MARKER_NAME, allocator = context.allocator)
+	defer delete(marker, context.allocator)
+	testing.expect(t, !os.exists(marker), "a refused directory was marked owned anyway")
+}
+
+// #256's round-1 review, finding 1(b): an unkeyed wav paired with its own
+// `.json` -- a podcast/DAW export folder -- is the same shape as a real
+// transcibr cache by suffix alone. The key requirement above refuses it too,
+// because the pairing partner's `.wav` still carries no source key.
+@(test)
+a_cache_directory_pairing_an_unkeyed_wav_with_a_json_is_refused_rather_than_adopted :: proc(
+	t: ^testing.T,
+) {
+	cache := testkit.made_scratch_cache(t, "audio", "export", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	wav := testkit.fixture_file(
+		t,
+		cache,
+		"podcast-ep12.wav",
+		"not a transcibr wav",
+		context.allocator,
+	)
+	defer delete(wav, context.allocator)
+	json := testkit.fixture_file(t, cache, "podcast-ep12.json", "{}", context.allocator)
+	defer delete(json, context.allocator)
+
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.Foreign_Directory)
+	testing.expect(t, os.exists(wav), "a refused cache open still lost the user's own file")
+	testing.expect(t, os.exists(json), "a refused cache open still lost the user's own file")
+}
+
+// #256's round-1 review, finding 1(c): because an unkeyed-wav-only folder is
+// now refused on FIRST contact rather than adopted, no marker is ever
+// written for it -- the sticky, escalating failure the review measured (a
+// directory refused once, then silently accepted forever after a marker
+// landed) has no directory left to escalate from. Adding a video after the
+// first refusal is refused again, identically.
+@(test)
+a_directory_refused_for_unkeyed_wav_stays_refused_after_more_files_land :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "audio", "poison", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	memo := testkit.fixture_file(t, cache, "memo.wav", "a voice memo", context.allocator)
+	defer delete(memo, context.allocator)
+
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.Foreign_Directory)
+
+	clip := testkit.fixture_file(t, cache, "clip.mp4", "not audio", context.allocator)
+	defer delete(clip, context.allocator)
+
+	testing.expect_value(t, open_cache(cache, context.allocator), Cache_Fault.Foreign_Directory)
+
+	marker := fmt.aprintf("%s\\%s", cache, CACHE_MARKER_NAME, allocator = context.allocator)
+	defer delete(marker, context.allocator)
+	testing.expect(
+		t,
+		!os.exists(marker),
+		"a directory refused for unkeyed wav content was marked owned anyway",
+	)
 }
 
 // `sweep_cache` gates through `open_cache` unconditionally, on every call --

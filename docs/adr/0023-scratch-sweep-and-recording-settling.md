@@ -348,28 +348,34 @@ directory does not have to be re-derived on every later Batch:
 - **The marker is already there.** Trusted outright; nothing is listed.
 - **The directory is empty.** Trivially transcibr's to take; the marker is written.
 - **The directory holds only the four shapes this package and the Engine ever write into a
-  scratch cache** — `.wav`, `.json`, `.probe`, `.part` — **and nothing that is not a plain file.**
-  Adopted: the marker is written, and nothing already there is touched. This is the migration
-  story an ownership check has to answer honestly or not ship at all — a directory from before
-  this ticket, holding a Batch's worth of leftover audio and Engine output and nothing else, reads
-  as transcibr's own on first contact and is never stranded.
-- **Anything else** — a subdirectory, or a single file whose name is not one of those four shapes
-  — refuses with the new `Cache_Fault.Foreign_Directory`, naming the remedy ("point `--cache` at
-  an empty directory, or one transcibr already owns") through the same `cache_error_message`
-  channel every other `Cache_Fault` already renders through. No `src/cli` edit was needed:
-  `--transcribe`'s and `--batch`'s existing calls to `audio.cache_error_message` already render
-  whatever `Cache_Fault` `open_cache` hands back.
+  scratch cache** — a `.wav` carrying the source key `wav_cache_path` always writes onto it
+  (`<stem>.<16 lowercase hex chars>.wav`), `.json`, `.probe`, `.part` — **and nothing that is not a
+  plain file.** Adopted: the marker is written, and nothing already there is touched. This is the
+  migration story an ownership check has to answer honestly or not ship at all — a directory from
+  before this ticket, holding a Batch's worth of leftover, correctly-keyed audio and Engine output
+  and nothing else, reads as transcibr's own on first contact and is never stranded.
+- **Anything else** — a subdirectory, a single file whose name is not one of those four shapes, or
+  a `.wav` with no source key on it — refuses with the new `Cache_Fault.Foreign_Directory`, naming
+  the remedy ("point `--cache` at an empty directory, or one transcibr already owns") through the
+  same `cache_error_message` channel every other `Cache_Fault` already renders through. No
+  `src/cli` edit was needed: `--transcribe`'s and `--batch`'s existing calls to
+  `audio.cache_error_message` already render whatever `Cache_Fault` `open_cache` hands back.
 
-**The accepted residual, stated rather than solved.** The adoption rule reads a directory of
-nothing but `.wav` files as transcibr's own, and a folder of a user's own raw voice-memo
-recordings, saved as `.wav`, is genuinely indistinguishable from that by name alone — the one shape
-among the four that is not distinctively transcibr's (`.probe` and `.part` carry a process id no
-real filename collides with by chance; `.json` next to audio is still a narrow pairing). The
-disaster scenario item 1 measured — `--cache` pointed at a directory of the user's own Recordings —
-is a video library in practice (`.mp4`, `.mov`, `.mkv`), which this refuses correctly; a directory
-holding nothing but the user's own `.wav` recordings and refuses nothing at all is the one shape
-this check cannot tell apart from a real leftover cache, and is recorded here as the accepted
-trade rather than assumed away.
+**The residual this section originally accepted is closed, not merely stated, as of #256's round-1
+review.** The first cut of the adoption rule read a bare `<stem>.wav` (no key) as transcibr's own by
+suffix alone, and three probes proved that shape genuinely destructive: a folder of a user's own
+voice memos (`memo-2019-holiday.wav`, `memo-2020-grandma.wav`), and a podcast/DAW export
+(`podcast-ep12.wav` + `podcast-ep12.json`, the exact pairing this addendum had called "still a
+narrow pairing" — measured, it was adopted and swept whole) were both adopted and destroyed by
+`sweep_cache` under the suffix-only rule, and once a marker landed for a wav-only folder the
+adoption never re-checked, so a single video dropped in later was still silently swept. Requiring
+`wav_name_key_shaped` (`src/audio/run.odin`) — exactly `SOURCE_KEY_CHARS` lowercase hex characters
+after the last `.` before `.wav` — closes all three: nothing a user or another program plausibly
+writes carries that key, so none of the three probed directories are adopted, and none reach the
+marker at all. The cost is that a bare-`.wav`-only cache from strictly before this ticket's own wav
+key existed is refused once rather than silently adopted — acceptable because the scratch cache
+itself is disposable and the refusal names its own remedy (an empty or already-owned `--cache`),
+where the directories the old rule destroyed were not disposable at all.
 
 **Defense in depth, stated exactly as far as it goes.** `sweep_cache` gates through `open_cache` on
 every call, unconditionally — so a caller that reaches it directly is refused before anything is
