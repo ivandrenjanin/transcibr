@@ -14,12 +14,13 @@ if (!A || typeof A.issue !== 'number' || !A.branch) {
 }
 const issue = A.issue
 const branch = A.branch
-const repo = A.repo || 'C:\\projects\\transcibr'
-const wtBase = A.worktreeBase || (repo + '-worktrees')
-const wt = wtBase + '\\issue-' + issue
-const reviewWtBase = wtBase + '\\review-' + issue
-const reportDir = A.reportDir || '$env:TEMP\\transcibr-sdd'
-const reportFile = reportDir + '\\issue-' + issue + '-report.md'
+const toFwd = (p) => String(p).replace(/\\/g, '/')
+const repo = toFwd(A.repo || 'C:/projects/transcibr')
+const wtBase = toFwd(A.worktreeBase || (repo + '-worktrees'))
+const wt = wtBase + '/issue-' + issue
+const reviewWtBase = wtBase + '/review-' + issue
+const reportDir = toFwd(A.reportDir || '$env:TEMP/transcibr-sdd')
+const reportFile = reportDir + '/issue-' + issue + '-report.md'
 const refutedList = A.refutedListPath || null
 const implNotes = A.implNotes || '(none)'
 const reviewNotes = A.reviewNotes || '(none)'
