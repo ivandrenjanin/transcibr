@@ -37,8 +37,8 @@ main :: proc() {
 	defer delete(root, context.allocator)
 
 	violations := check_repository(root, context.allocator)
-	defer violations_destroy(violations, context.allocator)
 	defer delete(violations)
+	defer violations_destroy(violations, context.allocator)
 
 	report_violations(violations)
 	if len(violations) > 0 {
