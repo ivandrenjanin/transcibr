@@ -4,7 +4,9 @@ package testkit
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import win32 "core:sys/windows"
 import "core:testing"
+import "core:thread"
 import "core:time"
 
 @(test)
@@ -47,6 +49,84 @@ remove_cache_takes_the_directory_and_what_was_left_in_it :: proc(t: ^testing.T) 
 	remove_cache(cache, context.allocator)
 
 	testing.expect(t, !os.exists(cache), "remove_cache left the directory behind")
+}
+
+// Holds a second handle open on a file inside the cache with no
+// FILE_SHARE_DELETE, so Windows answers remove_cache's own DeleteFileW on it
+// with a transient sharing violation -- the same shape a real-time scanner
+// opening a just-written file produces, and the shape the #178 review's
+// "just-deleted files [...] still in Windows' pending-delete state" names
+// generically: the removal underneath remove_cache is not yet safe to run
+// the instant the file exists, and only becomes so once every other handle
+// on it lets go.
+@(private)
+Held_File_Job :: struct {
+	handle:  win32.HANDLE,
+	release: time.Duration,
+}
+
+@(private)
+release_held_file :: proc(data: rawptr) {
+	job := (^Held_File_Job)(data)
+	assert(job != nil, "a held-file release thread was started with no job to release")
+	time.sleep(job.release)
+	win32.CloseHandle(job.handle)
+}
+
+// A fix with no retry at all fails this every time -- the very first
+// DeleteFileW lands mid-lock -- and one bounded below RELEASE_DELAY fails it
+// just as reliably, since the lock has not yet lifted when the budget runs
+// out.
+@(test)
+remove_cache_survives_a_file_still_locked_when_removal_first_runs :: proc(t: ^testing.T) {
+	cache := made_scratch_cache(t, "testkit", "locked-file", context.allocator)
+	defer delete(cache, context.allocator)
+
+	held := fmt.aprintf("%s\\held.bin", cache, allocator = context.allocator)
+	defer delete(held, context.allocator)
+	if !testing.expect(
+		t,
+		os.write_entire_file(held, []u8{0}) == nil,
+		"could not write the file this case holds open",
+	) {
+		return
+	}
+
+	wide := win32.utf8_to_wstring(held, context.allocator)
+	defer delete(wide, context.allocator)
+	handle := win32.CreateFileW(
+		wide,
+		win32.GENERIC_READ,
+		win32.FILE_SHARE_READ,
+		nil,
+		win32.OPEN_EXISTING,
+		win32.FILE_ATTRIBUTE_NORMAL,
+		nil,
+	)
+	if !testing.expect(t, handle != win32.INVALID_HANDLE_VALUE, "could not open the held handle") {
+		return
+	}
+
+	RELEASE_DELAY :: 40 * time.Millisecond
+	job := Held_File_Job {
+		handle  = handle,
+		release = RELEASE_DELAY,
+	}
+	th := thread.create_and_start_with_data(&job, release_held_file)
+	if !testing.expect(t, th != nil, "a thread this case needed to start would not start") {
+		win32.CloseHandle(handle)
+		return
+	}
+
+	remove_cache(cache, context.allocator)
+	thread.destroy(th)
+
+	testing.expectf(
+		t,
+		!os.exists(cache),
+		"remove_cache gave up on %s before the held file's lock lifted",
+		cache,
+	)
 }
 
 @(test)
@@ -162,6 +242,55 @@ remove_tree_takes_a_tree_and_every_directory_nested_in_it :: proc(t: ^testing.T)
 	remove_tree(cache, context.allocator)
 
 	testing.expect(t, !os.exists(cache), "remove_tree left the tree it was given behind")
+}
+
+// remove_tree is planning's own consumer of the fix (#178 AC2): planning's
+// suites walk real directory trees rather than flat caches, so this proves
+// the same locked-file window closes through remove_tree's own final
+// remove_settled and not only remove_cache's.
+@(test)
+remove_tree_survives_a_nested_file_still_locked_when_removal_first_runs :: proc(t: ^testing.T) {
+	cache := made_scratch_cache(t, "testkit", "locked-tree", context.allocator)
+	defer delete(cache, context.allocator)
+
+	held := fixture_file(t, cache, "june\\held.bin", "x", context.allocator)
+	defer delete(held, context.allocator)
+
+	wide := win32.utf8_to_wstring(held, context.allocator)
+	defer delete(wide, context.allocator)
+	handle := win32.CreateFileW(
+		wide,
+		win32.GENERIC_READ,
+		win32.FILE_SHARE_READ,
+		nil,
+		win32.OPEN_EXISTING,
+		win32.FILE_ATTRIBUTE_NORMAL,
+		nil,
+	)
+	if !testing.expect(t, handle != win32.INVALID_HANDLE_VALUE, "could not open the held handle") {
+		return
+	}
+
+	RELEASE_DELAY :: 40 * time.Millisecond
+	job := Held_File_Job {
+		handle  = handle,
+		release = RELEASE_DELAY,
+	}
+	th := thread.create_and_start_with_data(&job, release_held_file)
+	if !testing.expect(t, th != nil, "a thread this case needed to start would not start") {
+		win32.CloseHandle(handle)
+		return
+	}
+
+	remove_tree(cache, context.allocator)
+	thread.destroy(th)
+
+	testing.expectf(
+		t,
+		!os.exists(cache),
+		"remove_tree gave up on %s before the held file's lock lifted",
+		cache,
+	)
 }
 
 @(test)
