@@ -4,37 +4,33 @@
 // out structurally -- has no compiler enforcement of its own. common_options_test.odin's
 // Tools-shape test cannot see a breach of it: audio.Tools is the
 // byte-identical two-string struct, so a Tools test built the forbidden way
-// still passes. This parses every file this package holds, with the same
-// core:odin/parser tools/policy itself reads Odin with, and checks each
-// file's own import list against the closure directly.
+// still passes. This walks src/cliargs on disk (the same way tools/policy's
+// own discover_odin_files walks the repository, rather than trusting a
+// hand-written file roster that a later migration PR could silently outrun),
+// parses every file it finds with the same core:odin/parser tools/policy
+// itself reads Odin with, and checks each file's own import list against the
+// closure directly -- both the transcibr:-prefixed spelling and the relative
+// spelling Odin equally accepts.
 package cliargs
 
 import "core:mem"
 import "core:odin/ast"
 import "core:odin/parser"
+import "core:os"
 import "core:strings"
 import "core:testing"
 
+// The directory this test walks, relative to the working directory every
+// `odin test` invocation in this repository runs from (the repository
+// root) -- the same assumption tools/policy's own `repo_root` makes for
+// `just check`.
 @(private)
-COMMON_OPTIONS_SOURCE :: #load("common_options.odin", string)
+CLIARGS_DIRECTORY :: "src/cliargs"
+
+// The fewest files this package can hold and still be the package this test
+// is written against: the ten this test file counted at round 1, plus itself.
 @(private)
-COMMON_OPTIONS_TEST_SOURCE :: #load("common_options_test.odin", string)
-@(private)
-PAIR_OFF_SOURCE :: #load("pair_off.odin", string)
-@(private)
-PAIR_OFF_TEST_SOURCE :: #load("pair_off_test.odin", string)
-@(private)
-PROFILE_SOURCE :: #load("profile.odin", string)
-@(private)
-PROFILE_TEST_SOURCE :: #load("profile_test.odin", string)
-@(private)
-REFUSAL_SOURCE :: #load("refusal.odin", string)
-@(private)
-REFUSAL_TEST_SOURCE :: #load("refusal_test.odin", string)
-@(private)
-REQUIRED_SOURCE :: #load("required.odin", string)
-@(private)
-REQUIRED_TEST_SOURCE :: #load("required_test.odin", string)
+MIN_PACKAGE_FILE_COUNT :: 11
 
 @(private)
 Package_File :: struct {
@@ -42,35 +38,123 @@ Package_File :: struct {
 	src:  string,
 }
 
+// Every `.odin` file src/cliargs holds right now, read off disk. Unlike a
+// hand-written roster, this cannot go stale: a file added to the directory
+// and never mentioned anywhere else is still walked here.
 @(private)
-PACKAGE_FILES :: []Package_File {
-	{"common_options.odin", COMMON_OPTIONS_SOURCE},
-	{"common_options_test.odin", COMMON_OPTIONS_TEST_SOURCE},
-	{"pair_off.odin", PAIR_OFF_SOURCE},
-	{"pair_off_test.odin", PAIR_OFF_TEST_SOURCE},
-	{"profile.odin", PROFILE_SOURCE},
-	{"profile_test.odin", PROFILE_TEST_SOURCE},
-	{"refusal.odin", REFUSAL_SOURCE},
-	{"refusal_test.odin", REFUSAL_TEST_SOURCE},
-	{"required.odin", REQUIRED_SOURCE},
-	{"required_test.odin", REQUIRED_TEST_SOURCE},
+@(require_results)
+package_files :: proc(allocator: mem.Allocator) -> (files: []Package_File, ok: bool) {
+	assert(allocator.procedure != nil, "the collected files outlive this call")
+
+	if !os.exists(CLIARGS_DIRECTORY) {
+		return nil, false
+	}
+
+	found := make([dynamic]Package_File, 0, allocator)
+	walker := os.walker_create(CLIARGS_DIRECTORY)
+	defer os.walker_destroy(&walker)
+
+	for entry in os.walker_walk(&walker) {
+		if entry.type != .Regular || !strings.has_suffix(entry.name, ".odin") {
+			continue
+		}
+		contents, read_error := os.read_entire_file(entry.fullpath, allocator)
+		if read_error != nil {
+			return found[:], false
+		}
+		append(
+			&found,
+			Package_File{name = strings.clone(entry.name, allocator), src = string(contents)},
+		)
+	}
+
+	if _, walk_error := os.walker_error(&walker); walk_error != nil {
+		return found[:], false
+	}
+	return found[:], true
 }
 
 // ADR-0038 bounds this package's transcibr:-internal closure to these two
-// packages; core: imports are the standard library and outside the closure
-// the ADR names.
+// packages, spelled the way `transcibr:` collection imports name them.
 @(private)
 ALLOWED_TRANSCIBR_IMPORT_PATHS :: []string{"transcibr:transcript", "transcibr:process"}
 
+// This package's own location in the collection: `transcibr:cliargs` is
+// `src/cliargs`, so a relative import's ".." climbs out of `cliargs` into
+// `src` exactly once before it names a sibling package.
+@(private)
+CLIARGS_PACKAGE_DIRECTORY_SEGMENTS :: []string{"src", "cliargs"}
+
+// `path` resolved to the `transcibr:` spelling it names, whatever spelling
+// it arrived in. core:/base:/vendor: paths are the standard library and
+// outside ADR-0038's closure claim entirely, so they resolve to themselves
+// unchecked. A `transcibr:` path resolves to itself. Anything else is an
+// Odin relative import -- resolved against this package's own directory --
+// because Odin accepts that spelling exactly as it accepts the collection
+// one, and a guard that only recognizes one spelling recognizes neither.
 @(private)
 @(require_results)
-is_allowed_import :: proc(path: string) -> bool {
+resolve_import_path :: proc(
+	path: string,
+	allocator: mem.Allocator,
+) -> (
+	resolved: string,
+	ok: bool,
+) {
+	assert(len(path) > 0, "asked to resolve a nameless import path")
+	assert(allocator.procedure != nil, "the resolved path outlives this call")
+
+	if strings.has_prefix(path, "core:") ||
+	   strings.has_prefix(path, "base:") ||
+	   strings.has_prefix(path, "vendor:") {
+		return strings.clone(path, allocator), true
+	}
+	if strings.has_prefix(path, "transcibr:") {
+		return strings.clone(path, allocator), true
+	}
+
+	stack := make([dynamic]string, allocator)
+	for segment in CLIARGS_PACKAGE_DIRECTORY_SEGMENTS {
+		append(&stack, segment)
+	}
+	segments := strings.split(path, "/", allocator)
+	for segment in segments {
+		switch segment {
+		case "", ".":
+		case "..":
+			if len(stack) == 0 {
+				return "", false
+			}
+			pop(&stack)
+		case:
+			append(&stack, segment)
+		}
+	}
+	if len(stack) < 2 || stack[0] != "src" {
+		return "", false
+	}
+
+	joined := strings.join(stack[1:], "/", allocator)
+	defer delete(joined, allocator)
+	return strings.concatenate([]string{"transcibr:", joined}, allocator), true
+}
+
+@(private)
+@(require_results)
+is_allowed_import :: proc(path: string, allocator: mem.Allocator) -> bool {
 	assert(len(path) > 0, "asked whether a nameless import path is allowed")
-	if !strings.has_prefix(path, "transcibr:") {
+
+	resolved, resolved_ok := resolve_import_path(path, allocator)
+	if !resolved_ok {
+		return false
+	}
+	defer delete(resolved, allocator)
+
+	if !strings.has_prefix(resolved, "transcibr:") {
 		return true
 	}
 	for allowed in ALLOWED_TRANSCIBR_IMPORT_PATHS {
-		if path == allowed {
+		if resolved == allowed {
 			return true
 		}
 	}
@@ -121,8 +205,18 @@ cliargs_never_imports_outside_its_transcript_and_process_closure :: proc(t: ^tes
 	defer mem.dynamic_arena_destroy(&arena)
 	allocator := mem.dynamic_arena_allocator(&arena)
 
+	files, files_ok := package_files(allocator)
+	if !testing.expect(t, files_ok, "could not walk src/cliargs to discover its own files") {
+		return
+	}
+	testing.expect(
+		t,
+		len(files) >= MIN_PACKAGE_FILE_COUNT,
+		"walked src/cliargs and found fewer .odin files than this package is known to hold",
+	)
+
 	checked := 0
-	for file in PACKAGE_FILES {
+	for file in files {
 		paths, ok := import_paths_of(file.name, file.src, allocator)
 		if !testing.expectf(t, ok, "could not parse %s for its imports", file.name) {
 			continue
@@ -131,7 +225,7 @@ cliargs_never_imports_outside_its_transcript_and_process_closure :: proc(t: ^tes
 			checked += 1
 			testing.expectf(
 				t,
-				is_allowed_import(path),
+				is_allowed_import(path, allocator),
 				"%s imports %q, outside ADR-0038's transcript/process closure",
 				file.name,
 				path,
