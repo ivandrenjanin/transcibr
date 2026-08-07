@@ -74,6 +74,13 @@ fault_says :: proc(fault: Fault) -> string {
 
 // The line outlives this procedure and may be read by a worker other than the one
 // that produced it (ADR-0010); free it with `delete` and the same allocator.
+//
+// The `.Bad_Command_Line` arm below relies on `err.build.fault != .None`:
+// `start` (child.odin:189) is the single place a `.Bad_Command_Line` Error is
+// built, and it is the only one, so that guarantee holds for every caller
+// here rather than being reproved per call site. Pinned, guard-side, by
+// child_test.odin's a_bad_command_line_is_reported_with_a_build_fault_a_caller_can_read
+// (issue #223).
 @(require_results)
 error_message :: proc(err: Error, allocator: mem.Allocator) -> string {
 	assert(err.fault != .None, "there is no message for a child that started")
@@ -97,6 +104,11 @@ error_message :: proc(err: Error, allocator: mem.Allocator) -> string {
 	return message
 }
 
+// The `.Bad_Command_Line` arm below relies on the same guarantee
+// `error_message` does: `start` (child.odin:189) is the single constructor of
+// a `.Bad_Command_Line` Error, so `err.build.fault != .None` holds for every
+// caller here. Pinned, guard-side, by child_test.odin's
+// a_bad_command_line_is_reported_with_a_build_fault_a_caller_can_read (issue #223).
 @(require_results)
 disposition_of :: proc(err: Error) -> process.Disposition {
 	assert(err.fault != .None, "a child that started has nothing to dispose of")
