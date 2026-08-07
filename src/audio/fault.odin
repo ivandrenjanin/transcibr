@@ -149,10 +149,10 @@ borrowed_message :: proc(err: Error, source: string, allocator: mem.Allocator) -
 		)
 	} else {
 		message = fmt.aprintf(
-			"%q: %s (%v)",
+			"%q: %s (%s)",
 			source,
 			fault_says(err.fault),
-			err.riff,
+			riff_fault_says(err.riff),
 			allocator = allocator,
 		)
 	}

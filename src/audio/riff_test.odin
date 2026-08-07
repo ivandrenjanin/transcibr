@@ -2,6 +2,8 @@
 package audio
 
 import "core:encoding/endian"
+import "core:fmt"
+import "core:strings"
 import "core:testing"
 
 // Not hand-built: what ffmpeg wrote from a 0.2-second clip under this package's
@@ -230,4 +232,43 @@ the_pad_byte_after_an_odd_length_chunk_is_stepped_over :: proc(t: ^testing.T) {
 	testing.expect_value(t, fault, Riff_Fault.None)
 
 	testing.expect_value(t, facts.data_bytes, 4)
+}
+
+// The #71/#131 pattern: every Riff_Fault renders words a user reads, never the
+// raw enum spelling `%v` would have produced. See CLAUDE.md, Odin notes:
+// enumerated arrays and switches. `.None` is skipped by name because it is the
+// deliberately empty row.
+@(test)
+every_riff_fault_renders_words_and_never_its_identifier :: proc(t: ^testing.T) {
+	for fault in Riff_Fault {
+		if fault == .None {
+			continue
+		}
+		if !testing.expectf(
+			t,
+			len(RIFF_FAULT[fault]) > 0,
+			"%v has an empty row in RIFF_FAULT",
+			fault,
+		) {
+			continue
+		}
+
+		says := riff_fault_says(fault)
+		testing.expectf(
+			t,
+			!strings.contains(says, "_"),
+			"%v rendered <%s>, which still carries an underscore",
+			fault,
+			says,
+		)
+
+		raw := fmt.tprintf("%v", fault)
+		testing.expectf(
+			t,
+			says != raw,
+			"%v rendered its own identifier verbatim: <%s>",
+			fault,
+			says,
+		)
+	}
 }
