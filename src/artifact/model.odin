@@ -249,6 +249,16 @@ digest_finished :: proc(
 	return
 }
 
+// `hex_digest` (below) twins `net.hex_digest` (src/net/verify.odin) --
+// recorded duplication per #188's maintainer ruling. Both import directions
+// were weighed, not just one: `net` must not import artifact's world; and
+// the reverse -- `net` exporting `hex_digest` for `artifact` to import --
+// has no cycle either, but was rejected because it makes model-identity
+// hashing, a leaf concern of this package's own domain, depend on `net`'s
+// whole download-integrity footprint (the network client, transfer, resume)
+// for one hash-finishing helper artifact does not otherwise need. A leaf package
+// for this ~12-line procedure buys net line growth and justfile/vet/test
+// ceremony for no shared consumer either way.
 #assert(DIGEST_CHARS == 2 * sha2.DIGEST_SIZE_256)
 
 @(private)

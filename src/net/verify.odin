@@ -161,6 +161,17 @@ head_matches :: proc(read: []u8, magic: []u8) -> bool {
 	return true
 }
 
+// `DIGEST_HEX_CHARS`/`hex_digest` (below) twin `artifact.model.hex_digest`,
+// reached through `artifact.digest_of_bounded` (src/artifact/model.odin) --
+// recorded duplication per #188's maintainer ruling. Both import directions
+// were weighed, not just one: this package must not import artifact's
+// world; and the reverse -- this package exporting `hex_digest` for
+// `artifact` to import -- has no cycle either, but was rejected because it
+// makes model-identity hashing, a leaf concern of artifact's own domain,
+// depend on this package's whole download-integrity footprint (the network
+// client, transfer, resume) for one hash-finishing helper artifact does not
+// otherwise need. A leaf package for this ~12-line procedure buys net line
+// growth and justfile/vet/test ceremony for no shared consumer either way.
 #assert(DIGEST_HEX_CHARS == 2 * sha2.DIGEST_SIZE_256)
 
 @(private)
