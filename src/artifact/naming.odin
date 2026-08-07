@@ -126,6 +126,12 @@ model_display_name :: proc(path: string) -> string {
 // call rather than a field `identify_model` returns. `filepath.stem` on
 // purpose, for the same reason `model_display_name` reads it that way: an
 // Engine binary is never the dotfile `stem_of`'s own comment warns about.
+//
+// An empty path IS a programmer error to assert on: `read_sidecar`
+// (src/artifact/sidecar.odin) refuses to hand back a record whose `engine`
+// field is empty, so nothing that reaches here -- fresh from `sidecar_of` or
+// read back off disk -- can carry one. The boundary is the read, not this
+// call.
 @(require_results)
 engine_display_name :: proc(path: string) -> string {
 	assert(len(path) > 0, "there is no Engine here to name")

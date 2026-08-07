@@ -413,6 +413,10 @@ key_named :: proc(name: string) -> (key: Key, known: bool) {
 // Every arm refuses rather than defaulting: a number this reader shrugged at
 // would be stored as zero, and a zero compares equal to another zero -- so a
 // corrupt Sidecar would report a Recording as still matching its settings.
+// `.Engine` refuses an empty value the same way: `unquoted` alone accepts an
+// empty quoted body, and nothing downstream re-checks the field before
+// `engine_display_name` and `complete`'s `assert_filled_in` both treat it as
+// present -- refusing it here, rather than there, is the A8 boundary.
 @(private)
 @(require_results)
 store :: proc(s: ^Sidecar, key: Key, value: string, allocator: mem.Allocator) -> (ok: bool) {
@@ -421,6 +425,7 @@ store :: proc(s: ^Sidecar, key: Key, value: string, allocator: mem.Allocator) ->
 	switch key {
 	case .Engine:
 		s.engine, ok = unquoted(value, allocator)
+		ok = ok && len(s.engine) > 0
 	case .Engine_Sha256:
 		s.engine_version, ok = unquoted(value, allocator)
 	case .Model:

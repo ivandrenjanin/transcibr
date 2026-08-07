@@ -12,7 +12,9 @@ package pipeline
 // output in place of a real Engine run.
 
 import "core:fmt"
+import "core:mem"
 import "core:os"
+import "core:strings"
 import "core:testing"
 import "transcibr:artifact"
 import "transcibr:audio"
@@ -584,4 +586,109 @@ a_merge_profile_change_alone_drives_the_real_re_render_and_placement :: proc(t: 
 			entry.outcome.decision,
 		)
 	}
+}
+
+// Rewrites the recorded `engine: "..."` line to `engine: ""`, standing in for
+// a hand-edited or third-party-written Sidecar -- `read_sidecar` accepts the
+// result (an empty quoted body is a valid value), which is exactly what lets
+// the corruption reach `re_rendered_and_placed` rather than being refused on
+// the way in.
+@(private)
+@(require_results)
+corrupted_engine_field :: proc(
+	text: string,
+	allocator: mem.Allocator,
+) -> (
+	corrupted: string,
+	ok: bool,
+) {
+	lines := strings.split(text, "\n", context.temp_allocator)
+	defer delete(lines, context.temp_allocator)
+
+	found := false
+	for &line in lines {
+		if strings.has_prefix(line, "engine: \"") {
+			line = "engine: \"\""
+			found = true
+			break
+		}
+	}
+	if !found {
+		return "", false
+	}
+	return strings.join(lines, "\n", allocator), true
+}
+
+// A hand-edited or third-party-written Sidecar can carry `engine: ""` --
+// `unquoted` alone accepts an empty quoted body as a valid value. Before
+// `artifact.read_sidecar` refused this case (src/artifact/sidecar.odin's
+// `store`), such a record still read back as `known`, and a later Re_Render
+// built off it crashed the whole runner reaching `engine_display_name`'s or
+// `complete`'s assert (issue #22's failure mode, no summary, no report).
+// This drives that exact path end to end: plant a real Sidecar, corrupt its
+// `engine:` line on disk, then plan and run again with the SAME settings.
+// `read_sidecar`'s refusal makes the record `Provenance_Unknown` rather than
+// `known`, so the Recording is transcribed again -- the disposition ADR-0003
+// already gives unknown provenance -- rather than crashing the Batch.
+@(test)
+a_recorded_sidecar_with_an_empty_engine_field_is_redone_rather_than_crashing :: proc(
+	t: ^testing.T,
+) {
+	tree := testkit.made_scratch_cache(t, "pipeline", "empty-engine", context.allocator)
+	defer testkit.remove_cache(tree, context.allocator)
+	defer delete(tree, context.allocator)
+
+	one := resume_recording(t, tree, "one")
+	defer delete(one, context.allocator)
+
+	settings := resume_settings()
+	defer delete(string(settings.model.digest), context.allocator)
+	o := resume_options(tree, settings)
+
+	first_inventory, first_plan := planned_resume(t, tree, settings)
+	defer planning.destroy_inventory(first_inventory, context.allocator)
+	defer planning.destroy_plan(first_plan, context.allocator)
+	first := run_recordings(first_plan, o, context.allocator, nil, FAKE_RESUME_STAGES)
+	testing.expect_value(t, first.transcribed, 1)
+	testing.expect_value(t, first.failed, 0)
+
+	names, named := artifact.names_of(one, context.allocator)
+	testing.expect(t, named, "a Recording this case just wrote was refused a name")
+	defer artifact.destroy_names(names, context.allocator)
+
+	original, unreadable := os.read_entire_file_from_path(names[.Sidecar], context.allocator)
+	testing.expectf(
+		t,
+		unreadable == nil,
+		"could not read the Sidecar this case just wrote: %s",
+		names[.Sidecar],
+	)
+	defer delete(original, context.allocator)
+
+	corrupted, corrupted_ok := corrupted_engine_field(string(original), context.allocator)
+	testing.expect(t, corrupted_ok, "the recorded Sidecar carried no `engine:` line to corrupt")
+	defer delete(corrupted, context.allocator)
+	testing.expectf(
+		t,
+		os.write_entire_file(names[.Sidecar], transmute([]u8)corrupted) == nil,
+		"could not corrupt %s",
+		names[.Sidecar],
+	)
+
+	second_inventory, second_plan := planned_resume(t, tree, settings)
+	defer planning.destroy_inventory(second_inventory, context.allocator)
+	defer planning.destroy_plan(second_plan, context.allocator)
+	for entry in second_plan.entries {
+		testing.expectf(
+			t,
+			entry.outcome.reason == .Provenance_Unknown,
+			"%s with a corrupted `engine:` field was not read as unrecorded: %v",
+			entry.found.source,
+			entry.outcome.reason,
+		)
+	}
+
+	second := run_recordings(second_plan, o, context.allocator, nil, FAKE_RESUME_STAGES)
+	testing.expect_value(t, second.transcribed, 1)
+	testing.expect_value(t, second.failed, 0)
 }

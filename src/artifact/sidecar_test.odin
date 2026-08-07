@@ -134,6 +134,32 @@ a_sidecar_that_is_not_what_transcibr_writes_is_unknown_rather_than_half_read :: 
 	}
 }
 
+// A hand-edited or third-party-written Sidecar can carry `engine: ""` --
+// `unquoted` treats an empty quoted body as a valid value on its own. Without
+// this check the record reads back with `s.engine == ""`, which nothing
+// downstream re-validates: `complete`'s own `assert_filled_in` and
+// `engine_display_name`'s `assert(len(path) > 0, ...)` both treat that as a
+// programmer error rather than the corrupt-input case it is (A8). Refusing
+// it here, the same way an unreadable number is refused, is the boundary fix.
+@(test)
+a_sidecar_naming_no_engine_is_unknown_rather_than_read_with_an_empty_one :: proc(t: ^testing.T) {
+	golden := GOLDEN_SIDECAR
+	corrupted := strings.concatenate(
+		{
+			golden[:strings.index(golden, "engine: \"")],
+			"engine: \"\"\n",
+			golden[strings.index(golden, "engine_sha256"):],
+		},
+		context.temp_allocator,
+	)
+
+	read, ok := read_sidecar(corrupted, context.allocator)
+	defer destroy_sidecar(read, context.allocator)
+
+	testing.expect(t, !ok, "a Sidecar naming no Engine was read rather than refused")
+	testing.expect(t, len(read.model) == 0, "a refused Sidecar was half read")
+}
+
 @(test)
 a_sidecar_whose_numbers_are_not_numbers_is_unknown :: proc(t: ^testing.T) {
 	golden := GOLDEN_SIDECAR
