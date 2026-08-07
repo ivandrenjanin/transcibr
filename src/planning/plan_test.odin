@@ -8,10 +8,15 @@ import "transcibr:artifact"
 A_DIGEST :: artifact.Digest("a1b2c3d4e5f60718293a4b5c6d7e8f901a2b3c4d5e6f708192a3b4c5d6e7f801")
 
 @(private)
+AN_ENGINE_DIGEST :: artifact.Digest(
+	"f1e2d3c4b5a697086f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0918",
+)
+
+@(private)
 @(require_results)
 settings :: proc() -> Settings {
 	return Settings {
-		engine_version = "whisper.cpp 1.9.1",
+		engine_version = AN_ENGINE_DIGEST,
 		model = artifact.Model {
 			path = "C:\\models\\ggml-large-v3-turbo.bin",
 			digest = A_DIGEST,
@@ -28,9 +33,8 @@ settings :: proc() -> Settings {
 @(require_results)
 matching_sidecar :: proc(found: Found) -> artifact.Sidecar {
 	s := settings()
-	named, _ := s.engine_version.?
 	return artifact.sidecar_of(
-		named,
+		string(s.engine_version),
 		s.model,
 		s.beam,
 		s.merge_profile,
@@ -52,9 +56,8 @@ matching_sidecar :: proc(found: Found) -> artifact.Sidecar {
 @(require_results)
 zero_duration_sidecar :: proc(found: Found) -> artifact.Sidecar {
 	s := settings()
-	named, _ := s.engine_version.?
 	return artifact.sidecar_of(
-		named,
+		string(s.engine_version),
 		s.model,
 		s.beam,
 		s.merge_profile,
@@ -365,32 +368,9 @@ a_transcript_whose_recorded_settings_differ_is_done_again :: proc(t: ^testing.T)
 	}
 }
 
-// Criterion two, on the command line a user actually types. `--engine-version`
-// is optional, and a Batch that does not name its Engine cannot say the Engine
-// changed -- otherwise a finished corpus is re-transcribed from the top by
-// anybody who did not re-type the version string byte for byte.
-@(test)
-a_batch_that_names_no_engine_never_reports_the_engine_as_changed :: proc(t: ^testing.T) {
-	found := a_recording()
-	found.transcript = .Transcibrs
-	found.engine_output = true
-	found.recorded = matching_sidecar(found)
-
-	unnamed := settings()
-	unnamed.engine_version = nil
-
-	expect_decided(
-		t,
-		"a finished Recording planned without naming the Engine",
-		decide(found, unnamed),
-		.Skip,
-		.Up_To_Date,
-	)
-}
-
-// The other direction, which is NOT symmetric. A record that names no Engine is
-// unknown provenance, and ADR-0003's disposition for unknown is re-do it -- so a
-// Batch that does name one still re-transcribes what was recorded without.
+// A record that names no Engine is unknown provenance, and ADR-0003's
+// disposition for unknown is re-do it -- so a Batch, which always names one
+// now (issue #50), still re-transcribes what was recorded without.
 @(test)
 a_transcript_recorded_without_an_engine_is_done_again_by_a_batch_that_names_one :: proc(
 	t: ^testing.T,
@@ -422,36 +402,6 @@ a_transcript_whose_recorded_settings_still_match_is_skipped :: proc(t: ^testing.
 	found.recorded = matching_sidecar(found)
 
 	outcome := decide(found, settings())
-
-	testing.expect_value(t, outcome.decision, Decision.Skip)
-	testing.expect_value(t, outcome.reason, Reason.Up_To_Date)
-}
-
-// Issue #70: a flagless `--batch` must decide exactly what a flagless
-// `--plan` decides for the identical corpus. `src/cli` used to default
-// `Batch_Options.engine_version` to `transcript.UNKNOWN` before this
-// package ever saw it, so the implicit string-to-`Maybe(string)` conversion
-// at its one call site made a Batch that named nothing read as a Batch that
-// named the literal word "unknown" -- disagreeing with `--plan`, which left
-// `engine_version` nil. `Batch_Options.engine_version` is `Maybe(string)`
-// now, forwarded to this same `decide` call unchanged, so this pins the nil
-// case against a real recorded version the way `--plan` already exercised
-// it.
-@(test)
-a_recording_with_a_real_engine_version_is_skipped_when_the_batch_names_none :: proc(
-	t: ^testing.T,
-) {
-	found := a_recording()
-	found.transcript = .Transcibrs
-	found.engine_output = true
-	recorded := matching_sidecar(found)
-	recorded.engine_version = "whisper.cpp 1.9.9"
-	found.recorded = recorded
-
-	unnamed := settings()
-	unnamed.engine_version = nil
-
-	outcome := decide(found, unnamed)
 
 	testing.expect_value(t, outcome.decision, Decision.Skip)
 	testing.expect_value(t, outcome.reason, Reason.Up_To_Date)
