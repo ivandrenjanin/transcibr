@@ -8,7 +8,6 @@ import win32 "core:sys/windows"
 import "core:testing"
 import "core:time"
 import "transcibr:child"
-import "transcibr:process"
 import "transcibr:testkit"
 
 @(private)
@@ -1084,10 +1083,7 @@ stub_unstoppable_probe_run :: proc(
 	reason: child.Stop_Reason,
 	err: child.Error,
 ) {
-	return .Unstoppable, .Bound_Expired, child.Error {
-		fault = .Bad_Command_Line,
-		build = process.Build_Error{fault = .Empty_Executable},
-	}
+	return .Unstoppable, .Bound_Expired, child.Error{}
 }
 
 @(test)

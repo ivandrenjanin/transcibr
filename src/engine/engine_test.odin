@@ -224,14 +224,15 @@ an_engine_that_exits_zero_and_produces_nothing_is_a_failure :: proc(t: ^testing.
 	defer delete(produced.output, context.allocator)
 
 	testing.expect_value(t, err.fault, Fault.No_Output)
-
-	message := error_message(err, "C:\\recordings\\lecture.mkv", context.allocator)
-	defer delete(message, context.allocator)
-	testing.expect(
-		t,
-		strings.contains(message, "exited cleanly"),
-		"the No_Output message no longer names the exit it now always implies (issue #186 made .Refused, not .No_Output, the fault for a nonzero exit)",
-	)
+	if err.fault == .No_Output {
+		message := error_message(err, "C:\\recordings\\lecture.mkv", context.allocator)
+		defer delete(message, context.allocator)
+		testing.expect(
+			t,
+			strings.contains(message, "exited cleanly"),
+			"the No_Output message no longer names the exit it now always implies (issue #186 made .Refused, not .No_Output, the fault for a nonzero exit)",
+		)
+	}
 }
 
 // `refused(ending)` runs before `landed_bounded` in `transcribe`, so an
