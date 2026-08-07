@@ -1055,10 +1055,11 @@ an_extraction_whose_ffmpeg_exits_nonzero_is_refused_with_its_exit_code :: proc(t
 
 // `probe_using`'s own `.Unstoppable` arm returns before it ever reaches
 // `remove_answer_if_settled` -- an ffprobe run that could not be stopped may
-// still be running and may still hold `answer` open, exactly as `child.Run`'s
-// own doc comment (`src\child\run.odin`) states, so the answer file is
-// leaked deliberately, the same way `child.Read_Job`'s own doc comment
-// states its worker leaks for the identical reason. Nothing before this test
+// still be running and may still hold `answer` open, exactly as the member
+// comment on `child.Run.Unstoppable` (`src\child\run.odin`) states, so the
+// answer file is leaked deliberately, the same way `child.read_bounded`'s
+// own doc comment (`src\child\read.odin`) states its worker leaks for the
+// identical reason. Nothing before this test
 // ever drove `probe_using` onto its own `.Unstoppable` branch, so a mutation
 // adding an unconditional `remove(answer)` there left the whole suite green
 // (issue #150, the #125 recipe applied to the one arm its own round-4 review
@@ -1066,8 +1067,8 @@ an_extraction_whose_ffmpeg_exits_nonzero_is_refused_with_its_exit_code :: proc(t
 // (`child.Run.Unstoppable`, with no real unstoppable ffprobe constructible
 // on Windows), while `probe_using` itself still supplies the DECISION -- the
 // same way `stub_stopped_probe_run` above does for `.Stopped`, and
-// `src\doctor\model_probe.odin`'s `stub_unstoppable_probe` does for its own
-// otherwise-unconstructible ending.
+// `src\doctor\model_probe_test.odin`'s `stub_unstoppable_probe` does for its
+// own otherwise-unconstructible ending.
 @(private)
 @(require_results)
 stub_unstoppable_probe_run :: proc(
