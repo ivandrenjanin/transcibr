@@ -43,6 +43,17 @@ record_progress :: proc(progress: Download_Progress, user: rawptr) {
 	append(&collector.ticks, progress)
 }
 
+// write_body's buffer is VERIFY_READ_BYTES_NETWORK (64 KiB), and
+// fixture_read fills a whole buffer per call -- a fixture at or under that
+// size reaches exactly one tick regardless of whether the callback lives
+// inside or outside the read loop, which is why round 3's coverage of this
+// guard was reviewed and found not to pin "after every chunk" (round 5
+// review finding 1). Three chunks (two full 64 KiB buffers plus a
+// remainder) forces three ticks, and the count plus the monotonically
+// increasing running total is what a once-at-the-end report cannot satisfy.
+@(private = "file")
+PROGRESS_FIXTURE_BYTES :: 2 * VERIFY_READ_BYTES_NETWORK + 100
+
 @(test)
 write_body_reports_progress_after_every_chunk_received :: proc(t: ^testing.T) {
 	cache := testkit.made_scratch_cache(t, "net", "transfer-progress", context.allocator)
@@ -52,25 +63,37 @@ write_body_reports_progress_after_every_chunk_received :: proc(t: ^testing.T) {
 	part := fmt.aprintf("%s\\progress.part", cache, allocator = context.allocator)
 	defer delete(part, context.allocator)
 
+	data := make([]u8, PROGRESS_FIXTURE_BYTES, context.allocator)
+	defer delete(data, context.allocator)
 	body := Fixture_Body {
-		data = []u8{1, 2, 3, 4, 5},
+		data = data,
 	}
 	source := Body_Source {
 		read = fixture_read,
 		user = &body,
 	}
 	spec := Download_Spec {
-		expected_bytes = 5,
+		expected_bytes = i64(PROGRESS_FIXTURE_BYTES),
 	}
 	collector: Progress_Collector
 	defer delete(collector.ticks)
 	result := receive_and_write(200, 0, spec, part, source, record_progress, &collector)
 
 	testing.expect_value(t, result.fault, Download_Fault.None)
-	testing.expect(t, len(collector.ticks) > 0, "a completed transfer must have reported progress")
+	testing.expect_value(t, len(collector.ticks), 3)
+	testing.expect_value(t, collector.ticks[0].bytes_received, i64(VERIFY_READ_BYTES_NETWORK))
+	testing.expect_value(t, collector.ticks[1].bytes_received, i64(2 * VERIFY_READ_BYTES_NETWORK))
+	testing.expect_value(t, collector.ticks[2].bytes_received, i64(PROGRESS_FIXTURE_BYTES))
+	for i := 1; i < len(collector.ticks); i += 1 {
+		testing.expect(
+			t,
+			collector.ticks[i].bytes_received > collector.ticks[i - 1].bytes_received,
+			"progress must increase monotonically, one tick per chunk",
+		)
+	}
 	last := collector.ticks[len(collector.ticks) - 1]
-	testing.expect_value(t, last.bytes_received, i64(5))
-	testing.expect_value(t, last.total_bytes, i64(5))
+	testing.expect_value(t, last.bytes_received, i64(PROGRESS_FIXTURE_BYTES))
+	testing.expect_value(t, last.total_bytes, i64(PROGRESS_FIXTURE_BYTES))
 }
 
 @(test)

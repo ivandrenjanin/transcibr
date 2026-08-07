@@ -123,6 +123,64 @@ a_file_the_right_size_and_magic_but_wrong_hash_fails_and_reports_both_hashes :: 
 	testing.expect_value(t, len(result.actual_sha256), len(ABCD_SHA256))
 }
 
+// hash_and_check_magic's read loop is only exercised by files at or under
+// VERIFY_READ_BYTES (64 KiB) elsewhere in this suite, so the loop that
+// makes the hash streaming -- rather than the magic check that only needs
+// to run once -- has no committed coverage of a second iteration (round 5
+// review finding 2). This fixture is two chunks: chunk one is VERIFY_READ_BYTES
+// bytes starting with the one-byte magic ('M') and otherwise 'A'; chunk two
+// is LARGE_FIXTURE_TAIL_BYTES bytes starting with 'Z' -- a byte that does
+// not match the magic. A build that only checks the magic once (HEAD)
+// verifies; a build that re-checks it at the head of every chunk reports
+// Magic_Mismatch on chunk two.
+LARGE_FIXTURE_TAIL_BYTES :: 5000
+LARGE_FIXTURE_TOTAL_BYTES :: VERIFY_READ_BYTES + LARGE_FIXTURE_TAIL_BYTES
+
+// Published independently of this repository: SHA-256 of the exact byte
+// pattern `large_fixture` below, computed with Windows' own
+// `Get-FileHash -Algorithm SHA256` over a file written with that pattern,
+// not derived from the code under test.
+LARGE_FIXTURE_SHA256 :: "9bc85272af02121343fc7bc2a995d9d47a3ec8d7b4f2a22d5631aed0d2f4e499"
+
+@(private)
+@(require_results)
+large_fixture :: proc(allocator: mem.Allocator) -> []u8 {
+	data := make([]u8, LARGE_FIXTURE_TOTAL_BYTES, allocator)
+	for i := 0; i < len(data); i += 1 {
+		data[i] = 'A'
+	}
+	data[0] = 'M'
+	data[VERIFY_READ_BYTES] = 'Z'
+	return data
+}
+
+@(test)
+a_file_spanning_more_than_one_read_chunk_verifies_and_the_magic_is_checked_only_once :: proc(
+	t: ^testing.T,
+) {
+	cache := testkit.made_scratch_cache(t, "net", "verify-multi-chunk", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	data := large_fixture(context.allocator)
+	defer delete(data, context.allocator)
+	path := written_fixture(t, cache, "large.bin", data, context.allocator)
+	defer delete(path, context.allocator)
+
+	spec := Download_Spec {
+		url             = "https://example.invalid/large.bin",
+		display_name    = "large",
+		expected_bytes  = i64(LARGE_FIXTURE_TOTAL_BYTES),
+		expected_sha256 = LARGE_FIXTURE_SHA256,
+		magic           = []u8{'M'},
+	}
+	result := verify_download(path, spec, context.allocator)
+	defer delete(result.actual_sha256, context.allocator)
+
+	testing.expect_value(t, result.fault, Verify_Fault.None)
+	testing.expect_value(t, result.actual_bytes, i64(LARGE_FIXTURE_TOTAL_BYTES))
+}
+
 @(private)
 @(require_results)
 written_fixture :: proc(
