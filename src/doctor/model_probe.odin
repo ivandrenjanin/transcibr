@@ -206,7 +206,7 @@ model_load_check_using :: proc(
 
 // Issue #208: the `.Not_Started` branch below used to call
 // `child.error_message(probe.child, allocator)` unconditionally, reaching
-// that procedure's own `assert(err.fault != .None, ...)` (child.odin:79) for
+// that procedure's own `assert(err.fault != .None, ...)` (child.odin:86) for
 // any fault-free `.Not_Started` Probe -- an assert reachable from this
 // doctor fault-report path, guarded only by `run_bounded`'s unrecorded
 // guarantee that a `.Not_Started` run always carries a fault

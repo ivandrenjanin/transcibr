@@ -192,7 +192,7 @@ a_command_line_that_cannot_be_spelled_is_refused_before_anything_starts :: proc(
 }
 
 // Issue #223: `start` has exactly one return site for `.Bad_Command_Line`
-// (child.odin:189), so this is the guard-side half of the cross-package A4
+// (child.odin:201), so this is the guard-side half of the cross-package A4
 // pairing `error_message` and `disposition_of` rely on: both read `err.build`
 // on the `.Bad_Command_Line` arm believing it carries a real fault, because
 // `process.error_message` and `process.disposition_of` each assert
@@ -211,15 +211,18 @@ a_bad_command_line_is_reported_with_a_build_fault_a_caller_can_read :: proc(t: ^
 	c, err := start(&group, "", {}, context.allocator)
 	defer close(&c)
 	testing.expect_value(t, err.fault, Fault.Bad_Command_Line)
-	testing.expect(
-		t,
-		err.build.fault != .None,
-		"a Bad_Command_Line error carried no build fault, which error_message and disposition_of rely on",
-	)
-
-	message := error_message(err, context.allocator)
-	defer delete(message, context.allocator)
-	testing.expect(t, len(message) > 0, "a refusal rendered as nothing at all")
+	if err.fault == .Bad_Command_Line {
+		testing.expect(
+			t,
+			err.build.fault != .None,
+			"a Bad_Command_Line error carried no build fault, which error_message and disposition_of rely on",
+		)
+		if err.build.fault != .None {
+			message := error_message(err, context.allocator)
+			defer delete(message, context.allocator)
+			testing.expect(t, len(message) > 0, "a refusal rendered as nothing at all")
+		}
+	}
 }
 
 // The emptiness is read off the table rather than left to fault_says's own

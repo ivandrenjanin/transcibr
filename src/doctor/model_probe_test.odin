@@ -38,7 +38,7 @@ an_overflowed_probe_is_refused_by_the_model_verdict_rather_than_judged_on_its_ca
 
 // Issue #208: `model_load_verdict`'s `.Not_Started` branch used to call
 // `child.error_message` unconditionally, reaching its own
-// `assert(err.fault != .None, ...)` (child.odin:79) whenever a `.Not_Started`
+// `assert(err.fault != .None, ...)` (child.odin:86) whenever a `.Not_Started`
 // probe's child carried no fault -- reachable only because nothing in this
 // package checked the fault first before calling it. `run_bounded` never
 // actually returns `.Not_Started` with `err.fault == .None`

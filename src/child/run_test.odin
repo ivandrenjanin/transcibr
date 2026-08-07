@@ -72,7 +72,7 @@ a_child_that_outlives_its_bound_is_stopped_rather_than_waited_for :: proc(t: ^te
 // (the `refusal.fault != .None` branch above), so this is also the
 // guard-side half of the cross-package A4 pairing `src/doctor`'s
 // `model_load_verdict` relies on: `child.error_message` asserts
-// `err.fault != .None` (child.odin:79), and every `.Not_Started` a doctor
+// `err.fault != .None` (child.odin:86), and every `.Not_Started` a doctor
 // probe can observe traces back to this exact call. The general
 // `err.fault != .None` check below states that guarantee as the implication
 // it is, rather than only the one concrete fault the value-equality check
