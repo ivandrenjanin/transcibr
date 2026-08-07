@@ -123,7 +123,7 @@ test:
 # `just test-one <pkg> <bogus-name>` by hand.
 test-one pkg name:
 	if not exist build\odin-test mkdir build\odin-test
-	{{ odin }} test {{ if pkg == "policy" { "tools/policy" } else { "src/" + pkg } }} {{ collection }} -out:build/odin-test/focus.exe -define:ODIN_TEST_NAMES={{ pkg }}.{{ name }} {{ memory }} {{ vet }} > build\odin-test\focus.out 2>&1 && (type build\odin-test\focus.out & findstr /c:"No tests to run." build\odin-test\focus.out >nul && (echo TEST-ONE: "{{ pkg }}.{{ name }}" matched no test procedure -- 0 tests collected & exit /b 1) || exit /b 0) || (type build\odin-test\focus.out & exit /b 1)
+	{{ odin }} test {{ if pkg == "policy" { "tools/policy" } else { "src/" + pkg } }} {{ collection }} -out:build/odin-test/focus.exe -define:ODIN_TEST_NAMES={{ pkg }}.{{ name }} {{ memory }} {{ vet }} > build\odin-test\focus.out 2>&1 && (type build\odin-test\focus.out & findstr /b /c:"No tests to run." build\odin-test\focus.out >nul && (echo TEST-ONE: "{{ pkg }}.{{ name }}" matched no test procedure -- 0 tests collected & exit /b 1) || exit /b 0) || (type build\odin-test\focus.out & exit /b 1)
 
 # The #97-class detector (issue #104): src/child under ODIN_TEST_THREADS=1,
 # the one setting that surfaces a defect the default 12-thread sweep cannot.
