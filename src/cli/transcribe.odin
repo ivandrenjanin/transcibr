@@ -2,10 +2,12 @@
 package main
 
 import "core:fmt"
+import "core:os"
 import "core:strings"
 import "transcibr:artifact"
 import "transcibr:audio"
 import "transcibr:child"
+import "transcibr:cliargs"
 import "transcibr:engine"
 import "transcibr:pipeline"
 import "transcibr:process"
@@ -35,10 +37,22 @@ TRANSCRIBE :: "--transcribe"
 transcribe_one :: proc(arguments: []string) -> int {
 	assert(len(arguments) > 0, "no arguments at all is the version banner, settled before this")
 
-	o, ok := read_transcribe_options(arguments)
-	if !ok {
+	parsed, parsed_ok, refusal := cliargs.read_transcribe_options(arguments)
+	if !parsed_ok {
+		_ = refuse_cliargs(refusal)
 		return USAGE_ERROR
 	}
+
+	o := Transcribe_Options {
+		source = parsed.source,
+		model = parsed.model,
+		engine = parsed.engine,
+		cache = parsed.cache,
+		prompt = parsed.prompt,
+		profile = parsed.profile,
+		tools = audio.Tools{ffmpeg = parsed.tools.ffmpeg, ffprobe = parsed.tools.ffprobe},
+	}
+	audio.defaulted_tools(&o.tools)
 
 	group, opened := job_object_opened()
 	defer child.job_object_close(&group)
@@ -129,97 +143,55 @@ show :: proc(shown: process.Progress, user: rawptr) {
 	)
 }
 
-// `audio.defaulted_tools` runs AFTER the loop below, not before it:
-// `--ffmpeg ""` is an ordinary shell invocation with an unset variable in it,
-// and a default set only before the loop is overwritten by the empty value.
-// There is no `--engine-version` to default any more: the Engine is
-// identified from `--engine-exe` by its own SHA-256, exactly like the Model
-// (ADR-0027's reopening clause, closed by issue #50), so nothing here is
-// ever absent for `pipeline.settled_engine_version` to have settled.
+// The Refusal-consuming sibling ADR-0038 calls for (its refuse shape
+// paragraph): fed a Refusal by value instead of a pre-built format string
+// and inline `any` arguments, it feeds the identical `fmt.eprintf` path
+// `refuse` below still uses for every other command's own reader, through
+// two fixed backing arrays sized to `cliargs.MAX_REFUSAL_ARGS` and never an
+// allocation -- `refuse`'s own arity stays untouched, and its 22 call sites
+// stay exactly as they are (only `--transcribe`'s path is migrated here).
 @(private)
 @(require_results)
-read_transcribe_options :: proc(arguments: []string) -> (o: Transcribe_Options, ok: bool) {
-	defer if ok {
-		assert(len(o.source) > 0, "accepted a command line with no Recording to transcribe")
-		assert(len(o.model) > 0, "accepted a command line naming no Model")
-		assert(len(o.engine) > 0, "accepted a command line naming no Engine")
-		assert(len(o.cache) > 0, "accepted a command line naming no scratch cache")
-		assert(len(o.tools.ffmpeg) > 0, "accepted a command line that unset ffmpeg's own default")
-		assert(
-			len(o.tools.ffprobe) > 0,
-			"accepted a command line that unset ffprobe's own default",
-		)
-	} else {
-		assert(len(o.source) == 0, "refused a command line and kept what it asked for")
-	}
+refuse_cliargs :: proc(r: cliargs.Refusal) -> (ok: bool) {
+	assert(len(r.complaint) > 0, "refused a command line without saying what was wrong with it")
+	assert(
+		r.arg_count <= cliargs.MAX_REFUSAL_ARGS,
+		"a refusal carries more arguments than refuse can print",
+	)
 
-	o.profile = transcript.DEFAULT_PROFILE
-
-	for at := 0; at < len(arguments); at += 2 {
-		name := arguments[at]
-		if at + 1 >= len(arguments) {
-			return {}, refuse("%q stands at the end of the command line with no value after it.", name)
-		}
-		if !read_transcribe_option(&o, name, arguments[at + 1]) {
-			return {}, false
+	strs: [cliargs.MAX_REFUSAL_ARGS]string
+	ints: [cliargs.MAX_REFUSAL_ARGS]int
+	built: [cliargs.MAX_REFUSAL_ARGS]any
+	for i in 0 ..< r.arg_count {
+		switch v in r.args[i] {
+		case string:
+			strs[i] = v
+			built[i] = strs[i]
+		case int:
+			ints[i] = v
+			built[i] = ints[i]
 		}
 	}
 
-	audio.defaulted_tools(&o.tools)
-
-	for missing in ([?][2]string {
-			{o.source, TRANSCRIBE},
-			{o.model, "--model-file"},
-			{o.engine, "--engine-exe"},
-			{o.cache, "--cache"},
-		}) {
-		if len(missing[0]) == 0 {
-			return {}, refuse("%s names nothing.", missing[1])
-		}
-	}
-	return o, true
-}
-
-// `--model-file` and `--engine-exe`, because `--model` and `--engine` are already
-// the provenance fields a Transcript records next door -- one spelling meaning a
-// path here and a name there ends up recorded as the model it was made with.
-//
-// `--transcribe`'s own case is TRANSCRIBE alone; everything else falls
-// through to `read_common_option`, the grammar `--batch` reads the identical
-// way (PR #67's review, finding 2).
-@(private)
-@(require_results)
-read_transcribe_option :: proc(o: ^Transcribe_Options, name, value: string) -> (ok: bool) {
-	assert(o != nil, "there is nothing here to read an option into")
-
-	switch name {
-	case TRANSCRIBE:
-		o.source = value
-	case:
-		return read_common_option(
-			&o.model,
-			&o.engine,
-			&o.cache,
-			&o.tools,
-			&o.prompt,
-			&o.profile,
-			name,
-			value,
-		)
-	}
-	return true
+	fmt.eprintf(r.complaint, ..built[:r.arg_count])
+	fmt.eprint("\n\n")
+	write_usage(os.stderr)
+	return false
 }
 
 // `--model-file`, `--engine-exe`, `--cache`, `--ffmpeg`, `--ffprobe`,
-// `--prompt` and `--profile`: the whole of what `--transcribe` and `--batch`
-// read identically. There is no `--engine-version` case any more -- the
-// version-string flag ADR-0027's supersession retires (issue #50); the
-// Engine is identified from `--engine-exe`'s own bytes, the same as the
-// Model, and a caller who still passes `--engine-version` is refused as an
-// unknown option like any other retired flag. `--plan` shares only a few of
-// these fields -- it names no scratch cache and no ffmpeg -- and keeps its
-// own smaller switch rather than pass nil pointers through here for options
-// its own grammar must still refuse (A8).
+// `--prompt` and `--profile`: what `--batch` still reads through this
+// procedure. `--transcribe` reads the identical set through
+// `cliargs.read_transcribe_options` now (ADR-0038 Stage 3); this reader
+// stays because `--batch`'s own migration has not landed yet, and its last
+// caller here is `read_batch_option`. There is no `--engine-version` case
+// any more -- the version-string flag ADR-0027's supersession retires (issue
+// #50); the Engine is identified from `--engine-exe`'s own bytes, the same
+// as the Model, and a caller who still passes `--engine-version` is refused
+// as an unknown option like any other retired flag. `--plan` shares only a
+// few of these fields -- it names no scratch cache and no ffmpeg -- and
+// keeps its own smaller switch rather than pass nil pointers through here
+// for options its own grammar must still refuse (A8).
 @(private)
 @(require_results)
 read_common_option :: proc(
