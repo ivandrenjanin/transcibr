@@ -125,3 +125,51 @@ a_plan_refuses_an_unreadable_engine_naming_itself_and_not_the_batch :: proc(t: ^
 		stderr_text,
 	)
 }
+
+// Fix round 2 (PR #245's review): `--plan` identifies the Model before it
+// ever touches the Engine, and that refusal used to call `main.odin`'s
+// shared, unparametrized `model_identified`, which always reported "the
+// Batch cannot start" -- issue #216's headline defect, live on `--plan`
+// alongside the Engine refusal the test above already covers.
+@(test)
+a_plan_refuses_an_unreadable_model_naming_itself_and_not_the_batch :: proc(t: ^testing.T) {
+	directory := testkit.made_scratch_cache(t, "planning", "model-refusal-cli", context.allocator)
+	defer delete(directory, context.allocator)
+	defer testkit.remove_cache(directory, context.allocator)
+
+	missing_model := testkit.fixture_file(
+		t,
+		directory,
+		"ggml-model.bin",
+		"present so it can be removed",
+		context.allocator,
+	)
+	os.remove(missing_model)
+
+	stderr_text, exit_code, ran := run_plan_drill(
+		t,
+		directory,
+		"whisper-cli.exe",
+		missing_model,
+		context.allocator,
+	)
+	defer delete(missing_model, context.allocator)
+	defer delete(stderr_text, context.allocator)
+	if !ran {
+		return
+	}
+
+	testing.expect_value(t, exit_code, 1)
+	testing.expectf(
+		t,
+		strings.contains(stderr_text, "--plan cannot verify this Model"),
+		"the plan refusal did not name itself, in its exact words: %s",
+		stderr_text,
+	)
+	testing.expectf(
+		t,
+		!strings.contains(stderr_text, "the Batch cannot start"),
+		"the plan refusal still claims a Batch cannot start: %s",
+		stderr_text,
+	)
+}

@@ -47,6 +47,12 @@ TRANSCRIBE_ENGINE_REFUSAL_FRAMING :: "--transcribe cannot verify this Engine"
 // the same way: `--transcribe cannot <verb> this <noun>`.
 TRANSCRIBE_CACHE_REFUSAL_FRAMING :: "--transcribe cannot open this cache"
 
+// Fix round 2 (PR #245's review): the Model refusal below used to call
+// `main.odin`'s shared, unparametrized `model_identified`, which always
+// reported "the Batch cannot start" -- issue #216's own headline defect,
+// live on `--transcribe`. Named the same way as the framings above.
+TRANSCRIBE_MODEL_REFUSAL_FRAMING :: "--transcribe cannot verify this Model"
+
 @(require_results)
 transcribe_one :: proc(arguments: []string) -> int {
 	assert(len(arguments) > 0, "no arguments at all is the version banner, settled before this")
@@ -90,7 +96,7 @@ transcribe_one :: proc(arguments: []string) -> int {
 		return OPERATING_ERROR
 	}
 
-	identified, named := model_identified(o.model)
+	identified, named := model_identified_framed(o.model, TRANSCRIBE_MODEL_REFUSAL_FRAMING)
 	defer artifact.destroy_model(identified, context.allocator)
 	if !named {
 		return OPERATING_ERROR

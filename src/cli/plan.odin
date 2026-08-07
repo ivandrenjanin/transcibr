@@ -26,6 +26,12 @@ import "transcibr:transcript"
 // shared one.
 PLAN_ENGINE_REFUSAL_FRAMING :: "--plan cannot verify this Engine"
 
+// Fix round 2 (PR #245's review): the Model refusal below used to call
+// `main.odin`'s shared, unparametrized `model_identified`, which always
+// reported "the Batch cannot start" -- issue #216's own headline defect,
+// live on `--plan`. Named the same way as the Engine framing above.
+PLAN_MODEL_REFUSAL_FRAMING :: "--plan cannot verify this Model"
+
 // Fix round 1 (PR #245's review, finding 3): the call site below used to
 // call a private `plan_engine_identified` here, byte-identical to
 // `transcribe.odin`'s own copy but for the framing constant it closed over.
@@ -52,7 +58,7 @@ plan_batch :: proc(arguments: []string) -> int {
 	}
 
 	fmt.eprintfln("  identifying %s", o.model)
-	identified, named := model_identified(o.model)
+	identified, named := model_identified_framed(o.model, PLAN_MODEL_REFUSAL_FRAMING)
 	defer artifact.destroy_model(identified, context.allocator)
 	if !named {
 		return OPERATING_ERROR

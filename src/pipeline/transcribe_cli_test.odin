@@ -194,3 +194,61 @@ a_transcribe_refuses_an_unusable_cache_naming_itself_and_not_the_batch :: proc(t
 		stderr_text,
 	)
 }
+
+// Fix round 2 (PR #245's review): `--transcribe` identifies the Model after
+// its cache and before its Engine, and that refusal used to call
+// `main.odin`'s shared, unparametrized `model_identified`, which always
+// reported "the Batch cannot start" -- issue #216's headline defect, live on
+// `--transcribe` alongside the Engine and cache refusals the tests above
+// already cover.
+@(test)
+a_transcribe_refuses_an_unreadable_model_naming_itself_and_not_the_batch :: proc(t: ^testing.T) {
+	directory := testkit.made_scratch_cache(t, "pipeline", "model-refusal-cli", context.allocator)
+	defer delete(directory, context.allocator)
+	defer testkit.remove_cache(directory, context.allocator)
+
+	missing_model := testkit.fixture_file(
+		t,
+		directory,
+		"ggml-model.bin",
+		"present so it can be removed",
+		context.allocator,
+	)
+	os.remove(missing_model)
+	recording_path := testkit.fixture_file(
+		t,
+		directory,
+		"clip.mp4",
+		"never read: the drill refuses at the Model before it is ever opened",
+		context.allocator,
+	)
+	defer delete(recording_path, context.allocator)
+
+	stderr_text, exit_code, ran := run_transcribe_drill(
+		t,
+		recording_path,
+		"whisper-cli.exe",
+		missing_model,
+		directory,
+		context.allocator,
+	)
+	defer delete(missing_model, context.allocator)
+	defer delete(stderr_text, context.allocator)
+	if !ran {
+		return
+	}
+
+	testing.expect_value(t, exit_code, 1)
+	testing.expectf(
+		t,
+		strings.contains(stderr_text, "--transcribe cannot verify this Model"),
+		"the transcribe refusal did not name itself, in its exact words: %s",
+		stderr_text,
+	)
+	testing.expectf(
+		t,
+		!strings.contains(stderr_text, "the Batch cannot start"),
+		"the transcribe refusal still claims a Batch cannot start: %s",
+		stderr_text,
+	)
+}
