@@ -2,7 +2,6 @@
 package main
 
 import "core:fmt"
-import "core:os"
 import "core:strings"
 import "transcibr:artifact"
 import "transcibr:audio"
@@ -24,6 +23,10 @@ import "transcibr:process"
 // hand copy: `using parsed: cliargs.Transcribe_Options` promotes source,
 // model, engine, cache, prompt and profile straight through, so there is
 // nothing left here to drop or swap by hand (fix round 1, PR #201 finding 3).
+//
+// Issue #75 Stage 6 ("two-tools convergence"): `transcribe_one` zeroes the
+// promoted `tools` field right after `audio_tools` is built from it -- see
+// `batch.odin`'s own `Batch_Options` comment for why.
 Transcribe_Options :: struct {
 	using parsed: cliargs.Transcribe_Options,
 	audio_tools:  audio.Tools,
@@ -59,14 +62,15 @@ transcribe_one :: proc(arguments: []string) -> int {
 
 	parsed, parsed_ok, refusal := cliargs.read_transcribe_options(arguments)
 	if !parsed_ok {
-		_ = refuse_cliargs(refusal)
+		_ = refuse(refusal)
 		return USAGE_ERROR
 	}
 
 	o := Transcribe_Options {
-		parsed = parsed,
-		audio_tools = audio.Tools{ffmpeg = parsed.tools.ffmpeg, ffprobe = parsed.tools.ffprobe},
+		parsed      = parsed,
+		audio_tools = audio_tools_of(parsed.tools),
 	}
+	o.tools = {}
 	audio.defaulted_tools(&o.audio_tools)
 	assert(
 		len(o.audio_tools.ffmpeg) > 0,
@@ -186,45 +190,4 @@ show :: proc(shown: process.Progress, user: rawptr) {
 		shown.percent,
 		process.progress_says(shown.from),
 	)
-}
-
-// The Refusal-consuming sibling ADR-0038 calls for (its refuse shape
-// paragraph): fed a Refusal by value instead of a pre-built format string
-// and inline `any` arguments, it feeds the identical `fmt.eprintf` path
-// `refuse` (main.odin) still uses for every other command's own reader,
-// through two fixed backing arrays sized to `cliargs.MAX_REFUSAL_ARGS` and
-// never an allocation -- `refuse`'s own arity stays untouched. Its own call
-// sites number 15 on this tree (deposit #3 of the stage-3 review, PR #201,
-// already found the ADR's original "22" stale at 20; this stage's batch
-// migration retires `read_common_option`'s two and `read_batch_option`'s
-// family of five, leaving `--plan` (5), `main`'s `--from-json` (4) and
-// `--crash-drill` (3), plus `--doctor`'s own 3) -- `--plan` and `--doctor`
-// are this ticket's remaining migration sites (#75), not this one's.
-@(private)
-@(require_results)
-refuse_cliargs :: proc(r: cliargs.Refusal) -> (ok: bool) {
-	assert(len(r.complaint) > 0, "refused a command line without saying what was wrong with it")
-	assert(
-		r.arg_count <= cliargs.MAX_REFUSAL_ARGS,
-		"a refusal carries more arguments than refuse can print",
-	)
-
-	strs: [cliargs.MAX_REFUSAL_ARGS]string
-	ints: [cliargs.MAX_REFUSAL_ARGS]int
-	built: [cliargs.MAX_REFUSAL_ARGS]any
-	for i in 0 ..< r.arg_count {
-		switch v in r.args[i] {
-		case string:
-			strs[i] = v
-			built[i] = strs[i]
-		case int:
-			ints[i] = v
-			built[i] = ints[i]
-		}
-	}
-
-	fmt.eprintf(r.complaint, ..built[:r.arg_count])
-	fmt.eprint("\n\n")
-	write_usage(os.stderr)
-	return false
 }

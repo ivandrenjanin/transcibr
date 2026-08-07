@@ -18,8 +18,6 @@ import "transcibr:engine"
 import "transcibr:pipeline"
 import "transcibr:planning"
 
-BATCH :: "--batch"
-
 // The two-field ceiling handoff ADR-0038's addendum resolves the ADR's own
 // "ceiling-lookup placement" wrinkle with: cliargs' read loop now owns the
 // per-option dispatch, so src/cli can no longer resolve a ceiling
@@ -44,6 +42,15 @@ BATCH_WORKER_CEILINGS :: cliargs.Worker_Ceilings {
 // bare strings after the grammar returns, the same shape
 // `transcribe.odin`'s own `Transcribe_Options` already carries (fix round 1,
 // PR #201 finding 3).
+//
+// Issue #75 Stage 6 (s3/s5b deposits, "two-tools convergence"): `using`
+// promotes `parsed.tools` too, so `o.tools` and `o.audio_tools` used to sit
+// side by side, one undefaulted and one defaulted, both reachable under the
+// same field access shape -- reading `o.tools.ffmpeg` where `o.audio_tools`
+// was meant compiled clean and read the wrong string. `run_batch_command`
+// zeroes `o.tools` immediately after building `audio_tools` from it, so a
+// stray read of the promoted field comes back empty rather than a
+// plausible-looking, silently-wrong path.
 Batch_Options :: struct {
 	using parsed: cliargs.Batch_Options,
 	audio_tools:  audio.Tools,
@@ -99,18 +106,22 @@ console_ctrl_handler :: proc "system" (dw_ctrl_type: win32.DWORD) -> win32.BOOL 
 @(require_results)
 run_batch_command :: proc(arguments: []string) -> int {
 	assert(len(arguments) > 0, "no arguments at all is the version banner, settled before this")
-	assert(arguments[0] == BATCH, "main dispatched a command line that does not open with --batch")
+	assert(
+		arguments[0] == cliargs.BATCH,
+		"main dispatched a command line that does not open with --batch",
+	)
 
 	parsed, parsed_ok, refusal := cliargs.read_batch_options(arguments, BATCH_WORKER_CEILINGS)
 	if !parsed_ok {
-		_ = refuse_cliargs(refusal)
+		_ = refuse(refusal)
 		return USAGE_ERROR
 	}
 
 	o := Batch_Options {
-		parsed = parsed,
-		audio_tools = audio.Tools{ffmpeg = parsed.tools.ffmpeg, ffprobe = parsed.tools.ffprobe},
+		parsed      = parsed,
+		audio_tools = audio_tools_of(parsed.tools),
 	}
+	o.tools = {}
 	defaulted_batch(&o)
 	assert(
 		len(o.audio_tools.ffmpeg) > 0,

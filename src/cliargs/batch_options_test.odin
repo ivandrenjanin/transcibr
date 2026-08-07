@@ -264,7 +264,7 @@ read_batch_options_refuses_the_earliest_missing_field_for_every_prefix_of_suppli
 		expected_arg: string,
 	}
 	cases := []Case {
-		{arguments = []string{}, expected_arg = BATCH},
+		{arguments = []string{}, expected_arg = "--batch"},
 		{arguments = []string{BATCH, "recordings"}, expected_arg = "--model-file"},
 		{
 			arguments = []string{BATCH, "recordings", "--model-file", "model.bin"},

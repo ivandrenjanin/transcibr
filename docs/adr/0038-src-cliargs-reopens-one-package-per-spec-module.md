@@ -402,3 +402,138 @@ its `pu.ceilings[...]` index — is caught by
 stays review-only is the VALUE swap inside `BATCH_WORKER_CEILINGS`'s own composite literal, described
 just above — a MISSING or DUPLICATED ceiling for a `Worker_Option` member cannot reach `--batch` at
 all, since that fails the build at the literal itself.
+
+## Addendum, 2026-08-07 (issue #75, Stage 6 — the contraction): what actually shipped
+
+The stage-5b deposit handed the contraction seven items. This addendum records the shape each one
+took, and closes the two open questions this record's own body left standing (the refuse shape's
+sibling, and the #50 deposit's two problems).
+
+**`--from-json`'s grammar moved last**, exactly as the ADR's own body always meant it to (this
+record's "what it holds" section never carved out an exception for it) — `cliargs.Render_Options`/
+`read_render_options` (`src/cliargs/render_options.odin`), the fifth and last of the five migration
+sites this ticket ever named (four in the ADR's own count, `--doctor` ruled in by the 2026-08-07
+comment on #75). `src/cli/main.odin`'s `read_options`/`read_option` are deleted. `Render_Options`
+embeds `transcript.Render_Context` itself (`using rc`) rather than shadowing its fields under
+different names, so `re_render` reads the grammar's already-settled context straight off
+`options.rc`, with no copy in between. **Correction (fix round 1, PR #253 finding 1):** this
+paragraph originally described a `render_context_of` helper in `src/cli/main.odin` that hand-copied
+four fields (`o.source` → `rc.source_display`, `o.engine` → `rc.engine_version`, and so on) onto
+`Render_Context`'s differently-named fields, and called that copy "a field-for-field copy that
+decides nothing." The claim was false in the one way that mattered: the copy was untested
+(`src/cli` carries no tests, ADR-0009), and a mutation swapping which grammar field fed which
+`Render_Context` field compiled clean, built, and passed the whole `just test` sweep — corrupting
+the transcript's own front matter, the exact defect shape ADR-0027/#70 records as the reason this
+ticket exists. Embedding `Render_Context` directly removes that second, untestable copy; the one
+mapping that remains (an argv name to a `Render_Context` field, inside `read_render_option`) is
+covered by `read_render_options_accepts_a_well_formed_command_line`, which reds on the same swap.
+Unlike `Batch_Options`/
+`Transcribe_Options`/`Doctor_Options`, `Render_Options` embeds no `Common_Options` — it shares no
+option spelling with any other command (`--model`/`--engine` are free text here, not
+`--model-file`/`--engine-exe`, and there is no `--cache`, no tools struct, no `--prompt`) — and its
+required-field refusal keeps `--from-json`'s own pre-migration wording, `"nothing to render."`,
+never adopting `required_fields_present`'s shared `"%s names nothing."` (that sweep names a field;
+`--from-json`'s complaint never did, and byte-identity binds the wording, not the shape). The
+source-falls-back-to-json-path and model/engine-falls-back-to-"unknown" settling this record's own
+body never assigned a home also moved into the grammar rather than staying `src/cli` plumbing: unlike
+the tool/worker-ceiling defaulting this record keeps in `src/cli` because it needs
+`transcibr:audio`/`transcibr:pipeline` behind it, this settling needs nothing beyond
+`transcibr:transcript`, already inside the closure, and folding it in leaves `re_render` with
+strictly nothing left to decide.
+
+**The refuse shape's sibling is resolved by adopting the letter, not by amendment.** The stage-3
+deposit found `refuse_cliargs` (`src/cli/transcribe.odin`) standing as a live sibling of `refuse`
+(`src/cli/main.odin`) and asked the contraction to pick one of two ends: either `refuse` itself takes
+this record's own union-slice signature and every caller migrates, or `refuse_cliargs` becomes the
+one entry and this record gets an addendum recording that instead. This stage took the first branch:
+`refuse` first read `proc(complaint: string, args: []cliargs.Refusal_Arg) -> (ok: bool)`, taking the
+slice directly as lines 153-175 above specify, with every one of the five grammar packages' own
+refusal call sites reaching it through `refuse(refusal.complaint, refusal.args[:refusal.arg_count])`.
+**Correction (fix round 1, PR #253 finding 4):** that split shape moved the `args[:arg_count]`
+slicing to five call sites `just ci` cannot red (`src/cli`, ADR-0009), and the near-miss
+`refusal.args[:]` — the whole fixed `[3]Refusal_Arg` array, not the used prefix — is well-typed at
+every one of them; measured, mutating `src/cli/plan.odin`'s call site to exactly that built clean
+under the full vet set and printed `%!(EXTRA <nil>, <nil>)` onto the end of every `--plan` refusal.
+`refuse` now takes the whole `cliargs.Refusal` by value — `proc(refusal: cliargs.Refusal) -> (ok:
+bool)` — and does the `args[:arg_count]` slicing itself, the one place left that reads `arg_count` at
+all. `refuse_cliargs` is still deleted, and still does what it used to do — two fixed backing arrays
+sized to `cliargs.MAX_REFUSAL_ARGS`, filled by a `switch v in arg`, fed to the same `fmt.eprintf` call
+`write_usage` already used non-allocating. `crash_drill.odin`'s three surviving call sites, which
+build their own refusals rather than reading one back from a `cliargs.read_*_options` call, now build
+one through `cliargs.make_refusal` so every refusal `src/cli` prints — the five grammar sites and
+these three — takes this one shape.
+
+**The #50 deposit's two problems, resolved**: `--from-json`'s `--engine <version>` stays free text.
+It is not the decision-leak the deposit's own wording ("two different kinds of value reaching one
+key") suggested on first read — `--transcribe`/`--plan`/`--batch` digest an `--engine-exe` FILE they
+hold at run time; `--from-json` renders retained output from an earlier run and is never handed an
+engine binary to hash at all, so free text is the only kind of value it COULD carry for that field.
+Unifying the two would mean deleting `--from-json --engine`'s ability to record what a prior,
+possibly since-deleted engine build reported, for a command whose whole purpose is rendering output
+that engine already produced. Left as designed; no code change. The USAGE trailer's own sentence —
+"anything not given, or given empty, is recorded as unknown" — turns out to need no rewording either:
+re-read against the grammar rather than against the deposit's paraphrase, `--source`, `--model` and
+`--engine` are the exact three flag spellings `--from-json` alone accepts (`--transcribe` reads
+`--model-file`/`--engine-exe`, `--plan` and `--batch` the same, none of them a bare `--model` or
+`--engine`), so the sentence already names only the command it describes. Both halves of this
+deposit close as verified-correct-as-shipped rather than as a byte change.
+
+**The duplicate BATCH declaration** is deleted the same way the stage-5 review already landed for
+`PLAN`: `src/cli/batch.odin`'s own `BATCH :: "--batch"` constant is gone, and `main.odin`'s dispatch
+and `batch.odin`'s own dispatch assert both read `cliargs.BATCH` now, the single declaration
+`src/cliargs/batch_options.odin` already carried — the same shape `--doctor` and `--plan` already had
+before this stage touched them. **Correction (fix round 1, PR #253 finding 3):** this paragraph
+originally called this "the BATCH token pin," and the PR body repeated the claim, but deleting a
+duplicate declaration closes the DRIFT between two declarations, not the token's VALUE. Measured:
+with the duplicate gone, `BATCH :: "--batchX"` and, separately, `FROM_JSON :: "--from-jsonX"` (the
+render grammar's own token, which was never duplicated and so was never even discussed here) both
+still pass the full `just test` sweep, all 15 packages green, because no test anywhere asserts the
+literal `"--batch"` or `"--from-json"` string — `TRANSCRIBE` and `PLAN` are pinned only incidentally,
+by their own earliest-missing-field refusal test naming the literal token as `expected_arg` rather
+than the symbol. `batch_options_test.odin`'s equivalent case is corrected to the same literal, and
+`render_options_test.odin` gains a direct token-acceptance test, closing both.
+
+**Two-tools convergence**: `Batch_Options`, `Transcribe_Options` and `Doctor_Options` (`src/cli`)
+still each embed their `cliargs.*_Options` sibling via `using`, which still promotes `parsed.tools`
+(the ungrammar's own two-string, undefaulted struct) into the same field-access namespace as
+`audio_tools` (the defaulted `audio.Tools` this package builds from it). Splitting the struct apart
+would touch every one of the dozen-plus call sites each file already threads `o.model`/`o.cache`/
+`o.prompt`/… through via that same `using`, for a much larger diff than the defect warrants. Instead,
+each of the three command entry points zeroes the promoted `tools` field immediately after building
+`audio_tools` from it (`o.tools = {}`) — a stray read of the promoted field now returns two empty
+strings rather than a plausible-looking, silently-stale pair, so a misread is loud (an empty
+`--ffmpeg`/`--ffprobe` path fails fast at the tool spawn) rather than invisible to the whole
+toolchain, closing the s5b review's own framing of the risk. The third uncollapsed copy of the
+`audio.Tools{ffmpeg = ..., ffprobe = ...}` construction (`--batch`, `--doctor`, `--transcribe` each
+built one by hand) is now one shared procedure, `audio_tools_of` (`src/cli/main.odin`), called from
+all three.
+
+**`MIN_PACKAGE_FILE_COUNT` is now a pin, not a floor**: `==` in place of `>=`, at `22`, the exact file
+count `src/cliargs` holds once `render_options.odin`/`render_options_test.odin` land. A floor forgives
+a file's deletion as readily as a `>=` comparison always did; a pin catches both directions, and this
+package is done growing — every migration site ADR-0038 ever named is landed and every reader it
+replaced is deleted.
+
+**`pipeline.WORKER_OPTION_CEILINGS`/`worker_option_ceiling` are left exactly where the stage-4
+addendum put them, dead-with-a-passing-test.** The stage-4 review deposit offered the contraction two
+outs — retire them, or record their tenancy here instead — and this record takes the second: they sit
+inside `src/pipeline`, one of this stage's own in-flight fences (issue #211 holds `src/pipeline`
+source), so retiring them is not this PR's to do. They remain `pipeline`'s own tested record of the
+string-keyed pairing #124 first built, walked by `worker_option_ceilings_pair_each_option_with_its_own_max`
+(`src/pipeline/defaults_test.odin`), reachable by a future caller inside `pipeline` itself, but no
+longer a live link in any command's own dispatch path — `--batch`'s own dispatch has read the
+enum-keyed `Worker_Ceilings` table by member since the stage-4 addendum above, and nothing else in
+the tree calls either name.
+
+**The #74-rubric audit, over what remains**: every procedure across `src/cli/main.odin`,
+`batch.odin`, `doctor.odin`, `transcribe.odin`, `plan.odin`, `crash_drill.odin` and
+`engine_identify.odin` was walked against the same rule #74's own audit used — "the moment a decision
+worth testing turns up in `src/cli`, it belongs in the core instead." Nothing new turned up: every
+remaining procedure is argv-to-field plumbing, an I/O wrapper this record's own "what stays" list
+already names (model/engine identification, the Ctrl+C handler, the job-object prologue, the
+non-allocating write), a bool-to-exit-code map (`plan_verdict`'s own shape, per #74's own
+resolution), or a presentation-only format call. `crash_drill.odin`'s undocumented mode switch is the
+one boundary check outside those categories — it refuses an unrecognized mode string (A8, external
+input) rather than asserting on it, the same shape every other migrated grammar's `case:` arm uses,
+and it is not one of this ticket's own migration sites (no acceptance criterion or deposit ever named
+it). `src/cli` holds no decision under #74's rubric once this stage lands.

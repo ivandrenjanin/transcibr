@@ -27,12 +27,19 @@ import "core:testing"
 @(private)
 CLIARGS_DIRECTORY :: "src/cliargs"
 
-// The fewest files this package can hold and still be the package this test
-// is written against: the 11 stage-3 left this floor at, plus the three
-// ADR-0038 batch migration (#75) landed -- batch_options.odin,
-// batch_options_test.odin and worker_options.odin.
+// A PIN, not a floor: the stage-2 review deposit that first named this
+// constant asked for the floor-vs-pin call to be made once slack stopped
+// being cheap, and the stage-5 deposit measured it running 6 files behind
+// the real count -- a gap that only ever widens under `>=`, silently, one
+// migration at a time. `==` is the stronger guarantee regardless of whether
+// the package is still growing: it catches a file's DELETION as loudly as
+// its addition, where a floor forgives one and the other silently. 24 is
+// every .odin file src/cliargs holds once fix round 1 (PR #253 finding 2)
+// adds help.odin/help_test.odin -- asks_for_help moved here from src/cli,
+// where it was a second, untested pair-off loop -- on top of this stage's
+// own render_options.odin/render_options_test.odin (22).
 @(private)
-MIN_PACKAGE_FILE_COUNT :: 14
+MIN_PACKAGE_FILE_COUNT :: 24
 
 @(private)
 Package_File :: struct {
@@ -211,11 +218,7 @@ cliargs_never_imports_outside_its_transcript_and_process_closure :: proc(t: ^tes
 	if !testing.expect(t, files_ok, "could not walk src/cliargs to discover its own files") {
 		return
 	}
-	testing.expect(
-		t,
-		len(files) >= MIN_PACKAGE_FILE_COUNT,
-		"walked src/cliargs and found fewer .odin files than this package is known to hold",
-	)
+	testing.expect_value(t, len(files), MIN_PACKAGE_FILE_COUNT)
 
 	checked := 0
 	for file in files {

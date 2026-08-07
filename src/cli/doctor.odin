@@ -56,6 +56,9 @@ import "transcibr:pipeline"
 
 DOCTOR_ENGINE_REFUSAL_FRAMING :: "--doctor cannot verify this Engine"
 
+// Issue #75 Stage 6 ("two-tools convergence"): `run_doctor` zeroes the
+// promoted `tools` field right after `audio_tools` is built from it -- see
+// `batch.odin`'s own `Batch_Options` comment for why.
 Doctor_Options :: struct {
 	using parsed: cliargs.Doctor_Options,
 	audio_tools:  audio.Tools,
@@ -95,14 +98,15 @@ doctor_engine_identified :: proc(path: string) -> (identified: artifact.Digest, 
 run_doctor :: proc(arguments: []string) -> int {
 	parsed, parsed_ok, refusal := cliargs.read_doctor_options(arguments)
 	if !parsed_ok {
-		_ = refuse_cliargs(refusal)
+		_ = refuse(refusal)
 		return USAGE_ERROR
 	}
 
 	o := Doctor_Options {
-		parsed = parsed,
-		audio_tools = audio.Tools{ffmpeg = parsed.tools.ffmpeg, ffprobe = parsed.tools.ffprobe},
+		parsed      = parsed,
+		audio_tools = audio_tools_of(parsed.tools),
 	}
+	o.tools = {}
 	audio.defaulted_tools(&o.audio_tools)
 	assert(
 		len(o.audio_tools.ffmpeg) > 0,

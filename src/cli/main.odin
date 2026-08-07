@@ -9,6 +9,7 @@ import "core:os"
 import "core:strings"
 import "core:time"
 import "transcibr:artifact"
+import "transcibr:audio"
 import "transcibr:child"
 import "transcibr:cliargs"
 import "transcibr:crashlog"
@@ -92,11 +93,6 @@ was made. The engine's own output cannot settle them -- it carries no engine
 version and reports every large model as "large" (ADR-0003) -- so anything
 not given, or given empty, is recorded as "unknown" rather than guessed at.`
 
-// The one thing this binary reads that takes no value, so the loop that pairs a
-// name off with the argument after it cannot express it and it is answered before
-// that loop runs.
-HELP :: "--help"
-
 // Two failures and not one: a command line the caller must fix, and a Recording's
 // output that will not render, which is a file to go and look at.
 USAGE_ERROR :: 2
@@ -143,7 +139,7 @@ main :: proc() {
 		print_version()
 		return
 	}
-	if asks_for_help(args[1:]) {
+	if cliargs.asks_for_help(args[1:]) {
 		write_usage(os.stdout)
 		return
 	}
@@ -153,7 +149,7 @@ main :: proc() {
 	if args[1] == cliargs.PLAN {
 		os.exit(plan_batch(args[1:]))
 	}
-	if args[1] == BATCH {
+	if args[1] == cliargs.BATCH {
 		os.exit(run_batch_command(args[1:]))
 	}
 	if args[1] == cliargs.DOCTOR {
@@ -177,11 +173,6 @@ print_version :: proc() {
 	pipeline.report_line(line, context.allocator)
 }
 
-Options :: struct {
-	json_path: string,
-	rc:        transcript.Render_Context,
-}
-
 // `--from-json` is typed, pasted or scripted, so `options.json_path` is the
 // one path this whole binary opens that it did not construct itself --
 // including a reserved Windows device name such as `CON`, which opens fine
@@ -189,6 +180,17 @@ Options :: struct {
 // bounded for exactly that reason (issue #27); `child.READ_BOUND_MS` is the
 // same ceiling `transcibr-cli --transcribe` reads the Engine's own output
 // under.
+//
+// Issue #75 Stage 6 (the contraction): `--from-json`'s grammar (the old
+// `Options`, `read_options`, `read_option`) moved to
+// `cliargs.Render_Options`/`cliargs.read_render_options`, the fifth and last
+// of ADR-0038's migration sites. `Render_Options` embeds
+// `transcript.Render_Context` itself, so `options.rc` below is already the
+// context the grammar settled -- nothing here decides anything or copies a
+// field under a different name (fix round 1, PR #253 finding 1: a former
+// field-for-field copy, `render_context_of`, paired `--model` and `--engine`
+// onto `Render_Context`'s differently-named fields by hand, and a swap of
+// those two lines compiled clean and passed the whole suite).
 @(require_results)
 re_render :: proc(arguments: []string) -> int {
 	assert(
@@ -196,8 +198,9 @@ re_render :: proc(arguments: []string) -> int {
 		"no arguments at all is the version banner, settled before this point",
 	)
 
-	options, ok := read_options(arguments)
+	options, ok, refusal := cliargs.read_render_options(arguments)
 	if !ok {
+		_ = refuse(refusal)
 		return USAGE_ERROR
 	}
 	assert(len(options.json_path) > 0, "accepted a command line with nothing to render")
@@ -258,81 +261,6 @@ write_transcript :: proc(
 		return OPERATING_ERROR
 	}
 	return 0
-}
-
-// Scanned across the positions a NAME can stand in, stepping by two as
-// read_options walks the same list: a scan of everything read `--from-json
-// --help` as a request for usage and reported success on a render that never
-// happened.
-@(private)
-@(require_results)
-asks_for_help :: proc(arguments: []string) -> bool {
-	for at := 0; at < len(arguments); at += 2 {
-		if arguments[at] == HELP {
-			return true
-		}
-	}
-	return false
-}
-
-@(require_results)
-read_options :: proc(arguments: []string) -> (o: Options, ok: bool) {
-	defer if ok {
-		assert(len(o.json_path) > 0, "accepted a command line with nothing to render")
-		assert(len(o.rc.source_display) > 0, "accepted a command line that names no source")
-		assert(len(o.rc.model) > 0, "a model nobody named is UNKNOWN, never empty")
-		assert(len(o.rc.engine_version) > 0, "an engine nobody named is UNKNOWN, never empty")
-	} else {
-		assert(len(o.json_path) == 0, "refused a command line and kept what it asked for")
-	}
-
-	o.rc.profile = transcript.DEFAULT_PROFILE
-
-	for at := 0; at < len(arguments); at += 2 {
-		name := arguments[at]
-		if at + 1 >= len(arguments) {
-			return {}, refuse("%q stands at the end of the command line with no value after it.", name)
-		}
-		if !read_option(&o, name, arguments[at + 1]) {
-			return {}, false
-		}
-	}
-
-	if len(o.json_path) == 0 {
-		return {}, refuse("nothing to render.")
-	}
-	if len(o.rc.source_display) == 0 {
-		o.rc.source_display = o.json_path
-	}
-	o.rc.model = transcript.named_or_unknown(o.rc.model)
-	o.rc.engine_version = transcript.named_or_unknown(o.rc.engine_version)
-	return o, true
-}
-
-@(private)
-@(require_results)
-read_option :: proc(o: ^Options, name, value: string) -> (ok: bool) {
-	assert(o != nil, "there is nothing here to read an option into")
-
-	switch name {
-	case "--from-json":
-		o.json_path = value
-	case "--source":
-		o.rc.source_display = value
-	case "--model":
-		o.rc.model = value
-	case "--engine":
-		o.rc.engine_version = value
-	case "--profile":
-		profile, known := transcript.profile_named(value)
-		if !known {
-			return refuse("no merge profile called %q.", value)
-		}
-		o.rc.profile = profile
-	case:
-		return refuse("unknown option %q.", name)
-	}
-	return true
 }
 
 // The Model, identified once per run, with its refusal already reported. Both
@@ -403,16 +331,63 @@ job_object_opened :: proc() -> (group: child.Job_Object, ok: bool) {
 	return opened, false
 }
 
-// Hands back `false` so a caller can refuse in the one line it took to notice.
+// Issue #75 Stage 6 (the contraction), fix round 1 (PR #253 finding 4):
+// `refuse` now takes the whole `cliargs.Refusal` by value rather than a
+// pre-split `(complaint: string, args: []Refusal_Arg)` pair. The split shape
+// moved the `args[:arg_count]` slicing to every one of its five grammar call
+// sites, none of which `just ci` can red (`src/cli` carries no tests,
+// ADR-0009) -- and the plausible near-miss `refusal.args[:]` (the FULL fixed
+// array, not the used prefix) is well-typed at every one of them, silently
+// corrupting every refusal that command prints with trailing
+// `%!(EXTRA <nil>, <nil>)` bytes. Taking the whole `Refusal` removes the
+// slicing from every call site: there is exactly one place left that reads
+// `arg_count`, inside this procedure, and nothing outside `transcibr:cliargs`
+// can misname it. `crash_drill.odin`'s own refusals, which never went
+// through a `cliargs.read_*_options` call, now build one through
+// `cliargs.make_refusal` so every refusal in `src/cli` takes this same
+// shape. Nothing here allocates: `strs`, `ints` and `built` are fixed arrays
+// on this call's own stack, sized to `cliargs.MAX_REFUSAL_ARGS`, and the
+// `any` values `fmt.eprintf` receives point at them and never at `r.args`'
+// own backing bytes.
 @(private)
 @(require_results)
-refuse :: proc(complaint: string, args: ..any) -> (ok: bool) {
-	assert(len(complaint) > 0, "refused a command line without saying what was wrong with it")
+refuse :: proc(refusal: cliargs.Refusal) -> (ok: bool) {
+	r := refusal
+	assert(len(r.complaint) > 0, "refused a command line without saying what was wrong with it")
+	assert(
+		r.arg_count <= cliargs.MAX_REFUSAL_ARGS,
+		"a refusal carries more arguments than refuse can print",
+	)
+	assert(r.arg_count >= 0, "a refusal cannot carry a negative argument count")
 
-	fmt.eprintf(complaint, ..args)
+	strs: [cliargs.MAX_REFUSAL_ARGS]string
+	ints: [cliargs.MAX_REFUSAL_ARGS]int
+	built: [cliargs.MAX_REFUSAL_ARGS]any
+	for arg, i in r.args[:r.arg_count] {
+		switch v in arg {
+		case string:
+			strs[i] = v
+			built[i] = strs[i]
+		case int:
+			ints[i] = v
+			built[i] = ints[i]
+		}
+	}
+
+	fmt.eprintf(r.complaint, ..built[:r.arg_count])
 	fmt.eprint("\n\n")
 	write_usage(os.stderr)
 	return false
+}
+
+// The third copy of `audio.Tools{ffmpeg = ..., ffprobe = ...}` this package
+// carried (s5b review deposit 7): `--batch`, `--doctor` and `--transcribe`
+// each built one by hand from their own `parsed.tools`. One shared
+// procedure, called from all three.
+@(private)
+@(require_results)
+audio_tools_of :: proc(tools: cliargs.Tools) -> audio.Tools {
+	return audio.Tools{ffmpeg = tools.ffmpeg, ffprobe = tools.ffprobe}
 }
 
 // fprintln and not fprintfln, so nothing here allocates: a refusal that allocated
