@@ -84,13 +84,19 @@ and deliberately not `FILE_SHARE_DELETE` — issue #76 review round 2 measured a
 only open refuse a second concurrent transcibr outright, which is why both flags are already there,
 and Windows refuses to rename a file a second process holds open without `FILE_SHARE_DELETE`. So
 while a second live transcibr already holds `transcibr.log` open, `rotate_if_over` returns `false`,
-the new process opens the existing file anyway (append mode still finds its own end), and writes one
-`WARN` line through `crashlog.note` saying rotation was refused and why. **The sharing flags do not
-change for this.** Adding `FILE_SHARE_DELETE` would let one process rename the very file a second
-process is still appending to out from under it — precisely the failure rotate-at-open exists to
-avoid, just moved from "crash hooks hold a stale handle" to "a live append lands in a file nobody can
-find by its old name anymore." The refusal is the guard doing its job, not a defect masked by a
-`WARN` line.
+and the new process opens the existing file anyway (append mode still finds its own end). `note`
+writes through `g_log`, and `g_log` is not set until `register` runs (`crashlog.odin:44-49`,
+"Set once, by `register`") — after `open_log` has already returned — so `open_log` cannot call
+`note` itself; the refusal fact has to leave `open_log` some other way. `open_log` gains a second
+result alongside its handle, `rotation_refused: bool`, and `install` is the one that calls
+`crashlog.note` with it, immediately after `register` (`install.odin:24, 28`), by which point
+`g_log` is live. That is a signature change to `open_log` — a small one, one added `bool` — and D1's
+"every existing caller gets it for free" claim below is scoped to rotation's *enforcement*, not to
+this one WARN line. **The sharing flags do not change for this.** Adding `FILE_SHARE_DELETE` would
+let one process rename the very file a second process is still appending to out from under it —
+precisely the failure rotate-at-open exists to avoid, just moved from "crash hooks hold a stale
+handle" to "a live append lands in a file nobody can find by its old name anymore." The refusal is
+the guard doing its job, not a defect masked by a `WARN` line.
 
 Residual, stated rather than fixed: the 8 MiB ceiling is not enforced while a second transcibr
 process is alive; the file grows past it until the next launch that has the file to itself. Bounded
@@ -184,11 +190,12 @@ this ticket's scope, and this record leaves it there.
 ## Consequences
 
 `crashlog.note` becomes the one place a routine line is built, callable from every context the two
-crash hooks already reach plus every ordinary boundary report `src/cli` already makes. Rotation
-lives entirely inside `open_log`, so every existing caller of `install`/`open_log` gets it for free
-without a signature change. The trail and the three crash line shapes now share one timestamp
-formatter, one writer, and one handle — the same "one mechanism" property ADR-0036 built the package
-around, extended rather than replaced.
+crash hooks already reach plus every ordinary boundary report `src/cli` already makes. Rotation's
+enforcement lives entirely inside `open_log`, so every existing caller of `install`/`open_log` gets
+rotation itself for free; reporting a refused rotation is the one exception, costing `open_log` one
+added `bool` result (D2) so `install` can log it once `register` has made `note` callable. The trail
+and the three crash line shapes now share one timestamp formatter, one writer, and one handle — the
+same "one mechanism" property ADR-0036 built the package around, extended rather than replaced.
 
 **Residual, stated and not fixed:** a trail line written from a worker thread and one written from
 the UI thread (once #16's wndproc exists) can interleave. `FILE_APPEND_DATA` makes each `WriteFile`
