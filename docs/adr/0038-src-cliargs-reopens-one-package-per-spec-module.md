@@ -395,7 +395,10 @@ than repeating a bare `3` at the call site.
 **Routing item 4 (the #94 hand-pairing defect) is closed for `--batch`'s own dispatch**:
 `read_batch_option`'s `case "--extract-workers":`/`case "--queue-depth":` arms each name their own
 `Worker_Option` member explicitly and read their ceiling out of the enum-keyed table by that member,
-never by a second name search. A swap of the two `case` arms is still something only review catches
-— this record said the same of the enum table itself the first time (lines 244-245) — but a MISSING
-or DUPLICATED ceiling for a `Worker_Option` member cannot reach `--batch` at all: it fails the build
-at `BATCH_WORKER_CEILINGS`'s own composite literal.
+never by a second name search. A swap of the two `case` arms — whether the whole arm body or just
+its `pu.ceilings[...]` index — is caught by
+`read_batch_options_refuses_each_worker_option_against_its_own_ceiling_and_not_the_others`
+(`src/cliargs/batch_options_test.odin`): both mutations red that test under the full vet set. What
+stays review-only is the VALUE swap inside `BATCH_WORKER_CEILINGS`'s own composite literal, described
+just above — a MISSING or DUPLICATED ceiling for a `Worker_Option` member cannot reach `--batch` at
+all, since that fails the build at the literal itself.
