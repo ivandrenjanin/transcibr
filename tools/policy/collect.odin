@@ -3,6 +3,7 @@ package policy
 
 import "core:mem"
 import "core:odin/ast"
+import "core:odin/parser"
 import "core:slice"
 import "core:strings"
 
@@ -781,6 +782,31 @@ collect_vet_tags :: proc(
 	}
 
 	return slice.clone(found[:], allocator)
+}
+
+// Whether the file's own `#+build` tags exclude the platform this program
+// is running on, read exactly the way the compiler reads them.
+//
+// `parser.parse_file_tags`/`parser.match_build_tags` are the compiler's own
+// evaluator for the full `#+build` grammar -- compound expressions
+// (`windows, linux`), negation (`!windows`), and architecture terms
+// (`amd64`) included. Re-implementing that grammar here, even a subset of
+// it, would be a second model of `#+build` beside the one the compiler
+// maintains, which is the defect ADR-0028 is about (issue #239).
+// `ODIN_OS`/`ODIN_ARCH` are the compiler's own builtin constants for the
+// platform this build is running on; `parse_file_tags` reads a file's docs
+// as well as its tags, matching the compiler's own rule that a `#+build`
+// line can be written either way.
+@(require_results)
+platform_excludes_file :: proc(file: ^ast.File, tree: mem.Allocator) -> bool {
+	assert(file != nil, "asked whether no file at all is excluded by a build tag")
+
+	tags := parser.parse_file_tags(file^, tree)
+	target := parser.Build_Target {
+		os   = ODIN_OS,
+		arch = ODIN_ARCH,
+	}
+	return !parser.match_build_tags(tags, target)
 }
 
 // What a file tag declares, where the tag is a `#+vet` one.

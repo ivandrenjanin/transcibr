@@ -315,6 +315,13 @@ note_package_with_test_procedure :: proc(
 // procedure carrying `@(test)`. A file that fails to parse at all answers
 // false rather than crashing this walk: A8 -- a source file is external
 // input, and a file too broken to parse is not proof it holds a live test.
+//
+// Issue #239: a file whose own `#+build` tags exclude the platform this
+// check is running on answers false as well, however many `@(test)`
+// procedures parse clean inside it -- `odin test` never compiles that body
+// in on this platform, so a live-looking procedure here is dead there, and
+// crediting it would reopen the #174 hollow-package hole one tag line at a
+// time.
 @(require_results)
 file_declares_test_procedure :: proc(name: string, src: string, allocator: mem.Allocator) -> bool {
 	assert(len(name) > 0, "asked whether no file at all declares a test procedure")
@@ -322,6 +329,9 @@ file_declares_test_procedure :: proc(name: string, src: string, allocator: mem.A
 	facts := read_source(name, src, allocator)
 	defer facts_destroy(facts, allocator)
 	if facts.fault != Fault.None {
+		return false
+	}
+	if facts.excluded_by_platform {
 		return false
 	}
 	for procedure in facts.procedures {

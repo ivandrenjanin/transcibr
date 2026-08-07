@@ -376,6 +376,40 @@ a_tested_package_is_not_reported_as_untested :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(missing), 0)
 }
 
+// Issue #239: a `*_test.odin` file whose own `#+build` tags exclude the
+// platform this check runs on declares no test procedure at all, even though
+// its `@(test)` procedure parses clean -- `odin test` never compiles this
+// file's body in on this platform, so `packages_with_test_procedures` must
+// not credit it either. Before this fix, `file_declares_test_procedure` read
+// only `facts.procedures` and never `facts.excluded_by_platform`, so a
+// `#+build linux` file on this Windows checkout still reported true.
+@(test)
+a_build_tagged_test_file_excluding_the_current_platform_declares_no_test_procedure :: proc(
+	t: ^testing.T,
+) {
+	source := "#+build linux\npackage fixture\n\nimport \"core:testing\"\n\n@(test)\nchecks_something :: proc(t: ^testing.T) {\n\t_ = t\n}\n"
+	testing.expect_value(
+		t,
+		file_declares_test_procedure("tagged_test.odin", source, context.allocator),
+		false,
+	)
+}
+
+// The positive space of the same check (CLAUDE.md rule A3): a `#+build`
+// line that includes this platform must not be mistaken for one that
+// excludes it.
+@(test)
+a_build_tagged_test_file_naming_the_current_platform_still_declares_its_test_procedure :: proc(
+	t: ^testing.T,
+) {
+	source := "#+build windows\npackage fixture\n\nimport \"core:testing\"\n\n@(test)\nchecks_something :: proc(t: ^testing.T) {\n\t_ = t\n}\n"
+	testing.expect_value(
+		t,
+		file_declares_test_procedure("tagged_test.odin", source, context.allocator),
+		true,
+	)
+}
+
 // A small fixture on disk: two packages under one throwaway root, one whose
 // `*_test.odin` file still holds a real `@(test)` procedure and one whose
 // `*_test.odin` file holds none at all -- issue #174's own mutation, planted
