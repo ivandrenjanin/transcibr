@@ -190,6 +190,7 @@ transcribe_and_place :: proc(extracted: Recording_Extracted) -> bool {
 	if unfinished.fault != .None {
 		report_fault(engine.error_message(unfinished, job.source, job.allocator), job.allocator)
 		discard_engine_output(job, unfinished.fault)
+		discard_recording_wav(extracted.extracted.audio, unfinished.fault)
 		return false
 	}
 	checked_first_recording_health(job, extracted.extracted.container_ms, produced)
@@ -232,6 +233,44 @@ discard_engine_output :: proc(job: Recording_Job, fault: engine.Fault) {
 	defer delete(output, job.allocator)
 
 	os.remove(output)
+}
+
+// Issue #251: with no reuse path implemented anywhere in `audio.extract`
+// (ADR-0023's addendum below), keeping a refused Recording's own extracted
+// `<cache>\<name>.wav` around buys nothing but ~115 MB/hr of source per
+// failed Recording, held until the next Batch-start age sweep -- up to seven
+// days of it. `wav` is `extracted.extracted.audio`, the exact path
+// `audio.extract` already handed back and `transcribe_and_place` already
+// holds; no rebuilt prefix, unlike `discard_engine_output` above, because
+// this Recording's own Job never needed to reconstruct it.
+//
+// The fault set is narrower than `discard_engine_output`'s: alongside
+// `.Not_Stopped` (the Engine may still hold the file open, same reason as
+// above), `.Did_Not_Finish` also keeps its wav. Its own `fault_says`
+// sentence is "the Engine was stopped before it finished" -- a stop, not a
+// refusal. Nothing in this Recording's audio was judged and rejected the way
+// `.Refused` or `.Output_Empty` judge it; the run simply did not land inside
+// its bound (`run_engine`'s `.Bound_Expired`/`.Drain_Failed`/`.None` reasons
+// all collapse to this one fault in `engine.refused`). That is exactly the
+// "Batch interrupted, resumed later" shape ADR-0023's own rationale
+// describes, so this wav is the one worth keeping for it even though no
+// caller reuses it yet. Every other fault -- `.Refused`, `.Output_Empty`,
+// `.Went_Silent`, `.Path_Not_Ascii`, `.Not_Started`, `.No_Output` -- either
+// judged this Recording's audio and rejected it or never touched the wav at
+// all, so sweeping it loses nothing a retry could use.
+@(private)
+discard_recording_wav :: proc(wav: string, fault: engine.Fault) {
+	assert(len(wav) > 0, "a Recording Job with no extracted audio has nowhere to sweep")
+	assert(fault != .None, "a Recording that came through has no wav to sweep")
+
+	if fault == .Not_Stopped {
+		return
+	}
+	if fault == .Did_Not_Finish {
+		return
+	}
+
+	os.remove(wav)
 }
 
 // Runs against every Recording that finishes transcribing successfully,
