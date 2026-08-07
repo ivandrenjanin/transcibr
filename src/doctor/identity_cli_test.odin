@@ -60,6 +60,7 @@ run_doctor_drill :: proc(
 	allocator: mem.Allocator,
 ) -> (
 	stdout: string,
+	stderr: string,
 	exit_code: int,
 	ran: bool,
 ) {
@@ -80,12 +81,12 @@ run_doctor_drill :: proc(
 		},
 		allocator,
 	)
-	defer delete(err_out, allocator)
 	if !testing.expectf(t, err == nil, "the doctor drill did not run: %v", err) {
 		delete(out, allocator)
-		return "", 0, false
+		delete(err_out, allocator)
+		return "", "", 0, false
 	}
-	return string(out), state.exit_code, true
+	return string(out), string(err_out), state.exit_code, true
 }
 
 @(test)
@@ -118,9 +119,15 @@ an_unreadable_engine_binary_still_reports_the_five_preflight_rows_before_refusin
 	)
 	os.remove(missing_engine)
 
-	text, exit_code, ran := run_doctor_drill(t, missing_engine, model_path, context.allocator)
+	text, stderr_text, exit_code, ran := run_doctor_drill(
+		t,
+		missing_engine,
+		model_path,
+		context.allocator,
+	)
 	defer delete(missing_engine, context.allocator)
 	defer delete(text, context.allocator)
+	defer delete(stderr_text, context.allocator)
 	if !ran {
 		return
 	}
@@ -187,8 +194,9 @@ doctors_reported_engine_identity_names_the_engine_and_not_the_model :: proc(t: ^
 	expected_line := render_engine_identity(engine_digest, context.allocator)
 	defer delete(expected_line, context.allocator)
 
-	text, _, ran := run_doctor_drill(t, engine_path, model_path, context.allocator)
+	text, stderr_text, _, ran := run_doctor_drill(t, engine_path, model_path, context.allocator)
 	defer delete(text, context.allocator)
+	defer delete(stderr_text, context.allocator)
 	if !ran {
 		return
 	}
@@ -204,5 +212,66 @@ doctors_reported_engine_identity_names_the_engine_and_not_the_model :: proc(t: ^
 		!strings.contains(text, string(model.digest)),
 		"the doctor report named the Model's digest instead of the Engine's: %s",
 		text,
+	)
+}
+
+// Issue #216 fix round 1: the three unit-level tests the PR names as its pin
+// (`process`'s and `artifact`'s framing tests) only prove the parameter
+// plumbing between src/process and src/artifact -- none of them ever call
+// into src/cli, so a regression at doctor.odin's own call site (reverting
+// DOCTOR_ENGINE_REFUSAL_FRAMING, or losing the framing argument on a later
+// edit) leaves every one of them green. This spawns the real drill binary
+// with an unreadable Engine, the same way the two tests above already do,
+// and reads the refusal off stderr -- the one place `run_doctor` actually
+// prints it (`pipeline.report_fault`) -- so it is the only test in the tree
+// that would catch --doctor's refusal prose regressing back to the Batch's
+// wording.
+@(test)
+an_unreadable_engine_refusal_names_doctor_and_not_the_batch :: proc(t: ^testing.T) {
+	directory := testkit.made_scratch_cache(t, "doctor", "engine-refusal-cli", context.allocator)
+	defer delete(directory, context.allocator)
+	defer testkit.remove_cache(directory, context.allocator)
+
+	model_path := testkit.fixture_file(
+		t,
+		directory,
+		"ggml-model.bin",
+		"a model fixture, readable but not a real Model",
+		context.allocator,
+	)
+	defer delete(model_path, context.allocator)
+	missing_engine := testkit.fixture_file(
+		t,
+		directory,
+		"whisper-cli.exe",
+		"present so it can be removed",
+		context.allocator,
+	)
+	os.remove(missing_engine)
+
+	stdout_text, stderr_text, _, ran := run_doctor_drill(
+		t,
+		missing_engine,
+		model_path,
+		context.allocator,
+	)
+	defer delete(missing_engine, context.allocator)
+	defer delete(stdout_text, context.allocator)
+	defer delete(stderr_text, context.allocator)
+	if !ran {
+		return
+	}
+
+	testing.expectf(
+		t,
+		strings.contains(stderr_text, "--doctor"),
+		"the doctor refusal never named --doctor: %s",
+		stderr_text,
+	)
+	testing.expectf(
+		t,
+		!strings.contains(stderr_text, "the Batch cannot start"),
+		"the doctor refusal still claims a Batch cannot start: %s",
+		stderr_text,
 	)
 }
