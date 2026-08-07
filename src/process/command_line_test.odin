@@ -427,19 +427,25 @@ every_fault_renders_as_the_line_its_row_describes :: proc(t: ^testing.T) {
 	}
 }
 
-// Issue #255, the #244 review's reaching mutation: rebuilding the return at
-// command_line.odin:195-198 as `Build_Error{culprit = ..., argument = ...}`
-// drops `fault` to its zero value and sails past `error_message`'s
-// `assert(err.fault != .None, ...)` at command_line.odin:115 unnoticed by
-// anything that renders conditionally on that same field. This is the
-// guard-side half of the pairing (#208/#223 family, intra-package edition):
-// `check_inputs` is the only constructor a refusal here can come from, and
-// `build_command_line:195-198` is the only place that forwards its result, so
-// every one of these cases pins that the forwarded `Build_Error` still
-// carries the fault `check_inputs` gave it, checked before anything else
-// about the case.
+// Issue #255, the #244 review's reaching mutation: rebuilding the
+// check_inputs-forwarding return inside build_command_line as
+// `Build_Error{culprit = ..., argument = ...}` drops `fault` to its zero
+// value and sails past `error_message`'s `assert(err.fault != .None, ...)`
+// unnoticed by anything that renders conditionally on that same field. This
+// is the guard-side half of the pairing (#208/#223 family, intra-package
+// edition). build_command_line returns a Build_Error refusal from two
+// places -- the forwarded `refusal` from check_inputs, and its own
+// `fault_at(.Too_Long, "", 0)` literal once the finished line is measured
+// against the Windows ceiling -- and every one of these cases pins that
+// whichever path produced the `Build_Error`, it still carries a real fault,
+// checked before anything else about the case (round 1 of the #255 review:
+// the first version of this test covered only the check_inputs-forwarding
+// path, leaving the .Too_Long return unpinned).
 @(test)
 every_refusal_out_of_build_command_line_carries_its_own_fault :: proc(t: ^testing.T) {
+	over_the_ceiling := strings.repeat("a", MAX_COMMAND_LINE_UNITS, context.allocator)
+	defer delete(over_the_ceiling, context.allocator)
+
 	Refusal :: struct {
 		executable: string,
 		arguments:  []string,
@@ -452,6 +458,7 @@ every_refusal_out_of_build_command_line_carries_its_own_fault :: proc(t: ^testin
 		{EXE, {"-i", "a\x00b.mkv"}, .Nul_In_Argument},
 		{"C:\\\xED\xA0\x80\\ffmpeg.exe", {}, .Invalid_Utf8_In_Executable},
 		{EXE, {"-i", "\xED\xA0\x80"}, .Invalid_Utf8_In_Argument},
+		{EXE, {over_the_ceiling}, .Too_Long},
 	}
 
 	for refusal, i in cases {
