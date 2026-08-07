@@ -116,11 +116,7 @@ stem_of :: proc(source: string) -> string {
 model_display_name :: proc(path: string) -> string {
 	assert(len(path) > 0, "there is no Model here to name")
 
-	named := filepath.stem(path)
-	if len(named) == 0 {
-		return transcript.UNKNOWN
-	}
-	return named
+	return transcript.named_or_unknown(filepath.stem(path))
 }
 
 // The other half of the same cut, so a caller asking what kind of file this is

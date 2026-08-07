@@ -38,29 +38,30 @@ USAGE ::
                 --engine-exe <path> --cache <directory>
                 [--profile ` +
 	transcript.PROFILE_CHOICE +
-	`] [--engine-version <version>] [--prompt <text>]
+	`] [--prompt <text>]
                 [--ffmpeg <path>] [--ffprobe <path>]
       transcribe one recording, write its transcript, its retained engine
       output and its sidecar beside the recording, and print the transcript's
       path. Spends GPU time.
 
-  transcibr-cli --plan <folder> --model-file <path>
+  transcibr-cli --plan <folder> --model-file <path> --engine-exe <path>
                 [--profile ` +
 	transcript.PROFILE_CHOICE +
-	`] [--engine-version <version>] [--prompt <text>]
+	`] [--prompt <text>]
                 [--follow-reparse-points ` +
 	FOLLOW_CHOICE +
 	`]
       walk the folder and print what each recording found under it would get,
       and why. Spends no GPU time and writes nothing beside any recording.
-      --engine-version left out means "not asked", not "unknown": a plan that
-      cannot name its engine never reports the engine as having changed.
+      The engine is identified by hashing --engine-exe, the same way the
+      model is: a recorded transcript made with a since-replaced engine
+      binary is reported as changed even though its path is unchanged.
 
   transcibr-cli --batch <folder> --model-file <path>
                 --engine-exe <path> --cache <directory>
                 [--profile ` +
 	transcript.PROFILE_CHOICE +
-	`] [--engine-version <version>] [--prompt <text>]
+	`] [--prompt <text>]
                 [--follow-reparse-points ` +
 	FOLLOW_CHOICE +
 	`] [--ffmpeg <path>] [--ffprobe <path>]
@@ -272,12 +273,8 @@ read_options :: proc(arguments: []string) -> (o: Options, ok: bool) {
 	if len(o.rc.source_display) == 0 {
 		o.rc.source_display = o.json_path
 	}
-	if len(o.rc.model) == 0 {
-		o.rc.model = transcript.UNKNOWN
-	}
-	if len(o.rc.engine_version) == 0 {
-		o.rc.engine_version = transcript.UNKNOWN
-	}
+	o.rc.model = transcript.named_or_unknown(o.rc.model)
+	o.rc.engine_version = transcript.named_or_unknown(o.rc.engine_version)
 	return o, true
 }
 
@@ -326,6 +323,29 @@ model_identified :: proc(path: string) -> (identified: artifact.Model, ok: bool)
 
 	message := artifact.model_error_message(unidentified, path, context.allocator)
 	assert(len(message) > 0, "a Model was refused and nothing said why")
+	pipeline.report_fault(message, context.allocator)
+	return identified, false
+}
+
+// The Engine, identified by its own SHA-256 once per run, exactly like the
+// Model above -- ADR-0027's reopening clause, closed by issue #50. Every
+// command that spends an Engine (`--transcribe`, `--plan`, `--batch`) does
+// this and nothing else with the fault: an unreadable Engine binary is
+// reported against that file and the run stops (A8), never a silent
+// `unknown`. The caller frees the digest with `delete`, same as a Model's.
+@(private)
+@(require_results)
+engine_identified :: proc(path: string) -> (identified: artifact.Digest, ok: bool) {
+	assert(len(path) > 0, "there is no Engine here to identify")
+
+	unidentified: artifact.Engine_Fault
+	identified, unidentified = artifact.identify_engine(path, context.allocator)
+	if unidentified == .None {
+		return identified, true
+	}
+
+	message := artifact.engine_error_message(unidentified, path, context.allocator)
+	assert(len(message) > 0, "an Engine was refused and nothing said why")
 	pipeline.report_fault(message, context.allocator)
 	return identified, false
 }

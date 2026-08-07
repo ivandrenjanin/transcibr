@@ -41,17 +41,17 @@ read_follow :: proc(into: ^bool, value: string) -> (ok: bool) {
 	return true
 }
 
-// `engine_version` is NOTHING where the command line did not name one, and is
-// never defaulted to UNKNOWN here. `transcibr:planning` is what decides what an
-// unnamed Engine means, because this package collects no tests and a decision
-// nothing can turn red is a decision nobody is holding (ADR-0009).
+// `--engine-exe` is mandatory, the same as `--model-file`: the Engine is
+// identified by its own SHA-256, exactly the way the Model is (ADR-0027's
+// reopening clause, closed by issue #50), so there is no absent case for
+// this package to decide about any more.
 Plan_Options :: struct {
-	root:           string,
-	model:          string,
-	engine_version: Maybe(string),
-	prompt:         string,
-	profile:        transcript.Merge_Profile,
-	follow:         bool,
+	root:    string,
+	model:   string,
+	engine:  string,
+	prompt:  string,
+	profile: transcript.Merge_Profile,
+	follow:  bool,
 }
 
 @(require_results)
@@ -70,19 +70,30 @@ plan_batch :: proc(arguments: []string) -> int {
 	if !named {
 		return OPERATING_ERROR
 	}
-	return report_plan(o, identified)
+
+	fmt.eprintfln("  identifying %s", o.engine)
+	engine_digest, engine_named := engine_identified(o.engine)
+	defer delete(string(engine_digest), context.allocator)
+	if !engine_named {
+		return OPERATING_ERROR
+	}
+	return report_plan(o, identified, engine_digest)
 }
 
 @(private)
 @(require_results)
-report_plan :: proc(o: Plan_Options, identified: artifact.Model) -> int {
+report_plan :: proc(
+	o: Plan_Options,
+	identified: artifact.Model,
+	engine_digest: artifact.Digest,
+) -> int {
 	assert(len(o.root) > 0, "there is no folder here to walk")
 	assert(len(identified.digest) > 0, "a Model nobody identified reached the plan")
 
 	inventory, plan, runnable := planned(
 		o.root,
 		identified,
-		o.engine_version,
+		engine_digest,
 		o.prompt,
 		o.profile,
 		o.follow,
@@ -107,7 +118,7 @@ report_plan :: proc(o: Plan_Options, identified: artifact.Model) -> int {
 planned :: proc(
 	root: string,
 	identified: artifact.Model,
-	engine_version: Maybe(string),
+	engine_digest: artifact.Digest,
 	prompt: string,
 	profile: transcript.Merge_Profile,
 	follow: bool,
@@ -118,6 +129,10 @@ planned :: proc(
 ) {
 	assert(len(root) > 0, "there is no folder here to walk")
 	assert(len(identified.digest) > 0, "a Model nobody identified reached the plan")
+	assert(
+		len(engine_digest) == artifact.DIGEST_CHARS,
+		"an Engine nobody identified reached the plan",
+	)
 
 	inventory = planning.discover(
 		[]string{root},
@@ -129,7 +144,7 @@ planned :: proc(
 	plan, runnable = planning.plan_batch(
 		inventory,
 		planning.Settings {
-			engine_version = engine_version,
+			engine_version = engine_digest,
 			model = identified,
 			beam = artifact.ENGINE_DEFAULT_BEAM,
 			merge_profile = transcript.profile_name(profile),
@@ -203,6 +218,7 @@ read_plan_options :: proc(arguments: []string) -> (o: Plan_Options, ok: bool) {
 	defer if ok {
 		assert(len(o.root) > 0, "accepted a command line with no folder to walk")
 		assert(len(o.model) > 0, "accepted a command line naming no Model")
+		assert(len(o.engine) > 0, "accepted a command line naming no Engine")
 	} else {
 		assert(len(o.root) == 0, "refused a command line and kept what it asked for")
 	}
@@ -219,7 +235,11 @@ read_plan_options :: proc(arguments: []string) -> (o: Plan_Options, ok: bool) {
 		}
 	}
 
-	for missing in ([?][2]string{{o.root, PLAN}, {o.model, "--model-file"}}) {
+	for missing in ([?][2]string {
+			{o.root, PLAN},
+			{o.model, "--model-file"},
+			{o.engine, "--engine-exe"},
+		}) {
 		if len(missing[0]) == 0 {
 			return {}, refuse("%s names nothing.", missing[1])
 		}
@@ -241,8 +261,8 @@ read_plan_option :: proc(o: ^Plan_Options, name, value: string) -> (ok: bool) {
 		o.root = value
 	case "--model-file":
 		o.model = value
-	case "--engine-version":
-		o.engine_version = value
+	case "--engine-exe":
+		o.engine = value
 	case "--prompt":
 		o.prompt = value
 	case "--follow-reparse-points":
