@@ -18,57 +18,71 @@
 // walk). Running `just test-one crashlog <name>` for one of these in
 // isolation needs the same drill-build line run first, by hand:
 // `odin build src/cli -collection:transcibr=src -out:build/odin-test/transcibr-cli-drill.exe -subsystem:console -debug <vet set>`.
+//
+// The drill is spawned through `core:os`'s own `process_start`/`process_wait`
+// and NOT through `transcibr:child`, which is what this file used to use.
+// Issue #76 review round 6 wires `crashlog.assertion_hook` into
+// `transcibr:child`'s own worker entry points, so `child` now imports
+// `crashlog` -- and Odin refuses a cyclic package import outright
+// (`Error: Cyclic importation of 'child'`, measured at the pin; a `_test.odin`
+// file is part of its package for import resolution even under `odin build`).
+// `core:os`'s spawn is enough for a drill: nothing here needs
+// `CREATE_NO_WINDOW` (the test runner is a console-subsystem build) and
+// nothing here terminates a child (every drill mode traps on its own), so
+// neither CLAUDE.md note against `core:os` process handling applies. What is
+// given up is the Job Object `transcibr:child` put each drill in; a drill that
+// wedges past its bound now leaks its own process handle rather than dying
+// with the runner, on a path where the test has already failed.
 package crashlog
 
 import "core:os"
 import "core:strings"
 import "core:testing"
-import "transcibr:child"
+import "core:time"
 import "transcibr:testkit"
 
 @(private)
 DRILL_CLI :: "build\\odin-test\\transcibr-cli-drill.exe"
 
 @(private)
-DRILL_BOUND_MS :: u32(30_000)
+DRILL_BOUND :: 30 * time.Second
 
+// Starts `transcibr-cli --crash-drill <mode> <dir>`, waits for it to end, and
+// hands back the code it ended with. The drill is EXPECTED to crash -- a
+// crash signals exactly as fast as a clean exit, so `exited` says nothing yet
+// about HOW it ended, only that it did.
 @(private)
 @(require_results)
-open_drill_group :: proc(t: ^testing.T) -> (group: child.Job_Object, ok: bool) {
-	opened, err := child.job_object_open()
-	if !testing.expectf(t, err.fault == .None, "no job object: %v", err.fault) {
-		return {}, false
+drill_exit_code :: proc(t: ^testing.T, mode: string, dir: string) -> (code: int, exited: bool) {
+	assert(t != nil, "there is no test here to report a drill failure through")
+	assert(len(mode) > 0, "a crash drill with no mode tells the CLI nothing to do")
+
+	p, start_err := os.process_start({command = {DRILL_CLI, "--crash-drill", mode, dir}})
+	if !testing.expectf(t, start_err == nil, "the crash drill did not start: %v", start_err) {
+		return 0, false
 	}
-	return opened, true
+
+	state, wait_err := os.process_wait(p, DRILL_BOUND)
+	if !testing.expectf(
+		t,
+		wait_err == nil,
+		"the crash drill did not exit within the bound: %v",
+		wait_err,
+	) {
+		_ = os.process_kill(p)
+		return 0, false
+	}
+	return state.exit_code, state.exited
 }
 
-// Starts `transcibr-cli --crash-drill <mode> <dir>` and waits for it to end.
-// The drill is EXPECTED to crash -- `child.wait` only reports whether the
-// process signalled within the bound, which a crash does exactly as fast as
-// a clean exit, so this says nothing yet about how it ended.
 @(private)
 @(require_results)
 run_crash_drill :: proc(t: ^testing.T, mode: string, dir: string) -> (ok: bool) {
 	assert(t != nil, "there is no test here to report a drill failure through")
 	assert(len(mode) > 0, "a crash drill with no mode tells the CLI nothing to do")
 
-	group, opened := open_drill_group(t)
-	defer child.job_object_close(&group)
-	if !opened {
-		return false
-	}
-
-	c, err := child.start(&group, DRILL_CLI, {"--crash-drill", mode, dir}, context.allocator)
-	defer child.close(&c)
-	if !testing.expectf(t, err.fault == .None, "the crash drill did not start: %v", err.fault) {
-		return false
-	}
-
-	return testing.expect(
-		t,
-		child.wait(&c, DRILL_BOUND_MS),
-		"the crash drill did not exit within the bound",
-	)
+	_, exited := drill_exit_code(t, mode, dir)
+	return exited
 }
 
 // Issue #76 review round 3: an empty directory argument used to reach
@@ -80,28 +94,9 @@ run_crash_drill :: proc(t: ^testing.T, mode: string, dir: string) -> (ok: bool) 
 // can read back the exit code and tell USAGE_ERROR apart from a crash.
 @(test)
 an_empty_directory_argument_is_refused_rather_than_crashing :: proc(t: ^testing.T) {
-	group, opened := open_drill_group(t)
-	defer child.job_object_close(&group)
-	if !opened {
-		return
-	}
-
-	c, err := child.start(&group, DRILL_CLI, {"--crash-drill", "assert", ""}, context.allocator)
-	defer child.close(&c)
-	if !testing.expectf(t, err.fault == .None, "the crash drill did not start: %v", err.fault) {
-		return
-	}
-	if !testing.expect(
-		t,
-		child.wait(&c, DRILL_BOUND_MS),
-		"the crash drill did not exit within the bound",
-	) {
-		return
-	}
-
-	code, exited := child.exit_code(&c)
+	code, exited := drill_exit_code(t, "assert", "")
 	testing.expect(t, exited, "the crash drill's exit code was not available after it signalled")
-	testing.expect_value(t, code, u32(2))
+	testing.expect_value(t, code, 2)
 }
 
 @(test)
@@ -173,6 +168,46 @@ an_assertion_failure_on_a_worker_thread_leaves_its_message_in_the_log :: proc(t:
 		t,
 		strings.contains(text, "deliberate assertion on a worker thread"),
 		"the worker thread's assertion never reached the log",
+	)
+}
+
+// Issue #76 review round 6: `context.assertion_failure_proc` is per-context,
+// and until that round only `main` and the drill's OWN synthetic thread
+// installed it -- so every real production worker crashed mute, leaving the
+// bare `CRASH exception=` line and nothing else. The test above passes on a
+// thread `src/cli/crash_drill.odin` created and wired itself, which is why it
+// stayed green throughout. This one drives `transcibr:child`'s `read_worker`,
+// the production entry point `transcibr-cli --from-json` reads through, and
+// the drill installs nothing on that thread: the message and the frame naming
+// `read_worker` can only arrive through `read_worker`'s own install. Deleting
+// that one line turns this red while every other test in this file stays
+// green.
+@(test)
+an_assertion_in_a_real_production_worker_reaches_the_log :: proc(t: ^testing.T) {
+	dir := testkit.scratch_cache(t, "crashlog", "worker_assert_drill", context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	if !run_crash_drill(t, "worker-assert", dir) {
+		return
+	}
+
+	text := read_log(t, dir)
+	defer delete(text, context.allocator)
+	testing.expect(
+		t,
+		strings.contains(text, "a read thread was asked to fail on purpose, and did"),
+		"the production read worker's assertion never reached the log",
+	)
+	testing.expect(
+		t,
+		strings.contains(text, "read.odin"),
+		"the production read worker's location never reached the log",
+	)
+	testing.expect(
+		t,
+		strings.contains(text, "stack frame: child::[read.odin]::read_worker"),
+		"no symbolized frame naming the production read worker reached the log",
 	)
 }
 

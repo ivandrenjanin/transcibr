@@ -2,6 +2,7 @@
 package main
 
 import "core:thread"
+import "transcibr:child"
 import "transcibr:crashlog"
 
 // An undocumented mode, named in no USAGE block and reachable only by
@@ -19,6 +20,18 @@ CRASH_DRILL :: "--crash-drill"
 CRASH_DRILL_ASSERT :: "assert"
 CRASH_DRILL_ASSERT_THREAD :: "assert-thread"
 CRASH_DRILL_BOUNDS :: "bounds"
+
+// The mode that crashes a REAL production worker rather than a thread this
+// file created for the purpose. `assert-thread` above proves only that the
+// one-line install works when the drill itself writes it; issue #76 review
+// round 6 measured every enumerated production worker crashing mute while
+// that test stayed green, because no committed test drove one. This drives
+// `child.read_bounded`'s own worker thread -- `transcibr:child`'s
+// `read_worker`, the entry point `transcibr-cli --from-json` uses -- and
+// installs NOTHING on that thread itself, so the message, location and
+// symbolized stack can only reach the log through `read_worker`'s own
+// `context.assertion_failure_proc` assignment.
+CRASH_DRILL_WORKER_ASSERT :: "worker-assert"
 
 // Exercises `main`'s OWN crash-capture wiring rather than duplicating it:
 // every other mode below calls `crashlog.install` and sets
@@ -55,7 +68,8 @@ run_crash_drill :: proc(arguments: []string) -> int {
 	case CRASH_DRILL_ASSERT,
 	     CRASH_DRILL_ASSERT_THREAD,
 	     CRASH_DRILL_BOUNDS,
-	     CRASH_DRILL_WIRING_ASSERT:
+	     CRASH_DRILL_WIRING_ASSERT,
+	     CRASH_DRILL_WORKER_ASSERT:
 	case:
 		_ = refuse("--crash-drill does not know the mode %q.", mode)
 		return USAGE_ERROR
@@ -79,6 +93,8 @@ run_crash_drill :: proc(arguments: []string) -> int {
 		crash_in_a_worker_thread()
 	case CRASH_DRILL_BOUNDS:
 		crash_out_of_bounds(len(arguments))
+	case CRASH_DRILL_WORKER_ASSERT:
+		crash_in_a_real_worker(dir)
 	case CRASH_DRILL_WIRING_ASSERT:
 		assert(
 			false,
@@ -108,6 +124,19 @@ crash_in_a_worker_thread :: proc() {
 	assert(t != nil, "the crash drill's own worker thread would not start")
 	thread.join(t)
 	thread.destroy(t)
+}
+
+// `dir` is passed only because `read_bounded` refuses an empty path; the drill
+// asserts before that path is ever opened, so nothing is read from it. The
+// read never returns -- `read_worker` traps on the far side of the thread
+// boundary and takes the process with it -- so both results are discarded at
+// the call site rather than used.
+@(private)
+crash_in_a_real_worker :: proc(dir: string) {
+	assert(len(dir) > 0, "the worker-assert drill needs a non-empty path to hand the reader")
+
+	_, _ = child.read_bounded(dir, child.READ_BOUND_MS, context.allocator, true)
+	assert(false, "a read worker asked to fail on purpose returned instead")
 }
 
 // `index` is derived from argv's own length, never a literal, so the

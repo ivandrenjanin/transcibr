@@ -113,6 +113,19 @@ crashlog.assertion_hook` at the top of the thread's own entry point — so wirin
 worker entry points (`run_extract_worker`, `run_transcribe_worker` in `src/pipeline/run.odin`) is a
 mechanical two-line follow-up, not a design question. Re-entry path: exactly that.
 
+Everything OUTSIDE `src/pipeline` is now wired, which was not true when this ADR was first written:
+issue #76 review round 6 measured every real production worker crashing mute — a probe assert in
+`transcibr:child`'s `read_worker`, reached through an ordinary `transcibr-cli --from-json`, left the
+log holding a bare `CRASH exception=` line with no message, no location and no stack — because only
+`main` and the drill's own synthetic thread installed the hook. The one-line install now sits at the
+top of all seven: `read_worker`, `worker_loop` and the two directory workers in `transcibr:child`,
+`digest_worker` in `transcibr:artifact`, `landed_worker` in `transcibr:engine`, and `head_worker` in
+`transcibr:audio`. `src/pipeline`'s two remain the only deliberate omission, for the reason above.
+One consequence is structural and worth naming: `transcibr:child` now imports `transcibr:crashlog`,
+and Odin refuses a cyclic package import outright, so `crashlog_crash_test.odin` spawns its drills
+through `core:os`'s own `process_start`/`process_wait` rather than through `transcibr:child` — which
+costs those drills the Job Object they used to run inside.
+
 **No rolling operational trail — only crash artifacts land in the file.** Spec story 50's "look at a
 failure after the program has been closed" is served today only when that failure was a crash: no
 procedure in this package ever writes a non-crash line, so a normal run, and an ordinary operating

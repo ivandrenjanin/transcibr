@@ -8,6 +8,7 @@ import "core:strings"
 import "core:thread"
 import "core:time"
 import "transcibr:child"
+import "transcibr:crashlog"
 import "transcibr:process"
 
 Tools :: struct {
@@ -386,8 +387,12 @@ Head_Job :: struct {
 	stall_ms: i64,
 }
 
+// A fresh `core:thread` context arrives without the crash hook; see
+// `transcibr:child`'s `read_worker` doc comment for why the line is written
+// here rather than installed once by a helper.
 @(private)
 head_worker :: proc(data: rawptr) {
+	context.assertion_failure_proc = crashlog.assertion_hook
 	job := (^Head_Job)(data)
 	assert(job != nil, "a head-read thread was started with no job to read")
 	assert(len(job.path) > 0, "a head-read thread was started with no path to read")

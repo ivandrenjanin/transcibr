@@ -9,6 +9,7 @@ import "core:os"
 import "core:strings"
 import "core:thread"
 import "transcibr:child"
+import "transcibr:crashlog"
 import "transcibr:process"
 
 // Hashing a Model costs a pass over upwards of a gigabyte, so its identity is
@@ -164,8 +165,12 @@ Digest_Job :: struct {
 	fault:  Model_Fault,
 }
 
+// A fresh `core:thread` context arrives without the crash hook; see
+// `transcibr:child`'s `read_worker` doc comment for why the line is written
+// here rather than installed once by a helper.
 @(private)
 digest_worker :: proc(data: rawptr) {
+	context.assertion_failure_proc = crashlog.assertion_hook
 	job := (^Digest_Job)(data)
 	assert(job != nil, "a digest thread was started with no job to hash")
 	assert(len(job.path) > 0, "a digest thread was started with no path to hash")

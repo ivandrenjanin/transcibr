@@ -5,6 +5,7 @@ import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:thread"
+import "transcibr:crashlog"
 
 // Bounding `os.make_directory_all` and `os.read_all_directory_by_path` the
 // same way `read_bounded` bounds a whole-file read: `--cache` is hand-typed
@@ -21,8 +22,12 @@ Make_Directory_Job :: struct {
 	err:  os.Error,
 }
 
+// A fresh `core:thread` context arrives without the crash hook; see
+// `read_worker`'s own doc comment for why the line is written here rather
+// than installed once by a helper.
 @(private)
 make_directory_worker :: proc(data: rawptr) {
+	context.assertion_failure_proc = crashlog.assertion_hook
 	job := (^Make_Directory_Job)(data)
 	assert(job != nil, "a directory-creation thread was started with no job to run")
 	assert(len(job.path) > 0, "a directory-creation thread was started with no path to create")
@@ -81,8 +86,12 @@ Directory_Listing_Job :: struct {
 	err:     os.Error,
 }
 
+// A fresh `core:thread` context arrives without the crash hook; see
+// `read_worker`'s own doc comment for why the line is written here rather
+// than installed once by a helper.
 @(private)
 directory_listing_worker :: proc(data: rawptr) {
+	context.assertion_failure_proc = crashlog.assertion_hook
 	job := (^Directory_Listing_Job)(data)
 	assert(job != nil, "a directory-listing thread was started with no job to read")
 	assert(len(job.path) > 0, "a directory-listing thread was started with no path to read")

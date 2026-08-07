@@ -5,6 +5,7 @@ import "base:runtime"
 import win32 "core:sys/windows"
 import "core:thread"
 import "core:time"
+import "transcibr:crashlog"
 
 // A persistent OS thread reused across many bounded jobs, instead of one
 // created and joined per job. A walk over N Recordings across D directories
@@ -35,8 +36,13 @@ Worker :: struct {
 	wedged: bool,
 }
 
+// The crash hook is installed here rather than around each `w.job` call: this
+// loop IS the persistent thread's entry point, so one assignment on the way in
+// covers every job that thread will ever run. Why it cannot be folded into a
+// helper: `read_worker`'s own doc comment, and `transcibr:crashlog`'s.
 @(private)
 worker_loop :: proc(w: ^Worker) {
+	context.assertion_failure_proc = crashlog.assertion_hook
 	assert(w != nil, "a worker thread was started with no worker to run")
 
 	for {
