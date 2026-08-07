@@ -10,6 +10,7 @@ import "core:strings"
 import "core:time"
 import "transcibr:artifact"
 import "transcibr:child"
+import "transcibr:crashlog"
 import "transcibr:pipeline"
 import "transcibr:process"
 import "transcibr:transcript"
@@ -107,10 +108,35 @@ OPERATING_ERROR :: 1
 // route ffmpeg takes and ADR-0025 names as what retires the wrong-reason
 // refusal. `src/cli` carries no test (ADR-0009); `process.process_argv` and
 // the parser under it are what `src/process/command_line_test.odin` covers.
+//
+// Crash capture (issue #76) installs here, before anything else can assert
+// or fault, and inline rather than through a helper: Odin's implicit
+// `context` propagates forward into what a scope calls next, never back out
+// of a call that already returned, so `context.assertion_failure_proc =
+// crashlog.assertion_hook` set inside a helper `main` merely called would
+// vanish the moment that helper returned. The SAME rule is why that
+// assignment sits at `main`'s own top level rather than inside the `if` that
+// decides whether the log actually opened: a block is a scope too, so an
+// assignment written inside the `if`'s braces reverts the instant that block
+// closes and `main`'s own copy of the context never carries the hook at all
+// (fix round 5, issue #76's PR #166). Setting the hook unconditionally means
+// `assertion_hook` has to tolerate a log that never opened --
+// `hooks.odin`'s `assertion_hook` skips the write rather than asserting on a
+// closed handle, and still mirrors the failure to stderr. Best-effort and
+// silent either way (spec story 57: nothing here phones home, and a machine
+// with no usable %LOCALAPPDATA% still has to transcribe recordings).
+// `--crash-drill` installs a second time, over the directory it was given --
+// the second call just overwrites where the exception filter points.
 main :: proc() {
 	args, acquired := process.process_argv(context.allocator)
 	assert(acquired, "the operating system did not hand this process its own command line")
 	assert(len(args) > 0, "a process started with no argv at all, not even its own name")
+
+	crash_dir, crash_dir_ok := crashlog.default_directory(context.allocator)
+	if crash_dir_ok {
+		_ = crashlog.install(crash_dir, context.allocator)
+	}
+	context.assertion_failure_proc = crashlog.assertion_hook
 
 	if len(args) == 1 {
 		print_version()
@@ -132,8 +158,12 @@ main :: proc() {
 	if args[1] == DOCTOR {
 		os.exit(run_doctor(args[2:]))
 	}
+	if args[1] == CRASH_DRILL {
+		os.exit(run_crash_drill(args[2:]))
+	}
 	os.exit(re_render(args[1:]))
 }
+
 
 print_version :: proc() {
 	line := version.banner(PROGRAM, version.CURRENT, context.allocator)

@@ -8,6 +8,7 @@ import "core:strings"
 import win32 "core:sys/windows"
 import "core:thread"
 import "core:time"
+import "transcibr:crashlog"
 
 // Bounding a blocking read the same way run_bounded bounds a child. A path
 // typed by hand or derived from a Recording can name a reserved Windows
@@ -184,16 +185,26 @@ await_or_abandon :: proc(t: ^thread.Thread, bound_ms: i64) -> Wait {
 
 @(private)
 Read_Job :: struct {
-	path:     string,
-	bytes:    []u8,
-	os_error: os.Error,
+	path:         string,
+	bytes:        []u8,
+	os_error:     os.Error,
+	drill_assert: bool,
 }
 
+// `core:thread` builds this thread a context from scratch, so
+// `context.assertion_failure_proc` arrives back at Odin's own default however
+// `main` wired the process (issue #76 review round 6: an assert here left the
+// log holding a bare `CRASH` line and nothing else). The hook is per-context
+// and cannot be reinstalled by a helper -- Odin's implicit context does not
+// propagate back out of a call that returned -- so every worker entry point
+// writes the line itself, per `transcibr:crashlog`'s own doc comment.
 @(private)
 read_worker :: proc(data: rawptr) {
+	context.assertion_failure_proc = crashlog.assertion_hook
 	job := (^Read_Job)(data)
 	assert(job != nil, "a read thread was started with no job to read")
 	assert(len(job.path) > 0, "a read thread was started with no path to read")
+	assert(!job.drill_assert, "a read thread was asked to fail on purpose, and did")
 
 	job.bytes, job.os_error = os.read_entire_file_from_path(job.path, job_allocator())
 }
@@ -211,11 +222,24 @@ read_worker :: proc(data: rawptr) {
 // thread may still be writing into, short of `TerminateThread`, which
 // CLAUDE.md's own notes on this repository's test runner already found
 // abandons locks mid-use.
+//
+// `drill_assert` is a worker-side deliberate assertion no production caller
+// ever passes -- `read_bounded(path, bound_ms, allocator)` behaves identically
+// to a call that spells the default out. It is the same shape
+// `transcibr:engine`'s `landed_bounded` and `transcibr:audio`'s
+// `read_head_bounded` already carry for `stall_ms`: a defaulted parameter that
+// exists to reach a worker-thread state no ordinary input can produce. Issue
+// #76 review round 6 is what it is for -- `transcibr-cli --crash-drill
+// worker-assert` passes it so a committed test can measure that THIS worker's
+// own `context.assertion_failure_proc` install is what puts the message,
+// location and symbolized stack in the crash log, on a real production worker
+// rather than on a synthetic thread the drill itself created.
 @(require_results)
 read_bounded :: proc(
 	path: string,
 	bound_ms: i64,
 	allocator: mem.Allocator,
+	drill_assert := false,
 ) -> (
 	bytes: []u8,
 	err: Read_Error,
@@ -226,6 +250,7 @@ read_bounded :: proc(
 
 	job := new(Read_Job, job_allocator())
 	job.path = strings.clone(path, job_allocator())
+	job.drill_assert = drill_assert
 
 	context.allocator = job_allocator()
 	t := thread.create_and_start_with_data(job, read_worker)
