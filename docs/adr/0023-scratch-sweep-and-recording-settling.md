@@ -326,3 +326,106 @@ otherwise have transcribed. `discard_recording_wav` carries no pid, freshness, o
 against this. Issue #251 measured that this sweep has no ownership guard and records the gap here
 rather than inventing one: an ownership check is a real feature, not a fix, and is left to the
 maintainer alongside the reuse question above.
+
+## Addendum: the cache is owned, not merely opened, and its wav key stops colliding (issue #256)
+
+Issue #251's own closing gap — "an ownership check is a real feature… left to the maintainer" — is
+this ticket. It was filed alongside two siblings, both measured against the same `open_cache`: a
+sweep with no owned-name filter at all (`sweep_cache` removes any `.Regular`/`.Undetermined` entry
+by age or size, so `--cache` pointed at a real media directory loses the user's files at Batch
+start), and `produce` renaming its `.part` over `<cache>\<stem>.wav` with no existence check, so a
+`.wav` source under `--cache <its own folder>` is replaced by its own downmix. `open_cache` refused
+a regular file at the cache path and a missing parent; nothing refused a directory full of
+somebody's Recordings.
+
+### The ownership boundary
+
+`open_cache` now settles one further question before it hands a cache back to a caller: does
+transcibr own this directory. A zero-byte marker file, `.transcibr-cache`
+(`CACHE_MARKER_NAME`, `src/audio/run.odin`), records the answer once it is settled, so the same
+directory does not have to be re-derived on every later Batch:
+
+- **The marker is already there.** Trusted outright; nothing is listed.
+- **The directory is empty.** Trivially transcibr's to take; the marker is written.
+- **The directory holds only the four shapes this package and the Engine ever write into a
+  scratch cache** — `.wav`, `.json`, `.probe`, `.part` — **and nothing that is not a plain file.**
+  Adopted: the marker is written, and nothing already there is touched. This is the migration
+  story an ownership check has to answer honestly or not ship at all — a directory from before
+  this ticket, holding a Batch's worth of leftover audio and Engine output and nothing else, reads
+  as transcibr's own on first contact and is never stranded.
+- **Anything else** — a subdirectory, or a single file whose name is not one of those four shapes
+  — refuses with the new `Cache_Fault.Foreign_Directory`, naming the remedy ("point `--cache` at
+  an empty directory, or one transcibr already owns") through the same `cache_error_message`
+  channel every other `Cache_Fault` already renders through. No `src/cli` edit was needed:
+  `--transcribe`'s and `--batch`'s existing calls to `audio.cache_error_message` already render
+  whatever `Cache_Fault` `open_cache` hands back.
+
+**The accepted residual, stated rather than solved.** The adoption rule reads a directory of
+nothing but `.wav` files as transcibr's own, and a folder of a user's own raw voice-memo
+recordings, saved as `.wav`, is genuinely indistinguishable from that by name alone — the one shape
+among the four that is not distinctively transcibr's (`.probe` and `.part` carry a process id no
+real filename collides with by chance; `.json` next to audio is still a narrow pairing). The
+disaster scenario item 1 measured — `--cache` pointed at a directory of the user's own Recordings —
+is a video library in practice (`.mp4`, `.mov`, `.mkv`), which this refuses correctly; a directory
+holding nothing but the user's own `.wav` recordings and refuses nothing at all is the one shape
+this check cannot tell apart from a real leftover cache, and is recorded here as the accepted
+trade rather than assumed away.
+
+**Defense in depth, stated exactly as far as it goes.** `sweep_cache` gates through `open_cache` on
+every call, unconditionally — so a caller that reaches it directly is refused before anything is
+listed for removal; `a_sweep_of_a_foreign_directory_is_refused_and_removes_nothing`
+(`src/audio/run_test.odin`) pins this. `produce` and `extract` do not independently re-verify
+ownership per Recording — this is unchanged from `extract`'s own doc comment, already true before
+this ticket: "a cache that will not open is not a fact about this Recording… a Batch calls
+`open_cache` once, before the first extraction." Adding a second ownership check inside `produce`
+would mean every Recording paying for a check the Batch already paid once, against the same
+architecture this package already committed to. The gate is `open_cache`, called once; nothing
+downstream of it re-derives the answer.
+
+The marker itself is excluded from `cache_entries` (`src/audio/run.odin`), and so from the age/size
+sweep: a marker aged out by the 7-day ceiling would strand nothing (the next `open_cache` would
+simply re-derive ownership from the still-shaped contents), but excluding it outright avoids one
+aggressive sweep call ever making that re-derivation necessary at all, and avoids a
+directory-holding-only-transcibr-content losing its trust to its own housekeeping.
+
+### The wav key stops colliding on a shared stem
+
+Item 3 is transcibr-vs-transcibr and needed its own answer regardless of the ownership decision:
+`<cache>\<stem>.wav` was keyed on `job.name` alone — the artifact stem, ADR-0008 — and two
+Recordings sharing a stem from two different subfolders of one Batch root is a real, legitimate
+shape (ADR-0008's own injectivity proof is scoped to one directory; the flat scratch cache is not).
+`wav_cache_path` (`src/audio/run.odin`) now keys the wav on `<stem>.<key>.wav`, where `key` is the
+first eight bytes of a SHA-256 over the Recording's own `source` path, rendered as sixteen hex
+characters (`source_key`) — not a hash of the audio's bytes, which `produce` has not read yet and
+`extract` never reads as a whole. Two Recordings sharing a stem now key to two different paths;
+the same Recording keys to the same path every time, which retrying it depends on.
+
+**Consequence, stated plainly: this renames every wav this codebase will ever write, so every wav
+already sitting in a cache from before this ticket stops matching.** Nothing reads a cached wav by
+its old name ever again; issue #251 already measured that no caller reuses an extracted wav by any
+name, so this costs nothing beyond what #251 already priced in. An old-named wav becomes ordinary
+stale cache content, cleared by the existing age sweep like any other file that outlives its own
+Recording's run — up to seven days, the existing `max_age_ns`.
+
+**What this addendum does not do.** The Engine's own output naming (`<cache>\<name>.json`, built in
+`src/engine/run.odin` and rebuilt in `src/pipeline/recording.odin`'s `discard_engine_output`) is
+untouched: it stays keyed on `job.name` alone, and a stem collision there is a real, narrower
+residual this ticket does not fix, left exactly where "The two intermediates carry the process id;
+the finished audio does not" above already leaves it — the Batch's own guarantee that no two
+workers take the same stem, unenforced in this package. `discard_recording_wav`
+(`src/pipeline/recording.odin`, issue #251) takes `extracted.extracted.audio` exactly as
+`audio.extract` handed it back rather than rebuilding a prefix, so it inherits the new key with no
+edit of its own — the one path-construction seam (`wav_cache_path`) is the only place a wav's name
+is ever built, and everything downstream of `produce` already consumed the string it returned
+rather than reconstructing it.
+
+### What this builds toward
+
+Issue #17 (the GUI era's first-run cache selection) will ask a user to pick a `--cache` directory
+through a picker rather than a hand-typed flag, which makes "the user pointed it at the wrong
+folder" a mis-click rather than a typo -- the exact failure mode this addendum's ownership boundary
+exists to make survivable rather than catastrophic. A GUI picker can also surface `.None` versus
+`.Foreign_Directory` versus a freshly-adopted directory as three different confirmations at
+selection time, before a Batch ever starts, rather than as a refusal after the fact; that UI is
+#17's to design, not this ticket's, but the boundary it would sit on top of is the one recorded
+here.
