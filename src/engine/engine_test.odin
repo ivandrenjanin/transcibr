@@ -247,6 +247,37 @@ an_engine_that_produced_an_empty_file_is_a_failure :: proc(t: ^testing.T) {
 	testing.expect_value(t, err.fault, Fault.Output_Empty)
 }
 
+// The #109 collapse applied to this package's own child: a whisper.cpp run
+// that writes a real, non-empty output and then exits nonzero used to reach
+// `placed_from_engine_output` with no refusal of its own -- `landed_bounded`
+// only sees a file that is there and not empty, and the wrote-nothing case
+// is the only one that surfaced as `.No_Output`. Mutation check: dropping
+// `on_exit = watched_exit` in `run_engine`, or the `ending.exit_code != 0`
+// branch in `refused`, leaves this red while every other case in this file
+// stays green.
+@(test)
+an_engine_that_writes_output_and_then_exits_nonzero_is_a_refusal :: proc(t: ^testing.T) {
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	cache := testkit.made_scratch_cache(t, "engine", "nonzero-exit", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	executable := stand_in(t, cache, "nonzero-exit", ">\"%PREFIX%.json\" echo {}\r\nexit /b 3")
+	defer delete(executable, context.allocator)
+
+	tools, job := job_in(cache, executable)
+	produced, err := transcribe(&group, tools, job, Report{}, context.allocator, SHORT_LIMITS)
+	defer delete(produced.output, context.allocator)
+
+	testing.expect_value(t, err.fault, Fault.Refused)
+	testing.expect_value(t, err.exit_code, u32(3))
+}
+
 @(test)
 a_bounded_landed_check_of_a_real_output_on_disk_finds_it :: proc(t: ^testing.T) {
 	cache := testkit.made_scratch_cache(t, "engine", "landed", context.allocator)
@@ -600,6 +631,8 @@ every_way_a_run_can_end_is_the_fault_that_names_it :: proc(t: ^testing.T) {
 		Fault.Did_Not_Finish,
 	)
 	testing.expect_value(t, refused(Ending{run = .Finished}).fault, Fault.None)
+	testing.expect_value(t, refused(Ending{run = .Finished, exit_code = 3}).fault, Fault.Refused)
+	testing.expect_value(t, refused(Ending{run = .Finished, exit_code = 3}).exit_code, u32(3))
 }
 
 // An Unstoppable Engine is still the caller's only record of how long it ran
@@ -627,6 +660,7 @@ a_finished_run_carries_the_wall_clock_it_actually_took :: proc(t: ^testing.T) {
 	watch_state := Watch_State {
 		tracker = process.Tracker{duration_ms = 10_000},
 		elapsed_ms = 588,
+		exited = true,
 	}
 	ending := ending_for(.Finished, .None, watch_state, child.Error{})
 
