@@ -475,6 +475,17 @@ opened_group :: proc(t: ^testing.T) -> (group: child.Job_Object, ok: bool) {
 // counting its entries catches that: a renamed leftover is a real entry the
 // exact-path check could never see. The caller frees the returned names and
 // the slice itself.
+//
+// A round-2 adversarial review found the entry-set check still vacuous in the
+// OTHER direction: an Engine that never wrote into the cache at all (a broken
+// `-of` arg walk, or a broken `-of` flag name in `engine_arguments` itself)
+// leaves the cache holding only the sentinel either way, so the check passes
+// identically whether the sweep removed a real file or removed nothing. The
+// witness helper below closes that: it names an extra file the stand-in
+// writes at its own resolved prefix, alongside the Engine output proper, so
+// the cache holding the witness after the run is a positive proof the child
+// really resolved that prefix INSIDE the cache and wrote there -- not just
+// that the Engine output is absent.
 @(private)
 @(require_results)
 cache_entry_names :: proc(t: ^testing.T, cache: string, allocator: mem.Allocator) -> []string {
@@ -490,20 +501,45 @@ cache_entry_names :: proc(t: ^testing.T, cache: string, allocator: mem.Allocator
 	return names
 }
 
+// Whether `want` appears anywhere in `names` -- factored out of
+// `sweep_leaves_only_the_sentinel_audio` below purely to keep that procedure
+// under CLAUDE.md rule F1's 70-line limit once the witness check grew it.
+@(private)
+@(require_results)
+names_contain :: proc(names: []string, want: string) -> bool {
+	for name in names {
+		if name == want {
+			return true
+		}
+	}
+	return false
+}
+
 // The ticket's own proof: a Recording whose Engine run finishes and refuses
 // it (a real, non-empty output written, then a nonzero exit -- the #186
 // review's shape) must leave zero NEW entries in the scratch cache once
-// `transcribe_and_place` has settled it. Two things a bare "the exact output
-// path is gone" check cannot see (round-1 adversarial review, mutations 5
-// and 2): a renamed leftover (the sweep built the wrong path and removed
-// nothing real) and an overreaching sweep (the sweep removed a file it had
-// no business touching). `sentinel` stands in for the extracted `.wav`
+// `transcribe_and_place` has settled it. Three things a bare "the exact
+// output path is gone" check cannot see (round-1 adversarial review,
+// mutations 5 and 2; round-2 adversarial review, mutations F and G): a
+// renamed leftover (the sweep built the wrong path and removed nothing
+// real), an overreaching sweep (the sweep removed a file it had no business
+// touching), and a sweep that swept nothing because the Engine never wrote
+// into the cache at all (a broken `-of` arg walk in the stand-in itself, or a
+// broken `-of` flag name in `engine_arguments`) -- the last of which the
+// first two rounds' entry-set check could not see either, because an Engine
+// that writes nothing leaves the cache holding only the sentinel exactly the
+// way a correct sweep does. `sentinel` stands in for the extracted `.wav`
 // `audio.extract` would have already written at this exact prefix by the
-// time a real Batch reaches transcription -- it must survive untouched, and
-// the stand-in Engine itself is written OUTSIDE the cache so the entry count
-// in the cache means only what the sweep did to it. Shared by both tests
-// below so each stays under CLAUDE.md rule F1's 70-line limit; `tag` keeps
-// their scratch caches apart and `body` is each one's own stand-in shape.
+// time a real Batch reaches transcription -- it must survive untouched.
+// `body` also writes a witness file at its own resolved prefix, a name
+// `discard_engine_output` never touches -- the witness surviving in the
+// cache is the positive proof that the Engine really resolved that prefix
+// INSIDE the cache and wrote there, closing the third gap above. The
+// stand-in Engine itself is written OUTSIDE the cache so the entry count in
+// the cache means only what the sweep -- and the witness write -- did to it.
+// Shared by both tests below so each stays under CLAUDE.md rule F1's 70-line
+// limit; `tag` keeps their scratch caches apart and `body` is each one's own
+// stand-in shape.
 @(private)
 sweep_leaves_only_the_sentinel_audio :: proc(t: ^testing.T, tag: string, body: string) {
 	group, ok := opened_group(t)
@@ -555,8 +591,6 @@ sweep_leaves_only_the_sentinel_audio :: proc(t: ^testing.T, tag: string, body: s
 
 	testing.expect_value(t, placed, false)
 
-	expected := fmt.aprintf("%s.wav", tag, allocator = context.allocator)
-	defer delete(expected, context.allocator)
 	names := cache_entry_names(t, cache, context.allocator)
 	defer {
 		for name in names {
@@ -566,8 +600,10 @@ sweep_leaves_only_the_sentinel_audio :: proc(t: ^testing.T, tag: string, body: s
 	}
 	testing.expectf(
 		t,
-		len(names) == 1 && names[0] == expected,
-		"the cache held %v after %s, wanted only the surviving audio",
+		len(names) == 2 &&
+		names_contain(names, fmt.tprintf("%s.wav", tag)) &&
+		names_contain(names, fmt.tprintf("%s.witness", tag)),
+		"the cache held %v after %s, wanted only the surviving audio and the Engine's witness",
 		names,
 		tag,
 	)
@@ -578,19 +614,29 @@ a_refused_recording_leaves_no_engine_output_behind_in_the_scratch_cache :: proc(
 	sweep_leaves_only_the_sentinel_audio(
 		t,
 		"refused-sweep",
-		">\"%PREFIX%.json\" echo {}\r\nexit /b 3",
+		">\"%PREFIX%.json\" echo {}\r\n>\"%PREFIX%.witness\" echo x\r\nexit /b 3",
 	)
 }
 
 // The `.Output_Empty` precedent the ticket names converging to the same
 // shape: the Engine exits 0 but writes an empty file, `landed_bounded`
 // reports `.Output_Empty`, and the empty file must be swept exactly like a
-// `.Refused` one is -- proved the same entry-set way as the test above.
+// `.Refused` one is -- proved the same entry-set way as the test above. The
+// witness write after the empty output is what pins WHICH fault landed here:
+// if the resolved prefix were wrong (round-2 mutation G/F), the witness would
+// never reach the cache, and neither would the real `.json` written on the
+// same line before it -- so a witness surviving in the cache is proof the
+// output existed at the expected path for `landed_bounded` to find and read
+// as empty, the shape `.No_Output` (a missing file) cannot produce.
 @(test)
 an_output_empty_recording_leaves_no_engine_output_behind_in_the_scratch_cache :: proc(
 	t: ^testing.T,
 ) {
-	sweep_leaves_only_the_sentinel_audio(t, "empty-sweep", "type nul > \"%PREFIX%.json\"")
+	sweep_leaves_only_the_sentinel_audio(
+		t,
+		"empty-sweep",
+		"type nul > \"%PREFIX%.json\"\r\n>\"%PREFIX%.witness\" echo x",
+	)
 }
 
 // Issue #211's fault-walk mirror of src/audio/run_test.odin's own
