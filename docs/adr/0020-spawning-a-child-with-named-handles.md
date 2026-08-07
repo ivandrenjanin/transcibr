@@ -324,7 +324,8 @@ fall back to the original abandonment, on `job_allocator`'s heap, for the proces
 `Wait` (`.Finished` / `.Stopped` / `.Unstoppable`) is what names the three outcomes, deliberately
 matching `Run`'s own vocabulary for a process one layer up.
 
-`child.abandoning_a_read_repeatedly_does_not_accumulate_threads` is what pins the fix: a hundred
+`child.abandoning_a_read_repeatedly_does_not_accumulate_threads_when_the_thread_probe_succeeds` is
+what pins the fix: a hundred
 abandoned reads, run one after another through the public `read_bounded` seam, must not leave this
 process's own thread count more than `TOLERANCE` above its baseline — measured with the identical
 `CreateToolhelp32Snapshot` technique the review used, so the claim and the proof use the same

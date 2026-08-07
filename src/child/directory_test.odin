@@ -113,7 +113,7 @@ a_directory_listing_within_its_bound_returns_every_entry_through_child :: proc(t
 // anything new -- `list_directory_bounded` calls the identical
 // `await_or_abandon` this file already discriminates directly, at the pipe,
 // in `a_read_that_cannot_finish_is_abandoned_at_its_bound` and in
-// `abandoning_a_read_repeatedly_does_not_accumulate_threads`, and
+// `abandoning_a_read_repeatedly_does_not_accumulate_threads_when_the_thread_probe_succeeds`, and
 // `planning.a_directory_listing_that_cannot_finish_within_its_bound_is_-`
 // `reported_rather_than_awaited_forever` already proves the identical
 // listing-specific wiring one package over.
