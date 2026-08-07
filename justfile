@@ -64,6 +64,22 @@ fmt-check:
 	for /r tools %f in (*.odin) do @({{ odinfmt }} -path:"%f" -config:odinfmt.json > build\fmt-check.tmp & fc /b "%f" build\fmt-check.tmp >nul || (echo NOT FORMATTED: %f & del /q build\fmt-check.tmp & exit /b 1))
 	del /q build\fmt-check.tmp
 
+# Builds tools/policy's own test-harness binary, `policy-cli.exe`, which
+# `exit_code_test.odin` spawns as a child process to pin the VIOLATION_ERROR
+# exit mapping. Kept as its OWN recipe rather than a line inside `test:`'s
+# body (fix round 1 finding 1): `missing_from_test_recipe`
+# (tools/policy/packages.odin:307-344) treats the `tools/policy` token as
+# present the moment it occurs anywhere in the `test:` recipe's own body, so
+# a second occurrence there -- this build line, alongside the real
+# `odin test tools/policy` line -- let the package-accounting check see
+# `tools/policy` as present even with the real test line deleted. `test:`
+# invokes this recipe by name below rather than inlining the `odin build`
+# line, so the token appears in `test:`'s body exactly once, on the line
+# that actually runs the tests.
+policy-cli-exe:
+	if not exist build\odin-test mkdir build\odin-test
+	{{ odin }} build tools/policy {{ collection }} -out:build/odin-test/policy-cli.exe {{ vet }}
+
 # One explicit line per package: the 12 src/ packages that hold tests, plus
 # tools/policy, which reads Odin and is tested in Odin (ADR-0028). `cli` is
 # the one src/ package with none, by ADR-0009 -- an entry point thin enough
@@ -95,7 +111,7 @@ test:
 	{{ odin }} test src/testkit {{ collection }} -out:build/odin-test/testkit.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/transcript {{ collection }} -out:build/odin-test/transcript.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/version {{ collection }} -out:build/odin-test/version.exe {{ memory }} {{ vet }}
-	{{ odin }} build tools/policy {{ collection }} -out:build/odin-test/policy-cli.exe {{ vet }}
+	{{ just_executable() }} policy-cli-exe
 	{{ odin }} test tools/policy {{ collection }} -out:build/odin-test/policy.exe {{ memory }} {{ vet }}
 
 # One test, focused: `just test-one version banner_names_the_program_and_its_version`.
