@@ -263,3 +263,66 @@ this exact discipline to extraction's own `.part` file on every one of its fault
 side of the pipeline. It does not add an operational log line naming what was kept or removed —
 the operational log 176-B describes does not exist yet, and this ticket does not invent one; the
 line lands with 176-D's event seam instead.
+
+## Addendum: a refused Recording's extracted wav sweeps too, immediately (issue #251)
+
+Issue #211's sweep above, and the addendum that implements it, cover the Engine's own output file.
+They do not cover the much larger file sitting beside it in the same cache entry: the extracted
+`<cache>\<name>.wav` `transcibr:audio` wrote before the Engine ever ran. Issue #251 measured what
+this document's body claims for that file and found it fiction. The stated rationale for keeping a
+Recording's wav around — "a Batch interrupted over a weekend resumes against its own extracted
+audio rather than extracting it all again" — is implemented **nowhere**: `audio.extract`
+(`src/audio/run.odin:567`) does no existence check on a cached wav before writing one, and
+`produce` unconditionally extracts to a fresh `.part` and renames over whatever is already there.
+Every wav this codebase has ever written is write-once-read-once; nothing reuses it, ever. At the
+pinned extraction format (16 kHz mono `pcm_s16le` = 32,000 B/s) that is ~115 MB per hour of source
+per failed Recording, roughly 1000× the partial `.json` the addendum above sweeps, held for up to
+seven days until the next Batch-start age sweep finds it.
+
+**Ruling (maintainer, delegated, 2026-08-07): sweep it immediately too, at the same point
+`transcribe_and_place` already settles the Engine's own output.** With no reuse path implemented
+anywhere, keeping 115 MB/hr of source per failed Recording buys nothing the fault record and
+Sidecar do not already carry as the diagnostic story.
+
+The fault set this sweep answers to is narrower than the Engine-output sweep's. Both keep
+`.Not_Stopped` — the Engine may still be running and may still hold the file open, same reason as
+above. The wav sweep also keeps `.Did_Not_Finish`: its own `fault_says` sentence is "the Engine was
+stopped before it finished", and every one of its three `child.Stop_Reason` origins
+(`.None`, `.Bound_Expired`, `.Drain_Failed`, `src/engine/run.odin`'s `refused`) is this run simply
+not landing inside its bound — nothing judged this Recording's audio and rejected it, the way
+`.Refused` or `.Output_Empty` do. That is exactly the "Batch interrupted, resumed later" shape this
+document's own rationale describes, even though nothing reuses the file yet, so it is the one fault
+worth keeping the wav for regardless. Every other fault — `.Refused`, `.Output_Empty`,
+`.Went_Silent`, `.Path_Not_Ascii`, `.Not_Started`, `.No_Output` — either judged this Recording's
+audio and rejected it or never touched the wav at all, so sweeping it on those loses nothing a
+retry could use.
+
+Implemented in `src/pipeline/recording.odin`'s `discard_recording_wav`, called from
+`transcribe_and_place` alongside `discard_engine_output` on any Engine fault. It takes the exact
+path `extracted.extracted.audio` already carries — the same path `audio.extract` handed back —
+rather than rebuilding a prefix the way `discard_engine_output` does, because `transcribe_and_place`
+already holds it. `os.remove` on that one path; no enumeration of the cache directory, no wildcard,
+no `os.remove_all` (CLAUDE.md's Odin notes, issue #97/#105), tolerant of a locked file the same way
+`discard_part` and `discard_engine_output` already are.
+
+**What this addendum does not do.** It does not implement the reuse this document's body still
+describes as the reason a successful Recording's wav is kept. That is a real feature — an
+existence-and-freshness check in `audio.produce` before it extracts — or, if that feature is never
+built, an amendment to this document's body to stop claiming it exists. Issue #251 files that
+question to the maintainer in its own PR rather than resolving it here, and does not silently
+rewrite the rationale above: the body's words stand as originally written, now qualified by this
+addendum's measurement that nothing implements them. It does not touch a successful Recording's
+wav at all — that file stays exactly where the age/size sweep already governs it, unchanged.
+
+**A new residual, alongside "The two intermediates carry the process id; the finished audio does
+not" above.** That section's safety argument for leaving `<name>.wav` plain — "two workers that
+both produced it produced the same bytes" — covers concurrent WRITES only. This sweep adds an
+unconditional `os.remove` of that same plain name on a fault, and the write-side argument says
+nothing about a delete: if two transcibr processes are pointed at the same `--cache` over the same
+Recording (the ADR's own stated scenario for why the two intermediates needed a pid at all), one
+process's `.Refused` can remove `<cache>\<name>.wav` in the window after the other has extracted it
+but before its own Engine run has opened it, producing a spurious fault on a Recording that would
+otherwise have transcribed. `discard_recording_wav` carries no pid, freshness, or handle check
+against this. Issue #251 measured that this sweep has no ownership guard and records the gap here
+rather than inventing one: an ownership check is a real feature, not a fix, and is left to the
+maintainer alongside the reuse question above.

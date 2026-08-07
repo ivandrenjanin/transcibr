@@ -504,6 +504,15 @@ cache_entry_names :: proc(t: ^testing.T, cache: string, allocator: mem.Allocator
 // Whether `want` appears anywhere in `names` -- factored out of
 // `sweep_leaves_only_the_sentinel_audio` below purely to keep that procedure
 // under CLAUDE.md rule F1's 70-line limit once the witness check grew it.
+// Shared by `sweep_leaves_only_the_witness`'s sentinel and neighbor writes --
+// factored out purely to keep that procedure under CLAUDE.md rule F1's
+// 70-line limit once the neighbor probe grew it.
+@(private)
+must_write_probe :: proc(t: ^testing.T, path: string, label: string) {
+	assert(len(path) > 0, "a probe write reached with no path")
+	testing.expectf(t, os.write_entire_file(path, []u8{0}) == nil, "could not write the %s", label)
+}
+
 @(private)
 @(require_results)
 names_contain :: proc(names: []string, want: string) -> bool {
@@ -515,33 +524,41 @@ names_contain :: proc(names: []string, want: string) -> bool {
 	return false
 }
 
-// The ticket's own proof: a Recording whose Engine run finishes and refuses
-// it (a real, non-empty output written, then a nonzero exit -- the #186
-// review's shape) must leave zero NEW entries in the scratch cache once
-// `transcribe_and_place` has settled it. Three things a bare "the exact
-// output path is gone" check cannot see (round-1 adversarial review,
-// mutations 5 and 2; round-2 adversarial review, mutations F and G): a
-// renamed leftover (the sweep built the wrong path and removed nothing
-// real), an overreaching sweep (the sweep removed a file it had no business
-// touching), and a sweep that swept nothing because the Engine never wrote
-// into the cache at all (a broken `-of` arg walk in the stand-in itself, or a
-// broken `-of` flag name in `engine_arguments`) -- the last of which the
-// first two rounds' entry-set check could not see either, because an Engine
-// that writes nothing leaves the cache holding only the sentinel exactly the
-// way a correct sweep does. `sentinel` stands in for the extracted `.wav`
-// `audio.extract` would have already written at this exact prefix by the
-// time a real Batch reaches transcription -- it must survive untouched.
-// `body` also writes a witness file at its own resolved prefix, a name
-// `discard_engine_output` never touches -- the witness surviving in the
+// Issue #251's own proof, layered onto #211's: a Recording whose Engine run
+// finishes and refuses it (a real, non-empty output written, then a nonzero
+// exit -- the #186 review's shape) must leave zero NEW entries in the
+// scratch cache AND its own extracted `.wav` gone once `transcribe_and_place`
+// has settled it. Four things a bare "the exact output path is gone" check
+// cannot see (round-1 adversarial review, mutations 5 and 2; round-2
+// adversarial review, mutations F and G; round-1-of-#254's-fix-round
+// adversarial review): a renamed leftover (the sweep built the wrong path
+// and removed nothing real), an overreaching sweep (the sweep removed a file
+// it had no business touching), a sweep that swept nothing because the
+// Engine never wrote into the cache at all (a broken `-of` arg walk in the
+// stand-in itself, or a broken `-of` flag name in `engine_arguments`) -- the
+// last of which the first two rounds' entry-set check could not see either,
+// because an Engine that writes nothing leaves the cache holding only the
+// sentinel exactly the way a correct sweep does -- and an overreaching wav
+// sweep specifically (the #254 fix-round finding: a directory-walk removing
+// every `.wav` in the cache passed the whole suite because the only wav in
+// the cache WAS the sweep's own target). `sentinel` stands in for the
+// extracted `.wav` `audio.extract` would have already written at this exact
+// prefix by the time a real Batch reaches transcription -- issue #251
+// measured it outliving the refusal it belongs to, so it must now be gone
+// alongside the Engine's own output. `neighbor` stands in for a SECOND
+// Recording's extracted wav sharing this same cache -- it must survive, and
+// is the positive proof the sweep is an exact-path `os.remove` and not a
+// directory walk. `body` also writes a witness file at its own resolved
+// prefix, a name neither sweep ever touches -- the witness surviving in the
 // cache is the positive proof that the Engine really resolved that prefix
 // INSIDE the cache and wrote there, closing the third gap above. The
 // stand-in Engine itself is written OUTSIDE the cache so the entry count in
-// the cache means only what the sweep -- and the witness write -- did to it.
-// Shared by both tests below so each stays under CLAUDE.md rule F1's 70-line
-// limit; `tag` keeps their scratch caches apart and `body` is each one's own
-// stand-in shape.
+// the cache means only what the sweeps -- and the witness and neighbor
+// writes -- did to it. Shared by both tests below so each stays under
+// CLAUDE.md rule F1's 70-line limit; `tag` keeps their scratch caches apart
+// and `body` is each one's own stand-in shape.
 @(private)
-sweep_leaves_only_the_sentinel_audio :: proc(t: ^testing.T, tag: string, body: string) {
+sweep_leaves_only_the_witness :: proc(t: ^testing.T, tag: string, body: string) {
 	group, ok := opened_group(t)
 	defer child.job_object_close(&group)
 	if !ok {
@@ -560,11 +577,11 @@ sweep_leaves_only_the_sentinel_audio :: proc(t: ^testing.T, tag: string, body: s
 
 	sentinel := fmt.aprintf("%s\\%s.wav", cache, tag, allocator = context.allocator)
 	defer delete(sentinel, context.allocator)
-	testing.expect(
-		t,
-		os.write_entire_file(sentinel, []u8{0}) == nil,
-		"could not write the sentinel audio file",
-	)
+	must_write_probe(t, sentinel, "sentinel audio file")
+
+	neighbor := fmt.aprintf("%s\\%s-neighbor.wav", cache, tag, allocator = context.allocator)
+	defer delete(neighbor, context.allocator)
+	must_write_probe(t, neighbor, "neighbor audio file")
 
 	executable := refusal_stand_in(t, tools_dir, tag, body)
 	defer delete(executable, context.allocator)
@@ -584,7 +601,7 @@ sweep_leaves_only_the_sentinel_audio :: proc(t: ^testing.T, tag: string, body: s
 	)
 	extracted := Recording_Extracted {
 		job = job,
-		extracted = audio.Extracted{audio = "C:\\nowhere\\talk.wav", container_ms = 2_000},
+		extracted = audio.Extracted{audio = sentinel, container_ms = 2_000},
 	}
 
 	placed := transcribe_and_place(extracted)
@@ -601,17 +618,19 @@ sweep_leaves_only_the_sentinel_audio :: proc(t: ^testing.T, tag: string, body: s
 	testing.expectf(
 		t,
 		len(names) == 2 &&
-		names_contain(names, fmt.tprintf("%s.wav", tag)) &&
-		names_contain(names, fmt.tprintf("%s.witness", tag)),
-		"the cache held %v after %s, wanted only the surviving audio and the Engine's witness",
+		names_contain(names, fmt.tprintf("%s.witness", tag)) &&
+		names_contain(names, fmt.tprintf("%s-neighbor.wav", tag)),
+		"the cache held %v after %s, wanted only the Engine's witness and the neighbor's wav -- either the wav swept too or the sweep overreached onto the neighbor",
 		names,
 		tag,
 	)
 }
 
 @(test)
-a_refused_recording_leaves_no_engine_output_behind_in_the_scratch_cache :: proc(t: ^testing.T) {
-	sweep_leaves_only_the_sentinel_audio(
+a_refused_recording_leaves_no_engine_output_or_wav_behind_in_the_scratch_cache :: proc(
+	t: ^testing.T,
+) {
+	sweep_leaves_only_the_witness(
 		t,
 		"refused-sweep",
 		">\"%PREFIX%.json\" echo {}\r\n>\"%PREFIX%.witness\" echo x\r\nexit /b 3",
@@ -620,19 +639,20 @@ a_refused_recording_leaves_no_engine_output_behind_in_the_scratch_cache :: proc(
 
 // The `.Output_Empty` precedent the ticket names converging to the same
 // shape: the Engine exits 0 but writes an empty file, `landed_bounded`
-// reports `.Output_Empty`, and the empty file must be swept exactly like a
-// `.Refused` one is -- proved the same entry-set way as the test above. The
-// witness write after the empty output is what pins WHICH fault landed here:
-// if the resolved prefix were wrong (round-2 mutation G/F), the witness would
-// never reach the cache, and neither would the real `.json` written on the
-// same line before it -- so a witness surviving in the cache is proof the
-// output existed at the expected path for `landed_bounded` to find and read
-// as empty, the shape `.No_Output` (a missing file) cannot produce.
+// reports `.Output_Empty`, and the empty file -- and now the wav -- must be
+// swept exactly like a `.Refused` run's are -- proved the same entry-set way
+// as the test above. The witness write after the empty output is what pins
+// WHICH fault landed here: if the resolved prefix were wrong (round-2
+// mutation G/F), the witness would never reach the cache, and neither would
+// the real `.json` written on the same line before it -- so a witness
+// surviving in the cache is proof the output existed at the expected path
+// for `landed_bounded` to find and read as empty, the shape `.No_Output` (a
+// missing file) cannot produce.
 @(test)
-an_output_empty_recording_leaves_no_engine_output_behind_in_the_scratch_cache :: proc(
+an_output_empty_recording_leaves_no_engine_output_or_wav_behind_in_the_scratch_cache :: proc(
 	t: ^testing.T,
 ) {
-	sweep_leaves_only_the_sentinel_audio(
+	sweep_leaves_only_the_witness(
 		t,
 		"empty-sweep",
 		"type nul > \"%PREFIX%.json\"\r\n>\"%PREFIX%.witness\" echo x",
@@ -681,4 +701,117 @@ every_engine_fault_but_not_stopped_sweeps_its_own_engine_output :: proc(t: ^test
 		)
 		os.remove(output)
 	}
+}
+
+// Issue #251's own fault-walk mirror, one level narrower than
+// `every_engine_fault_but_not_stopped_sweeps_its_own_engine_output` above:
+// `discard_recording_wav` keeps the wav on `.Did_Not_Finish` as well as
+// `.Not_Stopped` -- a stop is not a refusal (this proc's own doc comment
+// records why) -- so the kept set here is two members wide where the
+// Engine-output sweep's is one. A round-1-style deletion of either guard
+// would still pass every OTHER test in this file; this table is what pins
+// both members' own behavior rather than leaving it asserted by prose only.
+@(test)
+every_engine_fault_but_not_stopped_or_did_not_finish_sweeps_its_own_recording_wav :: proc(
+	t: ^testing.T,
+) {
+	cache := testkit.made_scratch_cache(t, "Pipeline", "wav-fault-walk", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	wav := fmt.aprintf("%s\\wav-fault-walk.wav", cache, allocator = context.allocator)
+	defer delete(wav, context.allocator)
+
+	for fault in engine.Fault {
+		if fault == .None {
+			continue
+		}
+		kept := fault == .Not_Stopped || fault == .Did_Not_Finish
+		testing.expectf(t, os.write_entire_file(wav, []u8{0}) == nil, "could not write %s", wav)
+		discard_recording_wav(wav, fault)
+		testing.expectf(
+			t,
+			os.exists(wav) == kept,
+			"%v left the extracted wav in the wrong state",
+			fault,
+		)
+		os.remove(wav)
+	}
+}
+
+// Issue #251's success-side pin, the other direction of the ticket's own
+// acceptance criteria: an Engine run that comes through clean must leave its
+// Recording's extracted wav untouched, byte for byte. Reuses
+// `sweep_leaves_only_the_witness`'s own stand-in and sentinel technique
+// (`refusal_stand_in`, a real child spawned through the same `Job_Object`)
+// rather than calling `discard_recording_wav` directly, because the fact
+// this pins is upstream of that proc entirely -- that `transcribe_and_place`
+// never REACHES the sweep call at all when `unfinished.fault == .None`. #252
+// records that `transcribe_and_place`'s own success path -- what
+// `placed_and_reported` does with a real Engine output afterward -- carries
+// no test coverage yet; this test does not close that gap; it stops at
+// proving the wav survives regardless of what `placed_and_reported` goes on
+// to do with the placement itself, which is #252's fixture to build.
+@(test)
+a_successful_recording_leaves_its_extracted_wav_byte_identical :: proc(t: ^testing.T) {
+	group, ok := opened_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	tag := "success-survives"
+	cache := testkit.made_scratch_cache(t, "Pipeline", tag, context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	tools_tag := fmt.aprintf("%s-tools", tag, allocator = context.allocator)
+	defer delete(tools_tag, context.allocator)
+	tools_dir := testkit.made_scratch_cache(t, "Pipeline", tools_tag, context.allocator)
+	defer delete(tools_dir, context.allocator)
+	defer testkit.remove_cache(tools_dir, context.allocator)
+
+	sentinel := fmt.aprintf("%s\\%s.wav", cache, tag, allocator = context.allocator)
+	defer delete(sentinel, context.allocator)
+	original := []u8{1, 2, 3, 4, 5}
+	testing.expect(
+		t,
+		os.write_entire_file(sentinel, original) == nil,
+		"could not write the sentinel audio file",
+	)
+
+	executable := refusal_stand_in(t, tools_dir, tag, ">\"%PREFIX%.json\" echo {}")
+	defer delete(executable, context.allocator)
+
+	digest := a_digest('s')
+	defer delete(string(digest), context.allocator)
+	job := new_recording_job(
+		"C:\\clips\\talk.mp4",
+		tag,
+		&group,
+		Tools{engine = engine.Tools{engine = executable}},
+		cache,
+		artifact.Model{path = "C:\\nowhere\\model.bin", digest = digest, bytes = 1},
+		"",
+		"whisper.cpp 1.9.9",
+		transcript.DEFAULT_PROFILE,
+		engine.Report{},
+		Health_Watch{},
+	)
+	extracted := Recording_Extracted {
+		job = job,
+		extracted = audio.Extracted{audio = sentinel, container_ms = 2_000},
+	}
+
+	_ = transcribe_and_place(extracted)
+
+	after, unreadable := os.read_entire_file_from_path(sentinel, context.allocator)
+	testing.expectf(
+		t,
+		unreadable == nil,
+		"the sentinel audio did not survive at all: %v",
+		unreadable,
+	)
+	defer delete(after, context.allocator)
+	testing.expect_value(t, string(after), string(original))
 }
