@@ -263,11 +263,23 @@ model_load_verdict :: proc(probe: Probe, model_path: string, allocator: mem.Allo
 // 0xC0000409, and the marker line never printed at all, because the process
 // died before whisper.cpp could report anything about it. A probe that reads
 // the marker alone calls that a PASS.
+//
+// Issue #145: this renderer used to re-assert `probe.exit_code != 0`, the
+// identical condition its one call site in `model_load_verdict` already
+// checks -- a legitimate A4 pair, but the only assert in this package
+// standing between external, child-originated data and a fault report, and
+// nothing exercised it. Per #137/#141's shape (an assert redundant with a
+// guarantee the caller already holds is removed rather than recorded), the
+// assert is gone: a zero exit code reaching here through some future call
+// site renders "engine exit status 0x0" instead of crashing the test
+// runner, which is what A8 asks of a boundary either way. Covered by
+// `a_refused_engine_probe_names_its_exit_status_without_asserting` in
+// `model_probe_test.odin`, driven through `model_load_verdict`, the seam a
+// real doctor run reaches this through.
 @(private)
 @(require_results)
 model_refused :: proc(probe: Probe, model_path: string, allocator: mem.Allocator) -> Check {
 	assert(len(model_path) > 0, "there is no model here to report a refusal against")
-	assert(probe.exit_code != 0, "a clean exit was reported as the engine refusing the model")
 
 	says := "was refused by the engine; the download is truncated or corrupt"
 	if strings.contains(probe.captured, MODEL_LOAD_FAILURE_MARKER) {
