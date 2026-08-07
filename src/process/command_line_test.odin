@@ -427,6 +427,54 @@ every_fault_renders_as_the_line_its_row_describes :: proc(t: ^testing.T) {
 	}
 }
 
+// Issue #255, the #244 review's reaching mutation: rebuilding the return at
+// command_line.odin:195-198 as `Build_Error{culprit = ..., argument = ...}`
+// drops `fault` to its zero value and sails past `error_message`'s
+// `assert(err.fault != .None, ...)` at command_line.odin:115 unnoticed by
+// anything that renders conditionally on that same field. This is the
+// guard-side half of the pairing (#208/#223 family, intra-package edition):
+// `check_inputs` is the only constructor a refusal here can come from, and
+// `build_command_line:195-198` is the only place that forwards its result, so
+// every one of these cases pins that the forwarded `Build_Error` still
+// carries the fault `check_inputs` gave it, checked before anything else
+// about the case.
+@(test)
+every_refusal_out_of_build_command_line_carries_its_own_fault :: proc(t: ^testing.T) {
+	Refusal :: struct {
+		executable: string,
+		arguments:  []string,
+		want:       Build_Fault,
+	}
+	cases := []Refusal {
+		{"", {"-i"}, .Empty_Executable},
+		{`C:\a"b\ffmpeg.exe`, {}, .Quote_In_Executable},
+		{"C:\\a\x00b\\ffmpeg.exe", {"-i"}, .Nul_In_Executable},
+		{EXE, {"-i", "a\x00b.mkv"}, .Nul_In_Argument},
+		{"C:\\\xED\xA0\x80\\ffmpeg.exe", {}, .Invalid_Utf8_In_Executable},
+		{EXE, {"-i", "\xED\xA0\x80"}, .Invalid_Utf8_In_Argument},
+	}
+
+	for refusal, i in cases {
+		line, err := build_command_line(refusal.executable, refusal.arguments, context.allocator)
+		defer delete(line, context.allocator)
+		testing.expectf(
+			t,
+			err.fault != .None,
+			"refusal[%d] (%v) came back with no fault at all",
+			i,
+			refusal.want,
+		)
+		testing.expectf(
+			t,
+			err.fault == refusal.want,
+			"refusal[%d] came back %v, want %v",
+			i,
+			err.fault,
+			refusal.want,
+		)
+	}
+}
+
 @(test)
 every_fault_says_whether_a_different_plan_would_help :: proc(t: ^testing.T) {
 	for fault in Build_Fault {
