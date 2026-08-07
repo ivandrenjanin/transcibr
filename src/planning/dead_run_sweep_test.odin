@@ -45,8 +45,24 @@ STILL_ACTIVE :: 259
 @(private)
 sweep_once: sync.Once
 
+// core:testing runs every @(test) procedure in this package across up to 12
+// threads. `sweep_dead_runs` enumerates the WHOLE prefix, not just the one
+// tree its caller planted, so two sweep-related windows running at once --
+// two of this file's tests, or one of them racing the once-guarded
+// production hook `access_test.odin` fires -- can have one call's sweep
+// remove a tree a concurrently-running window has only just planted and not
+// yet asserted on. `sweep_test_lock` brackets each such window (plant,
+// sweep, assert, and this test's own cleanup) so at most one is ever
+// in-flight at a time; it does not change what `sweep_dead_runs` sweeps, only
+// serializes when the sweep-owning tests are allowed to run it (fix round 1,
+// issue #217 finding 1).
+@(private)
+sweep_test_lock: sync.Mutex
+
 @(private)
 sweep_dead_runs_once :: proc() {
+	sync.mutex_lock(&sweep_test_lock)
+	defer sync.mutex_unlock(&sweep_test_lock)
 	sync.once_do(&sweep_once, sweep_dead_runs)
 }
 
@@ -193,6 +209,9 @@ NEVER_ALIVE_PID :: 0xEFFFFFF0
 
 @(test)
 a_dead_run_tree_is_swept_on_the_next_suite_run :: proc(t: ^testing.T) {
+	sync.mutex_lock(&sweep_test_lock)
+	defer sync.mutex_unlock(&sweep_test_lock)
+
 	tree := dead_run_tree(t, NEVER_ALIVE_PID, "planted")
 	defer delete(tree, context.allocator)
 	defer testkit.remove_tree(tree, context.allocator)
@@ -211,6 +230,9 @@ a_dead_run_tree_is_swept_on_the_next_suite_run :: proc(t: ^testing.T) {
 // sentinel's own contents being touched at all.
 @(test)
 a_junction_inside_a_dead_run_tree_is_removed_without_touching_its_target :: proc(t: ^testing.T) {
+	sync.mutex_lock(&sweep_test_lock)
+	defer sync.mutex_unlock(&sweep_test_lock)
+
 	sentinel := testkit.made_scratch_cache(t, "planningsentinel", "junction", context.allocator)
 	defer delete(sentinel, context.allocator)
 	defer testkit.remove_tree(sentinel, context.allocator)
@@ -247,6 +269,9 @@ a_junction_inside_a_dead_run_tree_is_removed_without_touching_its_target :: proc
 // the same process.
 @(test)
 a_tree_named_with_the_current_pid_is_never_touched :: proc(t: ^testing.T) {
+	sync.mutex_lock(&sweep_test_lock)
+	defer sync.mutex_unlock(&sweep_test_lock)
+
 	tree := testkit.made_scratch_cache(t, "planning", "current-pid", context.allocator)
 	defer delete(tree, context.allocator)
 	defer testkit.remove_tree(tree, context.allocator)
@@ -263,6 +288,9 @@ a_tree_named_with_the_current_pid_is_never_touched :: proc(t: ^testing.T) {
 // failure (issue #22: nothing here may trip an assert).
 @(test)
 a_locked_dead_run_tree_does_not_fail_the_suite :: proc(t: ^testing.T) {
+	sync.mutex_lock(&sweep_test_lock)
+	defer sync.mutex_unlock(&sweep_test_lock)
+
 	tree := dead_run_tree(t, NEVER_ALIVE_PID, "locked")
 	defer delete(tree, context.allocator)
 	defer testkit.remove_tree(tree, context.allocator)
@@ -300,4 +328,36 @@ a_locked_dead_run_tree_does_not_fail_the_suite :: proc(t: ^testing.T) {
 		os.exists(held),
 		"the held file vanished, so this case proved nothing about a lock surviving",
 	)
+}
+
+// Windows' System process is always pid 4, from every boot since XP, and it
+// is a process this account can never open with full rights -- which is
+// exactly the ERROR_ACCESS_DENIED arm `pid_is_live` reads as "assume live"
+// (its own comment names this arm directly). Every other test in this file
+// plants under `NEVER_ALIVE_PID`, so `pid_is_live` never actually resolves
+// anything there; this is the one case that reaches the liveness branch
+// itself with a pid this process did not spawn and cannot claim as its own
+// (fix round 1, issue #217 finding 2 -- the guard "the sole invariant this
+// whole sweep exists to hold" had no test that could tell it apart from
+// `_ = pid_is_live(pid)`).
+@(test)
+a_tree_named_with_a_live_foreign_pid_is_never_touched :: proc(t: ^testing.T) {
+	sync.mutex_lock(&sweep_test_lock)
+	defer sync.mutex_unlock(&sweep_test_lock)
+
+	SYSTEM_PID :: 4
+	testing.expect(t, pid_is_live(SYSTEM_PID), "pid 4 (the System process) must read as live")
+	testing.expect(
+		t,
+		pid_is_live(u32(os.get_pid())),
+		"the running suite's own pid must read as live",
+	)
+
+	tree := dead_run_tree(t, SYSTEM_PID, "livepid")
+	defer delete(tree, context.allocator)
+	defer testkit.remove_tree(tree, context.allocator)
+
+	sweep_dead_runs()
+
+	testing.expect(t, os.exists(tree), "the sweep removed a tree stamped with a live foreign pid")
 }
