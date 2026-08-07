@@ -1116,3 +1116,48 @@ a_probe_whose_ffprobe_run_is_unstoppable_never_calls_the_remover :: proc(t: ^tes
 		calls,
 	)
 }
+
+// `probe_using`'s `run` parameter is an injectable seam (issue #125's round-4
+// finding 2), so `child.run_bounded`'s own guard test
+// (`a_child_that_will_not_start_is_reported_rather_than_asserted`, issue
+// #208) cannot see the probe arm -- it never calls through `probe_using` at
+// all. This drives the real production wiring instead: `run_probe_child`
+// (`probe`'s only production runner, `run.odin:271`) against an executable
+// that cannot start, the same way the child-package test drives
+// `run_bounded` directly, and then renders the resulting `Error` the way a
+// real caller would -- closing the gap `error_message`'s own doc comment
+// otherwise only asserts.
+@(test)
+a_probe_that_will_not_start_carries_a_child_fault_through_its_real_wiring :: proc(t: ^testing.T) {
+	group, ok := open_group(t)
+	defer child.job_object_close(&group)
+	if !ok {
+		return
+	}
+
+	calls := 0
+	context.user_ptr = &calls
+	tools := Tools {
+		ffprobe = "transcibr-no-such-executable.exe",
+	}
+	_, err := probe_using(
+		&group,
+		tools,
+		"source.mp4",
+		"answer.json",
+		context.allocator,
+		spy_answer_remove,
+		run_probe_child,
+	)
+	testing.expect_value(t, err.fault, Fault.Probe_Not_Started)
+	testing.expect(
+		t,
+		err.child.fault != .None,
+		"a Probe_Not_Started error carried no child fault, which error_message relies on",
+	)
+	if err.child.fault != .None {
+		message := error_message(err, "source.mp4", context.allocator)
+		defer delete(message, context.allocator)
+		testing.expect(t, len(message) > 0, "a Probe_Not_Started error rendered nothing")
+	}
+}

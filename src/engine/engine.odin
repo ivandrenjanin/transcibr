@@ -110,6 +110,14 @@ fault_says :: proc(fault: Fault) -> string {
 // The path is printed with %q and not %s: a refusal reaches a user through a
 // UTF-16 Win32 call, and a byte that is not UTF-8 -- which NTFS permits in a
 // filename -- makes the whole line convert to nil.
+//
+// The `.Not_Started` arm's `assert(err.child.fault != .None, ...)` below is
+// stated rather than silent: it is the same cross-package guarantee
+// src/child/run_test.odin's a_child_that_will_not_start_is_reported_rather_than_asserted
+// pins guard-side (issue #208) -- `child.run_bounded` has exactly one return
+// site for `.Not_Started`, so every `.Not_Started` this package observes
+// already carries a real child fault. Restated here as the A4 pair, where it
+// is relied on, rather than removed (issue #223).
 @(require_results)
 error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> string {
 	assert(err.fault != .None, "there is no message for a Recording that came through")
