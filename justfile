@@ -95,6 +95,7 @@ test:
 	{{ odin }} test src/testkit {{ collection }} -out:build/odin-test/testkit.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/transcript {{ collection }} -out:build/odin-test/transcript.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/version {{ collection }} -out:build/odin-test/version.exe {{ memory }} {{ vet }}
+	{{ odin }} build tools/policy {{ collection }} -out:build/odin-test/policy-cli.exe {{ vet }}
 	{{ odin }} test tools/policy {{ collection }} -out:build/odin-test/policy.exe {{ memory }} {{ vet }}
 
 # One test, focused: `just test-one version banner_names_the_program_and_its_version`.
