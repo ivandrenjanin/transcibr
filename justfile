@@ -97,6 +97,22 @@ test:
 # inspect it without losing what a developer would otherwise see live; the
 # odin test exit code itself is left untouched for a real pass or a real
 # test failure, and only the exit-0-but-nothing-collected case is escalated.
+#
+# Deliberately grepped for "No tests to run.", not the ticket's suggested
+# "Finished 0 tests" -- the zero-collected path in core/testing/runner.odin
+# returns before the "Finished %i test%s" line is ever reached, so that
+# string does not exist at this pin.
+#
+# Accepted risk, stated here and in the PR body: this guard has ZERO automated
+# coverage. `ci: fmt-check check build release test test-single smoke` never
+# invokes test-one, and .github/workflows/ci.yml runs only `just ci`, so no
+# CI gate ever exercises this line. The findstr pattern is a literal,
+# case-sensitive match on one line of toolchain text; if a future Odin
+# release changes that wording, the guard degrades silently back to exit 0
+# rather than failing loudly about its own staleness -- the same
+# accepted-toolchain-text risk class ADR-0035 already carries for `smoke`'s
+# banner-format grep. Nothing re-proves this guard still matches short of a
+# human running `just test-one <pkg> <bogus-name>` by hand.
 test-one pkg name:
 	if not exist build\odin-test mkdir build\odin-test
 	{{ odin }} test {{ if pkg == "policy" { "tools/policy" } else { "src/" + pkg } }} {{ collection }} -out:build/odin-test/focus.exe -define:ODIN_TEST_NAMES={{ pkg }}.{{ name }} {{ memory }} {{ vet }} > build\odin-test\focus.out 2>&1 && (type build\odin-test\focus.out & findstr /c:"No tests to run." build\odin-test\focus.out >nul && (echo TEST-ONE: "{{ pkg }}.{{ name }}" matched no test procedure -- 0 tests collected & exit /b 1) || exit /b 0) || (type build\odin-test\focus.out & exit /b 1)
