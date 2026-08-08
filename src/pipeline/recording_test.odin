@@ -108,7 +108,7 @@ recording_sidecar_reflects_whichever_engine_its_own_job_named :: proc(t: ^testin
 
 // A pre-1970 modification time is an operating error the filesystem can
 // genuinely hand back (`os.stat` really does date real files before 1970,
-// src/artifact/sidecar.odin:164), not a programmer bug -- A8 asks that it be
+// see src/artifact/sidecar.odin's `recordable`), not a programmer bug -- A8 asks that it be
 // refused through `artifact.recordable`/`complete`'s error return, downstream
 // of this call, and never asserted here. This pins that `recording_sidecar`
 // itself stays a pass-through for the field and does not crash on it.
@@ -722,8 +722,9 @@ every_engine_fault_but_not_stopped_or_did_not_finish_sweeps_its_own_recording_wa
 
 // The committed 2335-byte Engine output fixture -- src/transcript's own
 // format reference, reused rather than duplicated, same as
-// src/artifact/place_test.odin:14 and src/pipeline/batch_test.odin:27 --
-// copied to the stand-in's resolved `-of` prefix so `transcribe_and_place`
+// src/artifact/place_test.odin's `ENGINE_JSON` and src/pipeline/batch_test.odin's
+// `RESUME_ENGINE_JSON` -- copied to the stand-in's resolved `-of` prefix so
+// `transcribe_and_place`
 // is driven through a real, parseable, exit-0 Engine rather than a bare
 // `{}`.
 @(private)
