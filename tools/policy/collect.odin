@@ -627,14 +627,42 @@ is_freeing_call :: proc(name: string) -> bool {
 // Scoped to the known shape (CLAUDE.md rule A2's discipline, generalised to
 // a whole check rather than one assertion): same-identifier pairs, where
 // "same identifier" means the call's first argument is written as the exact
-// same plain identifier both times. What this deliberately does not see:
-// a DIFFERENT scope (a nested block's own defer pair is read as that
-// block's own scope, never paired with an outer one), an ALIAS (`t := tree;
-// defer walk(t)` beside `defer delete(tree)` names two different tokens),
-// and a FIELD ACCESS (`defer walk(state.tree)` has no single identifier for
-// this to key on at all). Precision over recall: a check that reached for
-// any of those would need to resolve what a name binds to, which is the
-// second model of Odin ADR-0028 exists to keep this program from building.
+// same plain identifier both times. What this deliberately does not see,
+// and what precision over recall costs on the current tree:
+//
+// A CROSS-SCOPE inversion (issue #246, probed live): an outer `defer
+// walk(tree)` beside a NESTED block's own `defer delete(tree)` is the exact
+// same LIFO use-after-free this check exists to catch -- the nested
+// block's defer fires at that block's own exit, strictly before the
+// enclosing procedure exits and runs the outer walk on freed memory -- but
+// note_stmt_list_defers reads one scope's direct statements at a time, so
+// the two defers are never paired.
+// `a_walk_defer_in_an_outer_scope_beside_a_free_defer_in_a_nested_block_is_not_caught`
+// (defer_order_test.odin) pins this open rather than closing it: pairing a
+// nested free against every enclosing scope's walks, at any nesting depth,
+// would also have to tell a same-named OUTER identifier apart from an
+// inner block's own unrelated local of the same name (`tree := ...`
+// re-declared inside the nested block shadows the outer `tree` and is a
+// different variable entirely) -- which needs resolving what a name binds
+// to, the second model of Odin ADR-0028 exists to keep this program from
+// building. `src/audio/fault.odin`'s and `src/engine/engine.odin`'s
+// case-clause `defer delete(reason, allocator)` are correct today and
+// unguarded against exactly this inversion if a future edit adds an outer
+// walk defer on `reason` around either switch.
+//
+// A CUSTOM FREE PROCEDURE (issue #246): is_freeing_call only recognises
+// the two builtins `delete` and `free` by name. A wrapper that itself
+// frees its argument under a different name reads as just another WALK, so
+// a walk defer registered ahead of it is never paired with it either.
+// `a_free_registered_through_a_procedure_not_named_delete_or_free_is_not_caught`
+// (defer_order_test.odin) pins this one open for the same reason: naming
+// every project wrapper that frees would mean resolving what the call
+// does, not what it is named.
+//
+// An ALIAS (`t := tree; defer walk(t)` beside `defer delete(tree)` names
+// two different tokens), and a FIELD ACCESS (`defer walk(state.tree)` has
+// no single identifier for this to key on at all) round out the residual:
+// same reason, a name resolved rather than read.
 @(require_results)
 collect_defer_order_issues :: proc(
 	file: ^ast.File,
