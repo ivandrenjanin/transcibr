@@ -17,16 +17,38 @@ asks_for_help_finds_help_at_a_later_name_position :: proc(t: ^testing.T) {
 	)
 }
 
-// The stride is two, not one: --help stands where a VALUE stands, never a
-// name, once a preceding name has claimed the slot after it. Finding this
-// with a stride of one reads "--from-json --help" as a request for usage and
-// renders nothing, exactly the failure the stride exists to prevent.
+// Issue #261: --help is sovereign in ANY argv slot, name position or value
+// position. A user typing "--from-json --help" wants help, not a filesystem
+// probe of a file literally named --help.
 @(test)
-asks_for_help_does_not_treat_a_value_position_as_a_name :: proc(t: ^testing.T) {
+asks_for_help_finds_help_standing_in_a_value_position :: proc(t: ^testing.T) {
 	testing.expect(
 		t,
-		!asks_for_help([]string{"--from-json", HELP}),
-		"--help standing where --from-json's own value belongs was wrongly recognized as a request for help",
+		asks_for_help([]string{"--from-json", HELP}),
+		"--help standing where --from-json's own value belongs was not recognized as a request for help",
+	)
+}
+
+// The pathological-but-legal case stays reachable: a json path genuinely
+// named --help is expressible as .\--help, which is a different string and
+// never matches HELP by exact equality.
+@(test)
+asks_for_help_leaves_the_escaped_literal_path_alone :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		!asks_for_help([]string{"--from-json", `.\--help`}),
+		".\\--help was wrongly recognized as a request for help",
+	)
+}
+
+// A bare token match only: a file genuinely named x--help.json is a
+// different string from --help and must never match as a substring.
+@(test)
+asks_for_help_does_not_match_help_as_a_substring :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		!asks_for_help([]string{"--from-json", "x--help.json"}),
+		"x--help.json was wrongly recognized as a request for help",
 	)
 }
 
