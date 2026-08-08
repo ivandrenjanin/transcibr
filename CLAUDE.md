@@ -40,6 +40,12 @@ procedure of anything it finds. It reads with
 `core:odin/parser`, inside `tools\policy` itself (ADR-0028), so a `//` inside a raw string is text and not
 a comment, and a procedure declared inside a `when` block is covered like any other.
 
+A comment that cites another place in this repository names the construct — a procedure, a
+constant, a type — never a line number: a line drifts on the very next edit to the file it names
+(issue #235's #228 and #266 precedents), where a name does not; `collect_line_number_cite_violations`
+in `tools\policy\check.odin` refuses an `<name>.odin:<digits>` shape inside any comment and fails
+`just check` on one.
+
 ## 1. Assertions
 
 Assertions detect programmer errors. Operating errors (a malformed SRT, a missing video, a
