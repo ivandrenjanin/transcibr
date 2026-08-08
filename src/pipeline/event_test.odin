@@ -119,6 +119,20 @@ a_nil_observer_changes_nothing_about_extract_recordings_own_outcome :: proc(t: ^
 	testing.expect_value(t, ok, false)
 }
 
+// Fix round 2 (PR #285's review, finding 1, Important): event.odin's own doc
+// comment on `Observer` says a partly-built value -- `user` set, `on_event`
+// still nil -- is exactly as safe as a zero `Observer{}`, because no sink can
+// read `user` without `on_event`. This is the shape #16's GUI sink will build
+// mid-construction. `fire` must treat it the same as "nobody is listening":
+// return without touching `user`, never assert it.
+@(test)
+fire_treats_a_partly_built_observer_the_same_as_a_zero_observer :: proc(t: ^testing.T) {
+	state: int
+	fire(Observer{user = &state}, Event{kind = .Failed, at = -1, message = "m"})
+
+	testing.expect_value(t, state, 0)
+}
+
 // The trail's own routing table (trail_observer.odin), pure and independent
 // of `crashlog.note`'s own file I/O -- what actually decides whether a fault
 // Event becomes a rolling-trail line, and under which subject.

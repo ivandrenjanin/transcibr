@@ -75,10 +75,6 @@ fire :: proc(observer: Observer, event: Event) {
 	assert(event.at >= -1, "an Event's at index must be -1 (batch-level) or a valid plan index")
 
 	if observer.on_event == nil {
-		assert(
-			observer.user == nil,
-			"an Observer with no on_event carries a user pointer that will never be read",
-		)
 		return
 	}
 	observer.on_event(event, observer.user)

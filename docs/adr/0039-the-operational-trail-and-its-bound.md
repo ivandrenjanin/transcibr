@@ -221,3 +221,24 @@ would block on it forever instead of writing its line — the same hazard ADR-00
 `MiniDumpWriteDump`/`DbgHelp`, whose "single-threaded, pre-opened handles, zero allocation in a
 possibly-corrupted process" constraints (`0036-...md:96-97`) are exactly why that record keeps the
 crash path free of anything that can wait on another thread.
+
+**Amended, PR #285's review, fix round 2.** Both claims in the paragraph above needed correcting once
+176-D (PR #285) actually shipped a caller into `note` from a worker thread. First, "a line can never
+tear mid-write" is false as stated: `record_note_line` is not one `WriteFile` call but 6-9 of them —
+the timestamp, level, subject and detail are written as separate unlocked calls — so
+`FILE_APPEND_DATA`'s atomicity guard covers only each individual `WriteFile`, not the line those calls
+together compose. Measured directly: removing PR #285's `trail_mutex` and rebuilding produced 18, 17,
+0 and 23 malformed trail lines out of 61 across four live 60-clip `--batch` runs; the mutexed binary
+produced 0 of 61 across the same four runs. Lines DO tear without serialization at the call site.
+
+Second, the no-mutex-around-`note` reasoning above is still correct as a reason not to put the mutex
+*inside* `crashlog` — but PR #285 did not do that. `trail_mutex` lives in `src/pipeline`
+(`trail_observer.odin`), guarding only `write_event_to_trail`'s own call into `note`; the two crash
+hooks (`assertion_hook`, `exception_filter`) call `crashlog.note` directly and never touch
+`trail_mutex`, so the deadlock this paragraph warns against still cannot happen — a crash interrupting
+a `pipeline`-side `note` call still runs its own line through, uncontended, exactly as this record's
+reasoning requires. What the pipeline-side mutex does NOT close, and what remains a true residual
+after PR #285: a crash-hook line can still interleave its own unlocked `WriteFile` fragments into a
+routine `pipeline`-side note line a worker is mid-way through writing, since `trail_mutex` holds no
+one else out of `note` but other `pipeline` callers. The tearing this section originally said could
+not happen, still can, on that one path.
