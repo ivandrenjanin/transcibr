@@ -72,7 +72,7 @@ a_child_that_outlives_its_bound_is_stopped_rather_than_waited_for :: proc(t: ^te
 // (the `refusal.fault != .None` branch above), so this is also the
 // guard-side half of the cross-package A4 pairing `src/doctor`'s
 // `model_load_verdict` relies on: `child.error_message` asserts
-// `err.fault != .None` (child.odin:86), and every `.Not_Started` a doctor
+// `err.fault != .None`, and every `.Not_Started` a doctor
 // probe can observe traces back to this exact call. The general
 // `err.fault != .None` check below states that guarantee as the implication
 // it is, rather than only the one concrete fault the value-equality check
@@ -490,8 +490,9 @@ fill_flood_pipe :: proc(t: ^testing.T, flood_bytes: []u8) -> (read: win32.HANDLE
 // smallest multiple of DRAIN_BYTES at or above MAX_DRAIN_BYTES, and nothing
 // else. That is what pins the VALUE the ceiling holds, not merely that a
 // ceiling exists -- issue #98. The canonical proof that this test still holds
-// that relationship is mutating the loop bound at src/child/run.odin:132
-// (an 8x mutation turns `total` far past `expected_stop`); a 1<<30 mutation of
+// that relationship is mutating `drain_bounded`'s own loop bound in
+// src/child/run.odin (an 8x mutation turns `total` far past `expected_stop`);
+// a 1<<30 mutation of
 // MAX_DRAIN_BYTES itself is no longer the recipe, since capacity_expressible
 // above now refuses that capacity outright instead of an int -> DWORD wrap
 // manufacturing a false red.
