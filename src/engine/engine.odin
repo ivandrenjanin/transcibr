@@ -167,6 +167,5 @@ error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> s
 		message = fmt.aprintf("%q: %s", source, says, allocator = allocator)
 	case .None:
 	}
-	assert(len(message) > 0, "a refusal rendered as nothing at all")
-	return message
+	return process.refusal_line(message)
 }
