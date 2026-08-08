@@ -574,10 +574,17 @@ for theirs. `transcibr:audio`'s table writes one deliberately empty row, for the
 renderer refuses by name — and carries a second, smaller vocabulary of its own, `Cache_Fault`, whose
 two members earn the switch shape instead of a fifth table (ADR-0018).
 
-Catch the empty entry by WALKING the enumeration in a test (`src\audio\fault_test.odin`) and never by
-asserting in the renderer. The assertion fires on the first report of that fault, which is a Recording
-already failing in front of somebody; and a test that trips an assertion takes the whole runner down
-rather than naming a case (issue #22), so the test reads the table directly instead.
+Catch the empty entry by WALKING the enumeration in a test (`src\audio\fault_test.odin`), guarded AS
+WELL AS by the reader's own assert (rule A4: pair assertions across code paths) — neither is sufficient
+alone. The walking test is what is required to fire first: issue #62 measured that dropping one row from
+a `FAULT` table produces three concurrent `[FATAL] ... fault_facts()` trips and a 90-second hang, 340 of
+426 tests reported, which is issue #22's hazard exactly — a renderer assert that fires during a
+concurrent sweep takes the whole runner down rather than naming a case. The walking test reads the table
+directly and goes red on the missing row without ever calling the renderer, so it is what actually
+catches the defect in CI. The reader's assert stays: it is the shipped binary's last line of defense
+against the same defect reaching a Recording already failing in front of somebody (rule A8 — an internal
+invariant, not external input), and it is the A4 pair the walking test is checked against, not a
+redundant copy of it.
 
 **`odin test` cannot write its test executable to a path containing a space.** It runs the binary
 it builds through a command line it does not quote, so a space is re-parsed as an argument
