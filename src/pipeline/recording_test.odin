@@ -494,6 +494,21 @@ must_write_probe :: proc(t: ^testing.T, path: string, label: string) {
 	testing.expectf(t, os.write_entire_file(path, []u8{0}) == nil, "could not write the %s", label)
 }
 
+// The keyed `<name>.<key>` basename a cache entry now carries -- factored out
+// so `sweep_leaves_only_the_witness` and `assert_success_landed` can each
+// derive the exact name `process.cache_key_prefix` built without either one
+// growing past CLAUDE.md rule F1's 70-line limit computing it inline. The
+// caller frees the answer with `delete` and the same allocator.
+@(private)
+@(require_results)
+cache_prefix_name :: proc(cache, name, source: string, allocator: mem.Allocator) -> string {
+	prefix := process.cache_key_prefix(cache, name, source, allocator)
+	assert(len(prefix) > len(cache) + 1, "a cache key prefix was not built at all")
+	basename := strings.clone(prefix[len(cache) + 1:], allocator)
+	delete(prefix, allocator)
+	return basename
+}
+
 @(private)
 @(require_results)
 names_contain :: proc(names: []string, want: string) -> bool {
@@ -567,8 +582,9 @@ sweep_leaves_only_the_witness :: proc(t: ^testing.T, tag: string, body: string) 
 	executable := testkit.engine_stand_in(t, tools_dir, tag, body, context.allocator)
 	defer delete(executable, context.allocator)
 
+	source := "C:\\clips\\talk.mp4"
 	job := new_recording_job(
-		"C:\\clips\\talk.mp4",
+		source,
 		tag,
 		&group,
 		Tools{engine = engine.Tools{engine = executable}},
@@ -586,9 +602,11 @@ sweep_leaves_only_the_witness :: proc(t: ^testing.T, tag: string, body: string) 
 	}
 
 	placed := transcribe_and_place(extracted)
-
 	testing.expect_value(t, placed, false)
 
+	prefix_name := cache_prefix_name(cache, tag, source, context.allocator)
+	defer delete(prefix_name, context.allocator)
+	witness_name := fmt.tprintf("%s.witness", prefix_name)
 	names := cache_entry_names(t, cache, context.allocator)
 	defer {
 		for name in names {
@@ -599,7 +617,7 @@ sweep_leaves_only_the_witness :: proc(t: ^testing.T, tag: string, body: string) 
 	testing.expectf(
 		t,
 		len(names) == 2 &&
-		names_contain(names, fmt.tprintf("%s.witness", tag)) &&
+		names_contain(names, witness_name) &&
 		names_contain(names, fmt.tprintf("%s-neighbor.wav", tag)),
 		"the cache held %v after %s, wanted only the Engine's witness and the neighbor's wav -- either the wav swept too or the sweep overreached onto the neighbor",
 		names,
@@ -656,9 +674,10 @@ every_engine_fault_but_not_stopped_sweeps_its_own_engine_output :: proc(t: ^test
 	job := Recording_Job {
 		cache     = cache,
 		name      = "fault-walk",
+		source    = "C:\\clips\\fault-walk.mp4",
 		allocator = context.allocator,
 	}
-	prefix := fmt.aprintf("%s\\%s", job.cache, job.name, allocator = context.allocator)
+	prefix := process.cache_key_prefix(job.cache, job.name, job.source, context.allocator)
 	defer delete(prefix, context.allocator)
 	output := process.engine_output_path(prefix, context.allocator)
 	defer delete(output, context.allocator)
@@ -682,6 +701,79 @@ every_engine_fault_but_not_stopped_sweeps_its_own_engine_output :: proc(t: ^test
 		)
 		os.remove(output)
 	}
+}
+
+// Issue #275, the #258/#268 two-recordings shape applied to
+// `discard_engine_output`'s own sweep: two Recordings sharing an artifact
+// stem from different subfolders of one Batch root must key to two
+// different Engine output paths, so a refusal on one Recording's own run
+// sweeps only its own file and never a second Recording's that happens to
+// share the same stem.
+@(test)
+discard_engine_output_sweeps_only_the_recording_it_was_given :: proc(t: ^testing.T) {
+	cache := testkit.made_scratch_cache(t, "Pipeline", "fault-walk-collision", context.allocator)
+	defer delete(cache, context.allocator)
+	defer testkit.remove_cache(cache, context.allocator)
+
+	first := Recording_Job {
+		cache     = cache,
+		name      = "interview",
+		source    = "C:\\clips\\june\\interview.mp4",
+		allocator = context.allocator,
+	}
+	second := Recording_Job {
+		cache     = cache,
+		name      = "interview",
+		source    = "C:\\clips\\july\\interview.mp4",
+		allocator = context.allocator,
+	}
+
+	first_prefix := process.cache_key_prefix(
+		first.cache,
+		first.name,
+		first.source,
+		context.allocator,
+	)
+	defer delete(first_prefix, context.allocator)
+	first_output := process.engine_output_path(first_prefix, context.allocator)
+	defer delete(first_output, context.allocator)
+
+	second_prefix := process.cache_key_prefix(
+		second.cache,
+		second.name,
+		second.source,
+		context.allocator,
+	)
+	defer delete(second_prefix, context.allocator)
+	second_output := process.engine_output_path(second_prefix, context.allocator)
+	defer delete(second_output, context.allocator)
+
+	testing.expectf(
+		t,
+		first_output != second_output,
+		"two Recordings sharing a stem still keyed to the same Engine output path: %s",
+		first_output,
+	)
+	testing.expect(t, os.write_entire_file(first_output, []u8{0}) == nil, "could not write first")
+	testing.expect(
+		t,
+		os.write_entire_file(second_output, []u8{0}) == nil,
+		"could not write second",
+	)
+
+	discard_engine_output(first, .Refused)
+
+	testing.expect(
+		t,
+		!os.exists(first_output),
+		"the first Recording's own output survived its sweep",
+	)
+	testing.expect(
+		t,
+		os.exists(second_output),
+		"a second Recording sharing a stem was swept by the first Recording's own sweep",
+	)
+	os.remove(second_output)
 }
 
 // Issue #251's own fault-walk mirror, one level narrower than
@@ -823,6 +915,9 @@ assert_success_landed :: proc(t: ^testing.T, f: Success_Fixture, tag: string) {
 	)
 	testing.expect(t, os.exists(names[.Sidecar]), "the Sidecar was never written")
 
+	prefix_name := cache_prefix_name(f.cache, tag, f.source, context.allocator)
+	defer delete(prefix_name, context.allocator)
+
 	names_after := cache_entry_names(t, f.cache, context.allocator)
 	defer {
 		for name in names_after {
@@ -833,7 +928,7 @@ assert_success_landed :: proc(t: ^testing.T, f: Success_Fixture, tag: string) {
 	testing.expectf(
 		t,
 		names_contain(names_after, fmt.tprintf("%s.wav", tag)) &&
-		names_contain(names_after, fmt.tprintf("%s.json", tag)),
+		names_contain(names_after, fmt.tprintf("%s.json", prefix_name)),
 		"a healthy Recording's own cache entries did not survive: %v",
 		names_after,
 	)

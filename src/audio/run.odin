@@ -1,8 +1,6 @@
 #+vet explicit-allocators
 package audio
 
-import "core:crypto/sha2"
-import "core:encoding/hex"
 import "core:fmt"
 import "core:mem"
 import "core:os"
@@ -599,57 +597,10 @@ extract :: proc(
 	return produce(group, tools, job, probed.duration_ms, tolerance, allocator)
 }
 
-// Long enough that two different Recordings' sources collide on a wav key by
-// chance only far below any Batch this program will ever run against (a
-// birthday bound over 2^64 keys), short enough that the filename stays
-// legible next to the artifact stem it still carries. Issue #256, item 3.
-SOURCE_KEY_BYTES :: 8
-SOURCE_KEY_CHARS :: 2 * SOURCE_KEY_BYTES
-
-#assert(SOURCE_KEY_BYTES <= sha2.DIGEST_SIZE_256)
-
-// A short, deterministic key over a Recording's own source path -- not its
-// bytes, which `produce` has not read yet and `extract` never will read as a
-// whole. Two Recordings sharing an artifact stem from different subfolders
-// of one Batch root are a real, legitimate shape (ADR-0008's own injectivity
-// note is scoped to one directory), and `job.name` alone cannot tell them
-// apart in the flat scratch cache.
-@(private)
-@(require_results)
-source_key :: proc(source: string, allocator: mem.Allocator) -> string {
-	assert(len(source) > 0, "there is no Recording source here to key")
-	assert(allocator.procedure != nil, "a key outliving this procedure needs an allocator")
-
-	context_256: sha2.Context_256
-	sha2.init_256(&context_256)
-	sha2.update(&context_256, transmute([]u8)source)
-	sum: [sha2.DIGEST_SIZE_256]u8
-	sha2.final(&context_256, sum[:])
-
-	encoded, _ := hex.encode(sum[:SOURCE_KEY_BYTES], allocator)
-	key := string(encoded)
-	assert(len(key) == SOURCE_KEY_CHARS, "a source key rendered to the wrong number of characters")
-	return key
-}
-
-// The single seam both cache paths below key against: `<cache>\<stem>.<key>`,
-// with no suffix. `wav_cache_path` and `probe_cache_path` each just append
-// their own extension to this -- the key is spelled once, here, so neither
-// can drift from the other the way issue #268 measured the probe path had.
-// The caller frees the answer with `delete` and the same allocator.
-@(private)
-@(require_results)
-cache_key_prefix :: proc(job: Job, allocator: mem.Allocator) -> string {
-	assert(len(job.cache) > 0, "there is no cache here to place audio into")
-	assert(len(job.name) > 0, "a Recording with no artifact stem has nowhere to put its audio")
-	assert(len(job.source) > 0, "there is no Recording source here to key its audio to")
-
-	key := source_key(job.source, allocator)
-	defer delete(key, allocator)
-	prefix := fmt.aprintf("%s\\%s.%s", job.cache, job.name, key, allocator = allocator)
-	assert(len(prefix) > len(job.cache), "a cache key prefix was not built at all")
-	return prefix
-}
+// `wav_cache_path` and `probe_cache_path` each key through
+// `process.cache_key_prefix`, the seam relocated there in issue #275 so
+// `transcibr:engine`'s own JSON output could key against the identical
+// `<cache>\<stem>.<key>` prefix without either package importing the other.
 
 // `produce`'s own wav path, pulled out so a test can prove two Recordings
 // sharing a stem key to two different paths without spawning ffmpeg at all --
@@ -660,7 +611,7 @@ cache_key_prefix :: proc(job: Job, allocator: mem.Allocator) -> string {
 @(require_results)
 wav_cache_path :: proc(job: Job, allocator: mem.Allocator) -> string {
 	assert(allocator.procedure != nil, "a wav cache path outliving this call needs an allocator")
-	prefix := cache_key_prefix(job, allocator)
+	prefix := process.cache_key_prefix(job.cache, job.name, job.source, allocator)
 	defer delete(prefix, allocator)
 	path := fmt.aprintf("%s.wav", prefix, allocator = allocator)
 	assert(strings.has_suffix(path, ".wav"), "a wav cache path was not built with its own suffix")
@@ -677,7 +628,7 @@ wav_cache_path :: proc(job: Job, allocator: mem.Allocator) -> string {
 @(require_results)
 probe_cache_path :: proc(job: Job, allocator: mem.Allocator) -> string {
 	assert(allocator.procedure != nil, "a probe cache path outliving this call needs an allocator")
-	prefix := cache_key_prefix(job, allocator)
+	prefix := process.cache_key_prefix(job.cache, job.name, job.source, allocator)
 	defer delete(prefix, allocator)
 	path := fmt.aprintf("%s.%d.probe", prefix, os.get_pid(), allocator = allocator)
 	assert(

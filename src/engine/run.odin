@@ -1,7 +1,6 @@
 #+vet explicit-allocators
 package engine
 
-import "core:fmt"
 import "core:mem"
 import "core:os"
 import "core:strings"
@@ -54,7 +53,7 @@ transcribe :: proc(
 	assert(allocator.procedure != nil, "an Engine invocation needs an allocator to work in")
 	assert(job.container_ms > 0, "a Recording nobody could time reached the Engine")
 
-	prefix := fmt.aprintf("%s\\%s", job.cache, job.name, allocator = allocator)
+	prefix := engine_output_prefix(job, allocator)
 	defer delete(prefix, allocator)
 	if !openable_by_the_engine(job, prefix) {
 		return {}, Error{fault = .Path_Not_Ascii}
@@ -87,6 +86,22 @@ transcribe :: proc(
 		duration_ms = ending.duration_ms,
 		elapsed_ms = ending.elapsed_ms,
 	}, Error{}
+}
+
+// The Engine's own `-of` prefix, pulled out of `transcribe` so a test can
+// prove two Recordings sharing a stem key to two different JSON prefixes
+// without spawning the Engine at all -- the same shape #258/#268 already
+// proved for `audio.wav_cache_path`/`audio.probe_cache_path`. Issue #275:
+// this replaces the plain `<cache>\<name>` this package used to build
+// inline, which `src/pipeline/recording.odin`'s `discard_engine_output` also
+// rebuilt on its own -- the exact drift #258/#268 already closed for the wav
+// and probe. The caller frees the answer with `delete` and the same
+// allocator.
+@(private)
+@(require_results)
+engine_output_prefix :: proc(job: Job, allocator: mem.Allocator) -> string {
+	assert(allocator.procedure != nil, "an Engine output prefix needs an allocator to be built in")
+	return process.cache_key_prefix(job.cache, job.name, job.source, allocator)
 }
 
 // Why all three paths, and why this does not subsume `open_cache`: ADR-0025.
