@@ -160,6 +160,15 @@ a_cache_refusal_can_end_on_a_callers_own_framing_instead_of_the_batch :: proc(t:
 	)
 }
 
+// Issue #249, item 2 (ex-#216 item 3, audio drift pin): the loop below used
+// to name itself "a_batch_can_refuse_to_start_with" and check only that each
+// fault's own sentence survived, never that the DEFAULT framing still says
+// the Batch cannot start -- so mutating `process.BATCH_CANNOT_START` reds
+// src/process alone and leaves this package green (measured directly).
+// `" -- the Batch cannot start"` is hand-typed rather than read off
+// `process.BATCH_CANNOT_START` itself, the same reason the artifact-package
+// pins (`engine_test.odin`, `model_test.odin`) hand-type it too: a
+// constant compared against its own value cannot fail no matter what it says.
 @(test)
 every_cache_fault_renders_a_line_a_batch_can_refuse_to_start_with :: proc(t: ^testing.T) {
 	for fault in Cache_Fault {
@@ -177,6 +186,13 @@ every_cache_fault_renders_a_line_a_batch_can_refuse_to_start_with :: proc(t: ^te
 			t,
 			strings.contains(message, says),
 			"%v rendered <%s>, which does not carry its own sentence",
+			fault,
+			message,
+		)
+		testing.expectf(
+			t,
+			strings.contains(message, " -- the Batch cannot start"),
+			"%v's default framing does not say the Batch cannot start: <%s>",
 			fault,
 			message,
 		)
