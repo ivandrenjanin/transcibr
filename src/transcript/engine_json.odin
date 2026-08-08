@@ -146,6 +146,10 @@ FAULT := [Parse_Fault]Fault_Facts {
 	},
 }
 
+// The asserts below are the A4 pair to engine_json_test.odin's
+// every_fault_says_what_adr_0002_does_with_it and
+// every_parse_fault_names_a_disposition, which walk Parse_Fault. See
+// CLAUDE.md, Odin notes: enumerated arrays and switches.
 @(private)
 @(require_results)
 fault_facts :: proc(fault: Parse_Fault) -> (facts: Fault_Facts) {

@@ -335,6 +335,10 @@ artifact_says :: proc(which: Artifact) -> string {
 // raw NUL cuts the line off and a byte that is not UTF-8 converts it all to nil.
 //
 // The line outlives this procedure; free it with delete and the same allocator.
+//
+// The asserts below are the A4 pair to place_test.odin's
+// every_fault_renders_a_line_a_recordings_failure_row_can_carry, which walks
+// Fault. See CLAUDE.md, Odin notes: enumerated arrays and switches.
 @(require_results)
 error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> string {
 	assert(err.fault != .None, "there is no message for a Recording that came through")
