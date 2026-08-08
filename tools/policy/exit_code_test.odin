@@ -52,6 +52,19 @@ policy_exit_code :: proc(t: ^testing.T, root: string) -> (code: int, exited: boo
 	return state.exit_code, state.exited
 }
 
+// Issue #267 work item 2: `ROOT_ERROR` and `VIOLATION_ERROR` (main.odin) are
+// the external contract a CI script reads back from this binary's exit code
+// -- but every test above compares the CHILD's exit code against the SAME
+// named constant this package compiles from, so a value change on either
+// side is invisible to all of them (the #222 review's "shared-constant
+// blindness"). Pinning the constants against LITERALS is what a CI script
+// reading a bare "2" or "3" actually depends on.
+@(test)
+exit_code_constants_are_pinned_at_their_documented_literal_values :: proc(t: ^testing.T) {
+	testing.expect_value(t, ROOT_ERROR, 2)
+	testing.expect_value(t, VIOLATION_ERROR, 3)
+}
+
 EXIT_CLEAN_DIRS :: []string{"src", "src/pkg", "tools"}
 
 EXIT_CLEAN_FILES :: []Fixture_File {

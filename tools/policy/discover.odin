@@ -30,6 +30,34 @@ is_excluded_directory :: proc(name: string) -> bool {
 	return false
 }
 
+// Whether `entry` belongs in the discovered list. `.Regular` is the ordinary
+// case; `.Undetermined` is included too -- issue #267: `core:os`'s own
+// `find_data_to_file_info` (dir_windows.odin) classifies a file's type by
+// opening it for `Read`, and an ACL deny on that file makes the open fail
+// silently (the failure is swallowed into a nil handle, never into the
+// entry's own error), leaving `entry.type` at its zero value, `.Undetermined`,
+// with `entry.name` and `entry.fullpath` populated exactly as normal. The
+// walker records no error anywhere for this, so a filter that demanded
+// `.Regular` alone dropped the entry with no trace: `just check` read fewer
+// files than the repository holds and reported clean. Widening to
+// `.Undetermined` lets an unreadable file flow on to `check_one_file`, whose
+// own read attempt is what turns it into the "cannot be read: %v" violation
+// (main.odin) rather than an omission. `entry.name` still has to end
+// `.odin` and be non-empty: `os.walker_walk` also hands back a fully zeroed,
+// empty-named `.Undetermined` entry when a SUBDIRECTORY itself cannot be
+// opened, which is a distinct failure this procedure must not mistake for a
+// source file -- that one is already reported through `os.walker_error`.
+@(require_results)
+is_odin_source_candidate :: proc(entry: os.File_Info) -> bool {
+	if entry.type != .Regular && entry.type != .Undetermined {
+		return false
+	}
+	if len(entry.name) == 0 {
+		return false
+	}
+	return strings.has_suffix(entry.name, ".odin")
+}
+
 // Every `.odin` file under `root`, repository-relative and forward-slashed,
 // skipping the directories above wherever they appear. Refuses a root that is
 // not there rather than returning an empty list: a walk that silently covers
@@ -63,7 +91,7 @@ discover_odin_files :: proc(
 			}
 			continue
 		}
-		if entry.type != .Regular || !strings.has_suffix(entry.name, ".odin") {
+		if !is_odin_source_candidate(entry) {
 			continue
 		}
 		relative := relative_slashed(entry.fullpath, root, allocator)
