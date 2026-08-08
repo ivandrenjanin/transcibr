@@ -17,6 +17,7 @@ import "transcibr:cliargs"
 import "transcibr:engine"
 import "transcibr:pipeline"
 import "transcibr:planning"
+import "transcibr:process"
 
 // The two-field ceiling handoff ADR-0038's addendum resolves the ADR's own
 // "ceiling-lookup placement" wrinkle with: cliargs' read loop now owns the
@@ -141,13 +142,13 @@ run_batch_command :: proc(arguments: []string) -> int {
 		return OPERATING_ERROR
 	}
 
-	identified, named := model_identified(o.model)
+	identified, named := model_identified_framed(o.model, process.BATCH_CANNOT_START)
 	defer artifact.destroy_model(identified, context.allocator)
 	if !named {
 		return OPERATING_ERROR
 	}
 
-	engine_digest, engine_named := engine_identified(o.engine)
+	engine_digest, engine_named := engine_identified_framed(o.engine, process.BATCH_CANNOT_START)
 	defer delete(string(engine_digest), context.allocator)
 	if !engine_named {
 		return OPERATING_ERROR

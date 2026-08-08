@@ -246,6 +246,15 @@ a_model_that_cannot_be_hashed_within_its_bound_is_reported_rather_than_awaited_f
 	)
 }
 
+// Issue #249, item 3: the loop below used to call `model_error_message` on
+// its default framing and never actually read it back -- the test's own name
+// claimed "and_stopping_the_batch" but nothing here checked for it, so
+// mutating `process.BATCH_CANNOT_START` to a different sentence left this
+// package green (measured: src/process reds, src/artifact and src/audio do
+// not). `" -- the Batch cannot start"` is hand-typed rather than built from
+// `process.BATCH_CANNOT_START` itself -- comparing the constant against its
+// own value is tautological and cannot fail no matter what the constant
+// says.
 @(test)
 every_model_fault_renders_a_line_naming_the_model_and_stopping_the_batch :: proc(t: ^testing.T) {
 	for fault in Model_Fault {
@@ -261,6 +270,13 @@ every_model_fault_renders_a_line_naming_the_model_and_stopping_the_batch :: proc
 			strings.contains(message, "ggml-large-v3.bin"),
 			"%v does not name the Model it is about",
 			fault,
+		)
+		testing.expectf(
+			t,
+			strings.contains(message, " -- the Batch cannot start"),
+			"%v's default framing does not say the Batch cannot start: <%s>",
+			fault,
+			message,
 		)
 	}
 }
