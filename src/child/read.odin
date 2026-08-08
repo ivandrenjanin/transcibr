@@ -9,6 +9,7 @@ import win32 "core:sys/windows"
 import "core:thread"
 import "core:time"
 import "transcibr:crashlog"
+import "transcibr:process"
 
 // Bounding a blocking read the same way run_bounded bounds a child. A path
 // typed by hand or derived from a Recording can name a reserved Windows
@@ -366,6 +367,5 @@ read_error_message :: proc(err: Read_Error, path: string, allocator: mem.Allocat
 		assert(len(says) > 0, "a fault was added to Read_Fault without a sentence")
 		message = fmt.aprintf("%q: %s", path, says, allocator = allocator)
 	}
-	assert(len(message) > 0, "a refusal rendered as nothing at all")
-	return message
+	return process.refusal_line(message)
 }
