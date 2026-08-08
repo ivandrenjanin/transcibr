@@ -686,6 +686,19 @@ a_trailing_backslash_in_the_executable_path_is_not_an_escape :: proc(t: ^testing
 	}
 }
 
+// issue #63: `refusal_line` is `deliverable` exported, so every Recording-level
+// renderer outside this package can reach the same non-empty, NUL-free,
+// valid-UTF-8 guard instead of spelling a weaker copy of it. This does not
+// trip the guard's own asserts (issue #22 forbids a committed test doing
+// that) -- it pins that a healthy message still round-trips unchanged through
+// the exported name, the same as it always did through the private one.
+@(test)
+refusal_line_returns_a_healthy_message_unchanged :: proc(t: ^testing.T) {
+	message := strings.clone("ffmpeg.exe: could not be started", context.allocator)
+	defer delete(message, context.allocator)
+	testing.expect_value(t, refusal_line(message), message)
+}
+
 // This test binary's own argv, read the same way `transcibr-cli`'s `main`
 // reads its (issue #35, ADR-0025): `GetCommandLineW` and not `os.args`, so
 // the running process is the fixture and there is nothing to build.

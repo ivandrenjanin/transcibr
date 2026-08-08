@@ -135,7 +135,7 @@ error_message :: proc(err: Build_Error, allocator: mem.Allocator) -> string {
 	facts := fault_facts(err.fault)
 	switch facts.blames {
 	case .An_Argument:
-		return deliverable(
+		return refusal_line(
 			fmt.aprintf(
 				"argument %d (%q): %s",
 				err.argument,
@@ -145,17 +145,26 @@ error_message :: proc(err: Build_Error, allocator: mem.Allocator) -> string {
 			),
 		)
 	case .The_Executable:
-		return deliverable(fmt.aprintf("%q: %s", err.culprit, facts.says, allocator = allocator))
+		return refusal_line(fmt.aprintf("%q: %s", err.culprit, facts.says, allocator = allocator))
 	case .Nothing:
-		return deliverable(strings.clone(facts.says, allocator))
+		return refusal_line(strings.clone(facts.says, allocator))
 	case .Unset:
 	}
 	panic("a fault's row in FAULT names nothing to blame")
 }
 
-@(private)
+// The non-empty, NUL-free, valid-UTF-8 guard every Recording-level refusal
+// passes through before it reaches a user through a UTF-16 Win32 call: a NUL
+// truncates the line where it is printed, and a byte that is not valid UTF-8
+// converts the whole of it to nil. Exported (issue #63) so `audio`,
+// `artifact`, `child`, `engine` and `transcript` -- the renderers that
+// interpolate the paths and Engine bytes this guard exists to catch -- call
+// it directly instead of each spelling a weaker, non-empty-only copy. Named
+// for what it hands back rather than for `CONTEXT.md`'s `Transcript` ("the deliverable"),
+// which this is not: `Transcript` is one specific finished document, and this
+// runs over any refusal line any of these packages renders.
 @(require_results)
-deliverable :: proc(message: string) -> string {
+refusal_line :: proc(message: string) -> string {
 	assert(len(message) > 0, "a refusal rendered as nothing at all")
 	assert(
 		strings.index_byte(message, 0) < 0,

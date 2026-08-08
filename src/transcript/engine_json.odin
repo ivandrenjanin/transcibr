@@ -596,7 +596,7 @@ error_message :: proc(err: Parse_Error, allocator: mem.Allocator) -> string {
 	}
 
 	assert(strings.contains(out, err.json_name), "an operating error that does not name its input")
-	return out
+	return process.refusal_line(out)
 }
 
 @(private)

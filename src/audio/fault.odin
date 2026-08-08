@@ -179,7 +179,6 @@ borrowed_message :: proc(err: Error, source: string, allocator: mem.Allocator) -
 			allocator = allocator,
 		)
 	}
-	assert(len(message) > 0, "a borrowed reason rendered as nothing at all")
 	return message
 }
 
@@ -264,6 +263,5 @@ error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> s
 	     .Audio_Not_Published:
 		message = fmt.aprintf("%q: %s", source, fault_says(err.fault), allocator = allocator)
 	}
-	assert(len(message) > 0, "a refusal rendered as nothing at all")
-	return message
+	return process.refusal_line(message)
 }

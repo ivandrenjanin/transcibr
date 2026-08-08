@@ -100,8 +100,7 @@ error_message :: proc(err: Error, allocator: mem.Allocator) -> string {
 			allocator = allocator,
 		)
 	}
-	assert(len(message) > 0, "a refusal rendered as nothing at all")
-	return message
+	return process.refusal_line(message)
 }
 
 // The `.Bad_Command_Line` arm below relies on the same guarantee

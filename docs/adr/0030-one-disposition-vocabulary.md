@@ -212,3 +212,40 @@ checked reader, a renderer) can be written once, parametrically, over an arbitra
 without losing the enumerated-array missing-row compile check the table above proves each copy still
 has. That question is unrelated to which package spells `Disposition`, and this ADR does not answer
 it. It is reopened by whoever picks that half back up.
+
+## Addendum (issue #63): `refusal_line`'s placement, re-taken at six importers
+
+The "`batch_setup_message` lives here, argued on its own" section above rejected one argument for
+`process` as this package's home — "its consumers already import `process`" — as true of every
+package `process` has no cycle with, and therefore not discriminating. It kept `process` anyway,
+on a narrower, proportion-shaped claim: `batch_setup_message` is three lines that call `deliverable`
+(now `refusal_line`), the guard `error_message` already called at every branch of `Build_Error`, and
+reusing that guard directly was worth more than a near-empty package built to hold one function and
+its one test.
+
+Issue #63 exported `deliverable` as `refusal_line` so `child` (two call sites), `audio` (one call
+site), `artifact`, `engine` and `transcript` could call the same non-empty, NUL-free, valid-UTF-8
+guard directly, instead of each spelling a weaker, non-empty-only copy of it. That takes the
+importer count this ADR argued over from one (`process` itself) to six packages — `process`,
+`child`, `audio`, `artifact`, `engine`, `transcript` — which is the point this ADR itself named as
+worth re-opening the question rather than inheriting it silently.
+
+The proportion argument still holds, checked again rather than assumed: `refusal_line` is nine
+lines including its three asserts (`command_line.odin:167-175`, counted by rule F1's own rule — the
+line containing `::` through the closing brace), all of them already read as one small guard, and
+none of the five importing packages branch on anything about it beyond "call it last." A package
+built solely to hold it would still be as near-empty at six importers as it was argued to be
+wrong-sized for at one — the lines that would move are the same nine, and nothing about a sixth or
+seventh call site changes their shape. The "its consumers already import `process`" non-argument the
+original section rejected is exactly as non-discriminating now: every one of the five importing
+packages already imports `process` for something else (`child` and `audio` for
+`Build_Error`/`Probe_Fault`, `artifact` for `Disposition` and `Model` plumbing, `engine` for the same
+command-line contract `error_message` renders, `transcript` for `Disposition` in `disposition_of`),
+so that fact alone still picks out nothing. What answers the question is the same thing it answered
+before: `process` already holds `refusal_line`'s one other caller (`batch_setup_message`), the guard
+is small enough that a dedicated package for it is a worse trade than it was at one importer, and no
+package among the five importing it is a more natural home for a guard about how ANY refusal reaches
+a UTF-16 Win32 call — it is not about command lines, Recordings, Engine output, child processes or
+Engine JSON specifically, so moving it into one of those five would misname it exactly as `process`
+holding it never did. `process` stays the home; five more importers changed the count this ADR
+watches, not the argument it made.

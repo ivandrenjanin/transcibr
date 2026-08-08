@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:mem"
 import "core:os"
 import "transcibr:child"
+import "transcibr:process"
 import "transcibr:transcript"
 
 Artifact :: enum u8 {
@@ -375,8 +376,7 @@ error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> s
 	case .None, .Named_No_File, .Not_Recordable:
 		message = fmt.aprintf("%q: %s", source, says, allocator = allocator)
 	}
-	assert(len(message) > 0, "a refusal rendered as nothing at all")
-	return message
+	return process.refusal_line(message)
 }
 
 @(private)
