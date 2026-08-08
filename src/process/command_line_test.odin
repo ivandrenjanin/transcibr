@@ -519,7 +519,7 @@ every_build_fault_names_a_disposition :: proc(t: ^testing.T) {
 
 // Reads FAULT directly, before any renderer is reached, exactly as
 // every_build_fault_names_a_disposition does above: fault_facts's len(facts.says) > 0
-// assert (command_line.odin:98) had no direct-read pair until this test.
+// assert had no direct-read pair until this test.
 @(test)
 every_build_fault_names_a_sentence :: proc(t: ^testing.T) {
 	for fault in Build_Fault {
@@ -532,7 +532,7 @@ every_build_fault_names_a_sentence :: proc(t: ^testing.T) {
 
 // Reads FAULT directly, before any renderer is reached, exactly as
 // every_build_fault_names_a_disposition does above: fault_facts's
-// facts.blames != .Unset assert (command_line.odin:99) had no direct-read pair —
+// facts.blames != .Unset assert had no direct-read pair —
 // expect_refusal_renders reads facts.blames only after error_message has already
 // run fault_facts and its asserts, so its .Unset arm is unreachable as a guard.
 @(test)
@@ -684,6 +684,19 @@ a_trailing_backslash_in_the_executable_path_is_not_an_escape :: proc(t: ^testing
 		testing.expect_value(t, doubled_argv[0], `C:\dir\\`)
 		testing.expect_value(t, doubled_argv[1], "one")
 	}
+}
+
+// issue #63: `refusal_line` is `deliverable` exported, so every Recording-level
+// renderer outside this package can reach the same non-empty, NUL-free,
+// valid-UTF-8 guard instead of spelling a weaker copy of it. This does not
+// trip the guard's own asserts (issue #22 forbids a committed test doing
+// that) -- it pins that a healthy message still round-trips unchanged through
+// the exported name, the same as it always did through the private one.
+@(test)
+refusal_line_returns_a_healthy_message_unchanged :: proc(t: ^testing.T) {
+	message := strings.clone("ffmpeg.exe: could not be started", context.allocator)
+	defer delete(message, context.allocator)
+	testing.expect_value(t, refusal_line(message), message)
 }
 
 // This test binary's own argv, read the same way `transcibr-cli`'s `main`
