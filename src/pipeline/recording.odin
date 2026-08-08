@@ -176,6 +176,7 @@ transcribe_and_place :: proc(extracted: Recording_Extracted) -> bool {
 			audio = extracted.extracted.audio,
 			cache = job.cache,
 			name = job.name,
+			source = job.source,
 			model = job.model.path,
 			container_ms = extracted.extracted.container_ms,
 			prompt = job.prompt,
@@ -215,19 +216,25 @@ transcribe_and_place :: proc(extracted: Recording_Extracted) -> bool {
 // Exact-path delete of the one file this Recording's own Engine run could
 // have written -- `job.cache` and `job.name` rebuild the identical prefix
 // `engine.transcribe` used, and `process.engine_output_path` is the same
-// exported name that built it there. No enumeration of the cache directory,
-// no wildcard, no `os.remove_all` (CLAUDE.md's Odin notes, issue #97/#105).
+// exported name that built it there. Issue #275: the prefix itself is keyed
+// through `process.cache_key_prefix`, the same seam `engine.transcribe`'s
+// own `engine_output_prefix` keys against, rather than rebuilt as the plain
+// `<cache>\<name>` this procedure used to compute on its own -- the exact
+// drift #258/#268 already closed for the wav and probe intermediates. No
+// enumeration of the cache directory, no wildcard, no `os.remove_all`
+// (CLAUDE.md's Odin notes, issue #97/#105).
 @(private)
 discard_engine_output :: proc(job: Recording_Job, fault: engine.Fault) {
 	assert(len(job.cache) > 0, "a Recording Job with no cache has nowhere to sweep")
 	assert(len(job.name) > 0, "a Recording Job with no name has nowhere to sweep")
+	assert(len(job.source) > 0, "a Recording Job with no source has nothing to key its sweep to")
 	assert(fault != .None, "a Recording that came through has no output to sweep")
 
 	if fault == .Not_Stopped {
 		return
 	}
 
-	prefix := fmt.aprintf("%s\\%s", job.cache, job.name, allocator = job.allocator)
+	prefix := process.cache_key_prefix(job.cache, job.name, job.source, job.allocator)
 	defer delete(prefix, job.allocator)
 	output := process.engine_output_path(prefix, job.allocator)
 	defer delete(output, job.allocator)
