@@ -366,6 +366,36 @@ every_parse_fault_names_a_disposition :: proc(t: ^testing.T) {
 	}
 }
 
+// Reads FAULT[fault].says directly rather than through fault_facts, exactly as
+// src/audio/fault_test.odin reads its own table directly: a row written
+// present and empty is not caught by the enumerated array, so nothing but a
+// test that looks at the row itself catches it (see CLAUDE.md, Odin notes:
+// enumerated arrays and switches).
+@(test)
+every_parse_fault_names_a_sentence :: proc(t: ^testing.T) {
+	for fault in Parse_Fault {
+		if fault == .None {
+			continue
+		}
+		testing.expectf(t, len(FAULT[fault].says) > 0, "%v has an empty says in FAULT", fault)
+	}
+}
+
+// Reads FAULT[fault].scope directly rather than through fault_facts, exactly
+// as the two tests above read their own fields: a row written present and
+// empty (`.scope` left at its zero value, `.Unset`) is not caught by the
+// enumerated array, so nothing but a test that looks at the field itself
+// catches it (see CLAUDE.md, Odin notes: enumerated arrays and switches).
+@(test)
+every_parse_fault_names_a_scope :: proc(t: ^testing.T) {
+	for fault in Parse_Fault {
+		if fault == .None {
+			continue
+		}
+		testing.expectf(t, FAULT[fault].scope != .Unset, "%v has no scope in FAULT", fault)
+	}
+}
+
 @(test)
 an_engine_that_transcribed_nothing_fails_its_recording :: proc(t: ^testing.T) {
 	empty := []string{"", `{"transcription": []}`}

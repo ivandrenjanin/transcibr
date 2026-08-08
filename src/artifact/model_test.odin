@@ -261,6 +261,14 @@ every_model_fault_renders_a_line_naming_the_model_and_stopping_the_batch :: proc
 		if fault == .None {
 			continue
 		}
+		if !testing.expectf(
+			t,
+			len(model_fault_says(fault)) > 0,
+			"%v has an empty row in Model_Fault's switch",
+			fault,
+		) {
+			continue
+		}
 		message := model_error_message(fault, "C:\\models\\ggml-large-v3.bin", context.allocator)
 		defer delete(message, context.allocator)
 

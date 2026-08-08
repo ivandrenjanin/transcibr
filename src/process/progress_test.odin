@@ -409,12 +409,24 @@ an_estimate_with_no_duration_to_key_on_does_not_move :: proc(t: ^testing.T) {
 	testing.expect(t, !now.silent, "a child with no known duration was reported as silent")
 }
 
+// See CLAUDE.md, Odin notes: enumerated arrays and switches. `.Engine` is
+// skipped by name because it is the deliberately empty arm -- the display says
+// nothing about where the number came from when the Engine itself supplied it.
 @(test)
-a_display_says_where_its_number_came_from_except_when_the_engine_did :: proc(t: ^testing.T) {
-	testing.expect_value(t, progress_says(.Engine), "")
-	for from in ([?]Progress_Source{.Estimate, .Frozen}) {
+every_progress_source_says_where_the_number_came_from :: proc(t: ^testing.T) {
+	for from in Progress_Source {
+		if from == .Engine {
+			testing.expect_value(t, progress_says(from), "")
+			continue
+		}
 		testing.expectf(t, len(progress_says(from)) > 0, "%v says nothing at all", from)
 	}
+}
+
+// What the walking test above cannot check: that two non-empty renderings are
+// not the SAME non-empty rendering.
+@(test)
+an_estimate_and_a_frozen_bar_do_not_read_the_same :: proc(t: ^testing.T) {
 	testing.expect(
 		t,
 		progress_says(.Estimate) != progress_says(.Frozen),

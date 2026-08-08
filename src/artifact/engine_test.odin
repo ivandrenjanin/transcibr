@@ -122,6 +122,14 @@ every_engine_fault_renders_a_line_naming_the_engine_and_stopping_the_batch :: pr
 		if fault == .None {
 			continue
 		}
+		if !testing.expectf(
+			t,
+			len(engine_fault_says(fault)) > 0,
+			"%v has an empty row in Engine_Fault's switch",
+			fault,
+		) {
+			continue
+		}
 		message := engine_error_message(fault, "C:\\engine\\whisper-cli.exe", context.allocator)
 		defer delete(message, context.allocator)
 

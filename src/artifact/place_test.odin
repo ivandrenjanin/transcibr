@@ -592,6 +592,14 @@ every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testin
 		if fault == .None {
 			continue
 		}
+		if !testing.expectf(
+			t,
+			len(fault_says(fault)) > 0,
+			"%v has an empty says in Fault",
+			fault,
+		) {
+			continue
+		}
 		message := error_message(
 			Error {
 				fault = fault,
@@ -626,6 +634,24 @@ every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testin
 			strings.contains(message, "talk.mkv"),
 			"%v does not name the Recording it is about",
 			fault,
+		)
+	}
+}
+
+// Reads artifact_says directly rather than through error_message, exactly as
+// src/audio/fault_test.odin reads its own table directly: a case written
+// present and empty is not caught by the exhaustive switch, so nothing but a
+// test that looks at the row itself catches it (see CLAUDE.md, Odin notes:
+// enumerated arrays and switches). error_message's assert at the
+// artifact_says call site is the A4 pair to this test.
+@(test)
+every_artifact_has_a_name_artifact_says_can_render :: proc(t: ^testing.T) {
+	for which in Artifact {
+		testing.expectf(
+			t,
+			len(artifact_says(which)) > 0,
+			"%v has an empty row in Artifact's switch",
+			which,
 		)
 	}
 }

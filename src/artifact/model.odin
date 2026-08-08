@@ -276,6 +276,10 @@ hex_digest :: proc(context_256: ^sha2.Context_256, allocator: mem.Allocator) -> 
 	return Digest(string(hex.encode(sum[:], allocator)))
 }
 
+// A switch, not a table; the case below the empty `.None` arm is what a
+// missing row would trip. See CLAUDE.md, Odin notes: enumerated arrays and
+// switches -- model_error_message's assert below is the A4 pair to the
+// walking test in model_test.odin.
 @(private)
 @(require_results)
 model_fault_says :: proc(fault: Model_Fault) -> string {
