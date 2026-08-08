@@ -153,6 +153,12 @@ Progress :: struct {
 	silent:  bool,
 }
 
+// No reader assert on the rendering's length: `.Engine` renders empty on
+// purpose, so no caller can tell that arm from a member added with no words for
+// it, and an assert would refuse the legitimate value. The walking test in
+// progress_test.odin is the only guard on this switch -- it walks the whole
+// enumeration and names `.Engine` as the one exception. See CLAUDE.md, Odin
+// notes: enumerated arrays and switches.
 @(require_results)
 progress_says :: proc(from: Progress_Source) -> string {
 	switch from {

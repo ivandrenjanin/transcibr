@@ -587,22 +587,39 @@ fault's rendered wording — that sibling can still trip the reader's assert bef
 `expectf` ever runs. Measured on this branch mutating one row at a time in `src\artifact` and
 `src\transcript`, each with a direct-read walking test already in place: at three of four sites tried
 (`model.odin`'s `.Unreadable`, `sidecar.odin`'s `.Prompt`, `engine_json.odin`'s `.Empty_Input`) the
-package's full `odin test` sweep died at the assert (`Illegal instruction`, no summary, no test named),
-because a sibling test in the same package independently exercises the mutated row's renderer and races
-the walking test for it. At the fourth (`place.odin`'s `.Sidecar`, which no sibling test independently
-exercises), the full sweep instead reported the walking test's own failure cleanly — `1 test failed`,
-exit 1, the row named — on 4 of 4 runs. Running the walking test alone
-(`-define:ODIN_TEST_NAMES=<pkg>.<test>`) named the row every time, at all four sites. So the
-walking test is what catches the defect in an isolated run of itself, always; whether it also wins the
-race in a full package sweep depends on what else that package's tests exercise, and is not something a
-test's own shape can promise. Where the reader's assert is the chosen answer, it stays: it is the shipped
-binary's last line of defense against the same defect reaching a Recording already failing in front of
-somebody (rule A8 — an internal invariant, not external input), and it is the A4 pair the walking test is
-checked against, not a redundant copy of it.
+package's full `odin test` sweep died at the assert, because a sibling test in the same package
+independently exercises the mutated row's renderer and races the walking test for it. At the fourth
+(`place.odin`'s `.Sidecar`, which no sibling test independently exercises), the full sweep instead
+reported the walking test's own failure cleanly — `1 test failed`, exit 1, the row named — on 4 of 4
+runs. Running the walking test alone (`-define:ODIN_TEST_NAMES=<pkg>.<test>`) named the row every time,
+at all four sites.
 
-The A4 pair is not the only sanctioned answer, and the walking test is not optional at either one. Two
-families in this tree deliberately carry no reader assert at all, each for a recorded reason, and each
-still requires the walking test:
+"Died at the assert" is a RANGE and not one shape, so no claim that this path merely crashes fast — or
+that it never hangs — survives being measured. One mutation (`engine_json.odin`'s `.No_Text` row, its
+`disposition` set to `.Unset`) run ten times over the justfile's own `odin test src\transcript` line:
+eight runs died in under a second with `Illegal instruction` (exit 132) and two ran past a two-minute
+ceiling with nothing written but the runner's banner, killed by the ceiling rather than by anything in
+the toolchain. An independent five-run pass over the same family during this ticket's review drew the
+hang three times of five. Which shape a run draws is scheduler timing (issue #22's mechanism, and see
+"The test runner hangs" below); none of the runs reported a summary or named a test either way, and
+nothing bounds the hanging one but the CI job timeout. So the walking test is what catches the defect in
+an isolated run of itself, always; whether it also wins the race in a full package sweep depends on what
+else that package's tests exercise, and is not something a test's own shape can promise. Its value is
+that it CAN fail cleanly, and does fire first in a healthy tree where nothing else reaches the mutated
+row — not that tripping the reader's assert is a safe way to find out.
+
+Where the reader's assert is the chosen answer, it stays: it is the shipped binary's last line of defense
+against the same defect reaching a Recording already failing in front of somebody (rule A8 — an internal
+invariant, not external input), and it is the A4 pair the walking test is checked against, not a
+redundant copy of it.
+
+The A4 pair is not the only sanctioned answer, and the walking test is not optional at either one. A
+renderer may carry no reader assert at all — but only where the reason is RECORDED at the site, in a
+comment naming why an assert is the wrong answer there and naming the walking test that stands in its
+place. Absent both, a renderer with no assert is a gap and not a decision. Do not count the sites that
+qualify, here or anywhere: this document has carried a census of them, and issue #62's own review found
+one the census missed, which is how a count fails — the rule is checkable at a site, a total never is.
+What follows are worked examples of what a recorded reason reads like, not a roster:
 
 - `src\doctor\report.odin`'s `sentence_or_fallback` — the shared fallback both `combined_message`
   (`report.odin`) and `health_error_message` (`src\doctor\health.odin`) route an empty row through —
@@ -617,10 +634,19 @@ still requires the walking test:
   would take the whole `odin test` runner down with it, not just the file being checked (issue #22).
   `fault_test.odin` walking `Fault` is the only guard on `fault_says`'s switch, by the comment's own
   words.
+- `src\process\progress.odin`'s `progress_says` — one arm, `.Engine`, renders the empty string on
+  purpose, because a reading the Engine itself supplied is annotated with nothing. So no reader can tell
+  that arm from a member added with no words for it, and an assert on the rendering's length would
+  refuse a legitimate value. `progress_test.odin`'s walking test is the only guard, and it is written to
+  name `.Engine` as the one exception rather than to skip whatever the enumeration happens to hold.
 
 Choose the no-assert shape only when its reason applies — the row's absence must reach a caller safely
-(A8) rather than crash a build or a check already failing loudly, or an in-renderer assert would take a
-concurrent test run down with it (issue #22) — and keep the walking test either way.
+(A8) rather than crash a build or a check already failing loudly, an in-renderer assert would take a
+concurrent test run down with it (issue #22), or an empty rendering is itself a legitimate answer — and
+keep the walking test either way. A walking test written against a HARDCODED list of members is not
+one: it reads what its author typed, not what the enumeration holds, so a member added later is outside
+it and ships green. Walk the enumeration itself and name each deliberately empty member by hand, the
+way `src\audio\fault_test.odin` names `.None` and `progress_test.odin` names `.Engine`.
 
 **`odin test` cannot write its test executable to a path containing a space.** It runs the binary
 it builds through a command line it does not quote, so a space is re-parsed as an argument
