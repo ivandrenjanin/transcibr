@@ -267,12 +267,19 @@ write_transcript :: proc(
 
 	written, write_err := os.write_string(os.stdout, markdown)
 	if write_err != nil || written != len(markdown) {
-		fmt.eprintfln(
-			"%s: %d of %d bytes of the transcript reached standard output: %v",
-			json_path,
-			written,
-			len(markdown),
-			write_err,
+		pipeline.report_fault(
+			pipeline.FAULT_OBSERVER,
+			.Failed,
+			-1,
+			fmt.aprintf(
+				"%s: %d of %d bytes of the transcript reached standard output: %v",
+				json_path,
+				written,
+				len(markdown),
+				write_err,
+				allocator = context.allocator,
+			),
+			context.allocator,
 		)
 		return OPERATING_ERROR
 	}

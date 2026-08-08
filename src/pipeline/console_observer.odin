@@ -19,8 +19,14 @@ import "core:fmt"
 write_event_to_console :: proc(event: Event, user: rawptr) {
 	switch event.kind {
 	case .Failed, .Refused, .Note:
+		assert(
+			len(event.message) > 0,
+			"a Failed/Refused/Note event reached the console with no message",
+		)
 		fmt.eprintln(event.message)
 	case .Health:
+		assert(len(event.source) > 0, "a Health event reached the console with no source")
+		assert(len(event.message) > 0, "a Health event reached the console with no message")
 		fmt.eprintfln("%s: %s", event.source, event.message)
 	case .Batch_Started,
 	     .Admitted,

@@ -386,6 +386,8 @@ checked_first_recording_health :: proc(
 
 	message := doctor.health_error_message(fault, factor, job.allocator)
 	defer delete(message, job.allocator)
+	assert(len(job.source) > 0, "a Health event was about to fire with no source to name")
+	assert(len(message) > 0, "a Health event was about to fire with no message to show")
 	fire(
 		job.observer,
 		Event {

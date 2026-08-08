@@ -133,7 +133,17 @@ run_one :: proc(
 
 	name := artifact.stem_of(o.source)
 	if len(name) == 0 {
-		fmt.eprintfln("%q: names no file to make artifacts from.", o.source)
+		pipeline.report_fault(
+			pipeline.FAULT_OBSERVER,
+			.Failed,
+			-1,
+			fmt.aprintf(
+				"%q: names no file to make artifacts from.",
+				o.source,
+				allocator = context.allocator,
+			),
+			context.allocator,
+		)
 		return OPERATING_ERROR
 	}
 

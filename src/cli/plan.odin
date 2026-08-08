@@ -191,11 +191,11 @@ plan_verdict :: proc(plan: planning.Plan, inventory: planning.Inventory, runnabl
 			planning.collision_line(plan, context.allocator),
 			planning.incomplete_line(inventory, context.allocator),
 		}) {
-		defer delete(line, context.allocator)
 		if len(line) == 0 {
+			delete(line, context.allocator)
 			continue
 		}
-		fmt.eprintln(line)
+		pipeline.report_fault(pipeline.FAULT_OBSERVER, .Refused, -1, line, context.allocator)
 		said = true
 	}
 	assert(said, "a Batch was refused and nothing said what refused it")

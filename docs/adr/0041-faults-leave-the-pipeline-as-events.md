@@ -8,7 +8,13 @@ console-subsystem assumption a GUI-subsystem binary cannot share — `fmt.eprint
 stdio write, silently disappears into a NULL handle in that binary (§2.4 of the same plan). This
 record settles the seam once, before #16 has to build against it, and closes residual 3 of the
 #176 tracker comment (2026-08-08): an operating-error run used to note that it started and never
-why it failed.
+why it failed. Fix round 1 (PR #285's review, finding 4, Important) found residual 3 only partly
+closed at this record's first pass: three `src/cli` fault sites -- `transcribe.odin`'s no-file-stem
+refusal, `main.odin`'s partial-stdout-write refusal, and `plan.odin`'s collision/incomplete refusal --
+still wrote to stderr with a bare `fmt.eprintfln`/`fmt.eprintln` and recorded nothing in the trail.
+All three now route through `pipeline.report_fault(pipeline.FAULT_OBSERVER, ...)` like every other
+fault site in `src/cli`; residual 3 is closed by every fault site as of this fix round, not most of
+them.
 
 ## The decision
 
@@ -100,21 +106,44 @@ carries the fields themselves; nothing downstream re-derives them from text.
 **Console** (`src/pipeline/console_observer.odin`, `CONSOLE_OBSERVER`): renders the *exact* bytes
 `report_fault`/`checked_first_recording_health`'s own fault line always wrote —
 `fmt.eprintln(event.message)` for `.Failed`/`.Refused`/`.Note`, `fmt.eprintfln("%s: %s", event.source,
-event.message)` for `.Health`. This is the byte-identity obligation the plan calls the review's own
-centerpiece: `src/pipeline/transcribe_cli_test.odin`'s three existing drills — each spawning the
-real `transcibr-cli` binary and reading its stderr back — pin this by construction, unchanged by
-this PR, because they read the process's real stderr rather than any internal call.
+event.message)` for `.Health`. Fix round 1 (PR #285's review, finding 2, Important) corrects a false
+claim this section originally made here: `src/pipeline/transcribe_cli_test.odin`'s three real-binary
+drills do **not** pin this by construction — they are `strings.contains` substring checks, and the
+reviewer mutated the `.Failed`/`.Refused`/`.Note` arm to print `"REVIEW-MUTANT %s"` and measured `just
+test` exit 0, all suites green. `src/pipeline/console_observer_test.odin`
+(`write_event_to_console_pins_the_exact_stderr_bytes_for_every_wired_kind`) is the byte-identity pin
+that was missing: it redirects `os.stderr` to a pipe for one call and asserts the exact bytes, for
+every `Event_Kind` this sink renders.
 
 **Trail** (`src/pipeline/trail_observer.odin`, folded into `FAULT_OBSERVER` alongside the console
-sink): every fault `src/cli` reports now also reaches `crashlog.note` — closing residual 3.
-`trail_level_and_subject` is the pure routing table (`.Failed` → `Error`/"fault", `.Refused` →
-`Warn`/"refused", `.Health` → `Warn`/"health", `.Note` → `Info`/"note", every other kind → no
-subject, meaning "skip"), tested directly in `src/pipeline/event_test.odin` with no file or handle
-touched. `pipeline` importing `crashlog` closes no cycle: every import in `src/crashlog/*.odin` is
-`core:`/`base:`/`win32`, checked at the pin. `src/cli` itself carries no test of this wiring
-(ADR-0009) — the same tradeoff `refuse` already accepted for its own `crashlog.note` call in
-176-B, held by review rather than a test, because the glue is one line and the two things it calls
-(`write_event_to_console`, `crashlog.note`) are each tested on their own.
+sink): every fault `src/cli` reports now also reaches `crashlog.note`. `trail_level_and_subject` is
+the pure routing table (`.Failed` → `Error`/"fault", `.Refused` → `Warn`/"refused", `.Health` →
+`Warn`/"health", `.Note` → `Info`/"note", every other kind → no subject, meaning "skip"), tested
+directly in `src/pipeline/event_test.odin` with no file or handle touched. `pipeline` importing
+`crashlog` closes no cycle: every import in `src/crashlog/*.odin` is `core:`/`base:`/`win32`, checked
+at the pin. `src/cli` itself carries no test of this wiring (ADR-0009) — the same tradeoff `refuse`
+already accepted for its own `crashlog.note` call in 176-B, held by review rather than a test,
+because the glue is one line and the two things it calls (`write_event_to_console`, `crashlog.note`)
+are each tested on their own.
+
+Fix round 1 (PR #285's review, finding 1, Critical) added `trail_mutex` (a package-private
+`sync.Mutex` in `src/pipeline/trail_observer.odin`) around the `crashlog.note` call inside
+`write_event_to_trail`. `crashlog.note` composes a line as six to nine separate unlocked `WriteFile`
+calls with no lock and no composed buffer (`src/crashlog/record.odin`'s `record_note_line`), which was
+safe only as long as every caller ran on `src/cli`'s one main thread. This record's own seam broke
+that: `write_event_to_trail` is now reached from worker threads inside `extract_recording`,
+`transcribe_and_place` and `checked_first_recording_health` (`spawn_extract_workers`, `run.odin`), and
+the reviewer measured 7 of 61 real trail lines torn in one `--batch` run over two extract workers, and
+581 of 640 torn in a deterministic 8-thread isolation probe against `crashlog.note` directly. The real
+fix — composing one line into a caller-owned buffer and issuing one `WriteFile` — belongs to
+`src/crashlog`, which this record's own fence excludes; `trail_mutex` closes the race from this side
+instead by serializing every call this package makes into `crashlog.note`, the only path a worker
+thread reaches it through today (every other `note` call site — `refuse`, `main`'s own process start —
+still runs on the CLI's single main thread).
+`src/pipeline/trail_observer_test.odin`'s
+`write_event_to_trail_serializes_concurrent_calls_through_trail_mutex` proves a second caller blocks
+for as long as the first holds `trail_mutex`, without opening a real crashlog file in-process (see
+"Testing `write_event_to_trail` itself" in the implementer report for why that stays out of scope).
 
 **GUI** (#16) is the third sink, deliberately not built here. `Batch_Options.observer` and
 `Recording_Job.observer` are the seam; #16 wires a third `Observer` into the same field, nothing
@@ -145,10 +174,13 @@ this PR's to pick up.
 
 ## Consequences
 
-Fourteen call sites that used to call `report_fault(message, allocator)` directly — four inside
-`src/pipeline/recording.odin`, one inside `src/pipeline/batch.odin`, nine inside `src/cli`
-(`batch.odin` ×2, `engine_identify.odin` ×2, `main.odin` ×3, `plan.odin` ×1, `transcribe.odin` ×1)
-— now pass an `Observer` and an `Event_Kind` alongside the message they always built. Every one of
+Seventeen call sites now pass an `Observer` and an `Event_Kind` alongside the message they always
+built — four inside `src/pipeline/recording.odin`, one inside `src/pipeline/batch.odin`, twelve
+inside `src/cli` (`batch.odin` ×2, `engine_identify.odin` ×2, `main.odin` ×4, `plan.odin` ×2,
+`transcribe.odin` ×2; the count was fourteen and nine respectively at this record's first pass — see
+the opening section above for the three `src/cli` sites fix round 1 added: `main.odin`'s
+partial-stdout-write refusal, `plan.odin`'s collision/incomplete refusal, and `transcribe.odin`'s
+no-file-stem refusal). Every one of
 them in `src/cli` passes `pipeline.FAULT_OBSERVER`, the console-plus-trail fan-out this record
 ships; every one of them inside `src/pipeline` reads the `Observer`/`at` off the `Recording_Job` or
 `Batch_Options` it already had in scope. The rolling trail gains one new line shape's worth of
