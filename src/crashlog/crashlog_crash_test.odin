@@ -15,9 +15,10 @@
 // that path is shared by `build` and `release`, and issue #76 review round 3
 // measured `test` failing depending on which of those last wrote it (a
 // release binary carries no usable line info for `assertion_hook`'s stack
-// walk). Running `just test-one crashlog <name>` for one of these in
-// isolation needs the same drill-build line run first, by hand:
-// `odin build src/cli -collection:transcibr=src -out:build/odin-test/transcibr-cli-drill.exe -subsystem:console -debug <vet set>`.
+// walk). `just test-one crashlog <name>` rebuilds it too, as its own first
+// dependency edge (issue #240's `drill-cli-exe` recipe) -- a bare
+// `test-one`, with no prior `just test` and no hand-run build, always meets
+// the current source.
 //
 // The drill is spawned through `core:os`'s own `process_start`/`process_wait`
 // and NOT through `transcibr:child`, which is what this file used to use.
