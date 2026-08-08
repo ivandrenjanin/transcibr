@@ -52,28 +52,29 @@ run_transcribe_drill :: proc(
 	assert(len(model_path) > 0, "the transcribe drill needs a model path, even an unreadable one")
 	assert(len(cache_path) > 0, "the transcribe drill needs a scratch cache to open")
 
-	state, out, err_out, err := os.process_exec(
-		{
-			command = {
-				TRANSCRIBE_DRILL_CLI,
-				"--transcribe",
-				recording_path,
-				"--model-file",
-				model_path,
-				"--engine-exe",
-				engine_path,
-				"--cache",
-				cache_path,
-			},
+	stdout: string
+	drill_ran: bool
+	stdout, stderr, exit_code, drill_ran = testkit.run_cli_drill(
+		t,
+		TRANSCRIBE_DRILL_CLI,
+		[]string {
+			"--transcribe",
+			recording_path,
+			"--model-file",
+			model_path,
+			"--engine-exe",
+			engine_path,
+			"--cache",
+			cache_path,
 		},
 		allocator,
 	)
-	delete(out, allocator)
-	if !testing.expectf(t, err == nil, "the transcribe drill did not run: %v", err) {
-		delete(err_out, allocator)
+	delete(stdout, allocator)
+	if !drill_ran {
+		delete(stderr, allocator)
 		return "", 0, false
 	}
-	return string(err_out), state.exit_code, true
+	return stderr, exit_code, true
 }
 
 // The #237 doctor shape's PR body names this as the covering test for the
