@@ -324,3 +324,16 @@ a_changed_model_beats_a_changed_merge_profile :: proc(t: ^testing.T) {
 	both.merge_profile = "conversation"
 	testing.expect_value(t, changed(both, EXAMPLE), Change.Model)
 }
+
+// Reads KEY directly rather than through write_text/write_number, exactly as
+// src/audio/fault_test.odin reads its own table directly: a row written
+// present and empty is not caught by the enumerated array, so nothing but a
+// test that looks at the row itself catches it (see CLAUDE.md, Odin notes:
+// enumerated arrays and switches). write_text and write_number's asserts are
+// the A4 pair to this test.
+@(test)
+every_key_has_a_name_in_key :: proc(t: ^testing.T) {
+	for key in Key {
+		testing.expectf(t, len(KEY[key]) > 0, "%v has an empty row in KEY", key)
+	}
+}

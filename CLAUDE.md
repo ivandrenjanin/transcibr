@@ -576,15 +576,24 @@ two members earn the switch shape instead of a fifth table (ADR-0018).
 
 Catch the empty entry by WALKING the enumeration in a test (`src\audio\fault_test.odin`), guarded AS
 WELL AS by the reader's own assert (rule A4: pair assertions across code paths) — neither is sufficient
-alone. The walking test is what is required to fire first: issue #62 measured that dropping one row from
-a `FAULT` table produces three concurrent `[FATAL] ... fault_facts()` trips and a 90-second hang, 340 of
-426 tests reported, which is issue #22's hazard exactly — a renderer assert that fires during a
-concurrent sweep takes the whole runner down rather than naming a case. The walking test reads the table
-directly and goes red on the missing row without ever calling the renderer, so it is what actually
-catches the defect in CI. The reader's assert stays: it is the shipped binary's last line of defense
-against the same defect reaching a Recording already failing in front of somebody (rule A8 — an internal
-invariant, not external input), and it is the A4 pair the walking test is checked against, not a
-redundant copy of it.
+alone, and the walking test is not a guarantee. Write the walking test to read the row or case itself
+— `len(FAULT[fault].says) > 0`, `len(model_fault_says(fault)) > 0` — and `continue` before calling the
+renderer, exactly as `src\audio\fault_test.odin` does; that removes the walking test's OWN call to the
+renderer as a source of the hazard below, which is what issue #62's re-enumeration found three of this
+family's tests skipping. It buys less than it looks like it does: `core:testing` runs every `@(test)` in
+a package concurrently by default (see "The test runner hangs" below), so if ANY OTHER test in the same
+package also exercises the renderer on the mutated row — and several legitimately do, to check a specific
+fault's rendered wording — that sibling can still trip the reader's assert before the walking test's own
+`expectf` ever runs. Measured on this branch mutating one row at a time in `src\artifact` and
+`src\transcript`, each with a direct-read walking test already in place: the package's full `odin test`
+sweep died at the assert (`Illegal instruction`, no summary, no test named) on every run, while running
+that same walking test alone (`-define:ODIN_TEST_NAMES=<pkg>.<test>`) named the row every time. So the
+walking test is what catches the defect in an isolated run of itself, always; whether it also wins the
+race in a full package sweep depends on what else that package's tests exercise, and is not something a
+test's own shape can promise. The reader's assert stays regardless: it is the shipped binary's last line
+of defense against the same defect reaching a Recording already failing in front of somebody (rule A8 —
+an internal invariant, not external input), and it is the A4 pair the walking test is checked against,
+not a redundant copy of it.
 
 **`odin test` cannot write its test executable to a path containing a space.** It runs the binary
 it builds through a command line it does not quote, so a space is re-parsed as an argument

@@ -336,9 +336,12 @@ artifact_says :: proc(which: Artifact) -> string {
 //
 // The line outlives this procedure; free it with delete and the same allocator.
 //
-// The asserts below are the A4 pair to place_test.odin's
+// The `says` assert below is the A4 pair to place_test.odin's
 // every_fault_renders_a_line_a_recordings_failure_row_can_carry, which walks
-// Fault. See CLAUDE.md, Odin notes: enumerated arrays and switches.
+// Fault; the `which` assert further down is the A4 pair to
+// every_artifact_has_a_name_artifact_says_can_render, which walks Artifact --
+// a separate enumeration. See CLAUDE.md, Odin notes: enumerated arrays and
+// switches.
 @(require_results)
 error_message :: proc(err: Error, source: string, allocator: mem.Allocator) -> string {
 	assert(err.fault != .None, "there is no message for a Recording that came through")

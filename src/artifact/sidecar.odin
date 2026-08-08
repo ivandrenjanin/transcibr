@@ -238,7 +238,9 @@ Key :: enum u8 {
 	Container_Ms,
 }
 
-// Why the two assertions on this table are all that is left: ADR-0024.
+// Why the two assertions on this table are all that is left: ADR-0024. Their
+// A4 pair is sidecar_test.odin's every_key_has_a_name_in_key, which walks Key
+// directly. See CLAUDE.md, Odin notes: enumerated arrays and switches.
 @(private, rodata)
 KEY := [Key]string {
 	.Engine             = "engine",
