@@ -100,7 +100,7 @@ extraction_tool_verdict :: proc(
 	case .Stopped, .Unstoppable:
 		message := combined_message(
 			executable,
-			"did not exit on its own within a few seconds of being asked its own version",
+			"did not exit on its own within a generous liveness bound after being asked its own version",
 			"",
 			allocator,
 		)

@@ -438,3 +438,23 @@ an_unstoppable_engine_probe_never_calls_the_wav_remover :: proc(t: ^testing.T) {
 		}
 	}
 }
+
+// Issue #273 fix round 1 widened this to 60s, but that value was chosen for
+// ordering against PROBE_BOUND_MS's 20s rather than from a loaded
+// measurement of this probe itself. The #292 round-2 review measured
+// `model_load_check` end to end under eight concurrent compile workers
+// plus six concurrent doctor sweeps -- 18 full CUDA model loads, worst
+// 38.71 s -- showing only 1.55x headroom at 60s. 120s carries 3.1x measured
+// headroom over that worst load, the same real headroom PROBE_BOUND_MS
+// itself carries over its own worst measured spawn (tool.odin).
+// Pins the widened floor the way `probe_bound_ms_carries_liveness_headroom...`
+// (tool_test.odin) already pins PROBE_BOUND_MS's, so a future edit that
+// quietly shrinks this constant back down fails loudly here.
+@(test)
+model_load_probe_bound_ms_carries_headroom_over_concurrent_load :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		MODEL_LOAD_PROBE_BOUND_MS >= 120_000,
+		"MODEL_LOAD_PROBE_BOUND_MS no longer carries the headroom issue #273's fix round 2 measured concurrent model loads need",
+	)
+}
