@@ -143,3 +143,27 @@ a_free_registered_through_a_procedure_not_named_delete_or_free_is_not_caught :: 
 
 	testing.expect_value(t, len(facts.defer_order), 0)
 }
+
+// Issue #281 item 1: two `defer delete(x)` on the same identifier, in the
+// same scope. This is a genuine double free -- LIFO runs both, and the
+// second one frees memory the first already freed -- but is_freeing_call
+// short-circuited the outer loop before this fix, so a free was never
+// considered as the EARLIER half of a pair (the #281 review's PROBE-F
+// measured 0 issues for exactly this shape).
+@(test)
+two_defer_deletes_on_the_same_identifier_in_one_scope_is_a_violation :: proc(t: ^testing.T) {
+	facts := facts_of(
+		t,
+		PROBE +
+		"held :: proc() {\n\tviolations := check()\n\tdefer delete(violations)\n\tdefer delete(violations)\n}\n",
+	)
+	defer facts_destroy(facts, context.allocator)
+
+	testing.expect_value(t, len(facts.defer_order), 1)
+	if len(facts.defer_order) == 1 {
+		testing.expect_value(t, facts.defer_order[0].line, 5)
+		testing.expect_value(t, facts.defer_order[0].walk_proc, "delete")
+		testing.expect_value(t, facts.defer_order[0].free_proc, "delete")
+		testing.expect_value(t, facts.defer_order[0].arg, "violations")
+	}
+}

@@ -592,9 +592,17 @@ Defer_Call :: struct {
 // fixed by hand three times before this check existed (main.odin's own
 // `violations`/`delete` pair among them, #184).
 //
-// `line` is the WALKING defer's own line: the one that reads freed memory,
-// and the one ground truth (the #178 review's six pre-fix hits) reports
-// against.
+// The same struct also carries issue #281's sibling class: two frees on the
+// same identifier in one scope, `walk_proc` and `free_proc` both a freeing
+// name. LIFO still runs both -- the earlier-registered one fires SECOND,
+// on memory the later-registered one already freed -- so it is exactly the
+// same "an earlier defer touches X after a later-registered one already
+// tore it down" shape, reported through the one field pair that already
+// names it.
+//
+// `line` is the EARLIER-registered defer's own line: the one that touches
+// freed memory once LIFO runs, and the one ground truth (the #178 review's
+// six pre-fix hits) reports against.
 Defer_Order_Issue :: struct {
 	line:      int,
 	walk_proc: string,
@@ -620,9 +628,12 @@ is_freeing_call :: proc(name: string) -> bool {
 	return false
 }
 
-// Every place in one file where a `defer` that walks or derefs an
-// identifier is registered ahead of a later `defer`, in the SAME block,
-// that deletes or frees that identifier.
+// Every place in one file where a `defer` -- one that walks or derefs an
+// identifier, or one that already deletes or frees it -- is registered
+// ahead of a later `defer`, in the SAME block, that deletes or frees that
+// same identifier. The second class is issue #281's same-scope double
+// free: LIFO still runs the later-registered free first, so the earlier
+// one then frees memory already gone.
 //
 // Scoped to the known shape (CLAUDE.md rule A2's discipline, generalised to
 // a whole check rather than one assertion): same-identifier pairs, where
@@ -729,8 +740,16 @@ note_defer_order_node :: proc(walker: ^ast.Visitor, node: ^ast.Node) -> ^ast.Vis
 
 // One scope's own defer-call pairs -- a block's `.stmts` or a case
 // clause's `.body`, both `[]^ast.Stmt` -- every `defer` among its direct
-// statements that names a container, checked pairwise for a walk
+// statements that names a container, checked pairwise for an earlier defer
 // registered ahead of a later free on the same identifier.
+//
+// The earlier half is read whether it is a walk or a free itself: a walk
+// ahead of a later free is issue #219's class, and a free ahead of a later
+// free is issue #281's same-scope double free -- LIFO runs the later one
+// first, so the earlier-registered free then runs again on memory already
+// gone. Both are "an earlier defer's own line touches X after a
+// later-registered defer already tore X down", so both are read by the one
+// loop: nothing here skips a freeing call as the earlier candidate.
 note_stmt_list_defers :: proc(state: ^Defer_Order_State, stmts: []^ast.Stmt) {
 	assert(state != nil, "asked to record a scope's defers into no state at all")
 
@@ -742,22 +761,19 @@ note_stmt_list_defers :: proc(state: ^Defer_Order_State, stmts: []^ast.Stmt) {
 		}
 	}
 
-	for walk, i in calls {
-		if is_freeing_call(walk.proc_name) {
-			continue
-		}
-		free, has_free := later_free_of(calls[i + 1:], walk.arg)
+	for earlier, i in calls {
+		free, has_free := later_free_of(calls[i + 1:], earlier.arg)
 		if !has_free {
 			continue
 		}
 		append(
 			state.found,
 			Defer_Order_Issue {
-				line = walk.line,
-				walk_proc = strings.clone(walk.proc_name, state.text),
+				line = earlier.line,
+				walk_proc = strings.clone(earlier.proc_name, state.text),
 				free_proc = strings.clone(free.proc_name, state.text),
 				free_line = free.line,
-				arg = strings.clone(walk.arg, state.text),
+				arg = strings.clone(earlier.arg, state.text),
 			},
 		)
 	}
