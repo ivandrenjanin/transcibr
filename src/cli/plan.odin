@@ -163,7 +163,13 @@ print_plan :: proc(plan: planning.Plan, inventory: planning.Inventory) {
 		pipeline.report_line(planning.plan_line(entry, context.allocator), context.allocator)
 	}
 	for note in inventory.notes {
-		pipeline.report_fault(planning.note_line(note, context.allocator), context.allocator)
+		pipeline.report_fault(
+			pipeline.FAULT_OBSERVER,
+			.Note,
+			-1,
+			planning.note_line(note, context.allocator),
+			context.allocator,
+		)
 	}
 }
 

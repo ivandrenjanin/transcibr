@@ -220,6 +220,9 @@ re_render :: proc(arguments: []string) -> int {
 	defer delete(json_bytes, context.allocator)
 	if read_err.fault != .None {
 		pipeline.report_fault(
+			pipeline.FAULT_OBSERVER,
+			.Failed,
+			-1,
 			child.read_error_message(read_err, options.json_path, context.allocator),
 			context.allocator,
 		)
@@ -252,7 +255,13 @@ write_transcript :: proc(
 	defer delete(markdown, context.allocator)
 
 	if err.fault != .None {
-		pipeline.report_fault(transcript.error_message(err, context.allocator), context.allocator)
+		pipeline.report_fault(
+			pipeline.FAULT_OBSERVER,
+			.Failed,
+			-1,
+			transcript.error_message(err, context.allocator),
+			context.allocator,
+		)
 		return OPERATING_ERROR
 	}
 
@@ -298,7 +307,13 @@ job_object_opened :: proc() -> (group: child.Job_Object, ok: bool) {
 	if opening.fault == .None {
 		return opened, true
 	}
-	pipeline.report_fault(child.error_message(opening, context.allocator), context.allocator)
+	pipeline.report_fault(
+		pipeline.FAULT_OBSERVER,
+		.Failed,
+		-1,
+		child.error_message(opening, context.allocator),
+		context.allocator,
+	)
 	return opened, false
 }
 

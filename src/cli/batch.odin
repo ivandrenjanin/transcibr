@@ -167,6 +167,9 @@ swept_cache :: proc(cache: string) -> bool {
 
 	if refused := audio.open_cache(cache, context.allocator); refused != .None {
 		pipeline.report_fault(
+			pipeline.FAULT_OBSERVER,
+			.Failed,
+			-1,
 			audio.cache_error_message(refused, cache, context.allocator),
 			context.allocator,
 		)
@@ -175,6 +178,9 @@ swept_cache :: proc(cache: string) -> bool {
 	taken, fault := audio.sweep_cache(cache, audio.DEFAULT_SWEEP_LIMITS, context.allocator)
 	if fault != .None {
 		pipeline.report_fault(
+			pipeline.FAULT_OBSERVER,
+			.Failed,
+			-1,
 			audio.cache_error_message(fault, cache, context.allocator),
 			context.allocator,
 		)
@@ -255,6 +261,7 @@ run_the_batch :: proc(
 				abort = &cancel_requested,
 				unhealthy = &gpu_health_unhealthy,
 			},
+			observer = pipeline.FAULT_OBSERVER,
 		},
 		context.allocator,
 		&cancel_requested,

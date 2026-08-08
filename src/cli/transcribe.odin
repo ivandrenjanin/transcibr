@@ -89,6 +89,9 @@ transcribe_one :: proc(arguments: []string) -> int {
 
 	if refused := audio.open_cache(o.cache, context.allocator); refused != .None {
 		pipeline.report_fault(
+			pipeline.FAULT_OBSERVER,
+			.Failed,
+			-1,
 			audio.cache_error_message(
 				refused,
 				o.cache,
@@ -153,6 +156,7 @@ run_one :: proc(
 		o.profile,
 		engine.Report{on_progress = show},
 		health,
+		pipeline.FAULT_OBSERVER,
 	)
 	assert(
 		job.health != pipeline.Health_Watch{},
