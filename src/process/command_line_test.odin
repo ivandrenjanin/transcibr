@@ -517,6 +517,34 @@ every_build_fault_names_a_disposition :: proc(t: ^testing.T) {
 	}
 }
 
+// Reads FAULT directly, before any renderer is reached, exactly as
+// every_build_fault_names_a_disposition does above: fault_facts's len(facts.says) > 0
+// assert (command_line.odin:98) had no direct-read pair until this test.
+@(test)
+every_build_fault_names_a_sentence :: proc(t: ^testing.T) {
+	for fault in Build_Fault {
+		if fault == .None {
+			continue
+		}
+		testing.expectf(t, len(FAULT[fault].says) > 0, "%v has an empty says in FAULT", fault)
+	}
+}
+
+// Reads FAULT directly, before any renderer is reached, exactly as
+// every_build_fault_names_a_disposition does above: fault_facts's
+// facts.blames != .Unset assert (command_line.odin:99) had no direct-read pair —
+// expect_refusal_renders reads facts.blames only after error_message has already
+// run fault_facts and its asserts, so its .Unset arm is unreachable as a guard.
+@(test)
+every_build_fault_names_who_it_blames :: proc(t: ^testing.T) {
+	for fault in Build_Fault {
+		if fault == .None {
+			continue
+		}
+		testing.expectf(t, FAULT[fault].blames != .Unset, "%v blames nothing in FAULT", fault)
+	}
+}
+
 // Measured; see ADR-0019.
 @(private)
 UNENCODABLE_CASES :: []string {

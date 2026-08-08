@@ -52,7 +52,11 @@ NUL_SAYS :: "contains a NUL, which ends the command line where Windows reads it"
 @(private)
 INVALID_UTF8_SAYS :: "is not valid UTF-8, so Windows cannot encode it as a command line"
 
-// See CLAUDE.md, Odin notes: enumerated arrays and switches.
+// See CLAUDE.md, Odin notes: enumerated arrays and switches. fault_facts's three
+// asserts below are each paired with a walking test that reads the row directly:
+// command_line_test.odin's every_build_fault_names_a_sentence (.says),
+// every_build_fault_names_who_it_blames (.blames), and
+// every_build_fault_names_a_disposition (.disposition).
 @(private, rodata)
 FAULT := [Build_Fault]Fault_Facts {
 	.None = {},
