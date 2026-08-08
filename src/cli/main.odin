@@ -8,7 +8,6 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:time"
-import "transcibr:artifact"
 import "transcibr:audio"
 import "transcibr:child"
 import "transcibr:cliargs"
@@ -271,51 +270,15 @@ write_transcript :: proc(
 	return 0
 }
 
-// The Model, identified once per run, with its refusal already reported. Both
-// commands that spend a Model do exactly this and nothing else with the fault.
-//
-// The Model comes back either way and the CALLER frees it: destroying it has to
-// be deferred where it is used and not where it was read, and a procedure that
-// owned the defer would free it before the run that needs it.
-@(private)
-@(require_results)
-model_identified :: proc(path: string) -> (identified: artifact.Model, ok: bool) {
-	assert(len(path) > 0, "there is no Model here to identify")
-
-	unidentified: artifact.Model_Fault
-	identified, unidentified = artifact.identify_model(path, context.allocator)
-	if unidentified == .None {
-		return identified, true
-	}
-
-	message := artifact.model_error_message(unidentified, path, context.allocator)
-	assert(len(message) > 0, "a Model was refused and nothing said why")
-	pipeline.report_fault(message, context.allocator)
-	return identified, false
-}
-
-// The Engine, identified by its own SHA-256 once per run, exactly like the
-// Model above -- ADR-0027's reopening clause, closed by issue #50. Every
-// command that spends an Engine (`--transcribe`, `--plan`, `--batch`) does
-// this and nothing else with the fault: an unreadable Engine binary is
-// reported against that file and the run stops (A8), never a silent
-// `unknown`. The caller frees the digest with `delete`, same as a Model's.
-@(private)
-@(require_results)
-engine_identified :: proc(path: string) -> (identified: artifact.Digest, ok: bool) {
-	assert(len(path) > 0, "there is no Engine here to identify")
-
-	unidentified: artifact.Engine_Fault
-	identified, unidentified = artifact.identify_engine(path, context.allocator)
-	if unidentified == .None {
-		return identified, true
-	}
-
-	message := artifact.engine_error_message(unidentified, path, context.allocator)
-	assert(len(message) > 0, "an Engine was refused and nothing said why")
-	pipeline.report_fault(message, context.allocator)
-	return identified, false
-}
+// Issue #249 item 4: this file used to carry its own unparametrized
+// `model_identified`/`engine_identified`, the shape `--doctor`, `--plan` and
+// `--transcribe` each grew a byte-identical private copy of before their own
+// framing migrated them onto `engine_identified_framed`/
+// `model_identified_framed` (src/cli/engine_identify.odin). `--batch`
+// (src/cli/batch.odin) was the last caller left on the unparametrized pair;
+// it now calls the framed pair too, passing `process.BATCH_CANNOT_START`
+// explicitly where it used to fall through to it as a default -- so this
+// file no longer needs a Model or an Engine wrapper of its own at all.
 
 // The shared Job Object every command that spawns children opens, with its
 // refusal already reported (issue #119: transcribe_one, run_batch_command and
