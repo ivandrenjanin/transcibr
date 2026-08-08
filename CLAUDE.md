@@ -469,8 +469,8 @@ The ceiling belongs to the CONSUMER and not to the reader, and it already reads 
 second consumer wants a different one, a nanosecond moment needing the full nineteen digits where a
 percentage needs two. That day has come: both call sites in `src\process\engine.odin` still take the
 default, but `src\artifact\sidecar.odin` declares `MAX_SIDECAR_DIGITS :: 19`, with
-`#assert(MAX_SIDECAR_DIGITS == len("9223372036854775807"))`, and passes it at five call sites
-(`sidecar.odin:396-405`) — including `s.source_modified_ns`, the nanosecond moment itself. At nineteen
+`#assert(MAX_SIDECAR_DIGITS == len("9223372036854775807"))`, and passes it at five call sites in
+`sidecar.odin` — including `s.source_modified_ns`, the nanosecond moment itself. At nineteen
 digits the digit-count ceiling no longer bounds the value below i64's range by itself; the per-digit
 check in the loop is what still does, unchanged from what it was doing at twelve.
 
