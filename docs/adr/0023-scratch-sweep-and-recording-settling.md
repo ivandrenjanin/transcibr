@@ -473,8 +473,16 @@ than something this package enforces. **Retired by the addendum below (issue #27
 
 ## Addendum: the Engine's own JSON output stops colliding on a shared stem too, and stops being built twice (issue #275)
 
-The residual every earlier addendum above left open — named "broader" where the #256 addendum
-calls it "narrower" (issue #40's own wording-disagreement note) — is closed here. The Engine's
+The residual every earlier addendum above left open is closed here. Closing it also settles the
+wording issue #40 deposited from the #268 review: the ADR's body sits two different guarantees next
+to each other in one paragraph — "no two workers ... take the same Recording" (:183, protecting the
+wav and probe paths) beside "no two workers take the same stem" (:186, protecting the JSON path) —
+and the #256 addendum repeats the "same stem" wording for the JSON residual alone (:431), close
+enough in the prose to read as two wordings of one guarantee rather than two guarantees, which is
+what #40 flagged. Retiring the JSON residual here removes the ambiguity outright: the "same stem"
+statements above are now marked Retired, and "same Recording" — restated in this addendum's own
+closing paragraph below (:525-526) — is the one guarantee left standing, covering the wav, probe,
+and JSON paths alike. The Engine's
 `<cache>\<name>.json` output was the last unkeyed member of the collision family #256/#268 already
 closed for the wav and probe intermediates, and its path was built independently in two packages:
 `src/engine/run.odin`'s `transcribe` and `src/pipeline/recording.odin`'s `discard_engine_output`,
