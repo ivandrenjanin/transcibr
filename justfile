@@ -80,23 +80,28 @@ policy-cli-exe:
 	if not exist build\odin-test mkdir build\odin-test
 	{{ odin }} build tools/policy {{ collection }} -out:build/odin-test/policy-cli.exe {{ vet }}
 
+# Builds the crash-drill binary, `transcibr-cli-drill.exe`, that
+# `src/crashlog`'s crash-drill tests spawn as a child process (see
+# `crashlog_crash_test.odin`'s own header). `-debug` for a real PDB --
+# `assertion_hook`'s stack symbolization needs one (issue #76 review round 1)
+# -- and its own path, never touched by `build` or `release`: sharing
+# `build/transcibr-cli.exe` with those made `test` pass or fail depending on
+# which of them last ran (issue #76 review round 3), since a `-o:speed`
+# binary carries no usable line info for the stack walk. Kept as its own
+# recipe, the same shape as `policy-cli-exe` above, so `test` and `test-one`
+# share one build line instead of two (issue #240; the #165/#175
+# recipe-shape precedent `policy-cli-exe` already set).
+drill-cli-exe:
+	if not exist build\odin-test mkdir build\odin-test
+	{{ odin }} build src/cli {{ collection }} -out:build/odin-test/transcibr-cli-drill.exe -subsystem:console -debug {{ vet }}
+
 # One explicit line per package: the 12 src/ packages that hold tests, plus
 # tools/policy, which reads Odin and is tested in Odin (ADR-0028). `cli` is
 # the one src/ package with none, by ADR-0009 -- an entry point thin enough
 # to read, with no logic of its own worth testing.
-#
-# `src/crashlog`'s crash-drill tests spawn a debug build of transcibr-cli as a
-# child process and need a real PDB for `assertion_hook`'s stack symbolization
-# (issue #76 review round 1). Sharing `build/transcibr-cli.exe` with `build`
-# and `release` made `test` pass or fail depending on which of those last ran
-# (issue #76 review round 3) -- a `just ci` ending on `release` left a
-# non-debug binary at that path, so `test` run again afterward failed a
-# symbolization assertion the first `just ci` pass never saw. The drill gets
-# its own binary at its own path instead, built here and never touched by
-# `build` or `release`.
 test:
 	if not exist build\odin-test mkdir build\odin-test
-	{{ odin }} build src/cli {{ collection }} -out:build/odin-test/transcibr-cli-drill.exe -subsystem:console -debug {{ vet }}
+	{{ just_executable() }} drill-cli-exe
 	{{ odin }} test src/artifact {{ collection }} -out:build/odin-test/artifact.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/audio {{ collection }} -out:build/odin-test/audio.exe {{ memory }} {{ vet }}
 	{{ odin }} test src/child {{ collection }} -out:build/odin-test/child.exe {{ memory }} {{ vet }}
@@ -146,28 +151,45 @@ test:
 # owned by the Odin toolchain, not by this repository -- `test-one-selftest`
 # pins the wording, not the ownership.
 #
-# What `test-one-selftest` does NOT pin is the rest of this same staleness
-# family, each recorded here as its own still-accepted risk: a stale
-# `build\odin-test\transcibr-cli-drill.exe` reports the crashlog crash-drill
-# tests green after an edit to record.odin that was never rebuilt (#176-A
-# review deposit on issue #175); a stale `build\odin-test\policy-cli.exe`
-# reports the policy exit-code tests green the same way (#184 review deposit
-# on issue #175). `just test` rebuilds both binaries as its own first lines,
-# so `just ci` is honest about those two; only a bare `just test-one` after an
-# edit, without a preceding `just test`, meets either of them.
+# Five of the tested packages above run their real assertions against a
+# CHILD-process binary, not against anything `odin test` itself builds:
+# `crashlog`'s crash-drill tests, `doctor`'s identity-CLI test,
+# `pipeline`'s and `planning`'s framing-regression tests all spawn
+# `transcibr-cli-drill.exe`, and `policy`'s exit-code tests spawn
+# `policy-cli.exe`. Before issue #240, only `just test`'s own first lines
+# rebuilt either binary, so a bare `just test-one crashlog <name>` (or
+# `doctor`/`pipeline`/`planning`/`policy`) after an edit to the binary's own
+# source (`src/cli/crash_drill.odin`, `src/cli/doctor.odin`,
+# `src/cli/transcribe.odin`, `src/cli/plan.odin`, `tools/policy/main.odin`,
+# ...) ran the test against whatever binary was already sitting in
+# `build\odin-test\` -- silently stale, and silently green (#176-A and #184
+# review deposits on issue #175; a live #267-review hit of the policy member,
+# resolved only by a hand-run `just policy-cli-exe`, deposited on this
+# ticket; a fix-round-1 review deposit on this ticket itself proved the same
+# staleness live for `doctor`, `pipeline` and `planning`, the drill binary's
+# other three consumers, which the first pass of this fix left unmapped).
+# The `{{ if pkg == ... }}` lines below close that: `test-one` now rebuilds
+# the one binary the named package's tests consume, the same recipes `test`
+# itself calls, before running the focused test against it -- so a bare
+# `test-one` on any of these five packages meets the current source, never a
+# stale binary, and a build failure in the relevant recipe fails `test-one`
+# loudly rather than falling through to a stale run. Every other package has
+# no such child binary, so its line is a no-op. The pkg->binary mapping lives
+# here, in this one conditional, and nowhere else.
 #
-# A third, unrelated member of the same family is NOT covered by anything in
-# `just ci`: a `#+build`-tagged `*_test.odin` file reports 0 tests collected
-# as a pass through `odin test` itself -- the exact line `just test` runs for
-# that package -- rather than the hollow-file violation issue #174 closed for
-# the untagged case (#174 review deposit on issue #175). Rebuilding binaries
-# does not touch this risk; it is a source-level build tag, and no recipe in
-# `ci` reads for it. `just test-one` on that package's real test name DOES
-# catch it -- the bogus-name guard above fires "0 tests collected" -- so this
-# residual is met by `just ci` and missed by a bare `just test-one`, the
-# inverse of the other two.
+# A third, unrelated member of the same staleness family is NOT covered by
+# anything here or in `just ci`: a `#+build`-tagged `*_test.odin` file reports
+# 0 tests collected as a pass through `odin test` itself -- the exact line
+# `just test` runs for that package -- rather than the hollow-file violation
+# issue #174 closed for the untagged case (#174 review deposit on issue
+# #175). It is a source-level build tag, and no recipe in `ci` reads for it.
+# `just test-one` on that package's real test name DOES catch it -- the
+# bogus-name guard above fires "0 tests collected" -- so this residual is met
+# by `just ci` and missed by a bare `just test-one`, unlike the two staleness
+# members above, which a bare `test-one` now meets on its own.
 test-one pkg name:
 	if not exist build\odin-test mkdir build\odin-test
+	{{ if pkg == "crashlog" { just_executable() + " drill-cli-exe" } else if pkg == "doctor" { just_executable() + " drill-cli-exe" } else if pkg == "pipeline" { just_executable() + " drill-cli-exe" } else if pkg == "planning" { just_executable() + " drill-cli-exe" } else if pkg == "policy" { just_executable() + " policy-cli-exe" } else { "rem test-one: package " + pkg + " has no prebuilt child-process binary to rebuild" } }}
 	{{ odin }} test {{ if pkg == "policy" { "tools/policy" } else { "src/" + pkg } }} {{ collection }} -out:build/odin-test/focus.exe -define:ODIN_TEST_NAMES={{ pkg }}.{{ name }} {{ memory }} {{ vet }} > build\odin-test\focus.out 2>&1 && (type build\odin-test\focus.out & findstr /b /c:"No tests to run." build\odin-test\focus.out >nul && (echo TEST-ONE: "{{ pkg }}.{{ name }}" matched no test procedure -- 0 tests collected & exit /b 1) || exit /b 0) || (type build\odin-test\focus.out & exit /b 1)
 
 # Proves `test-one`'s bogus-name guard both ways, by exit code (issue #175,

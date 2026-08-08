@@ -11,9 +11,10 @@
 //
 // The `test` recipe builds `build\odin-test\policy-cli.exe` before running
 // this package's tests, the same way it builds the crash-drill binary before
-// `src/crashlog`'s tests run. Running `just test-one policy <name>` for one
-// of these in isolation needs that build line run first, by hand:
-// `odin build tools/policy -collection:transcibr=src -out:build/odin-test/policy-cli.exe <vet set>`.
+// `src/crashlog`'s tests run. `just test-one policy <name>` rebuilds it too,
+// as its own first dependency edge (issue #240's `policy-cli-exe` recipe) --
+// a bare `test-one`, with no prior `just test` and no hand-run build, always
+// meets the current source.
 package policy
 
 import "core:os"

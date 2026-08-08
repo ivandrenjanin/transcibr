@@ -9,9 +9,10 @@
 // mode, never `--crash-drill`.
 //
 // Running either test below in isolation (`just test-one doctor <name>`)
-// needs that binary built first, by hand, the same requirement
-// crashlog_crash_test.odin's own doc comment names:
-// `odin build src/cli -collection:transcibr=src -out:build/odin-test/transcibr-cli-drill.exe -subsystem:console -debug <vet set>`.
+// rebuilds that binary itself, as its own first dependency edge (issue
+// #240's `drill-cli-exe` recipe, mapped to this package in fix round 1) --
+// a bare `test-one`, with no prior `just test` and no hand-run build,
+// always meets the current source.
 //
 // Finding 1: an unreadable Engine binary used to return OPERATING_ERROR
 // before `run_preflight` ever ran, so the whole report -- all five existing
