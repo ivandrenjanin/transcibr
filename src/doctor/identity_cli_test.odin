@@ -69,25 +69,12 @@ run_doctor_drill :: proc(
 	assert(len(engine_path) > 0, "the doctor drill needs an engine path, even an unreadable one")
 	assert(len(model_path) > 0, "the doctor drill needs a model path, even an unreadable one")
 
-	state, out, err_out, err := os.process_exec(
-		{
-			command = {
-				DOCTOR_DRILL_CLI,
-				"--doctor",
-				"--engine-exe",
-				engine_path,
-				"--model-file",
-				model_path,
-			},
-		},
+	return testkit.run_cli_drill(
+		t,
+		DOCTOR_DRILL_CLI,
+		[]string{"--doctor", "--engine-exe", engine_path, "--model-file", model_path},
 		allocator,
 	)
-	if !testing.expectf(t, err == nil, "the doctor drill did not run: %v", err) {
-		delete(out, allocator)
-		delete(err_out, allocator)
-		return "", "", 0, false
-	}
-	return string(out), string(err_out), state.exit_code, true
 }
 
 @(test)

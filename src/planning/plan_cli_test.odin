@@ -46,26 +46,20 @@ run_plan_drill :: proc(
 	assert(len(engine_path) > 0, "the plan drill needs an engine path, even an unreadable one")
 	assert(len(model_path) > 0, "the plan drill needs a model path, even an unreadable one")
 
-	state, out, err_out, err := os.process_exec(
-		{
-			command = {
-				PLAN_DRILL_CLI,
-				"--plan",
-				root,
-				"--model-file",
-				model_path,
-				"--engine-exe",
-				engine_path,
-			},
-		},
+	stdout: string
+	drill_ran: bool
+	stdout, stderr, exit_code, drill_ran = testkit.run_cli_drill(
+		t,
+		PLAN_DRILL_CLI,
+		[]string{"--plan", root, "--model-file", model_path, "--engine-exe", engine_path},
 		allocator,
 	)
-	delete(out, allocator)
-	if !testing.expectf(t, err == nil, "the plan drill did not run: %v", err) {
-		delete(err_out, allocator)
+	delete(stdout, allocator)
+	if !drill_ran {
+		delete(stderr, allocator)
 		return "", 0, false
 	}
-	return string(err_out), state.exit_code, true
+	return stderr, exit_code, true
 }
 
 // The #237 doctor shape's PR body names this as the covering test for the

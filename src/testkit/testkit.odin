@@ -272,6 +272,46 @@ engine_stand_in :: proc(
 	return path
 }
 
+// Issue #283's consolidation: `src/doctor`'s `run_doctor_drill`, `src/pipeline`'s
+// `run_transcribe_drill` and `src/planning`'s `run_plan_drill` each carried
+// their own ~25-line copy of this process_exec/error-handling shape,
+// differing only in the arguments they built and whether they bothered
+// reading stdout back -- the #245-deposit-on-#83 drift `engine_stand_in`
+// above already closed for the Engine stand-in script. Every caller still
+// asserts its own command-shaping arguments before reaching here (the drill
+// needs a Recording, an Engine path, and so on); this only owns spawning
+// `binary` with `arguments` after it, and reading both streams and the exit
+// code back. The caller frees `stdout` and `stderr` with `allocator`.
+@(require_results)
+run_cli_drill :: proc(
+	t: ^testing.T,
+	binary: string,
+	arguments: []string,
+	allocator: mem.Allocator,
+) -> (
+	stdout: string,
+	stderr: string,
+	exit_code: int,
+	ran: bool,
+) {
+	assert(t != nil, "there is no test here to report a drill failure through")
+	assert(len(binary) > 0, "the drill has no binary here to spawn")
+	assert(len(arguments) > 0, "a drill spawned with no arguments is not driving anything")
+
+	command := make([]string, len(arguments) + 1, allocator)
+	defer delete(command, allocator)
+	command[0] = binary
+	copy(command[1:], arguments)
+
+	state, out, err_out, err := os.process_exec({command = command}, allocator)
+	if !testing.expectf(t, err == nil, "the drill did not run: %v", err) {
+		delete(out, allocator)
+		delete(err_out, allocator)
+		return "", "", 0, false
+	}
+	return string(out), string(err_out), state.exit_code, true
+}
+
 // `waitfor` registers its signal name machine-wide, and a second instance
 // asking for a name already registered fails at once -- so cases that share
 // one name make a different one red on each run. The process id keeps two

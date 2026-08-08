@@ -341,3 +341,29 @@ flood_type_command_names_the_file_the_wait_and_the_signal :: proc(t: ^testing.T)
 		"flood_type_command did not wait on the signal it was given",
 	)
 }
+
+// Issue #283's consolidation: `src/doctor`, `src/pipeline` and `src/planning`
+// each carried their own ~25-line copy of this exact process_exec/error-
+// handling shape, the same drift `engine_stand_in` above already closed for
+// the Engine stand-in script. `cmd.exe` stands in for the drill binary here
+// so this case never depends on `transcibr-cli-drill.exe` being built --
+// checking the helper itself, not a consumer of it, the same split
+// `engine_stand_in_writes_a_cmd_that_walks_its_own_arguments_for_of` draws.
+@(test)
+run_cli_drill_captures_stdout_stderr_and_the_exit_code :: proc(t: ^testing.T) {
+	stdout, stderr, exit_code, ran := run_cli_drill(
+		t,
+		"cmd.exe",
+		[]string{"/c", "echo out&& echo err 1>&2 && exit 7"},
+		context.allocator,
+	)
+	defer delete(stdout, context.allocator)
+	defer delete(stderr, context.allocator)
+	if !testing.expect(t, ran, "run_cli_drill did not run cmd.exe at all") {
+		return
+	}
+
+	testing.expectf(t, strings.contains(stdout, "out"), "run_cli_drill lost stdout: %s", stdout)
+	testing.expectf(t, strings.contains(stderr, "err"), "run_cli_drill lost stderr: %s", stderr)
+	testing.expect_value(t, exit_code, 7)
+}
