@@ -67,7 +67,7 @@ extraction_tool_check :: proc(
 //
 // Issue #208 round 1: the `.Not_Started` case below used to call
 // `child.error_message(probe.child, allocator)` unconditionally, reaching
-// that procedure's own `assert(err.fault != .None, ...)` (child.odin:86)
+// that procedure's own `assert(err.fault != .None, ...)` (child.odin)
 // for any fault-free `.Not_Started` Probe -- the same reachable-assert
 // defect fixed for `model_load_verdict` (src/doctor/model_probe.odin). The
 // fault check below means this branch never reaches that assert regardless

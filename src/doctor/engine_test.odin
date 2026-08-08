@@ -238,7 +238,7 @@ an_overflowed_probe_is_refused_by_the_engine_verdict_rather_than_judged_on_its_c
 
 // Issue #208 round 1: `engine_error_message`'s `.Not_Started` branch called
 // `child.error_message(check.child, allocator)` unconditionally, reaching
-// that procedure's own `assert(err.fault != .None, ...)` (child.odin:86)
+// that procedure's own `assert(err.fault != .None, ...)` (child.odin)
 // for any fault-free `.Not_Started` check -- the same reachable-assert
 // defect `model_load_verdict` had, and this one is reached through a public
 // procedure. Drives a fault-free `.Not_Started` Engine_Check (the shape

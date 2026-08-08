@@ -36,7 +36,7 @@ an_overflowed_probe_is_refused_by_name_rather_than_judged_on_its_capture :: proc
 // Issue #208 round 1: `extraction_tool_verdict`'s `.Not_Started` branch
 // called `child.error_message(probe.child, allocator)` unconditionally,
 // reaching that procedure's own `assert(err.fault != .None, ...)`
-// (child.odin:86) for any fault-free `.Not_Started` Probe -- the same
+// (child.odin) for any fault-free `.Not_Started` Probe -- the same
 // reachable-assert defect `model_load_verdict` had, byte-identical in
 // shape. Drives a fault-free `.Not_Started` Probe directly through
 // `extraction_tool_verdict`, the seam a caller-constructed stub Probe
