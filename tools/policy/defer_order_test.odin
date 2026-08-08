@@ -93,3 +93,53 @@ a_walk_defer_registered_before_a_free_defer_inside_a_switch_case_is_a_violation 
 		testing.expect_value(t, facts.defer_order[0].arg, "violations")
 	}
 }
+
+// Issue #246's probed-live residual: a walk defer in the OUTER scope beside a
+// free defer in a NESTED block on the same identifier. Odin's defers are
+// scoped to the block that registers them, so the nested block's `defer
+// delete(violations)` fires when that block exits -- strictly before the
+// enclosing procedure exits and runs the outer `defer walk(violations)` on
+// what is by then freed memory. collect_defer_order_issues pairs a scope's
+// own direct statements only (note_stmt_list_defers reads one []^ast.Stmt at
+// a time), so the outer defer and the nested block's defer are never read as
+// one scope and this real inversion goes unreported. This test PINS that gap
+// rather than closing it -- see collect_defer_order_issues's own doc comment
+// for why (issue #246 recorded the residual rather than extending the
+// check): the day this starts reporting an issue, this test goes red and
+// the doc comment must move with it.
+@(test)
+a_walk_defer_in_an_outer_scope_beside_a_free_defer_in_a_nested_block_is_not_caught :: proc(
+	t: ^testing.T,
+) {
+	facts := facts_of(
+		t,
+		PROBE +
+		"held :: proc(n: int) {\n\tviolations := check()\n\tdefer walk(violations)\n\tif n > 0 {\n\t\tdefer delete(violations)\n\t}\n}\n",
+	)
+	defer facts_destroy(facts, context.allocator)
+
+	testing.expect_value(t, len(facts.defer_order), 0)
+}
+
+// A second silent category, distinct from the cross-scope one above: a free
+// registered through anything other than the two builtins is_freeing_call
+// matches by name, `delete` and `free`. A wrapper that itself frees its
+// argument -- `violations_release`, say -- reads as just another WALK to
+// this check, so a walk defer registered ahead of it is never paired at all
+// and the same LIFO inversion goes unreported. Naming every project's own
+// free-like wrapper would need resolving what a call actually does, the
+// second model of the code ADR-0028 keeps this program from building, so
+// this is recorded rather than chased.
+@(test)
+a_free_registered_through_a_procedure_not_named_delete_or_free_is_not_caught :: proc(
+	t: ^testing.T,
+) {
+	facts := facts_of(
+		t,
+		PROBE +
+		"held :: proc() {\n\tviolations := check()\n\tdefer walk(violations)\n\tdefer violations_release(violations)\n}\n",
+	)
+	defer facts_destroy(facts, context.allocator)
+
+	testing.expect_value(t, len(facts.defer_order), 0)
+}
