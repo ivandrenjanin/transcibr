@@ -11,16 +11,27 @@ import "core:strings"
 import "transcibr:child"
 
 // A `--help`/`-version` probe exits almost immediately once its own
-// executable is even runnable; five seconds is generous against a cold page
-// cache and nowhere close to what a wedged or hostile executable could stall
-// this for (issue #27's bound family).
-PROBE_BOUND_MS :: i64(5_000)
+// executable is even runnable, and this bound exists to catch a wedged or
+// hostile executable -- never to time a healthy one. It is a LIVENESS
+// bound, not a performance expectation: the original five-second value
+// (issue #27's bound family) was tuned against a cold page cache alone, and
+// the #239 review measured it tripping one full `just ci` run in three on a
+// machine loaded with parallel package sweeps. Issue #273's own
+// instrumentation -- the reference engine's `--help` and the reference
+// ffprobe's `-hide_banner`, spawned repeatedly both idle and under six
+// parallel `just ci` sweeps saturating every logical core on this machine
+// -- never saw either child take longer than a few hundred milliseconds to
+// exit. Twenty seconds keeps an order of magnitude of headroom over that
+// worst measurement while staying far short of what a CI job's own
+// wall-clock timeout allows a single hung probe to burn.
+PROBE_BOUND_MS :: i64(20_000)
 
 #assert(PROBE_BOUND_MS > 0)
+#assert(PROBE_BOUND_MS >= 4 * 5_000)
 
 // `child.MAX_DRAIN_BYTES` bounds one drain of the pipe, but a probe's own
 // wall-clock bound still gives a flooding tool many drains to grow this
-// builder across -- twenty at PROBE_BOUND_MS's five seconds, sixty at the
+// builder across -- eighty at PROBE_BOUND_MS's twenty seconds, sixty at the
 // model load probe's fifteen (POLL_MS's own 250 ms apart). Four times
 // MAX_DRAIN_BYTES (4 MiB) sits an order of magnitude over any legitimate
 // `--help`/`-version`/`--no-prints` transcript this package has ever

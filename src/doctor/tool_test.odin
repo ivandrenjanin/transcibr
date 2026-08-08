@@ -249,6 +249,26 @@ a_probe_refuses_a_flood_past_its_capture_ceiling_rather_than_growing_without_bou
 	)
 }
 
+// Issue #273: measured on this machine (idle and under six parallel
+// `just ci` sweeps saturating every logical core) the reference engine's
+// `--help` and the reference ffprobe's `-hide_banner` both exit inside a
+// few hundred milliseconds even under that load -- but the #239 review's
+// own field evidence was a genuine multi-second stall under load elsewhere,
+// which the prior five-second ceiling could not survive one time in three.
+// This pins PROBE_BOUND_MS at a liveness bound with an order of magnitude
+// of headroom over every spawn this package's own instrumentation measured,
+// rather than a tight performance expectation a loaded machine can trip.
+@(test)
+probe_bound_ms_carries_liveness_headroom_over_a_loaded_machines_measured_spawn_time :: proc(
+	t: ^testing.T,
+) {
+	testing.expect(
+		t,
+		PROBE_BOUND_MS >= 20_000,
+		"PROBE_BOUND_MS no longer carries the headroom issue #273 measured a loaded machine needs",
+	)
+}
+
 @(test)
 a_probe_that_outlives_its_bound_is_stopped_rather_than_waited_for :: proc(t: ^testing.T) {
 	group, ok := open_group(t)

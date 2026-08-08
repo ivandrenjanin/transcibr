@@ -139,7 +139,7 @@ engine_fault_says :: proc(fault: Engine_Fault) -> string {
 		return "the engine could not be started"
 	case .Did_Not_Finish:
 		return(
-			"the engine did not exit on its own within a few seconds of being started with --help" \
+			"the engine did not exit on its own within a generous liveness bound after being started with --help" \
 		)
 	case .Backend_Not_Loaded:
 		return(
