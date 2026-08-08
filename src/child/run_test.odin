@@ -18,6 +18,26 @@ CHILD_RUN_BOUND_MS :: i64(60_000)
 @(private)
 CHILD_SHORT_BOUND_MS :: i64(500)
 
+// Issue #170: CHILD_SHORT_BOUND_MS is too tight for a case that also has to
+// observe real bytes crossing the pipe, because that needs the freshly
+// spawned cmd.exe to actually get a CPU slice before the bound expires, and
+// nothing here controls when the OS schedules it. Instrumented under
+// deliberate contention (14 CPU-bound threads oversubscribing a 12-logical-
+// processor machine): a poll's own `WaitForSingleObject(..., POLL_MS)`
+// (run.odin) routinely overran its 250 ms floor by 30-60 ms, and in 31 of 40
+// runs cmd.exe had written nothing to the pipe by the time two such polls
+// pushed elapsed past 500 ms -- `drain_bounded` correctly reported "nothing
+// waiting" both times; the pipe genuinely held nothing yet. That is a
+// scheduling race in this test's own assumption, not a missed-read window in
+// the drain (drain_bounded's own ceiling is pinned separately, by
+// a_single_drain_stops_at_its_ceiling_even_with_a_steady_flood, below).
+// CHILD_FLOOD_BOUND_MS gives roughly 5x the worst delay measured that way --
+// still two orders of magnitude under LONGER_SECONDS -- so the case keeps
+// proving the poll loop regains control despite a flood, without the
+// child's own dispatch latency deciding the outcome.
+@(private)
+CHILD_FLOOD_BOUND_MS :: i64(3_000)
+
 @(test)
 a_child_that_exits_inside_its_bound_ran_to_completion :: proc(t: ^testing.T) {
 	group, ok := open_group(t)
@@ -316,7 +336,7 @@ a_flood_on_the_diagnostic_stream_does_not_stop_the_bound_from_being_reached :: p
 		&group,
 		CMD,
 		{"/c", command},
-		CHILD_SHORT_BOUND_MS,
+		CHILD_FLOOD_BOUND_MS,
 		context.allocator,
 		Run_Callbacks{user = &collected, on_chunk = collect_chunk},
 	)
@@ -328,7 +348,7 @@ a_flood_on_the_diagnostic_stream_does_not_stop_the_bound_from_being_reached :: p
 	testing.expect(
 		t,
 		elapsed <
-		time.Duration(CHILD_SHORT_BOUND_MS) * time.Millisecond + testkit.FLOOD_STOP_SLACK,
+		time.Duration(CHILD_FLOOD_BOUND_MS) * time.Millisecond + testkit.FLOOD_STOP_SLACK,
 		"the flood delayed the bound from being reached at all",
 	)
 
