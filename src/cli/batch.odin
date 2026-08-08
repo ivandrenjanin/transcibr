@@ -37,17 +37,6 @@ BATCH_WORKER_CEILINGS :: cliargs.Worker_Ceilings {
 	.Queue_Depth     = pipeline.MAX_QUEUE_DEPTH,
 }
 
-// Issue #249 item 4: `run_batch_command` used to call `main.odin`'s shared,
-// unparametrized `model_identified`/`engine_identified`, the last two
-// callers of a pair the doctor/plan/transcribe convergence left otherwise
-// unused. `process.BATCH_CANNOT_START` is `engine_identified_framed` and
-// `model_identified_framed`'s own default framing (src/process/batch_setup.odin),
-// so passing it here explicitly changes no byte `--batch` prints; it only
-// means every command now identifies an Engine or a Model through the same
-// one pair of procedures, each with its own named framing.
-BATCH_ENGINE_REFUSAL_FRAMING :: process.BATCH_CANNOT_START
-BATCH_MODEL_REFUSAL_FRAMING :: process.BATCH_CANNOT_START
-
 // `using parsed: cliargs.Batch_Options` promotes root, follow, the worker
 // counts and every Common_Options field straight through; `audio_tools` is
 // the defaulted audio.Tools this package builds from `parsed.tools`' two
@@ -153,13 +142,13 @@ run_batch_command :: proc(arguments: []string) -> int {
 		return OPERATING_ERROR
 	}
 
-	identified, named := model_identified_framed(o.model, BATCH_MODEL_REFUSAL_FRAMING)
+	identified, named := model_identified_framed(o.model, process.BATCH_CANNOT_START)
 	defer artifact.destroy_model(identified, context.allocator)
 	if !named {
 		return OPERATING_ERROR
 	}
 
-	engine_digest, engine_named := engine_identified_framed(o.engine, BATCH_ENGINE_REFUSAL_FRAMING)
+	engine_digest, engine_named := engine_identified_framed(o.engine, process.BATCH_CANNOT_START)
 	defer delete(string(engine_digest), context.allocator)
 	if !engine_named {
 		return OPERATING_ERROR
