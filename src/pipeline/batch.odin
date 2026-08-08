@@ -77,6 +77,7 @@ engine_output_path :: proc(source: string, allocator: mem.Allocator) -> (path: s
 re_render_recording :: proc(
 	entry: planning.Entry,
 	o: Batch_Options,
+	at: int,
 	allocator: mem.Allocator,
 ) -> bool {
 	assert(
@@ -95,7 +96,7 @@ re_render_recording :: proc(
 		return false
 	}
 
-	return re_rendered_and_placed(entry.found.source, output, made, o, allocator)
+	return re_rendered_and_placed(entry.found.source, output, made, o, at, allocator)
 }
 
 @(private)
@@ -105,6 +106,7 @@ re_rendered_and_placed :: proc(
 	output: string,
 	made: artifact.Sidecar,
 	o: Batch_Options,
+	at: int,
 	allocator: mem.Allocator,
 ) -> bool {
 	return placed_and_reported(
@@ -119,6 +121,8 @@ re_rendered_and_placed :: proc(
 			profile = o.profile,
 		},
 		made,
+		o.observer,
+		at,
 		allocator,
 	)
 }
@@ -130,15 +134,16 @@ sort_entry :: proc(
 	o: Batch_Options,
 	allocator: mem.Allocator,
 	jobs: ^[dynamic]Recording_Job,
+	at: int,
 ) {
 	assert(summary != nil, "there is nowhere here to record what this entry came to")
 	assert(jobs != nil, "there is nowhere here to collect a Transcribe entry's Job")
 
 	switch entry.outcome.decision {
 	case .Transcribe:
-		append(jobs, recording_job_of(entry, o))
+		append(jobs, recording_job_of(entry, o, at))
 	case .Re_Render:
-		if re_render_recording(entry, o, allocator) {
+		if re_render_recording(entry, o, at, allocator) {
 			summary.rerendered += 1
 		} else {
 			summary.failed += 1
@@ -146,7 +151,7 @@ sort_entry :: proc(
 	case .Skip:
 		summary.skipped += 1
 	case .Refuse:
-		report_fault(planning.plan_line(entry, allocator), allocator)
+		report_fault(o.observer, .Refused, at, planning.plan_line(entry, allocator), allocator)
 		summary.refused += 1
 	}
 }
@@ -185,8 +190,8 @@ run_recordings :: proc(
 
 	jobs := make([dynamic]Recording_Job, 0, len(plan.entries), allocator)
 	defer delete(jobs)
-	for entry in plan.entries {
-		sort_entry(&summary, entry, o, allocator, &jobs)
+	for entry, i in plan.entries {
+		sort_entry(&summary, entry, o, allocator, &jobs, i)
 	}
 	if len(jobs) > 0 {
 		results, _ := run_batch(jobs[:], stages, o.config, allocator, cancelled)

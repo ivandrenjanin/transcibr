@@ -163,7 +163,13 @@ print_plan :: proc(plan: planning.Plan, inventory: planning.Inventory) {
 		pipeline.report_line(planning.plan_line(entry, context.allocator), context.allocator)
 	}
 	for note in inventory.notes {
-		pipeline.report_fault(planning.note_line(note, context.allocator), context.allocator)
+		pipeline.report_fault(
+			pipeline.FAULT_OBSERVER,
+			.Note,
+			-1,
+			planning.note_line(note, context.allocator),
+			context.allocator,
+		)
 	}
 }
 
@@ -185,11 +191,11 @@ plan_verdict :: proc(plan: planning.Plan, inventory: planning.Inventory, runnabl
 			planning.collision_line(plan, context.allocator),
 			planning.incomplete_line(inventory, context.allocator),
 		}) {
-		defer delete(line, context.allocator)
 		if len(line) == 0 {
+			delete(line, context.allocator)
 			continue
 		}
-		fmt.eprintln(line)
+		pipeline.report_fault(pipeline.FAULT_OBSERVER, .Refused, -1, line, context.allocator)
 		said = true
 	}
 	assert(said, "a Batch was refused and nothing said what refused it")

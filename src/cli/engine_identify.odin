@@ -32,7 +32,7 @@ engine_identified_framed :: proc(
 
 	message := artifact.engine_error_message(unidentified, path, context.allocator, framing)
 	assert(len(message) > 0, "an Engine was refused and nothing said why")
-	pipeline.report_fault(message, context.allocator)
+	pipeline.report_fault(pipeline.FAULT_OBSERVER, .Failed, -1, message, context.allocator)
 	return identified, false
 }
 
@@ -65,6 +65,6 @@ model_identified_framed :: proc(
 
 	message := artifact.model_error_message(unidentified, path, context.allocator, framing)
 	assert(len(message) > 0, "a Model was refused and nothing said why")
-	pipeline.report_fault(message, context.allocator)
+	pipeline.report_fault(pipeline.FAULT_OBSERVER, .Failed, -1, message, context.allocator)
 	return identified, false
 }
