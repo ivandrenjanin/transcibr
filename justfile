@@ -151,25 +151,31 @@ test:
 # owned by the Odin toolchain, not by this repository -- `test-one-selftest`
 # pins the wording, not the ownership.
 #
-# Two of the tested packages above run their real assertions against a
+# Five of the tested packages above run their real assertions against a
 # CHILD-process binary, not against anything `odin test` itself builds:
-# `crashlog`'s crash-drill tests spawn `transcibr-cli-drill.exe` and
-# `policy`'s exit-code tests spawn `policy-cli.exe`. Before issue #240, only
-# `just test`'s own first lines rebuilt either binary, so a bare
-# `just test-one crashlog <name>` or `just test-one policy <name>` after an
-# edit to the binary's own source (`src/cli/crash_drill.odin`,
-# `tools/policy/main.odin`, ...) ran the test against whatever binary was
-# already sitting in `build\odin-test\` -- silently stale, and silently green
-# (#176-A and #184 review deposits on issue #175; a live #267-review hit of
-# the policy member, resolved only by a hand-run `just policy-cli-exe`,
-# deposited on this ticket). The two `{{ if pkg == ... }}` lines below close
-# that: `test-one` now rebuilds the one binary the named package's tests
-# consume, the same recipes `test` itself calls, before running the focused
-# test against it -- so a bare `test-one` on either package meets the current
-# source, never a stale binary, and a build failure in either recipe fails
-# `test-one` loudly rather than falling through to a stale run. Every other
-# package has no such child binary, so its line is a no-op. The pkg->binary
-# mapping lives here, in this one conditional, and nowhere else.
+# `crashlog`'s crash-drill tests, `doctor`'s identity-CLI test,
+# `pipeline`'s and `planning`'s framing-regression tests all spawn
+# `transcibr-cli-drill.exe`, and `policy`'s exit-code tests spawn
+# `policy-cli.exe`. Before issue #240, only `just test`'s own first lines
+# rebuilt either binary, so a bare `just test-one crashlog <name>` (or
+# `doctor`/`pipeline`/`planning`/`policy`) after an edit to the binary's own
+# source (`src/cli/crash_drill.odin`, `src/cli/doctor.odin`,
+# `src/cli/transcribe.odin`, `src/cli/plan.odin`, `tools/policy/main.odin`,
+# ...) ran the test against whatever binary was already sitting in
+# `build\odin-test\` -- silently stale, and silently green (#176-A and #184
+# review deposits on issue #175; a live #267-review hit of the policy member,
+# resolved only by a hand-run `just policy-cli-exe`, deposited on this
+# ticket; a fix-round-1 review deposit on this ticket itself proved the same
+# staleness live for `doctor`, `pipeline` and `planning`, the drill binary's
+# other three consumers, which the first pass of this fix left unmapped).
+# The `{{ if pkg == ... }}` lines below close that: `test-one` now rebuilds
+# the one binary the named package's tests consume, the same recipes `test`
+# itself calls, before running the focused test against it -- so a bare
+# `test-one` on any of these five packages meets the current source, never a
+# stale binary, and a build failure in the relevant recipe fails `test-one`
+# loudly rather than falling through to a stale run. Every other package has
+# no such child binary, so its line is a no-op. The pkg->binary mapping lives
+# here, in this one conditional, and nowhere else.
 #
 # A third, unrelated member of the same staleness family is NOT covered by
 # anything here or in `just ci`: a `#+build`-tagged `*_test.odin` file reports
@@ -183,7 +189,7 @@ test:
 # members above, which a bare `test-one` now meets on its own.
 test-one pkg name:
 	if not exist build\odin-test mkdir build\odin-test
-	{{ if pkg == "crashlog" { just_executable() + " drill-cli-exe" } else if pkg == "policy" { just_executable() + " policy-cli-exe" } else { "rem test-one: package " + pkg + " has no prebuilt child-process binary to rebuild" } }}
+	{{ if pkg == "crashlog" { just_executable() + " drill-cli-exe" } else if pkg == "doctor" { just_executable() + " drill-cli-exe" } else if pkg == "pipeline" { just_executable() + " drill-cli-exe" } else if pkg == "planning" { just_executable() + " drill-cli-exe" } else if pkg == "policy" { just_executable() + " policy-cli-exe" } else { "rem test-one: package " + pkg + " has no prebuilt child-process binary to rebuild" } }}
 	{{ odin }} test {{ if pkg == "policy" { "tools/policy" } else { "src/" + pkg } }} {{ collection }} -out:build/odin-test/focus.exe -define:ODIN_TEST_NAMES={{ pkg }}.{{ name }} {{ memory }} {{ vet }} > build\odin-test\focus.out 2>&1 && (type build\odin-test\focus.out & findstr /b /c:"No tests to run." build\odin-test\focus.out >nul && (echo TEST-ONE: "{{ pkg }}.{{ name }}" matched no test procedure -- 0 tests collected & exit /b 1) || exit /b 0) || (type build\odin-test\focus.out & exit /b 1)
 
 # Proves `test-one`'s bogus-name guard both ways, by exit code (issue #175,

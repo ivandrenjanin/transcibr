@@ -13,10 +13,11 @@
 // shape the #237 doctor test used to catch the identical class of
 // regression.
 //
-// Running this test in isolation (`just test-one pipeline <name>`) needs
-// the same drill-build line `crashlog_crash_test.odin`'s doc comment names,
-// run first, by hand:
-// `odin build src/cli -collection:transcibr=src -out:build/odin-test/transcibr-cli-drill.exe -subsystem:console -debug <vet set>`.
+// Running this test in isolation (`just test-one pipeline <name>`) rebuilds
+// that binary itself, as its own first dependency edge (issue #240's
+// `drill-cli-exe` recipe, mapped to this package in fix round 1) -- a bare
+// `test-one`, with no prior `just test` and no hand-run build, always meets
+// the current source.
 package pipeline
 
 import "core:mem"
