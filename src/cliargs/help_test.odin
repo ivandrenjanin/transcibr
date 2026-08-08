@@ -52,6 +52,19 @@ asks_for_help_does_not_match_help_as_a_substring :: proc(t: ^testing.T) {
 	)
 }
 
+// The substring test above only pins a match with LEADING context; it
+// cannot catch a prefix weakening (strings.has_prefix(argument, HELP))
+// because "x--help.json" does not start with "--help". A file genuinely
+// named --help.json is a real, reachable json path and must never match.
+@(test)
+asks_for_help_does_not_match_help_as_a_prefix :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		!asks_for_help([]string{"--from-json", "--help.json"}),
+		"--help.json was wrongly recognized as a request for help",
+	)
+}
+
 @(test)
 asks_for_help_finds_nothing_in_an_empty_argument_list :: proc(t: ^testing.T) {
 	testing.expect(t, !asks_for_help([]string{}), "an empty argument list asked for help")
