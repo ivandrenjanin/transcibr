@@ -11,9 +11,9 @@ import "core:mem"
 // needed the identical key `wav_cache_path`/`probe_cache_path` already used
 // (#256/#268) and neither `transcibr:audio` nor `transcibr:engine` may
 // import the other. `transcibr:process` already sits under both, the same
-// shared-importable-home precedent `read_natural`/`worker_ceiling` set: both
-// packages consume this one function rather than each holding, or
-// re-deriving, their own copy.
+// shared-importable-home role `read_natural` fills for `src/artifact` and
+// `src/cliargs`: two packages consume one function rather than each holding,
+// or re-deriving, their own copy.
 
 // Long enough that two different Recordings' sources collide on a cache key
 // by chance only far below any Batch this program will ever run against (a

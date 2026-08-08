@@ -185,7 +185,7 @@ this package enforces it. What remains open, separately, is the Engine's own `<c
 output, which stays keyed on `job.name` alone — the broader, stem-level residual: the Batch's own
 guarantee that no two workers take the same stem, unenforced in this package (see the #256 addendum
 below). Said out loud because the two intermediates are named for the process, and it would be easy
-to read that as the whole answer.
+to read that as the whole answer. **Retired by the addendum below (issue #275).**
 
 ## The accepted costs
 
@@ -428,7 +428,8 @@ Recording's run — up to seven days, the existing `max_age_ns`.
 untouched: it stays keyed on `job.name` alone, and a stem collision there is a real, narrower
 residual this ticket does not fix, left exactly where "The two intermediates carry the process id;
 the finished audio does not" above already leaves it — the Batch's own guarantee that no two
-workers take the same stem, unenforced in this package. `discard_recording_wav`
+workers take the same stem, unenforced in this package. **Retired by the addendum below (issue
+#275).** `discard_recording_wav`
 (`src/pipeline/recording.odin`, issue #251) takes `extracted.extracted.audio` exactly as
 `audio.extract` handed it back rather than rebuilding a prefix, so it inherits the new key with no
 edit of its own — the one path-construction seam (`wav_cache_path`) is the only place a wav's name
@@ -487,8 +488,8 @@ through one seam.
 of their own, and every test #256/#268 pinned against them stayed green untouched. `src/engine`
 cannot import `src/audio` (both are consumed by `src/pipeline`, and `src/audio` does not need to
 know about the Engine or vice versa), so neither package could own the seam the other also needed;
-`src/process` already sits under both, the same shared-importable-home role `read_natural` and
-`worker_ceiling` fill for `src/cli` and `src/cliargs`. `engine.Job` gained a `source` field —
+`src/process` already sits under both, the same shared-importable-home role `read_natural` fills for
+`src/artifact` and `src/cliargs`. `engine.Job` gained a `source` field —
 the Recording's own source path, threaded from `src/pipeline`'s `Recording_Job.source`, which it
 already carried — purely to key against; the Engine never reads it.
 
