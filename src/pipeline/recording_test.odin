@@ -880,6 +880,19 @@ destroy_success_fixture :: proc(f: Success_Fixture) {
 // Copies SUCCESS_ENGINE_JSON to the stand-in's own resolved `-of` prefix and
 // exits 0 -- a real, parseable Engine run, not a bare `{}`. The caller frees
 // the returned path.
+//
+// Issue #276: `ping -n 2 127.0.0.1 >nul` runs first -- instrumented under a
+// real `just test` 12-thread sweep (5 runs, 2 failed), the bare `copy` this
+// body used to be finished fast enough that `child.elapsed_ns`'s own
+// millisecond rounding read exactly 0, tripping
+// `checked_first_recording_health`'s `produced.elapsed_ms <= 0` guard and
+// leaving the health gate never consulted at all -- the "expected checked to
+// be true, got false" shape both #276's fifth sighting and CI's own seventh
+// recorded. A loopback ping's ~1s round trip is a network-stack timer, not a
+// CPU-scheduled one, so it hands every caller of this stand-in a wall clock
+// too short to trip `doctor.health_threshold()` (2.94s at the fixed 5000ms
+// `container_ms` `a_successful_recording_reaches_transcribe_and_place_and_-`
+// `the_health_gate` uses) and too long to ever round to zero.
 @(private)
 @(require_results)
 success_engine_executable :: proc(t: ^testing.T, f: Success_Fixture, tag: string) -> string {
@@ -892,7 +905,10 @@ success_engine_executable :: proc(t: ^testing.T, f: Success_Fixture, tag: string
 	)
 	defer delete(fixture, context.allocator)
 
-	body := fmt.tprintf("copy /y \"%s\" \"%%PREFIX%%.json\" >nul", fixture)
+	body := fmt.tprintf(
+		"ping -n 2 127.0.0.1 >nul\r\ncopy /y \"%s\" \"%%PREFIX%%.json\" >nul",
+		fixture,
+	)
 	return testkit.engine_stand_in(t, f.tools_dir, tag, body, context.allocator)
 }
 
@@ -949,6 +965,26 @@ assert_success_landed :: proc(t: ^testing.T, f: Success_Fixture, tag: string) {
 // survive. `container_ms` is held at doctor.MIN_HEALTH_CHECK_CONTAINER_MS so
 // the speed half of the health check is not left inconclusive by a container
 // too short to judge.
+//
+// Issue #276: this only asserts `checked` -- AC1b's actual claim, "the health
+// gate is actually consulted" -- and no longer asserts `abort`/`unhealthy`.
+// Instrumented under 14 CPU-bound busy-loop processes on a 12-logical-
+// processor machine (the #170/#289 review's own load technique), 35 focused
+// runs, 7 failed: every failure read `checked=true` and
+// `fault=Realtime_Factor_Too_Low`, with `elapsed_ms` measured 2998-5176 (a
+// real `copy`-driven `.cmd` standing in for a GPU run, so its own wall clock
+// is exactly what a loaded machine slows down) against the fixed 5000 ms
+// `container_ms`, giving a factor of 0.966x-1.668x -- under `health_-`
+// `threshold()`'s 1.7x. Not one of the 35 runs left `checked` false; the
+// consultation itself is load-independent, only the verdict a real,
+// non-GPU-representative child's timing produces is not. The verdict's own
+// correctness is already pinned deterministically elsewhere, against literal
+// timings rather than a real child's wall clock:
+// `a_healthy_first_recording_is_checked_once_and_never_aborts_the_batch`,
+// `an_unhealthy_first_recording_sets_both_the_shared_abort_flag_and_its_own_-`
+// `unhealthy_flag`, and `review_a_real_engine_duration_reading_must_not_-`
+// `abort_a_healthy_batch` above -- so dropping the timing-derived assertions
+// here loses no coverage.
 @(test)
 a_successful_recording_reaches_transcribe_and_place_and_the_health_gate :: proc(t: ^testing.T) {
 	group, ok := opened_group(t)
@@ -966,7 +1002,7 @@ a_successful_recording_reaches_transcribe_and_place_and_the_health_gate :: proc(
 
 	digest := a_digest('h')
 	defer delete(string(digest), context.allocator)
-	checked, abort, unhealthy: bool
+	checked: bool
 	job := new_recording_job(
 		f.source,
 		tag,
@@ -978,7 +1014,7 @@ a_successful_recording_reaches_transcribe_and_place_and_the_health_gate :: proc(
 		"whisper.cpp 1.9.9",
 		transcript.DEFAULT_PROFILE,
 		engine.Report{},
-		Health_Watch{checked = &checked, abort = &abort, unhealthy = &unhealthy},
+		Health_Watch{checked = &checked},
 	)
 	extracted := Recording_Extracted {
 		job = job,
@@ -994,8 +1030,6 @@ a_successful_recording_reaches_transcribe_and_place_and_the_health_gate :: proc(
 		return
 	}
 	testing.expect_value(t, checked, true)
-	testing.expect_value(t, abort, false)
-	testing.expect_value(t, unhealthy, false)
 
 	assert_success_landed(t, f, tag)
 }
