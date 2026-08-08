@@ -585,9 +585,14 @@ a package concurrently by default (see "The test runner hangs" below), so if ANY
 package also exercises the renderer on the mutated row — and several legitimately do, to check a specific
 fault's rendered wording — that sibling can still trip the reader's assert before the walking test's own
 `expectf` ever runs. Measured on this branch mutating one row at a time in `src\artifact` and
-`src\transcript`, each with a direct-read walking test already in place: the package's full `odin test`
-sweep died at the assert (`Illegal instruction`, no summary, no test named) on every run, while running
-that same walking test alone (`-define:ODIN_TEST_NAMES=<pkg>.<test>`) named the row every time. So the
+`src\transcript`, each with a direct-read walking test already in place: at three of four sites tried
+(`model.odin`'s `.Unreadable`, `sidecar.odin`'s `.Prompt`, `engine_json.odin`'s `.Empty_Input`) the
+package's full `odin test` sweep died at the assert (`Illegal instruction`, no summary, no test named),
+because a sibling test in the same package independently exercises the mutated row's renderer and races
+the walking test for it. At the fourth (`place.odin`'s `.Sidecar`, which no sibling test independently
+exercises), the full sweep instead reported the walking test's own failure cleanly — `1 test failed`,
+exit 1, the row named — on 4 of 4 runs. Running the walking test alone
+(`-define:ODIN_TEST_NAMES=<pkg>.<test>`) named the row every time, at all four sites. So the
 walking test is what catches the defect in an isolated run of itself, always; whether it also wins the
 race in a full package sweep depends on what else that package's tests exercise, and is not something a
 test's own shape can promise. The reader's assert stays regardless: it is the shipped binary's last line

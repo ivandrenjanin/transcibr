@@ -80,6 +80,12 @@ Error :: struct {
 	exit_code: u32,
 }
 
+// The A4 pair to this switch's `.None`-guarded catch-all is
+// engine_test.odin's every_fault_renders_a_line_a_recordings_failure_row_can_carry,
+// which reads fault_says(fault) directly and stops before calling
+// error_message -- the `says` assert in error_message below is the second
+// half of that pair. See CLAUDE.md, Odin notes: enumerated arrays and
+// switches.
 @(private)
 @(require_results)
 fault_says :: proc(fault: Fault) -> string {

@@ -147,9 +147,12 @@ FAULT := [Parse_Fault]Fault_Facts {
 }
 
 // The asserts below are the A4 pair to engine_json_test.odin's
-// every_fault_says_what_adr_0002_does_with_it and
-// every_parse_fault_names_a_disposition, which walk Parse_Fault. See
-// CLAUDE.md, Odin notes: enumerated arrays and switches.
+// every_parse_fault_names_a_sentence (`.says`), every_parse_fault_names_a_scope
+// (`.scope`) and every_parse_fault_names_a_disposition (`.disposition`), each
+// of which reads its own FAULT[fault] field directly and never through
+// fault_facts. every_fault_says_what_adr_0002_does_with_it is a second,
+// stronger check on disposition (the ADR-0002 hard/soft split), not this
+// pairing. See CLAUDE.md, Odin notes: enumerated arrays and switches.
 @(private)
 @(require_results)
 fault_facts :: proc(fault: Parse_Fault) -> (facts: Fault_Facts) {

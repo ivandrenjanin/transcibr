@@ -372,6 +372,26 @@ the_profiles_diverge_further_on_interactive_material :: proc(t: ^testing.T) {
 	)
 }
 
+// Reads PROFILES[profile].name directly, exactly as src/audio/fault_test.odin
+// reads its own table directly: a row written present and empty is not caught
+// by the enumerated array, so nothing but a test that looks at the row itself
+// catches it (see CLAUDE.md, Odin notes: enumerated arrays and switches).
+// Kept separate from every_merge_profile_is_named_and_names_itself_back below:
+// that test's own call to profile_named walks every Merge_Profile internally
+// (through profile_row again) to find the name it is given back, so it cannot
+// be made to skip a bad row the way a `continue` skips a renderer call.
+@(test)
+every_merge_profile_has_a_name_in_profiles :: proc(t: ^testing.T) {
+	for profile in Merge_Profile {
+		testing.expectf(
+			t,
+			len(PROFILES[profile].name) > 0,
+			"%v has an empty row in PROFILES",
+			profile,
+		)
+	}
+}
+
 @(test)
 every_merge_profile_is_named_and_names_itself_back :: proc(t: ^testing.T) {
 	for profile in Merge_Profile {

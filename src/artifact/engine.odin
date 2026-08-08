@@ -79,6 +79,12 @@ engine_fault_of :: proc(fault: Model_Fault) -> Engine_Fault {
 	unreachable()
 }
 
+// The A4 pair to this switch's `.None`-guarded catch-all is
+// engine_test.odin's every_engine_fault_renders_a_line_naming_the_engine_and_stopping_the_batch,
+// which reads engine_fault_says(fault) directly and stops before calling
+// engine_error_message -- the assert in engine_error_message below is the
+// second half of that pair. See CLAUDE.md, Odin notes: enumerated arrays
+// and switches.
 @(private)
 @(require_results)
 engine_fault_says :: proc(fault: Engine_Fault) -> string {

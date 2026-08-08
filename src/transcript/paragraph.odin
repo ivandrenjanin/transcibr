@@ -77,6 +77,10 @@ PROFILE_CHOICE :: MONOLOGUE_NAME + "|" + CONVERSATION_NAME
 
 #assert(len(Merge_Profile) == 2)
 
+// The `row.name` assert below is the A4 pair to merge_profiles_test.odin's
+// every_merge_profile_has_a_name_in_profiles, which reads PROFILES[profile].name
+// directly and never calls profile_row. See CLAUDE.md, Odin notes: enumerated
+// arrays and switches.
 @(private)
 @(require_results)
 profile_row :: proc(profile: Merge_Profile) -> (row: Named_Profile) {
