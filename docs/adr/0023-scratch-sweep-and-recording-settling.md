@@ -172,11 +172,20 @@ deleting the other's probe answer, and one worker's rename moving the file the o
 still writing. Both intermediates now carry `os.get_pid()`. `<name>.wav` stays plain because it is the
 artifact stem (ADR-0008), and two workers that both produced it produced the same bytes.
 
-**The stated residual: the process id does not separate two workers inside one transcibr.** What keeps
-those apart is the artifact stem, and that rests on no two workers in a Batch ever taking the same
-Recording. That is the **Batch's** guarantee, and nothing in this package enforces it — `extract` is
-handed a `Job` and believes it. Said out loud because the two intermediates are named for the process,
-and it would be easy to read that as the whole answer.
+**The stated residual, narrowed by issue #268 below: the process id alone does not separate two
+workers inside one transcibr sharing an artifact stem.** Both intermediates now also carry the
+`wav_cache_path`/`probe_cache_path` source key (see "Addendum: the probe intermediate stops
+colliding on a shared stem too (issue #268)" below), so a stem collision between two *different*
+Recordings sharing a stem in one Batch is closed for both `.wav.part` and `.probe`. That key does
+not, and cannot, separate two workers handed the *same* Recording: `probe_cache_path` and
+`wav_cache_path` are pure functions of the `Job`, so two workers on one Recording still compute the
+identical path and still race one probe answer file and one `.part` — that rests on no two workers
+in a Batch ever taking the same Recording, which remains the **Batch's** guarantee and nothing in
+this package enforces it. What remains open, separately, is the Engine's own `<cache>\<name>.json`
+output, which stays keyed on `job.name` alone — the broader, stem-level residual: the Batch's own
+guarantee that no two workers take the same stem, unenforced in this package (see the #256 addendum
+below). Said out loud because the two intermediates are named for the process, and it would be easy
+to read that as the whole answer.
 
 ## The accepted costs
 
@@ -436,3 +445,27 @@ exists to make survivable rather than catastrophic. A GUI picker can also surfac
 selection time, before a Batch ever starts, rather than as a refusal after the fact; that UI is
 #17's to design, not this ticket's, but the boundary it would sit on top of is the one recorded
 here.
+
+## Addendum: the probe intermediate stops colliding on a shared stem too (issue #268)
+
+The addendum above ("The wav key stops colliding on a shared stem", issue #256) keyed
+`wav_cache_path` on `<stem>.<key>.wav` so two Recordings sharing an artifact stem from different
+subfolders of one Batch root stop colliding on that path. It did not touch the other intermediate
+this document's own "The two intermediates carry the process id; the finished audio does not"
+section describes: `extract`'s probe answer path, built inline as `<cache>\<stem>.<pid>.probe`.
+Extract workers are threads inside one process, so two same-stem Recordings probed concurrently
+shared both `job.name` and `os.get_pid()` — the identical collision #256 closed for the wav path,
+still open for the probe path. Issue #268 measured it and closed it the same way.
+
+`cache_key_prefix` (`src/audio/run.odin`) is the one seam both intermediates now build their
+`<cache>\<stem>.<key>` prefix through, so the key is spelled once rather than twice: `wav_cache_path`
+appends `.wav`, `probe_cache_path` appends `.<pid>.probe`. Two Recordings sharing a stem now key to
+two different probe paths as well as two different wav paths; the same Recording keys to the same
+probe path every time within one process, which the pid suffix still guarantees.
+
+**What this addendum does not do.** It does not touch the probe file's removal or settling logic
+(`answer_read_settled`, `remove_answer_if_settled`, `probe_using`) — out of scope for a
+path-construction fix. It does not close the Engine's own `<cache>\<name>.json` naming, which stays
+keyed on `job.name` alone; that residual is exactly the one "The two intermediates carry the process
+id; the finished audio does not" above now points to, and it remains the Batch's guarantee rather
+than something this package enforces.

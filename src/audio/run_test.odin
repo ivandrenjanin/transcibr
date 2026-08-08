@@ -563,6 +563,46 @@ two_recordings_sharing_a_stem_key_to_different_wav_paths :: proc(t: ^testing.T) 
 	)
 }
 
+// Issue #268: #258's collision key covers the wav path but the probe
+// intermediate's path derivation never adopted it. Two same-stem Recordings
+// probed concurrently by the extract workers -- one process, same pid --
+// used to race one probe answer path.
+@(test)
+two_recordings_sharing_a_stem_key_to_different_probe_paths :: proc(t: ^testing.T) {
+	first := Job {
+		source = "C:\\talks\\june\\interview.mp4",
+		cache  = "C:\\cache",
+		name   = "interview",
+	}
+	second := Job {
+		source = "C:\\talks\\july\\interview.mp4",
+		cache  = "C:\\cache",
+		name   = "interview",
+	}
+
+	first_path := probe_cache_path(first, context.allocator)
+	defer delete(first_path, context.allocator)
+	second_path := probe_cache_path(second, context.allocator)
+	defer delete(second_path, context.allocator)
+
+	testing.expectf(
+		t,
+		first_path != second_path,
+		"two Recordings sharing a stem still keyed to the same probe path: %s",
+		first_path,
+	)
+	testing.expect(
+		t,
+		strings.has_prefix(first_path, "C:\\cache\\interview."),
+		"the probe key dropped the artifact stem a human reads the cache by",
+	)
+	testing.expect(
+		t,
+		strings.has_suffix(first_path, ".probe"),
+		"the probe key stopped being a .probe path",
+	)
+}
+
 // The wav key has to be the same path twice in a row, or a retry of the same
 // Recording would scatter its audio across the cache under a new name every
 // time it is asked for.
