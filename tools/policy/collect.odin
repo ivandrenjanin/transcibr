@@ -349,6 +349,103 @@ one_line :: proc(text: string, allocator: mem.Allocator) -> string {
 	return strings.clone(head, allocator)
 }
 
+// Every `<name>.odin:<digits>` cite found inside any comment in one file,
+// wherever it sits -- above a declaration, inside a body, or trailing code
+// on its line. Unlike collect_body_comments this does not filter to
+// comments strictly inside a procedure: CLAUDE.md section 0's line-number
+// ban (issue #235) is about every in-repo comment cite, not only the ones
+// section 0's own body rule already reads.
+//
+// Each `//` line is its own token in `group.list` with its own `pos.line`,
+// so checking one token at a time already reports the right line for the
+// common case. A block comment is flattened to its opening line the same
+// way one_line already does for collect_body_comments, and a cite on a
+// later line of one is outside what this walk finds -- the same residual
+// that already exists for section 0's own check, and just as rare in
+// practice: this repository's comments are almost entirely `//` lines.
+@(require_results)
+collect_line_number_cites :: proc(
+	file: ^ast.File,
+	tree: mem.Allocator,
+	allocator: mem.Allocator,
+) -> []Line_Number_Cite {
+	assert(file != nil, "asked for the line-number cites of no file at all")
+	assert(allocator.procedure != nil, "the cites outlive this walk and need a chosen allocator")
+
+	found := make([dynamic]Line_Number_Cite, 0, len(file.comments), tree)
+	for group in file.comments {
+		assert(group != nil, "a comment group that is not there is a parser defect")
+		for comment in group.list {
+			flattened := one_line(comment.text, tree)
+			cite, has_cite := find_line_number_cite(flattened)
+			if !has_cite {
+				continue
+			}
+			append(
+				&found,
+				Line_Number_Cite{line = comment.pos.line, text = strings.clone(cite, allocator)},
+			)
+		}
+	}
+
+	return slice.clone(found[:], allocator)
+}
+
+// The first `<name>.odin:<digits>` cite in `text`, if there is one.
+//
+// Anchored on the literal `.odin:` substring, which is specific enough that
+// a timestamp (`12:34:56`) or a version string (`release-1.2.3`) cannot
+// trip it -- neither carries that six-character run at all. A name char
+// must sit immediately before the dot (a bare `.odin:5` names nothing), and
+// at least one digit must follow the colon; anything else is not a cite and
+// the scan moves past the `.odin:` it just rejected and keeps looking.
+@(require_results)
+find_line_number_cite :: proc(text: string) -> (cite: string, found: bool) {
+	needle :: ".odin:"
+	offset := 0
+	for offset < len(text) {
+		rest := text[offset:]
+		at := strings.index(rest, needle)
+		if at < 0 {
+			return "", false
+		}
+		dot := offset + at
+		start := dot
+		for start > 0 && is_cite_name_byte(text[start - 1]) {
+			start -= 1
+		}
+		digits_start := dot + len(needle)
+		end := digits_start
+		for end < len(text) && text[end] >= '0' && text[end] <= '9' {
+			end += 1
+		}
+		if start < dot && end > digits_start {
+			return text[start:end], true
+		}
+		offset = digits_start
+	}
+	return "", false
+}
+
+// One byte a file name or a path leading up to `.odin:` may be written
+// with. Letters, digits, underscore and hyphen cover an Odin file's own
+// name; `/` and `\` carry the path component ahead of it, both spellings
+// this repository's own comments use.
+@(require_results)
+is_cite_name_byte :: proc(b: u8) -> bool {
+	switch {
+	case b >= 'a' && b <= 'z':
+		return true
+	case b >= 'A' && b <= 'Z':
+		return true
+	case b >= '0' && b <= '9':
+		return true
+	case b == '_' || b == '-' || b == '/' || b == '\\':
+		return true
+	}
+	return false
+}
+
 // Every line in one file where an `os.remove_all(...)` call expression
 // appears -- the #97 review's own finding, not a rule any policy document
 // states (see the justfile's `check` recipe comment above the call into this

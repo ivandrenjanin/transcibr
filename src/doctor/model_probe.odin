@@ -206,20 +206,19 @@ model_load_check_using :: proc(
 
 // Issue #208: the `.Not_Started` branch below used to call
 // `child.error_message(probe.child, allocator)` unconditionally, reaching
-// that procedure's own `assert(err.fault != .None, ...)` (child.odin:86) for
+// that procedure's own `assert(err.fault != .None, ...)` (child.odin) for
 // any fault-free `.Not_Started` Probe -- an assert reachable from this
 // doctor fault-report path, guarded only by `run_bounded`'s unrecorded
-// guarantee that a `.Not_Started` run always carries a fault
-// (`src/child/run.odin:102-104`, pinned by a guard-side test in
-// `src/child/run_test.odin`). The fault check below means this branch never
-// reaches that assert regardless of what any future caller-constructed
-// Probe carries.
+// guarantee that a `.Not_Started` run always carries a fault (pinned by a
+// guard-side test in `src/child/run_test.odin`). The fault check below
+// means this branch never reaches that assert regardless of what any future
+// caller-constructed Probe carries.
 //
 // Issue #209: below the switch, this used to guard again with
 // `if !probe.exited { ... }`, reporting "the engine's own exit status could
 // not be read" -- a branch unreachable for any Probe `probe_executable`
 // builds, because `tool.odin`'s own `if run == .Finished { assert(state.exited,
-// ...) }` (tool.odin:136-137) already guarantees a `.Finished` run always
+// ...) }` in `probe_executable` already guarantees a `.Finished` run always
 // exited. `probe_executable` is this package's only production `Probe`
 // constructor -- `model_load_check_using` is the only caller of this
 // procedure outside this package's own tests, always through

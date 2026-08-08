@@ -135,6 +135,33 @@ collect_comment_violations :: proc(file: string, facts: Source_Facts, into: ^[dy
 	}
 }
 
+// CLAUDE.md section 0: an in-repo comment cites a construct by NAME, never
+// by line number -- the same rule the Odin notes section already applies to
+// `core`, carried to every in-repo comment (issue #235). A line drifts on
+// the very next edit to the file it names; a name does not. Reach is
+// `.odin` files only, because `facts` comes from `discover_odin_files`
+// (fix round 2 finding 1): a non-Odin file such as the repository's own
+// justfile can still carry a line-number cite in its comments and this
+// check will never see it. That is a scope decision, not an oversight --
+// migrate any such cite by hand when found.
+collect_line_number_cite_violations :: proc(
+	file: string,
+	facts: Source_Facts,
+	into: ^[dynamic]Violation,
+) {
+	assert(len(file) > 0, "asked to check the line-number cites of no file at all")
+	assert(into != nil, "asked to collect violations into nothing at all")
+
+	for cite in facts.line_number_cites {
+		message := fmt.aprintf(
+			"comment cites %q by line number, not by name (CLAUDE.md section 0, issue #235)",
+			cite.text,
+			allocator = into.allocator,
+		)
+		append(into, make_violation(file, cite.line, message, into.allocator))
+	}
+}
+
 // CLAUDE.md rule F2: every procedure that hands something back, and can carry
 // the attribute at all, carries `@(require_results)`.
 collect_result_violations :: proc(file: string, facts: Source_Facts, into: ^[dynamic]Violation) {
@@ -278,9 +305,10 @@ violations_destroy :: proc(violations: [dynamic]Violation, allocator: mem.Alloca
 }
 
 // Every verdict this program computes about one file's facts, appended in the
-// order CLAUDE.md states the rules: section 0, rule F1, rule F2, rule M2,
-// then the #97/#105 ban, then issue #219's defer-order class -- all riding
-// the same read.
+// order CLAUDE.md states the rules: section 0 (the body-comment ban, then
+// issue #235's line-number-cite ban), rule F1, rule F2, rule M2, then the
+// #97/#105 ban, then issue #219's defer-order class -- all riding the same
+// read.
 collect_violations :: proc(
 	file: string,
 	facts: Source_Facts,
@@ -291,6 +319,7 @@ collect_violations :: proc(
 	assert(into != nil, "asked to collect violations into nothing at all")
 
 	collect_comment_violations(file, facts, into)
+	collect_line_number_cite_violations(file, facts, into)
 	collect_length_violations(file, facts, into)
 	collect_result_violations(file, facts, into)
 	collect_vet_tag_violations(file, facts, required_tags, into)

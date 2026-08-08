@@ -5,7 +5,7 @@ import "core:strings"
 import "core:testing"
 
 // Issue #130 fix round 1: an Engine_Fault with an emptied sentence used to
-// crash here (report.odin:19, `assert(len(says) > 0, ...)`) rather than
+// crash in `report.odin` (`assert(len(says) > 0, ...)`) rather than
 // render -- exactly the failure the walking test in engine_fault_test.odin
 // exists to prevent from ever reaching a Recording that is already failing.
 @(test)

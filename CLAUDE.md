@@ -40,6 +40,12 @@ procedure of anything it finds. It reads with
 `core:odin/parser`, inside `tools\policy` itself (ADR-0028), so a `//` inside a raw string is text and not
 a comment, and a procedure declared inside a `when` block is covered like any other.
 
+A comment that cites another place in this repository names the construct — a procedure, a
+constant, a type — never a line number: a line drifts on the very next edit to the file it names
+(issue #235's #228 and #266 precedents), where a name does not; `collect_line_number_cite_violations`
+in `tools\policy\check.odin` refuses an `<name>.odin:<digits>` shape inside any comment and fails
+`just check` on one.
+
 ## 1. Assertions
 
 Assertions detect programmer errors. Operating errors (a malformed SRT, a missing video, a
@@ -463,8 +469,8 @@ The ceiling belongs to the CONSUMER and not to the reader, and it already reads 
 second consumer wants a different one, a nanosecond moment needing the full nineteen digits where a
 percentage needs two. That day has come: both call sites in `src\process\engine.odin` still take the
 default, but `src\artifact\sidecar.odin` declares `MAX_SIDECAR_DIGITS :: 19`, with
-`#assert(MAX_SIDECAR_DIGITS == len("9223372036854775807"))`, and passes it at five call sites
-(`sidecar.odin:396-405`) — including `s.source_modified_ns`, the nanosecond moment itself. At nineteen
+`#assert(MAX_SIDECAR_DIGITS == len("9223372036854775807"))`, and passes it at five call sites in
+`sidecar.odin` — including `s.source_modified_ns`, the nanosecond moment itself. At nineteen
 digits the digit-count ceiling no longer bounds the value below i64's range by itself; the per-digit
 check in the loop is what still does, unchanged from what it was doing at twelve.
 

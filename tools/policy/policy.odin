@@ -81,6 +81,14 @@ Body_Comment :: struct {
 	text:   string,
 }
 
+// One `<name>.odin:<digits>` cite found inside a comment, anywhere in the
+// file -- not only inside a procedure body, since a cite above a
+// declaration is exactly as prone to drift as one inside it (issue #235).
+Line_Number_Cite :: struct {
+	line: int,
+	text: string,
+}
+
 // Everything the build asks about one file, or the fault that stopped it being
 // asked. A file with a fault carries no facts at all: a partial answer read as a
 // complete one is the silence this whole program exists to end.
@@ -95,6 +103,7 @@ Body_Comment :: struct {
 Source_Facts :: struct {
 	procedures:           []Procedure,
 	comments:             []Body_Comment,
+	line_number_cites:    []Line_Number_Cite,
 	vet_tags:             []string,
 	remove_all_lines:     []int,
 	defer_order:          []Defer_Order_Issue,
@@ -338,6 +347,7 @@ read_source :: proc(name: string, src: string, allocator: mem.Allocator) -> (fac
 		excluded_by_platform = platform_excludes_file(&file, tree),
 		procedures = found,
 		comments = collect_body_comments(&file, found, tree, allocator),
+		line_number_cites = collect_line_number_cites(&file, tree, allocator),
 		vet_tags = collect_vet_tags(&file, tree, allocator),
 		remove_all_lines = collect_remove_all_calls(&file, tree, allocator),
 		defer_order = collect_defer_order_issues(&file, tree, allocator),
@@ -363,6 +373,11 @@ facts_destroy :: proc(facts: Source_Facts, allocator: mem.Allocator) {
 		delete(comment.text, allocator)
 	}
 	delete(facts.comments, allocator)
+
+	for cite in facts.line_number_cites {
+		delete(cite.text, allocator)
+	}
+	delete(facts.line_number_cites, allocator)
 
 	for tag in facts.vet_tags {
 		delete(tag, allocator)

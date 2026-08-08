@@ -138,7 +138,7 @@ One line of a doctor Report: what was checked, and how it came out — PASS, FAI
 reason, SKIP with the reason it was never judged, or an advisory INFO that never turns the Report's
 own verdict false on its own (ADR-0033). `passed`, `failed` and `skipped` are the three constructors
 that produce a Check meant to reach a Report. The Model check also builds a bare, unnamed `Check{}` as
-an internal screened-clean sentinel (`model_screened_further`, `checks.odin:200`) — never one of the
+an internal screened-clean sentinel (`model_screened_further` in `checks.odin`) — never one of the
 three, and never handed to a Report itself; `model_check` discriminates it by `len(refusal.name) > 0`
 and, once past it, always returns a Check one of the three constructors made.
 _Avoid_: result, verdict, test, probe
@@ -212,11 +212,11 @@ The one realtime factor this repository has actually measured against a working 
 17x at beam size 5 over the reference corpus (docs/spec/0001-transcibr-v1.md) — and the frame of
 reference the health watch's speed half reads against. Not read by the preflight's Engine check at
 all: that check decides on two independent evidence sources, neither of them the Baseline. Before
-anything is spawned, `backend_library_present` (`engine.odin:70-71, 90-102`) is a bare filesystem
+anything is spawned, `backend_library_present` in `engine.odin` is a bare filesystem
 check for the CUDA DLL beside the executable — ADR-0011's own account of the most common broken
 install, missing the DLL entirely — and only once that passes does the check go on to its own
 diagnostic output, a `--help` capture checked for `"loaded CUDA backend from"`
-(`strings.contains(probe.captured, ...)`, `engine.odin:84`) — not the systeminfo JSON field the
+(`strings.contains(probe.captured, ...)` in `engine.odin`) — not the systeminfo JSON field the
 Health watch entry above reads, which is a different Engine output entirely. So the Baseline is the
 health watch's own number, not one either of the Engine check's two halves reads. Not a promise about any one machine's own
 GPU: the health watch's threshold sits a full order of magnitude below it, because a factor that far

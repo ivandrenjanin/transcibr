@@ -12,8 +12,8 @@ import "core:testing"
 // actually creates the directory within its bound, and not merely that it
 // compiles against `await_or_abandon` -- the bound-enforcement mechanism
 // itself is `read_test.odin`'s to prove, against a pipe nobody writes to.
-// Three missing levels, matching `directory.odin:31`'s call to
-// `os.make_directory_all` rather than `os.make_directory`: this is the only
+// Three missing levels, matching `directory.odin`'s `make_directory_worker`
+// call to `os.make_directory_all` rather than `os.make_directory`: this is the only
 // test in the repository whose target proves the recursive create is really
 // what runs. Issue #97 measured (fix round 1, against
 // `dev-2026-07-nightly:819fdc7`) that the `-define:ODIN_TEST_THREADS=1`

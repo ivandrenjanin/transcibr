@@ -200,8 +200,8 @@ a_command_line_that_cannot_be_spelled_is_refused_before_anything_starts :: proc(
 	}
 }
 
-// Issue #223: `start` has exactly one return site for `.Bad_Command_Line`
-// (child.odin:201), so this is the guard-side half of the cross-package A4
+// Issue #223: `start` has exactly one return site for `.Bad_Command_Line`,
+// so this is the guard-side half of the cross-package A4
 // pairing `error_message` and `disposition_of` rely on: both read `err.build`
 // on the `.Bad_Command_Line` arm believing it carries a real fault, because
 // `process.error_message` and `process.disposition_of` each assert
