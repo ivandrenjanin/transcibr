@@ -1,6 +1,7 @@
 #+vet explicit-allocators
 package policy
 
+import "core:strings"
 import "core:testing"
 
 // Issue #235: an in-repo comment cite of an `.odin` file pins itself to a
@@ -96,4 +97,31 @@ a_cite_above_a_procedure_is_still_a_violation :: proc(t: ^testing.T) {
 	collect_line_number_cite_violations("probe.odin", facts, &violations)
 
 	testing.expect_value(t, len(violations), 1)
+}
+
+// #219's precedent (`collect_violations_wires_in_the_defer_order_check` in
+// check_test.odin): a collector proven correct in isolation is not proven
+// wired in. This asserts through `collect_violations` itself, and checks the
+// message text, so unwiring this check -- or wiring in a different collector
+// that happens to also report one violation -- cannot satisfy it.
+@(test)
+collect_violations_wires_in_the_line_number_cite_check :: proc(t: ^testing.T) {
+	source := PROBE + "// see other.odin:42 for the real story\nheld :: proc() {\n\treturn\n}\n"
+	facts := facts_of(t, source)
+	defer facts_destroy(facts, context.allocator)
+
+	violations := make([dynamic]Violation, 0, context.allocator)
+	defer delete(violations)
+	defer violations_destroy(violations, context.allocator)
+	collect_violations("probe.odin", facts, []string{}, &violations)
+
+	testing.expect_value(t, len(violations), 1)
+	if len(violations) == 1 {
+		testing.expect_value(t, violations[0].line, 3)
+		testing.expect(
+			t,
+			strings.contains(violations[0].message, "issue #235"),
+			"collect_violations must surface the line-number-cite verdict, not just some other one",
+		)
+	}
 }
