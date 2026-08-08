@@ -595,10 +595,32 @@ exit 1, the row named — on 4 of 4 runs. Running the walking test alone
 (`-define:ODIN_TEST_NAMES=<pkg>.<test>`) named the row every time, at all four sites. So the
 walking test is what catches the defect in an isolated run of itself, always; whether it also wins the
 race in a full package sweep depends on what else that package's tests exercise, and is not something a
-test's own shape can promise. The reader's assert stays regardless: it is the shipped binary's last line
-of defense against the same defect reaching a Recording already failing in front of somebody (rule A8 —
-an internal invariant, not external input), and it is the A4 pair the walking test is checked against,
-not a redundant copy of it.
+test's own shape can promise. Where the reader's assert is the chosen answer, it stays: it is the shipped
+binary's last line of defense against the same defect reaching a Recording already failing in front of
+somebody (rule A8 — an internal invariant, not external input), and it is the A4 pair the walking test is
+checked against, not a redundant copy of it.
+
+The A4 pair is not the only sanctioned answer, and the walking test is not optional at either one. Two
+families in this tree deliberately carry no reader assert at all, each for a recorded reason, and each
+still requires the walking test:
+
+- `src\doctor\report.odin`'s `sentence_or_fallback` — the shared fallback both `combined_message`
+  (`report.odin`) and `health_error_message` (`src\doctor\health.odin`) route an empty row through —
+  substitutes `NO_SENTENCE_FALLBACK` for the empty string instead of asserting. Per #137/#139: an assert
+  in `src\doctor\engine.odin`'s `engine_fault_says` or `src\doctor\health.odin`'s `health_fault_says`
+  would fire on the FIRST report of a check that is already failing in front of a user, turning a
+  reportable failure into a crash. `engine_fault_test.odin`/`health_fault_test.odin` still walk the
+  enumeration; `report_test.odin` pins `NO_SENTENCE_FALLBACK` so the fallback itself cannot go empty.
+- `tools\policy\policy.odin`'s `fault_says` — the trailing `assert(false, "a fault with no words for
+  it")` after the switch is unreachable for a case that compiles with an empty return, so this site has
+  no reader assert either. A source file is external input (rule A8), and an assertion tripped by one
+  would take the whole `odin test` runner down with it, not just the file being checked (issue #22).
+  `fault_test.odin` walking `Fault` is the only guard on `fault_says`'s switch, by the comment's own
+  words.
+
+Choose the no-assert shape only when its reason applies — the row's absence must reach a caller safely
+(A8) rather than crash a build or a check already failing loudly, or an in-renderer assert would take a
+concurrent test run down with it (issue #22) — and keep the walking test either way.
 
 **`odin test` cannot write its test executable to a path containing a space.** It runs the binary
 it builds through a command line it does not quote, so a space is re-parsed as an argument
