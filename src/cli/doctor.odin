@@ -25,14 +25,13 @@ package main
 // `engine_identified`, which built its refusal by calling
 // `artifact.engine_error_message` with no framing of its own -- so an
 // unreadable Engine told a doctor-pass user "the Batch cannot start" when no
-// Batch was ever asked for. `doctor_engine_identified` below calls the same
-// `artifact.identify_engine` hasher `engine_identified` does (the ADR-0037
-// property above is unchanged: it is the hasher, not the cli wrapper, that
-// has to be the one path), but supplies `--doctor`'s own framing rather than
-// inheriting the Batch's. `main.odin` is fenced under #75-s5; `--plan` and
-// `--transcribe` still route through its unparametrized `engine_identified`
-// and keep the Batch's framing until their own fenced files migrate (#75
-// deposit comment, PR body).
+// Batch was ever asked for. `--plan` and `--transcribe` migrated to
+// `engine_identified_framed` (src/cli/engine_identify.odin) at #245's
+// review; issue #249 item 4 closed the last gap -- `--doctor` calls the same
+// shared helper below rather than a byte-identical private copy of its own,
+// and `--batch` (`src/cli/batch.odin`) now passes its own framing to it too,
+// so `main.odin` no longer carries a second, unparametrized pair of
+// wrappers beside it.
 //
 // Issue #75 Stage 5b: --doctor's grammar (Doctor_Options, read_doctor_options,
 // read_doctor_option) moved to transcibr:cliargs, the fifth and last of the
@@ -47,7 +46,6 @@ package main
 // returns, the same shape `batch.odin`'s and `transcribe.odin`'s own
 // Options structs already carry.
 
-import "transcibr:artifact"
 import "transcibr:audio"
 import "transcibr:child"
 import "transcibr:cliargs"
@@ -55,7 +53,19 @@ import "transcibr:crashlog"
 import "transcibr:doctor"
 import "transcibr:pipeline"
 
-DOCTOR_ENGINE_REFUSAL_FRAMING :: "--doctor cannot verify this Engine"
+// Issue #249 item 5: an unreadable Engine used to be reported twice -- the
+// preflight "engine" row on stdout (`doctor.engine_check`, its own
+// spawn-probe vocabulary) and this identity refusal on stderr
+// (`artifact.Engine_Fault`'s hash-read vocabulary), two different sentences
+// for the same underlying fact. Both streams stay: the preflight row is
+// diagnostic detail a script never has to parse, and the identity refusal on
+// stderr is the one line `an_unreadable_engine_refusal_names_doctor_and_not_the_batch`
+// (src/doctor/identity_cli_test.odin) already pins for automation. Pointing
+// the stderr line back at the row above is the "one voice" the ticket asks
+// for without reshaping either vocabulary or the shared
+// `engine_identified_framed` helper both --doctor and --plan/--transcribe
+// now call.
+DOCTOR_ENGINE_REFUSAL_FRAMING :: "--doctor cannot verify this Engine -- see the engine row above"
 
 // Issue #75 Stage 6 ("two-tools convergence"): `run_doctor` zeroes the
 // promoted `tools` field right after `audio_tools` is built from it -- see
@@ -63,32 +73,6 @@ DOCTOR_ENGINE_REFUSAL_FRAMING :: "--doctor cannot verify this Engine"
 Doctor_Options :: struct {
 	using parsed: cliargs.Doctor_Options,
 	audio_tools:  audio.Tools,
-}
-
-// The same shape as `main.odin`'s `engine_identified`, with one deliberate
-// difference: the framing passed to `artifact.engine_error_message`. See the
-// issue #216 note above for why this is a second call site and not a second
-// hasher.
-@(private)
-@(require_results)
-doctor_engine_identified :: proc(path: string) -> (identified: artifact.Digest, ok: bool) {
-	assert(len(path) > 0, "there is no Engine here to identify")
-
-	unidentified: artifact.Engine_Fault
-	identified, unidentified = artifact.identify_engine(path, context.allocator)
-	if unidentified == .None {
-		return identified, true
-	}
-
-	message := artifact.engine_error_message(
-		unidentified,
-		path,
-		context.allocator,
-		DOCTOR_ENGINE_REFUSAL_FRAMING,
-	)
-	assert(len(message) > 0, "an Engine was refused and nothing said why")
-	pipeline.report_fault(message, context.allocator)
-	return identified, false
 }
 
 // Unlike TRANSCRIBE, PLAN and BATCH, this flag names no Recording or folder
@@ -140,7 +124,10 @@ run_doctor :: proc(arguments: []string) -> int {
 		pipeline.report_line(doctor.render_check(check, context.allocator), context.allocator)
 	}
 
-	engine_digest, engine_named := doctor_engine_identified(o.engine)
+	engine_digest, engine_named := engine_identified_framed(
+		o.engine,
+		DOCTOR_ENGINE_REFUSAL_FRAMING,
+	)
 	defer delete(string(engine_digest), context.allocator)
 	if !engine_named {
 		crashlog.note(.Warn, "doctor", "the Engine could not be verified")
