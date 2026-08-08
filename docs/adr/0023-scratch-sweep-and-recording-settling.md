@@ -468,4 +468,50 @@ probe path every time within one process, which the pid suffix still guarantees.
 path-construction fix. It does not close the Engine's own `<cache>\<name>.json` naming, which stays
 keyed on `job.name` alone; that residual is exactly the one "The two intermediates carry the process
 id; the finished audio does not" above now points to, and it remains the Batch's guarantee rather
-than something this package enforces.
+than something this package enforces. **Retired by the addendum below (issue #275).**
+
+## Addendum: the Engine's own JSON output stops colliding on a shared stem too, and stops being built twice (issue #275)
+
+The residual every earlier addendum above left open — named "broader" where the #256 addendum
+calls it "narrower" (issue #40's own wording-disagreement note) — is closed here. The Engine's
+`<cache>\<name>.json` output was the last unkeyed member of the collision family #256/#268 already
+closed for the wav and probe intermediates, and its path was built independently in two packages:
+`src/engine/run.odin`'s `transcribe` and `src/pipeline/recording.odin`'s `discard_engine_output`,
+the exact drift class #258/#268 eliminated for the wav and probe by routing every construction site
+through one seam.
+
+**The seam's home moved to `src/process` rather than staying in `src/audio`.** `cache_key_prefix`
+(with its `source_key` helper) relocated from `src/audio/run.odin` to a new
+`src/process/cache_key.odin`, unchanged in behavior — `audio.wav_cache_path` and
+`audio.probe_cache_path` now call `process.cache_key_prefix` where they used to call a private copy
+of their own, and every test #256/#268 pinned against them stayed green untouched. `src/engine`
+cannot import `src/audio` (both are consumed by `src/pipeline`, and `src/audio` does not need to
+know about the Engine or vice versa), so neither package could own the seam the other also needed;
+`src/process` already sits under both, the same shared-importable-home role `read_natural` and
+`worker_ceiling` fill for `src/cli` and `src/cliargs`. `engine.Job` gained a `source` field —
+the Recording's own source path, threaded from `src/pipeline`'s `Recording_Job.source`, which it
+already carried — purely to key against; the Engine never reads it.
+
+`engine.transcribe`'s own `engine_output_prefix` (`src/engine/run.odin`) and
+`discard_engine_output`'s prefix (`src/pipeline/recording.odin`) both now call
+`process.cache_key_prefix(cache, name, source, allocator)` directly rather than rebuilding
+`<cache>\<name>` by hand — the rebuild deletion itself is the drift-class fix: neither package
+holds its own copy of the construction logic that could drift from the other's.
+
+**Consequence, stated plainly, the same shape the #256 addendum already stated for the wav key:**
+this renames every Engine output this codebase will ever write, from `<cache>\<name>.json` to
+`<cache>\<name>.<key>.json`. Nothing reads a cached Engine output by its old name — `landed_bounded`
+reads back the exact path `transcribe` just built, never a name reconstructed from `job.name` alone
+— so this costs nothing beyond the rename itself. An old-named `.json` becomes ordinary stale cache
+content, cleared by the existing age sweep like any other file that outlives its own Recording's
+run.
+
+**What this addendum does not do.** It does not touch the Engine's `-of` argument itself, which
+already took whatever prefix `transcribe` built and required no change of its own — nor the
+Sidecar, which records no cache path at all (`src/artifact/sidecar.odin`'s `Key` enum carries
+`Engine`, `Engine_Sha256`, `Model`, and the rest, never a scratch-cache filename), so no
+differential exists on any user-visible path bytes. It does not add an ownership or freshness check
+beyond what `process.cache_key_prefix` already provides — the same residual "The two intermediates
+carry the process id; the finished audio does not" above already states for the wav and probe keys:
+two workers handed the *same* Recording still compute the identical prefix, which remains the
+Batch's own guarantee and nothing in `src/process`, `src/engine`, or `src/pipeline` enforces it.
