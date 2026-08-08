@@ -16,22 +16,26 @@ import "transcibr:child"
 // bound, not a performance expectation: the original five-second value
 // (issue #27's bound family) was tuned against a cold page cache alone, and
 // the #239 review measured it tripping one full `just ci` run in three on a
-// machine loaded with parallel package sweeps. Issue #273's own
-// instrumentation -- the reference engine's `--help` and the reference
-// ffprobe's `-hide_banner`, spawned repeatedly both idle and under six
-// parallel `just ci` sweeps saturating every logical core on this machine
-// -- never saw either child take longer than a few hundred milliseconds to
-// exit. Twenty seconds keeps an order of magnitude of headroom over that
-// worst measurement while staying far short of what a CI job's own
-// wall-clock timeout allows a single hung probe to burn.
+// machine loaded with parallel package sweeps. A raw `Start-Process` spawn
+// of the reference engine's `--help` and the reference ffprobe's
+// `-hide_banner`, idle and under six parallel `just ci` sweeps, never took
+// longer than a few hundred milliseconds -- but that measures a path this
+// bound does not gate. Through the actual gated path (`probe_executable`,
+// which builds the pipe pair and drains it at POLL_MS granularity), the
+// #292 round-2 review measured a worst spawn of 6.41 s under eight
+// concurrent compile workers plus six concurrent doctor sweeps. Twenty
+// seconds keeps 3.1x measured headroom over that worst spawn through the
+// gated path -- real headroom, not an order of magnitude, but still
+// comfortably short of what a CI job's own wall-clock timeout allows a
+// single hung probe to burn.
 PROBE_BOUND_MS :: i64(20_000)
 
 #assert(PROBE_BOUND_MS > 0)
 
 // `child.MAX_DRAIN_BYTES` bounds one drain of the pipe, but a probe's own
 // wall-clock bound still gives a flooding tool many drains to grow this
-// builder across -- eighty at PROBE_BOUND_MS's twenty seconds, two hundred
-// forty at the model load probe's sixty (POLL_MS's own 250 ms apart). Four times
+// builder across -- eighty at PROBE_BOUND_MS's twenty seconds, four hundred
+// eighty at the model load probe's one hundred twenty (POLL_MS's own 250 ms apart). Four times
 // MAX_DRAIN_BYTES (4 MiB) sits an order of magnitude over any legitimate
 // `--help`/`-version`/`--no-prints` transcript this package has ever
 // captured, while still refusing a flood loudly well short of what a doctor
