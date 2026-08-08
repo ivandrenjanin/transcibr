@@ -81,6 +81,26 @@ an_identifier_cite_is_not_a_violation :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(violations), 0)
 }
 
+// The mandated identifier form can still read `<name>.odin:` followed by
+// prose rather than digits (a colon reads naturally before a clause). Fix
+// round 2 finding 2: without the "at least one digit follows the colon"
+// half of the guard, this exact mandated form false-reds.
+@(test)
+an_odin_file_colon_with_no_digits_is_not_a_violation :: proc(t: ^testing.T) {
+	facts := facts_of(
+		t,
+		PROBE + "// see run.odin: its `held` loop bound\nheld :: proc() {\n\treturn\n}\n",
+	)
+	defer facts_destroy(facts, context.allocator)
+
+	violations := make([dynamic]Violation, 0, context.allocator)
+	defer delete(violations)
+	defer violations_destroy(violations, context.allocator)
+	collect_line_number_cite_violations("probe.odin", facts, &violations)
+
+	testing.expect_value(t, len(violations), 0)
+}
+
 // A comment ABOVE a procedure is not inside a body, but a line-number cite
 // there is banned exactly the same way -- this check reads every comment in
 // the file, not only the ones section 0 already flags.

@@ -138,7 +138,12 @@ collect_comment_violations :: proc(file: string, facts: Source_Facts, into: ^[dy
 // CLAUDE.md section 0: an in-repo comment cites a construct by NAME, never
 // by line number -- the same rule the Odin notes section already applies to
 // `core`, carried to every in-repo comment (issue #235). A line drifts on
-// the very next edit to the file it names; a name does not.
+// the very next edit to the file it names; a name does not. Reach is
+// `.odin` files only, because `facts` comes from `discover_odin_files`
+// (fix round 2 finding 1): a non-Odin file such as the repository's own
+// justfile can still carry a line-number cite in its comments and this
+// check will never see it. That is a scope decision, not an oversight --
+// migrate any such cite by hand when found.
 collect_line_number_cite_violations :: proc(
 	file: string,
 	facts: Source_Facts,

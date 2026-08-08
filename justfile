@@ -67,8 +67,8 @@ fmt-check:
 # Builds tools/policy's own test-harness binary, `policy-cli.exe`, which
 # `exit_code_test.odin` spawns as a child process to pin the VIOLATION_ERROR
 # exit mapping. Kept as its OWN recipe rather than a line inside `test:`'s
-# body (fix round 1 finding 1): `missing_from_test_recipe`
-# (tools/policy/packages.odin:307-344) treats the `tools/policy` token as
+# body (fix round 1 finding 1): `missing_from_test_recipe` in
+# tools/policy/packages.odin treats the `tools/policy` token as
 # present the moment it occurs anywhere in the `test:` recipe's own body, so
 # a second occurrence there -- this build line, alongside the real
 # `odin test tools/policy` line -- let the package-accounting check see
