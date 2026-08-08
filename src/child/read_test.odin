@@ -312,15 +312,18 @@ TOLERANCE :: 8
 @(private)
 LEAK_SWEEP_BUDGET :: 120 * time.Second
 
-@(test)
-abandoning_a_read_repeatedly_does_not_accumulate_threads :: proc(t: ^testing.T) {
-	baseline, counted := transcibr_thread_count()
-	if !counted {
-		return
-	}
-
-	servers: [ROUNDS]win32.HANDLE
-	paths: [ROUNDS]string
+// Split out of `abandoning_a_read_repeatedly_does_not_accumulate_threads_-`
+// `when_the_thread_probe_succeeds` (issue #264) purely to hold that test
+// under CLAUDE.md rule F1's 70-line cap once the thread-probe gate call
+// grew from a bare early return into `report_thread_count_probe`; the
+// round loop itself is unchanged from before that split.
+@(private)
+@(require_results)
+run_abandoned_read_rounds :: proc(
+	t: ^testing.T,
+	servers: ^[ROUNDS]win32.HANDLE,
+	paths: ^[ROUNDS]string,
+) -> int {
 	rounds_ok := 0
 	started := time.tick_now()
 	for round in 0 ..< ROUNDS {
@@ -348,15 +351,42 @@ abandoning_a_read_repeatedly_does_not_accumulate_threads :: proc(t: ^testing.T) 
 		delete(bytes, context.allocator)
 		testing.expect_value(t, err.fault, Read_Fault.Did_Not_Finish)
 	}
+	return rounds_ok
+}
 
-	after, counted_after := transcibr_thread_count()
+@(test)
+abandoning_a_read_repeatedly_does_not_accumulate_threads_when_the_thread_probe_succeeds :: proc(
+	t: ^testing.T,
+) {
+	raw_baseline, baseline_counted := transcibr_thread_count()
+	baseline, baseline_ok := report_thread_count_probe(
+		t,
+		raw_baseline,
+		baseline_counted,
+		"at baseline",
+	)
+	if !baseline_ok {
+		return
+	}
+
+	servers: [ROUNDS]win32.HANDLE
+	paths: [ROUNDS]string
+	rounds_ok := run_abandoned_read_rounds(t, &servers, &paths)
+
+	raw_after, after_counted := transcibr_thread_count()
 
 	for i in 0 ..< rounds_ok {
 		win32.CloseHandle(servers[i])
 		delete(paths[i], context.allocator)
 	}
 
-	if !counted_after {
+	after, ok_after := report_thread_count_probe(
+		t,
+		raw_after,
+		after_counted,
+		"after the leak sweep",
+	)
+	if !ok_after {
 		return
 	}
 	testing.expectf(

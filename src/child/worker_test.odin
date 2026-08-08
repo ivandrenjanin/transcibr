@@ -37,7 +37,8 @@ a_worker_runs_a_job_and_stays_reusable_afterward :: proc(t: ^testing.T) {
 // thread rather than one per job. Run enough jobs through the public
 // `run_on_worker` seam that "a fresh thread every job" and "one thread
 // reused" cannot read the same under sibling noise, the identical reasoning
-// `abandoning_a_read_repeatedly_does_not_accumulate_threads` already uses
+// `abandoning_a_read_repeatedly_does_not_accumulate_threads_when_the_thread_probe_succeeds`
+// already uses
 // for the same instrument (`CreateToolhelp32Snapshot`) against this
 // package's own concurrent sweep -- an exact `==` here flaked under that
 // sweep the same way an exact match already flaked for that case (finding 7
@@ -46,9 +47,17 @@ a_worker_runs_a_job_and_stays_reusable_afterward :: proc(t: ^testing.T) {
 WORKER_REUSE_JOBS :: 50
 
 @(test)
-a_worker_reused_across_many_jobs_does_not_grow_the_thread_count :: proc(t: ^testing.T) {
-	baseline, counted := transcibr_thread_count()
-	if !counted {
+a_worker_reused_across_many_jobs_does_not_grow_the_thread_count_when_the_thread_probe_succeeds :: proc(
+	t: ^testing.T,
+) {
+	raw_baseline, baseline_counted := transcibr_thread_count()
+	baseline, baseline_ok := report_thread_count_probe(
+		t,
+		raw_baseline,
+		baseline_counted,
+		"at baseline",
+	)
+	if !baseline_ok {
 		return
 	}
 
@@ -58,7 +67,7 @@ a_worker_reused_across_many_jobs_does_not_grow_the_thread_count :: proc(t: ^test
 	}
 	defer release_worker(w)
 
-	after_spawn, counted_after_spawn := transcibr_thread_count()
+	raw_after_spawn, after_spawn_counted := transcibr_thread_count()
 
 	job: Increment_Job
 	for _ in 0 ..< WORKER_REUSE_JOBS {
@@ -67,8 +76,21 @@ a_worker_reused_across_many_jobs_does_not_grow_the_thread_count :: proc(t: ^test
 	}
 	testing.expect_value(t, job.value, WORKER_REUSE_JOBS)
 
-	after_jobs, counted_after_jobs := transcibr_thread_count()
-	if !counted_after_spawn || !counted_after_jobs {
+	raw_after_jobs, after_jobs_counted := transcibr_thread_count()
+
+	after_spawn, ok_spawn := report_thread_count_probe(
+		t,
+		raw_after_spawn,
+		after_spawn_counted,
+		"after spawning the worker",
+	)
+	after_jobs, ok_jobs := report_thread_count_probe(
+		t,
+		raw_after_jobs,
+		after_jobs_counted,
+		"after running the jobs",
+	)
+	if !ok_spawn || !ok_jobs {
 		return
 	}
 
