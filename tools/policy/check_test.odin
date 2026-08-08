@@ -161,6 +161,39 @@ a_defer_order_issue_is_a_violation :: proc(t: ^testing.T) {
 }
 
 @(test)
+a_same_scope_double_free_reports_as_a_double_free_against_issue_281 :: proc(t: ^testing.T) {
+	source :=
+		PROBE +
+		"held :: proc() {\n\tresolved := check()\n\tdefer delete(resolved, allocator)\n\tdefer delete(resolved, allocator)\n}\n"
+	facts := facts_of(t, source)
+	defer facts_destroy(facts, context.allocator)
+
+	violations := make([dynamic]Violation, 0, context.allocator)
+	defer delete(violations)
+	defer violations_destroy(violations, context.allocator)
+	collect_defer_order_violations("probe.odin", facts, &violations)
+
+	testing.expect_value(t, len(violations), 1)
+	if len(violations) == 1 {
+		testing.expect(
+			t,
+			strings.contains(violations[0].message, "issue #281's class"),
+			"a double free must cite issue #281, not #219",
+		)
+		testing.expect(
+			t,
+			!strings.contains(violations[0].message, "reads"),
+			"a double free is not a read; the message must not call it one",
+		)
+		testing.expect(
+			t,
+			strings.contains(violations[0].message, "double free"),
+			"the message must describe the class it actually found",
+		)
+	}
+}
+
+@(test)
 collect_violations_wires_in_the_defer_order_check :: proc(t: ^testing.T) {
 	source :=
 		PROBE +
