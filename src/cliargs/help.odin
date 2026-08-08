@@ -10,6 +10,13 @@
 // reachable as .\--help). The match is exact-string equality against a
 // whole argv element, never a substring, so a file genuinely named
 // x--help.json is left alone.
+//
+// The ruling applies to every option's value slot, including --prompt's,
+// which is free user text rather than a path: --prompt has no .\ escape
+// form, so a prompt whose literal text is --help becomes permanently
+// unexpressible on the command line. That is an accepted, escape-route-less
+// consequence of making --help sovereign in any slot (fix round 3 of PR
+// #284), not a gap left to close.
 package cliargs
 
 HELP :: "--help"

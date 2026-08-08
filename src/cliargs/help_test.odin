@@ -91,3 +91,16 @@ asks_for_help_finds_help_mid_line :: proc(t: ^testing.T) {
 		"--help in the middle of argv, with arguments after it, was not recognized",
 	)
 }
+
+// --prompt is free user text, unlike a path-valued option: there is no .\
+// escape form of a prompt string, so a prompt whose literal text is --help
+// is an accepted, escape-route-less consequence of the any-slot ruling
+// (issue #261 fix round 3), not an oversight.
+@(test)
+asks_for_help_finds_help_as_a_prompt_value :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		asks_for_help([]string{"--transcribe", "--prompt", HELP}),
+		"--help standing where --prompt's own value belongs was not recognized as a request for help",
+	)
+}
