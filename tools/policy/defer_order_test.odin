@@ -167,3 +167,27 @@ two_defer_deletes_on_the_same_identifier_in_one_scope_is_a_violation :: proc(t: 
 		testing.expect_value(t, facts.defer_order[0].arg, "violations")
 	}
 }
+
+// Issue #281 item 2: the #246 review's PROBE-A shape, committed. Both
+// halves of a walk/free pair sitting inside one nested non-case Block_Stmt
+// (an `if` body here) is already read as its own scope by
+// note_defer_order_node -- descent carries on into a nested Block_Stmt the
+// same way it does into a Case_Clause -- but no committed test exercised the
+// positive before this one.
+@(test)
+a_walk_defer_and_a_free_defer_both_inside_a_nested_if_block_is_a_violation :: proc(t: ^testing.T) {
+	facts := facts_of(
+		t,
+		PROBE +
+		"held :: proc(n: int) {\n\tif n > 0 {\n\t\tviolations := check()\n\t\tdefer violations_destroy(violations, context.allocator)\n\t\tdefer delete(violations)\n\t}\n}\n",
+	)
+	defer facts_destroy(facts, context.allocator)
+
+	testing.expect_value(t, len(facts.defer_order), 1)
+	if len(facts.defer_order) == 1 {
+		testing.expect_value(t, facts.defer_order[0].line, 6)
+		testing.expect_value(t, facts.defer_order[0].walk_proc, "violations_destroy")
+		testing.expect_value(t, facts.defer_order[0].free_proc, "delete")
+		testing.expect_value(t, facts.defer_order[0].arg, "violations")
+	}
+}
