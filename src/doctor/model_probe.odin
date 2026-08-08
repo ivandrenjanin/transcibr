@@ -26,9 +26,15 @@ import "transcibr:child"
 MODEL_PROBE_WAV := #load("../audio/fixtures/ffmpeg-mono-16k.wav")
 
 // A real 1.6 GB Model loads (warm cache) in under 1.5 s on the reference
-// machine; fifteen seconds leaves an order of magnitude for a cold page
-// cache without coming close to what a real transcription would cost.
-MODEL_LOAD_PROBE_BOUND_MS :: i64(15_000)
+// machine, so this leaves headroom for a cold page cache without coming
+// close to what a real transcription would cost. Issue #273's fix round 1
+// widened this from a pre-fix 15s after live measurement (4 concurrent
+// full CUDA model loads under compile load) reproduced the ticket's own
+// same-class flake through it while PROBE_BOUND_MS (tool.odin) had
+// already been widened -- 15s had become the tightest gate left in the
+// package. Sixty seconds keeps this above PROBE_BOUND_MS's own 20s, since
+// a full context build is inherently heavier than a `--help` spawn.
+MODEL_LOAD_PROBE_BOUND_MS :: i64(60_000)
 
 #assert(MODEL_LOAD_PROBE_BOUND_MS > 0)
 

@@ -27,12 +27,11 @@ import "transcibr:child"
 PROBE_BOUND_MS :: i64(20_000)
 
 #assert(PROBE_BOUND_MS > 0)
-#assert(PROBE_BOUND_MS >= 4 * 5_000)
 
 // `child.MAX_DRAIN_BYTES` bounds one drain of the pipe, but a probe's own
 // wall-clock bound still gives a flooding tool many drains to grow this
-// builder across -- eighty at PROBE_BOUND_MS's twenty seconds, sixty at the
-// model load probe's fifteen (POLL_MS's own 250 ms apart). Four times
+// builder across -- eighty at PROBE_BOUND_MS's twenty seconds, two hundred
+// forty at the model load probe's sixty (POLL_MS's own 250 ms apart). Four times
 // MAX_DRAIN_BYTES (4 MiB) sits an order of magnitude over any legitimate
 // `--help`/`-version`/`--no-prints` transcript this package has ever
 // captured, while still refusing a flood loudly well short of what a doctor
