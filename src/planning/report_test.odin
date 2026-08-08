@@ -145,6 +145,10 @@ a_recording_re_done_for_its_settings_names_the_setting_that_changed :: proc(t: ^
 @(test)
 every_change_plan_line_renders_reads_as_words_and_never_as_its_identifier :: proc(t: ^testing.T) {
 	for change in artifact.Change {
+		if !testing.expectf(t, len(change_says(change)) > 0, "%v has no words in Change", change) {
+			continue
+		}
+
 		line := plan_line(
 			Entry {
 				found = Found{source = "C:\\clips\\talk.mp4"},

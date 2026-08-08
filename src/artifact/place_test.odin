@@ -592,6 +592,14 @@ every_fault_renders_a_line_a_recordings_failure_row_can_carry :: proc(t: ^testin
 		if fault == .None {
 			continue
 		}
+		if !testing.expectf(
+			t,
+			len(fault_says(fault)) > 0,
+			"%v has an empty says in Fault",
+			fault,
+		) {
+			continue
+		}
 		message := error_message(
 			Error {
 				fault = fault,
