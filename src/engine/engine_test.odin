@@ -94,8 +94,65 @@ job_in :: proc(
 		name         = "lecture",
 		model        = "C:\\nowhere\\model.bin",
 		container_ms = container_ms,
+		source       = "C:\\nowhere\\lecture.mp4",
 	}
 	return tools, job
+}
+
+// Issue #275, the #258/#268 two-recordings shape applied to the Engine's own
+// JSON output prefix: two Recordings sharing a stem from different
+// subfolders of one Batch root must key to two different `<name>.json`
+// prefixes, exactly as `wav_cache_path`/`probe_cache_path` already do for
+// the wav and probe intermediates. Proved against `engine_output_prefix`
+// directly, no child spawn needed.
+@(test)
+two_recordings_sharing_a_stem_key_to_different_json_prefixes :: proc(t: ^testing.T) {
+	first := Job {
+		cache  = "C:\\cache",
+		name   = "interview",
+		source = "C:\\talks\\june\\interview.mp4",
+	}
+	second := Job {
+		cache  = "C:\\cache",
+		name   = "interview",
+		source = "C:\\talks\\july\\interview.mp4",
+	}
+
+	first_prefix := engine_output_prefix(first, context.allocator)
+	defer delete(first_prefix, context.allocator)
+	second_prefix := engine_output_prefix(second, context.allocator)
+	defer delete(second_prefix, context.allocator)
+
+	testing.expectf(
+		t,
+		first_prefix != second_prefix,
+		"two Recordings sharing a stem still keyed to the same Engine output prefix: %s",
+		first_prefix,
+	)
+	testing.expect(
+		t,
+		strings.has_prefix(first_prefix, "C:\\cache\\interview."),
+		"the Engine output prefix dropped the artifact stem a human reads the cache by",
+	)
+}
+
+// The same source must key to the same prefix every time, or a retry of the
+// same Recording would scatter its Engine output across the cache under a
+// new name.
+@(test)
+the_same_source_keys_to_the_same_json_prefix_every_time :: proc(t: ^testing.T) {
+	job := Job {
+		cache  = "C:\\cache",
+		name   = "interview",
+		source = "C:\\talks\\june\\interview.mp4",
+	}
+
+	once := engine_output_prefix(job, context.allocator)
+	defer delete(once, context.allocator)
+	again := engine_output_prefix(job, context.allocator)
+	defer delete(again, context.allocator)
+
+	testing.expect_value(t, once, again)
 }
 
 // Spelled the same way at all three call sites (transcibr:testkit's own
@@ -167,7 +224,9 @@ a_stand_in_engine_that_reports_progress_drives_the_display :: proc(t: ^testing.T
 		return
 	}
 
-	expected := fmt.aprintf("%s\\lecture.json", cache, allocator = context.allocator)
+	prefix := engine_output_prefix(job, context.allocator)
+	defer delete(prefix, context.allocator)
+	expected := fmt.aprintf("%s.json", prefix, allocator = context.allocator)
 	defer delete(expected, context.allocator)
 	testing.expect_value(t, produced.output, expected)
 	testing.expect(t, os.exists(produced.output), "the Engine's output is not where it was named")

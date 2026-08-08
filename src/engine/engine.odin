@@ -19,6 +19,14 @@ Job :: struct {
 	// `open_cache` answers it once for the whole cache.
 	cache:        string,
 	name:         string,
+	// The Recording's own source path -- not read here, only keyed. Issue
+	// #275: the Engine's `<name>.json` output prefix is keyed against this
+	// through `process.cache_key_prefix`, the same seam
+	// `audio.wav_cache_path`/`audio.probe_cache_path` key against, so two
+	// Recordings sharing an artifact stem in one Batch stop colliding on
+	// their Engine output the way #256/#268 already closed for the wav and
+	// probe intermediates.
+	source:       string,
 	model:        string,
 	container_ms: i64,
 	// Empty means no `--prompt` flag at all; see `process.Engine_Job.prompt`.
