@@ -69,3 +69,25 @@ asks_for_help_does_not_match_help_as_a_prefix :: proc(t: ^testing.T) {
 asks_for_help_finds_nothing_in_an_empty_argument_list :: proc(t: ^testing.T) {
 	testing.expect(t, !asks_for_help([]string{}), "an empty argument list asked for help")
 }
+
+// Every other test places --help in the FINAL argv slot, which a
+// last-slot-only scan would also pass. --help is sovereign wherever it
+// stands, including first with arguments still trailing after it -- base
+// behavior this PR must not silently regress.
+@(test)
+asks_for_help_finds_help_first_with_arguments_after_it :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		asks_for_help([]string{HELP, "--transcribe", "--source", "x"}),
+		"--help first, with arguments after it, was not recognized",
+	)
+}
+
+@(test)
+asks_for_help_finds_help_mid_line :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		asks_for_help([]string{"--from-json", HELP, "nope.json"}),
+		"--help in the middle of argv, with arguments after it, was not recognized",
+	)
+}
