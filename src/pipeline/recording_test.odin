@@ -889,10 +889,16 @@ destroy_success_fixture :: proc(f: Success_Fixture) {
 // leaving the health gate never consulted at all -- the "expected checked to
 // be true, got false" shape both #276's fifth sighting and CI's own seventh
 // recorded. A loopback ping's ~1s round trip is a network-stack timer, not a
-// CPU-scheduled one, so it hands every caller of this stand-in a wall clock
-// too short to trip `doctor.health_threshold()` (2.94s at the fixed 5000ms
-// `container_ms` `a_successful_recording_reaches_transcribe_and_place_and_-`
-// `the_health_gate` uses) and too long to ever round to zero.
+// CPU-scheduled one, so it is immune to the scheduling artifact that produced
+// the zero reading in the first place -- it floors the wall clock above
+// zero, nothing more. It carries NO safety margin against
+// `doctor.health_threshold()`: under load the ping's own wall clock inflates
+// like any other timing in this process and crosses the threshold routinely
+// (measured 19/20 loaded runs at 14 CPU-burn processes on 12 logical
+// processors, elapsed_ms 2941-13309, factor 0.376x-1.700x against the fixed
+// 5000ms `container_ms`). That is exactly why
+// `a_successful_recording_reaches_transcribe_and_place_and_the_health_gate`
+// below asserts only `checked`, never the verdict the threshold decides.
 @(private)
 @(require_results)
 success_engine_executable :: proc(t: ^testing.T, f: Success_Fixture, tag: string) -> string {
