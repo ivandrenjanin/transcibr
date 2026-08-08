@@ -274,4 +274,10 @@ an_unreadable_engine_refusal_names_doctor_and_not_the_batch :: proc(t: ^testing.
 		"the doctor refusal still claims a Batch cannot start: %s",
 		stderr_text,
 	)
+	testing.expectf(
+		t,
+		strings.contains(stderr_text, "see the engine row above"),
+		"the doctor refusal lost its pointer back to the engine row: %s",
+		stderr_text,
+	)
 }
