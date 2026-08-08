@@ -1459,7 +1459,7 @@ a_probe_whose_ffprobe_run_is_unstoppable_never_calls_the_remover :: proc(t: ^tes
 // (`a_child_that_will_not_start_is_reported_rather_than_asserted`, issue
 // #208) cannot see the probe arm -- it never calls through `probe_using` at
 // all. This drives the real production wiring instead: `run_probe_child`
-// (`probe`'s only production runner, `run.odin:271`) against an executable
+// (`probe`'s only production runner, defined in `run.odin`) against an executable
 // that cannot start, the same way the child-package test drives
 // `run_bounded` directly, and then renders the resulting `Error` the way a
 // real caller would -- closing the gap `error_message`'s own doc comment

@@ -192,15 +192,16 @@ borrowed_message :: proc(err: Error, source: string, allocator: mem.Allocator) -
 // `child.error_message(err.child, allocator)` unconditionally, relying on
 // `err.child.fault != .None` for both -- but the two arms reach that
 // guarantee through different paths. `produce`'s extraction call goes
-// straight through `child.run_bounded` (src/audio/run.odin:640), which has
-// exactly one return site for `.Not_Started` (src/child/run.odin), pinned
-// guard-side by src/child/run_test.odin's
+// straight through `child.run_bounded` (src/audio/run.odin's `produce`),
+// which has exactly one return site for `.Not_Started` (src/child/run.odin),
+// pinned guard-side by src/child/run_test.odin's
 // a_child_that_will_not_start_is_reported_rather_than_asserted (issue #208).
 // `probe_using`'s call goes through its injectable `run: Probe_Run`
-// parameter (src/audio/run.odin:293, issue #125's round-4 seam) instead --
-// `child.run_bounded`'s own guard test cannot see that arm, because it never
-// calls through `probe_using` at all. `probe`'s only production wiring
-// (src/audio/run.odin:271) always passes `run_probe_child`, itself a plain
+// parameter (src/audio/run.odin's `probe_using`, issue #125's round-4 seam)
+// instead -- `child.run_bounded`'s own guard test cannot see that arm,
+// because it never calls through `probe_using` at all. `probe`'s only
+// production wiring (src/audio/run.odin's `probe`) always passes
+// `run_probe_child`, itself a plain
 // forward into `child.run_bounded`, so production inherits the same
 // guarantee; that specific path is what
 // src/audio/run_test.odin's a_probe_that_will_not_start_carries_a_child_fault_through_its_real_wiring
