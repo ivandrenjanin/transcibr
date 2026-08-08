@@ -54,8 +54,8 @@ composed message builds it into its own stack buffer before calling `note`, the 
 `transcibr.log` growing past `LOG_CEILING_BYTES :: 8 << 20` is renamed to `transcibr.log.1`
 (`MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`, replacing whatever `.1` already existed) before the
 new run's handle is opened — inside `open_log`, ahead of its `CreateFileW` call
-(`handle.odin:39-47`), and therefore ahead of `install`'s call into `register`
-(`install.odin:24, 28`). `GetFileAttributesExW`, `MoveFileExW` and `DeleteFileW` are all bound at
+(`handle.odin:55-63`), and therefore ahead of `install`'s call into `register`
+(`install.odin:32, 36`). `GetFileAttributesExW`, `MoveFileExW` and `DeleteFileW` are all bound at
 the pin (`grep -rlw` over `C:\odin\dist\core\sys\windows\` returns `kernel32.odin` for each), so
 nothing here is hand-declared. The size check is handleless — `GetFileAttributesExW`, not
 `GetFileSizeEx` —
@@ -79,24 +79,37 @@ outright, either way breaking the constraint ADR-0036 states as load-bearing. Ru
 at `open_log`, before any handle exists, keeps it true by construction: whichever file `register`
 gets a handle to is the one every hook writes for the rest of the process's life.
 
-**The honest part.** `handle.odin:39-47`'s `open_log` shares `FILE_SHARE_READ | FILE_SHARE_WRITE`
+**The honest part.** `handle.odin:55-63`'s `open_log` shares `FILE_SHARE_READ | FILE_SHARE_WRITE`
 and deliberately not `FILE_SHARE_DELETE` — issue #76 review round 2 measured a `FILE_SHARE_READ`-
 only open refuse a second concurrent transcibr outright, which is why both flags are already there,
 and Windows refuses to rename a file a second process holds open without `FILE_SHARE_DELETE`. So
-while a second live transcibr already holds `transcibr.log` open, `rotate_if_over` returns `false`,
-and the new process opens the existing file anyway (append mode still finds its own end). `note`
-writes through `g_log`, and `g_log` is not set until `register` runs (`crashlog.odin:44-49`,
+while a second live transcibr already holds `transcibr.log` open, `rotate_if_over` refuses the
+rename, and the new process opens the existing file anyway (append mode still finds its own end).
+`note` writes through `g_log`, and `g_log` is not set until `register` runs (`crashlog.odin:44-49`,
 "Set once, by `register`") — after `open_log` has already returned — so `open_log` cannot call
 `note` itself; the refusal fact has to leave `open_log` some other way. `open_log` gains a second
-result alongside its handle, `rotation_refused: bool`, and `install` is the one that calls
-`crashlog.note` with it, immediately after `register` (`install.odin:24, 28`), by which point
-`g_log` is live. That is a signature change to `open_log` — a small one, one added `bool` — and D1's
+result alongside its handle, `rotation_refusal: Rotation_Refusal`, and `install` is the one that
+calls `crashlog.note` with it, immediately after `register` (`install.odin:32, 36`), by which point
+`g_log` is live. That is a signature change to `open_log` — a small one, one added result — and D1's
 "every existing caller gets it for free" claim below is scoped to rotation's *enforcement*, not to
-this one WARN line. **The sharing flags do not change for this.** Adding `FILE_SHARE_DELETE` would
-let one process rename the very file a second process is still appending to out from under it —
-precisely the failure rotate-at-open exists to avoid, just moved from "crash hooks hold a stale
-handle" to "a live append lands in a file nobody can find by its old name anymore." The refusal is
-the guard doing its job, not a defect masked by a `WARN` line.
+this one WARN line.
+
+**Amended, fix round 2 of issue #270's PR #270.** The round-1 review measured the rename failing for
+a reason other than a second live transcibr — a live probe holding only the *destination* generation
+file open (no source handle at all) still failed the rename, with `ERROR_ACCESS_DENIED`, not
+`ERROR_SHARING_VIOLATION`. A bare `rotation_refused: bool` could not tell that case apart from the
+one this section describes, so it reported "a second process holds transcibr.log open" for a cause
+that was not that. `open_log`'s second result is therefore not a `bool` but
+`Rotation_Refusal :: enum u8 { None, Second_Opener, Unknown }` (`rotate.odin`): `.Second_Opener`
+only when `MoveFileExW`'s `GetLastError()` is exactly `ERROR_SHARING_VIOLATION`, the one cause this
+section's reasoning actually confirms; every other rename failure is `.Unknown`, logged with a
+cause-neutral detail rather than the second-process claim. `install` switches on the enum
+exhaustively and warns for both non-`.None` cases, each with its own wording. **The sharing flags do
+not change for this.** Adding `FILE_SHARE_DELETE` would let one process rename the very file a
+second process is still appending to out from under it — precisely the failure rotate-at-open exists
+to avoid, just moved from "crash hooks hold a stale handle" to "a live append lands in a file nobody
+can find by its old name anymore." The refusal is the guard doing its job, not a defect masked by a
+`WARN` line.
 
 Residual, stated rather than fixed: the 8 MiB ceiling is not enforced while a second transcibr
 process is alive; the file grows past it until the next launch that has the file to itself. Bounded
@@ -112,7 +125,7 @@ they add a second bound of their own — an age sweep, with its own best-effort-
 simpler than the rename residual above; they make "which file is the log" ambiguous in a support
 request, where today there is exactly one answer; and their one argument with real teeth — "two
 processes sharing one log file is the whole defect" — does not hold: each transcibr process opens
-its own handle to the one shared file (`handle.odin:39-47`), it does not share a handle with another
+its own handle to the one shared file (`handle.odin:55-63`), it does not share a handle with another
 process's memory. The GUI design handoff's `logs\transcibr-2026-08-05.log` is a mock string in a
 visual reference, not a location this codebase has ever used; the UI copy that names a path is what
 gets corrected, in a later GUI-era stage, not this ADR.
@@ -193,7 +206,8 @@ this ticket's scope, and this record leaves it there.
 crash hooks already reach plus every ordinary boundary report `src/cli` already makes. Rotation's
 enforcement lives entirely inside `open_log`, so every existing caller of `install`/`open_log` gets
 rotation itself for free; reporting a refused rotation is the one exception, costing `open_log` one
-added `bool` result (D2) so `install` can log it once `register` has made `note` callable. The trail
+added `Rotation_Refusal` result (D2) so `install` can log it once `register` has made `note`
+callable. The trail
 and the three crash line shapes now share one timestamp formatter, one writer, and one handle — the
 same "one mechanism" property ADR-0036 built the package around, extended rather than replaced.
 

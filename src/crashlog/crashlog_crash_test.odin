@@ -37,6 +37,7 @@ package crashlog
 
 import "core:os"
 import "core:strings"
+import win32 "core:sys/windows"
 import "core:testing"
 import "core:time"
 import "transcibr:testkit"
@@ -264,6 +265,144 @@ mains_own_wiring_installs_the_assertion_hook_without_the_drills_help :: proc(t: 
 		t,
 		strings.contains(text, "relying on main's own wiring"),
 		"main's own crash-capture wiring never reached the log -- context.assertion_failure_proc was not set at main's own scope",
+	)
+}
+
+// Fix round 1, issue #270 finding 1: `install`'s own `if refusal != .None {
+// note(...) }` wiring was reachable from no red mutation -- deleting it left
+// every crashlog test green, because `rotate_test.odin`'s own refusal test
+// calls `note` directly rather than through `install`. This drives the real
+// seam: the drill's own child process runs a real `crashlog.install` against
+// a directory this test process holds an over-bound log open in (without
+// `FILE_SHARE_DELETE`, the same fixture shape `rotate_test.odin` uses), so
+// only the drill's OWN `install` call can put the WARN line in the log.
+@(test)
+installs_own_warn_line_reaches_the_log_when_rotation_is_refused :: proc(t: ^testing.T) {
+	dir := testkit.scratch_cache(t, "crashlog", "rotation_warn_drill", context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	holder, holder_refusal, holder_ok := open_log(dir, context.allocator)
+	defer close_log(&holder)
+	if !testing.expect(t, holder_ok, "could not open the holder handle this fixture needs") {
+		return
+	}
+	testing.expect_value(t, holder_refusal, Rotation_Refusal.None)
+
+	padding := make([]byte, LOG_CEILING_BYTES + 1, context.allocator)
+	defer delete(padding, context.allocator)
+	write_bytes(holder.file, padding)
+
+	if !run_crash_drill(t, "rotation-warn", dir) {
+		return
+	}
+
+	text := read_log(t, dir)
+	defer delete(text, context.allocator)
+	testing.expect(
+		t,
+		strings.contains(text, "WARN rotation refused: a second process holds transcibr.log open"),
+		"the drill's own install call did not log the rotation refusal",
+	)
+}
+
+// The fixture half of the test below, split out to hold F1's line limit: this
+// plants an over-bound `transcibr.log`, a stale `.1` generation, and holds
+// only the DESTINATION generation file open (no `FILE_SHARE_DELETE`, nothing
+// at all holding the source) -- the same shape `rotate_test.odin`'s
+// `open_log_reports_an_unknown_cause_when_only_the_destination_is_held` uses,
+// which makes `rotate_if_over`'s `MoveFileExW` fail with `ERROR_ACCESS_DENIED`
+// rather than `ERROR_SHARING_VIOLATION`.
+@(private)
+@(require_results)
+hold_destination_generation_file :: proc(
+	t: ^testing.T,
+	dir: string,
+) -> (
+	dest_handle: win32.HANDLE,
+	ok: bool,
+) {
+	assert(t != nil, "there is no test here to report a fixture failure through")
+	assert(len(dir) > 0, "the fixture needs somewhere to plant its files")
+
+	if os.make_directory_all(dir) != nil {
+		testing.expect(t, false, "could not create the drill directory")
+		return win32.INVALID_HANDLE_VALUE, false
+	}
+
+	path := strings.concatenate({dir, "\\", LOG_FILE_NAME}, context.allocator)
+	defer delete(path, context.allocator)
+	old := make([]byte, LOG_CEILING_BYTES + 1, context.allocator)
+	defer delete(old, context.allocator)
+	if os.write_entire_file(path, old) != nil {
+		testing.expect(t, false, "could not plant an over-bound log fixture")
+		return win32.INVALID_HANDLE_VALUE, false
+	}
+
+	generation_path := strings.concatenate({dir, "\\", LOG_FILE_NAME, ".1"}, context.allocator)
+	defer delete(generation_path, context.allocator)
+	if os.write_entire_file(generation_path, transmute([]byte)string("stale generation")) != nil {
+		testing.expect(t, false, "could not plant a stale generation fixture")
+		return win32.INVALID_HANDLE_VALUE, false
+	}
+
+	generation_wide := win32.utf8_to_utf16(generation_path, context.allocator)
+	defer delete(generation_wide, context.allocator)
+	if generation_wide == nil {
+		testing.expect(t, false, "could not encode the generation path")
+		return win32.INVALID_HANDLE_VALUE, false
+	}
+	handle := win32.CreateFileW(
+		win32.wstring(raw_data(generation_wide)),
+		win32.GENERIC_READ,
+		win32.FILE_SHARE_READ | win32.FILE_SHARE_WRITE,
+		nil,
+		win32.OPEN_EXISTING,
+		win32.FILE_ATTRIBUTE_NORMAL,
+		nil,
+	)
+	if handle == win32.INVALID_HANDLE_VALUE {
+		testing.expect(t, false, "could not hold the destination generation file for this fixture")
+		return win32.INVALID_HANDLE_VALUE, false
+	}
+	return handle, true
+}
+
+// Fix round 2, issue #270 finding 1: `install`'s `.Unknown` arm was reachable
+// from no red mutation -- deleting only `case .Unknown: note(...)` left every
+// crashlog test green, because the existing rotation-warn drill test's
+// fixture holds a live handle on the SOURCE file, which classifies as
+// `.Second_Opener` and only ever exercises the sibling arm. `rotation-warn`
+// is the same drill mode finding 1's first case already wired -- it calls
+// `install` unconditionally and lets whatever `Rotation_Refusal` `open_log`
+// returns pick the wording, so only the fixture needs to differ.
+@(test)
+installs_own_unknown_wording_reaches_the_log_when_only_the_destination_is_held :: proc(
+	t: ^testing.T,
+) {
+	dir := testkit.scratch_cache(t, "crashlog", "rotation_warn_unknown_drill", context.allocator)
+	defer delete(dir, context.allocator)
+	defer testkit.remove_cache(dir, context.allocator)
+
+	dest_handle, planted := hold_destination_generation_file(t, dir)
+	if !planted {
+		return
+	}
+	defer win32.CloseHandle(dest_handle)
+
+	if !run_crash_drill(t, "rotation-warn", dir) {
+		return
+	}
+
+	text := read_log(t, dir)
+	defer delete(text, context.allocator)
+	testing.expect(
+		t,
+		strings.contains(
+			text,
+			"WARN rotation refused: the previous transcibr.log could not be rotated",
+		),
+		"the drill's own install call did not log the unknown-cause rotation refusal",
 	)
 }
 

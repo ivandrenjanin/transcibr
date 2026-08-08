@@ -14,11 +14,12 @@ open_log_opens_and_appends_under_a_fresh_directory :: proc(t: ^testing.T) {
 	defer delete(dir, context.allocator)
 	defer testkit.remove_cache(dir, context.allocator)
 
-	h, ok := open_log(dir, context.allocator)
+	h, refusal, ok := open_log(dir, context.allocator)
 	defer close_log(&h)
 
 	testing.expect(t, ok, "open_log refused a directory it should have been able to create")
 	testing.expect(t, handle_is_open(h), "open_log reported success with no open handle")
+	testing.expect_value(t, refusal, Rotation_Refusal.None)
 }
 
 // Issue #76 review round 2: a `FILE_SHARE_READ`-only `open_log` refused a
@@ -33,11 +34,11 @@ open_log_allows_a_second_concurrent_open_log_call :: proc(t: ^testing.T) {
 	defer delete(dir, context.allocator)
 	defer testkit.remove_cache(dir, context.allocator)
 
-	h1, ok1 := open_log(dir, context.allocator)
+	h1, _, ok1 := open_log(dir, context.allocator)
 	defer close_log(&h1)
 	testing.expect(t, ok1, "the first open_log call should have succeeded")
 
-	h2, ok2 := open_log(dir, context.allocator)
+	h2, _, ok2 := open_log(dir, context.allocator)
 	defer close_log(&h2)
 	testing.expect(
 		t,
@@ -52,7 +53,7 @@ record_assert_line_writes_prefix_message_and_location :: proc(t: ^testing.T) {
 	defer delete(dir, context.allocator)
 	defer testkit.remove_cache(dir, context.allocator)
 
-	h, ok := open_log(dir, context.allocator)
+	h, _, ok := open_log(dir, context.allocator)
 	testing.expect(t, ok, "open_log refused a directory it should have been able to create")
 
 	loc := runtime.Source_Code_Location {
@@ -78,7 +79,7 @@ record_exception_line_writes_the_exception_code_and_address :: proc(t: ^testing.
 	defer delete(dir, context.allocator)
 	defer testkit.remove_cache(dir, context.allocator)
 
-	h, ok := open_log(dir, context.allocator)
+	h, _, ok := open_log(dir, context.allocator)
 	testing.expect(t, ok, "open_log refused a directory it should have been able to create")
 
 	record: win32.EXCEPTION_RECORD
