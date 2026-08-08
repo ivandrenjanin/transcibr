@@ -230,11 +230,20 @@ collect_remove_all_violations :: proc(
 	}
 }
 
+// Two classes, both reported through the same Defer_Order_Issue pair
+// (collect.odin's doc comment on that struct names both):
+//
 // Issue #219's class: a `defer` that walks or derefs a container registered
 // ahead of a later `defer`, in the same scope, that deletes or frees it.
 // Odin's own defers run LIFO, so the later-registered free fires FIRST and
 // the walk this reports then runs on freed memory -- silently, the way
 // #184's main.odin pair did before it was fixed by hand.
+//
+// Issue #281's class: a `defer` that already deletes or frees a container,
+// registered ahead of a later `defer`, in the same scope, that deletes or
+// frees the same container again. LIFO still runs the later-registered one
+// first, so the earlier-registered one then frees memory already gone --
+// a double free, not a read.
 collect_defer_order_violations :: proc(
 	file: string,
 	facts: Source_Facts,
@@ -244,16 +253,30 @@ collect_defer_order_violations :: proc(
 	assert(into != nil, "asked to collect violations into nothing at all")
 
 	for issue in facts.defer_order {
-		message := fmt.aprintf(
-			"defer %s(%s, ...) reads %s after defer %s(%s, ...) at line %d frees it (LIFO order; issue #219's class)",
-			issue.walk_proc,
-			issue.arg,
-			issue.arg,
-			issue.free_proc,
-			issue.arg,
-			issue.free_line,
-			allocator = into.allocator,
-		)
+		message: string
+		if is_freeing_call(issue.walk_proc) {
+			message = fmt.aprintf(
+				"defer %s(%s, ...) frees %s a second time after defer %s(%s, ...) at line %d already freed it (LIFO order; issue #281's class; double free)",
+				issue.walk_proc,
+				issue.arg,
+				issue.arg,
+				issue.free_proc,
+				issue.arg,
+				issue.free_line,
+				allocator = into.allocator,
+			)
+		} else {
+			message = fmt.aprintf(
+				"defer %s(%s, ...) reads %s after defer %s(%s, ...) at line %d frees it (LIFO order; issue #219's class)",
+				issue.walk_proc,
+				issue.arg,
+				issue.arg,
+				issue.free_proc,
+				issue.arg,
+				issue.free_line,
+				allocator = into.allocator,
+			)
+		}
 		append(into, make_violation(file, issue.line, message, into.allocator))
 	}
 }
