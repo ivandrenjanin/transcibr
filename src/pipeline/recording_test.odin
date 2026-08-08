@@ -158,8 +158,8 @@ sort_entry_counts_skip_and_refuse_without_building_a_job :: proc(t: ^testing.T) 
 		outcome = planning.Outcome{decision = .Refuse, reason = .Names_No_File},
 	}
 
-	sort_entry(&summary, skipped, o, context.allocator, &jobs)
-	sort_entry(&summary, refused, o, context.allocator, &jobs)
+	sort_entry(&summary, skipped, o, context.allocator, &jobs, 0)
+	sort_entry(&summary, refused, o, context.allocator, &jobs, 1)
 
 	testing.expect_value(t, summary.skipped, 1)
 	testing.expect_value(t, summary.refused, 1)
@@ -188,7 +188,7 @@ sort_entry_builds_exactly_one_job_for_a_transcribe_decision :: proc(t: ^testing.
 		found = planning.Found{source = "C:\\clips\\talk.mp4"},
 		outcome = planning.Outcome{decision = .Transcribe, reason = .Nothing_Recorded},
 	}
-	sort_entry(&summary, entry, o, context.allocator, &jobs)
+	sort_entry(&summary, entry, o, context.allocator, &jobs, 0)
 	defer abandon_recording_job(jobs[0])
 
 	if !testing.expect_value(t, len(jobs), 1) {

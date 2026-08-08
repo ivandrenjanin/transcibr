@@ -87,6 +87,16 @@ Recording_Job :: struct {
 	health:         Health_Watch,
 	arena:          ^mem.Dynamic_Arena,
 	allocator:      mem.Allocator,
+	// ADR-0041's seam: where a fault this Job's own Stages hit leaves
+	// `src/pipeline` (`fire`, event.odin), and which `plan.entries` index it
+	// names -- `new_recording_job` defaults `at` to `-1`, "no one Recording",
+	// the value `--transcribe`'s Batch of one (which has no Plan at all)
+	// keeps. A `Recording_Job` literal built directly, as every test in this
+	// package but `new_recording_job`'s own callers does, leaves both fields
+	// at their bare zero value (`Observer{}`, `at == 0`); `fire` treats a zero
+	// Observer as "nobody is listening", not a crash, so that is still safe.
+	observer:       Observer,
+	at:             int,
 }
 
 Recording_Extracted :: struct {
@@ -112,11 +122,24 @@ destroy_recording_arena :: proc(job: Recording_Job) {
 // Exported (issue #78) so `src/cli` can call the one definition instead of
 // hand-copying the `message := ...; defer delete(message); fmt.eprintln(message)`
 // shape at every fault it reports -- six copies of it, at the ticket's count.
-report_fault :: proc(message: string, allocator: mem.Allocator) {
+//
+// ADR-0041: this no longer writes to stderr itself -- it builds the Event and
+// hands it to `observer` (`fire`, event.odin), whose console sink
+// (`CONSOLE_OBSERVER`) renders the identical bytes this procedure used to
+// write directly. `message` is still freed here, exactly as before: the
+// Event's own `message` field borrows it for the length of `fire`'s call and
+// no longer.
+report_fault :: proc(
+	observer: Observer,
+	kind: Event_Kind,
+	at: int,
+	message: string,
+	allocator: mem.Allocator,
+) {
 	assert(len(message) > 0, "reported a fault with no message to show")
 
 	defer delete(message, allocator)
-	fmt.eprintln(message)
+	fire(observer, Event{kind = kind, at = at, message = message})
 }
 
 // report_fault's stdout sibling (issue #119): a line that belongs on standard
@@ -137,7 +160,13 @@ extract_recording :: proc(job: Recording_Job) -> (extracted: Recording_Extracted
 
 	planned, unread := audio.read_source(job.source, job.allocator)
 	if unread.fault != .None {
-		report_fault(audio.error_message(unread, job.source, job.allocator), job.allocator)
+		report_fault(
+			job.observer,
+			.Failed,
+			job.at,
+			audio.error_message(unread, job.source, job.allocator),
+			job.allocator,
+		)
 		destroy_recording_arena(job)
 		return {}, false
 	}
@@ -149,7 +178,13 @@ extract_recording :: proc(job: Recording_Job) -> (extracted: Recording_Extracted
 		job.allocator,
 	)
 	if unextracted.fault != .None {
-		report_fault(audio.error_message(unextracted, job.source, job.allocator), job.allocator)
+		report_fault(
+			job.observer,
+			.Failed,
+			job.at,
+			audio.error_message(unextracted, job.source, job.allocator),
+			job.allocator,
+		)
 		destroy_recording_arena(job)
 		return {}, false
 	}
@@ -189,7 +224,13 @@ transcribe_and_place :: proc(extracted: Recording_Extracted) -> bool {
 		fmt.eprintln()
 	}
 	if unfinished.fault != .None {
-		report_fault(engine.error_message(unfinished, job.source, job.allocator), job.allocator)
+		report_fault(
+			job.observer,
+			.Failed,
+			job.at,
+			engine.error_message(unfinished, job.source, job.allocator),
+			job.allocator,
+		)
 		discard_engine_output(job, unfinished.fault)
 		discard_recording_wav(extracted.extracted.audio, unfinished.fault)
 		return false
@@ -345,7 +386,17 @@ checked_first_recording_health :: proc(
 
 	message := doctor.health_error_message(fault, factor, job.allocator)
 	defer delete(message, job.allocator)
-	fmt.eprintfln("%s: %s", job.source, message)
+	fire(
+		job.observer,
+		Event {
+			kind = .Health,
+			at = job.at,
+			source = job.source,
+			message = message,
+			factor = factor,
+			health = fault,
+		},
+	)
 	if job.health.abort != nil {
 		sync.atomic_store(job.health.abort, true)
 	}
@@ -370,6 +421,8 @@ placed_and_reported :: proc(
 	duration: Maybe(transcript.Millis),
 	rc: transcript.Render_Context,
 	made: artifact.Sidecar,
+	observer: Observer,
+	at: int,
 	allocator: mem.Allocator,
 ) -> bool {
 	assert(len(source) > 0, "there is no Recording here to place artifacts beside")
@@ -378,7 +431,13 @@ placed_and_reported :: proc(
 	placed, unplaced := artifact.complete(source, output, duration, rc, made, allocator)
 	defer artifact.destroy_names(placed, allocator)
 	if unplaced.fault != .None {
-		report_fault(artifact.error_message(unplaced, source, allocator), allocator)
+		report_fault(
+			observer,
+			.Failed,
+			at,
+			artifact.error_message(unplaced, source, allocator),
+			allocator,
+		)
 		return false
 	}
 	assert(len(placed[.Transcript]) > 0, "placement succeeded with no Transcript name to report")
@@ -421,6 +480,8 @@ placed_from_engine_output :: proc(
 			profile = job.profile,
 		},
 		made,
+		job.observer,
+		job.at,
 		job.allocator,
 	)
 }
@@ -481,6 +542,12 @@ Batch_Options :: struct {
 	profile:        transcript.Merge_Profile,
 	config:         Config,
 	health:         Health_Watch,
+	// ADR-0041: the seam every fault reported for this Batch reaches --
+	// `src/cli/batch.odin` wires its own console-plus-trail fan-out here.
+	// Left at its zero value (`Observer{}`) by every test in this package
+	// that builds a `Batch_Options` literal directly, which `fire` treats as
+	// "nobody is listening", not a crash.
+	observer:       Observer,
 }
 
 // The one place a Recording_Job is actually built, for a Batch of many
@@ -501,6 +568,8 @@ new_recording_job :: proc(
 	profile: transcript.Merge_Profile,
 	report: engine.Report,
 	health: Health_Watch,
+	observer: Observer = {},
+	at: int = -1,
 ) -> Recording_Job {
 	assert(len(source) > 0, "there is no Recording here to build a Job for")
 	assert(len(name) > 0, "a Recording with no artifact stem has nowhere to put its output")
@@ -527,13 +596,15 @@ new_recording_job :: proc(
 		health         = health,
 		arena          = arena,
 		allocator      = mem.dynamic_arena_allocator(arena),
+		observer       = observer,
+		at             = at,
 	}
 	return result
 }
 
 @(private)
 @(require_results)
-recording_job_of :: proc(entry: planning.Entry, o: Batch_Options) -> Recording_Job {
+recording_job_of :: proc(entry: planning.Entry, o: Batch_Options, at: int) -> Recording_Job {
 	assert(len(entry.found.source) > 0, "there is no Recording here to build a Job for")
 
 	return new_recording_job(
@@ -548,5 +619,7 @@ recording_job_of :: proc(entry: planning.Entry, o: Batch_Options) -> Recording_J
 		o.profile,
 		engine.Report{},
 		o.health,
+		o.observer,
+		at,
 	)
 }
