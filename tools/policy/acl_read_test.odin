@@ -108,25 +108,22 @@ check_one_file_reports_cannot_be_read_for_an_acl_denied_source_file :: proc(t: ^
 }
 
 // The process-level half: what exit code the real binary answers with when
-// the fixture's only source file is ACL-denied. Measured, not assumed, and
-// the measurement is NOT what the read-failure rendering would suggest: an
-// ACL-denied file is invisible to `discover_odin_files` (an icacls `(R)`
-// deny hides the entry from the walk itself, confirmed by planting a
-// readable sibling and observing only the sibling get checked) -- so the
-// denied file never reaches `check_one_file`, and no `"cannot be read:"`
-// violation is ever produced through this path. What actually fires is
-// `check_repository`'s own `len(files) == 0` guard (main.odin): with its
-// only file gone from the walk, the fixture reports zero `.odin` files
-// discovered, and THAT is the one violation driving `os.exit(VIOLATION_ERROR)`
-// here, not ROOT_ERROR (there is no root-argument problem) and not a
-// read-failure violation (that message never renders through this path --
-// `check_one_file_reports_cannot_be_read_for_an_acl_denied_source_file`
-// above is what pins the "cannot be read:" rendering, calling
-// `check_one_file` directly rather than through `discover_odin_files`).
+// the fixture's only source file is ACL-denied. Since the #267 fix
+// (`is_odin_source_candidate` in discover.odin), an ACL-denied file is no
+// longer invisible to `discover_odin_files` -- it comes back with
+// `entry.type == .Undetermined` and flows on to `check_one_file`, whose own
+// read attempt renders the `"cannot be read:"` violation
+// (`check_one_file_reports_cannot_be_read_for_an_acl_denied_source_file`
+// above pins that rendering directly). THAT violation, not
+// `check_repository`'s `len(files) == 0` guard, is what now drives
+// `os.exit(VIOLATION_ERROR)` for this fixture -- the guard never fires here
+// because the walk no longer reports zero files. This test only pins the
+// process-level exit code; the zero-files guard itself is covered
+// separately, on a fixture with no `.odin` files at all and no ACL deny, by
+// `check_repository_reports_the_zero_files_guard_violation_over_a_repository_with_no_odin_files`
+// below.
 @(test)
-main_exits_violation_error_via_the_zero_files_guard_when_the_only_source_file_is_acl_denied :: proc(
-	t: ^testing.T,
-) {
+main_exits_violation_error_for_an_acl_denied_sole_source_file :: proc(t: ^testing.T) {
 	base, base_ok := fixture_root(t, "transcibr-policy-acl-exit-fixture", context.allocator)
 	testing.expect_value(t, base_ok, true)
 	defer delete(base, context.allocator)
@@ -161,8 +158,7 @@ main_exits_violation_error_via_the_zero_files_guard_when_the_only_source_file_is
 // that would set `.Regular`) -- so the OLD `entry.type != .Regular`
 // filter dropped it exactly like a non-`.odin` file, with no error recorded
 // anywhere: `os.walker_error` stays nil because `find_data_to_file_info`
-// itself returns `err == nil`. This is the review's own measurement (see
-// `main_exits_violation_error_via_the_zero_files_guard_...` above): with a
+// itself returns `err == nil`. This is the review's own measurement: with a
 // readable SIBLING present, only the sibling used to come back from this
 // call, and the denied file vanished with no trace at this seam at all. The
 // fix widens the filter to also collect an `.Undetermined`, non-empty-named
@@ -337,4 +333,41 @@ check_package_accounting_reports_cannot_be_read_for_an_acl_denied_justfile :: pr
 	acl_undenied(t, justfile_path)
 
 	testing.expect(t, violations_mention(violations, "cannot be read:"))
+}
+
+// Fix round 1 of #267's review: the widened `is_odin_source_candidate`
+// (discover.odin) took the only test that could see `check_repository`'s own
+// `len(files) == 0` guard (main.odin) disappear -- that fixture's ACL-denied
+// sole file is now discovered (as `.Undetermined`) and flows to
+// `check_one_file` instead, so a mutation that disarms the guard
+// (`if len(files) == 0` -> `if false && len(files) == 0`) left the whole
+// suite green. This test needs no ACL trick at all: a fixture root that
+// genuinely holds zero `.odin` files is what the guard exists for, and
+// `discover_odin_files` legitimately answers `ok = true, files = []` for
+// one (an empty, existing directory is not a walker error). No readable
+// sibling, no denied file -- just an empty root, at the `check_repository`
+// seam directly.
+@(test)
+check_repository_reports_the_zero_files_guard_violation_over_a_repository_with_no_odin_files :: proc(
+	t: ^testing.T,
+) {
+	base, base_ok := fixture_root(t, "transcibr-policy-zero-files-fixture", context.allocator)
+	testing.expect_value(t, base_ok, true)
+	defer delete(base, context.allocator)
+	if !base_ok {
+		return
+	}
+	testing.expect_value(t, ensure_fixture_root(base), os.Error(nil))
+	defer testing.expect_value(t, os.remove(base), os.Error(nil))
+
+	violations := check_repository(base, context.allocator)
+	defer delete(violations)
+	defer violations_destroy(violations, context.allocator)
+
+	testing.expect_value(t, len(violations), 1)
+	testing.expect(
+		t,
+		violations_mention(violations, "discovered zero .odin files"),
+		"the zero-files guard did not fire over an empty repository",
+	)
 }
