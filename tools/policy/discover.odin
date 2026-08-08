@@ -42,17 +42,15 @@ is_excluded_directory :: proc(name: string) -> bool {
 // files than the repository holds and reported clean. Widening to
 // `.Undetermined` lets an unreadable file flow on to `check_one_file`, whose
 // own read attempt is what turns it into the "cannot be read: %v" violation
-// (main.odin) rather than an omission. `entry.name` still has to end
-// `.odin` and be non-empty: `os.walker_walk` also hands back a fully zeroed,
-// empty-named `.Undetermined` entry when a SUBDIRECTORY itself cannot be
-// opened, which is a distinct failure this procedure must not mistake for a
-// source file -- that one is already reported through `os.walker_error`.
+// (main.odin) rather than an omission. `os.walker_walk` also hands back a
+// fully zeroed, empty-named `.Undetermined` entry when a SUBDIRECTORY itself
+// cannot be opened, which is a distinct failure this procedure must not
+// mistake for a source file -- that one is already reported through
+// `os.walker_error`, and the `.odin` suffix check below already refuses it
+// on its own: an empty name never carries that suffix.
 @(require_results)
 is_odin_source_candidate :: proc(entry: os.File_Info) -> bool {
 	if entry.type != .Regular && entry.type != .Undetermined {
-		return false
-	}
-	if len(entry.name) == 0 {
 		return false
 	}
 	return strings.has_suffix(entry.name, ".odin")

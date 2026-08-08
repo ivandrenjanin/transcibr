@@ -371,3 +371,22 @@ check_repository_reports_the_zero_files_guard_violation_over_a_repository_with_n
 		"the zero-files guard did not fire over an empty repository",
 	)
 }
+
+// Fix round 2 of #267's review: `is_odin_source_candidate` (discover.odin)
+// used to carry an `if len(entry.name) == 0 { return false }` branch,
+// commented as "load-bearing" for refusing the fully zeroed, empty-named
+// `.Undetermined` entry `os.walker_walk` hands back when a subdirectory
+// cannot be opened. Measured false and removed: `strings.has_suffix("",
+// ".odin")` is already false, so the suffix check alone refuses that
+// sentinel and the branch could never change the answer. This test locks
+// the invariant the deleted branch was wrongly credited with, directly
+// against the zeroed sentinel, so a future suffix-check rewrite that
+// stopped refusing an empty name would be caught here rather than by an ACL
+// fixture that can never construct one.
+@(test)
+is_odin_source_candidate_refuses_a_fully_zeroed_undetermined_entry :: proc(t: ^testing.T) {
+	zeroed := os.File_Info{}
+	testing.expect_value(t, zeroed.type, os.File_Type.Undetermined)
+	testing.expect_value(t, len(zeroed.name), 0)
+	testing.expect_value(t, is_odin_source_candidate(zeroed), false)
+}
